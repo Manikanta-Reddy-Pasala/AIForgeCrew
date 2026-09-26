@@ -108,6 +108,28 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
                 "to make progress, or output `FINAL: <answer>` ONLY when "
                 "the work is actually done. Do not just narrate or 'test'."})
             return "continue"
+    # A command this turn handed back is still running: an answer now would
+    # report its output so far as the result (live: "batch 29/40" given as
+    # the end of a 40-batch job). One nudge; the model may still answer and
+    # say it is running.
+    if not getattr(st, "running_job_nudged", False):
+        try:
+            from aiforge_core.runtime import cmd_jobs
+            live = cmd_jobs.turn_running()
+        except Exception:  # noqa: BLE001 — never block an answer on this
+            live = []
+        if live:
+            st.running_job_nudged = True
+            ids = ", ".join(str(j.key) for j in live)
+            if step.get("text"):
+                yield {"type": "thought", "text": step["text"]}
+            st.convo.append({"role": "user", "content":
+                f"[harness — not the user] Command(s) {ids} you started are "
+                "STILL RUNNING, so their output so far is not the result. "
+                "command_wait for them before answering, or command_kill "
+                "them — or, if the answer does not depend on them, say "
+                "plainly that they are still running."})
+            return "continue"
     # Task board gate: the model planned items and some are still open. A
     # long run must not stop to report half the work; bounded so a model
     # that cannot finish still exits.

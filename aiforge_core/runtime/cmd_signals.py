@@ -38,7 +38,7 @@ def failure_in(text: str) -> str | None:
     for kind, rx in _FAILURES:
         m = rx.search(text)
         if m:
-            start = text.rfind("\n", 0, m.start()) + 1
+            start = text.rfind("\n", 0, m.end()) + 1
             end = text.find("\n", m.end())
             line = text[start:end if end >= 0 else None].strip()
             return f"{kind}: {line[:160]}"
@@ -104,5 +104,22 @@ def bounded(text: str, limit: int) -> str:
             + text[-(limit - head):])
 
 
-__all__ = ["SCAN_BYTES", "bounded", "clean", "failure_in", "file_size",
+__all__ = ["SCAN_BYTES", "bounded", "clean", "failure_in", "file_size", "job_hint",
            "read_range", "signal_in", "waiting_for_input"]
+
+
+def job_hint(key, alive: bool, why: str | None = None) -> str:
+    """What the model should do next with a handed-back job."""
+    if not alive:
+        return "finished — the output above is final."
+    if why and any(why.startswith(kind + ":") for kind, _rx in _FAILURES):
+        # Live: the model was told only "command_wait to wait for more" and
+        # waited 45 s on a build it had already seen fail.
+        return (f"an error appeared while it is still running. If it means "
+                f"the command failed, command_kill(id='{key}') now and "
+                f"report or fix it — do not wait for it to finish. If the "
+                f"error is harmless, command_wait(id='{key}').")
+    return (f"still running. command_wait(id='{key}') to wait for more "
+            f"(returns early on an error, a prompt or a stall), "
+            f"command_output(id='{key}') to peek, command_kill(id="
+            f"'{key}') to stop it and fix the command.")

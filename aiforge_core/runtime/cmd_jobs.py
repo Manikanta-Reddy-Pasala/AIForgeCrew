@@ -340,6 +340,17 @@ def find(ref) -> Job | None:
     return None
 
 
+def turn_running() -> list[Job]:
+    """This turn's handed-off jobs that are still running (explicit
+    background jobs are meant to outlive the answer, so not these)."""
+    token = _TURN.get()
+    if token is None:
+        return []
+    with _LOCK:
+        return [j for j in _JOBS.values()
+                if j.turn is token and not j.explicit and j.alive()]
+
+
 def running() -> list[Job]:
     """The caller's own live jobs."""
     caller = _caller()
@@ -372,13 +383,9 @@ def stop_for_text(session_id, text: str) -> int:
 
 # ── looking and waiting ──────────────────────────────────────────────────
 
-def _hint(job: Job, alive: bool) -> str:
-    if not alive:
-        return "finished — the output above is final."
-    return (f"still running. command_wait(id='{job.key}') to wait for more "
-            f"(returns early on an error, a prompt or a stall), "
-            f"command_output(id='{job.key}') to peek, command_kill(id="
-            f"'{job.key}') to stop it and fix the command.")
+
+def _hint(job: Job, alive: bool, why: str | None = None) -> str:
+    return sig.job_hint(job.key, alive, why)
 
 
 def look(job: Job, why: str | None = None) -> dict:
@@ -404,7 +411,7 @@ def look(job: Job, why: str | None = None) -> dict:
         _forget(job)
     if why:
         out["returned_because"] = why
-    out["hint"] = _hint(job, alive)
+    out["hint"] = _hint(job, alive, why)
     return out
 
 
