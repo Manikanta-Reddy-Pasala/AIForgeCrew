@@ -4,8 +4,8 @@ import os
 import re
 
 from .._shell import _ACTION_RE
+from . import _summary_bg, _tail_cut
 from ._claim_guard import _claims_file_edits
-from ._generation import _CANCELLED, _complete_cancellable
 from ._window import _ctx_budget_chars
 
 
@@ -50,88 +50,39 @@ def _text_of(m: dict) -> str:
     return c if isinstance(c, str) else ""
 
 
-def _condense_timeout_s() -> float:
-    """Wall-clock cap for the condense summariser call (env
-    ``AIFORGE_CONDENSE_TIMEOUT_S``, default 30s; <=0 disables). On the Doer
-    path ``session_id is None`` so ``_complete_cancellable`` runs the LLM call
-    INLINE with no timeout — a wedged endpoint would hang the whole turn on a
-    condense. This bounds it so the turn falls back to the non-LLM breadcrumb."""
-    try:
-        return float(os.environ.get("AIFORGE_CONDENSE_TIMEOUT_S", "30"))
-    except (TypeError, ValueError):
-        return 30.0
+# The model summary sits inside the breadcrumb between these, so a later
+# splice or condense can find exactly that text again.
+_SUM_OPEN = "Summary of what happened:\n"
+_SUM_CLOSE = "\n(end of summary)"
+_SUM_RE = re.compile(re.escape(_SUM_OPEN) + r"(.*?)" + re.escape(_SUM_CLOSE), re.S)
+_GEN_RE = re.compile(r"\(condense #(\d+)\)")
+_BLOCK_RE = re.compile(re.escape(_CONDENSE_OPEN) + r"(.*?)"
+                       + re.escape(_CONDENSE_CLOSE), re.S)
+#: A summary longer than this is cut: it must stay smaller than the history
+#: it replaces.
+_SUMMARY_MAX_CHARS = 4000
 
 
-def _llm_summarize_middle(middle: list[dict], complete_fn, session_id=None) -> str:
-    """Code-aware LLM summary of the dropped middle. Swappable model via
-    AIFORGE_COMPACT_ROLE. Routed through _complete_cancellable so a Stop can
-    interrupt it (and it honours the generation cap). Bounded by a wall-clock
-    timeout (:func:`_condense_timeout_s`) so a hung endpoint can't wedge the
-    turn. Returns '' on any failure / cancel / timeout so the caller falls
-    back to the heuristic breadcrumb."""
-    if complete_fn is None or not middle:
-        return ""
-    transcript = []
-    for m in middle:
-        r = (m.get("role") or "").upper()
-        c = _text_of(m).strip()
-        if c:
-            transcript.append(f"{r}: {c}")
-    body = "\n".join(transcript)
-    if len(body) > 24000:        # bound the summariser's own input
-        body = body[:12000] + "\n…\n" + body[-12000:]
-    # learner, not doer: this call is background compaction and must count
-    # against compaction_rpm, not the chat bucket.
-    sum_role = os.environ.get("AIFORGE_COMPACT_ROLE", "").strip() or "learner"
-    msgs = [{"role": "system", "content": _COMPACT_SYS},
-            {"role": "user", "content": "Summarise this slice:\n\n" + body}]
-    timeout = _condense_timeout_s()
-
-    def _call() -> str:
-        try:
-            out = _complete_cancellable(complete_fn, sum_role, msgs, session_id)
-            if out is _CANCELLED or not isinstance(out, str):
-                return ""
-            return out.strip()
-        except Exception:  # noqa: BLE001
-            return ""
-
-    if timeout <= 0:
-        return _call()
-    import threading as _th
-    box: dict = {}
-
-    def _worker() -> None:
-        box["out"] = _call()
-
-    t = _th.Thread(target=_worker, daemon=True)
-    t.start()
-    t.join(timeout)
-    if t.is_alive():
-        # Summariser is wedged — abandon it (daemon) and fall back to the
-        # cheap non-LLM condense so the turn proceeds.
-        return ""
-    return box.get("out", "")
+def _prior_block(sys_text: str) -> str:
+    m = _BLOCK_RE.search(sys_text or "")
+    return m.group(1) if m else ""
 
 
-_SUMMARY_LOCK = __import__("threading").Lock()
-_SUMMARY_READY: dict = {}
-_SUMMARY_BUSY: set = set()
+def _block_gen(block: str) -> int:
+    m = _GEN_RE.search(block or "")
+    return int(m.group(1)) if m else 0
 
 
-def _summary_key(session_id) -> str:
-    return "" if session_id is None else str(session_id)
+def _block_summary(block: str) -> str:
+    m = _SUM_RE.search(block or "")
+    return m.group(1).strip() if m else ""
 
 
-def _take_ready_summary(session_id) -> str:
-    """A model summary that finished after an earlier turn, if one is waiting."""
-    with _SUMMARY_LOCK:
-        return _SUMMARY_READY.pop(_summary_key(session_id), "")
-
-
-def _summary_messages(middle) -> list:
+def _summary_messages(middle, prior: str = "") -> list:
     """The prompt for a background summary. Bounded so the call cannot be
-    larger than the history it is replacing."""
+    larger than the history it is replacing. ``prior`` is the summary the
+    breadcrumb already carries: the new one must cover it too, or each
+    condense would forget everything before the last slice."""
     transcript = []
     for m in middle:
         r = (m.get("role") or "").upper()
@@ -141,6 +92,9 @@ def _summary_messages(middle) -> list:
     body = "\n".join(transcript)
     if len(body) > 24000:
         body = body[:12000] + "\n…\n" + body[-12000:]
+    if prior:
+        body = "EARLIER SUMMARY (keep what still matters):\n" + prior + \
+            "\n\nNEWER TURNS:\n" + body
     return [{"role": "system", "content": _COMPACT_SYS},
             {"role": "user", "content": "Summarise this slice:\n\n" + body}]
 
@@ -160,43 +114,73 @@ def _text_complete(complete_fn, role: str, msgs: list):
     return client.complete(role, msgs)
 
 
-def _schedule_llm_summary(middle, complete_fn, session_id) -> None:
-    """Start the model summary and return at once.
+def _summary_role() -> str:
+    # learner, not doer: the call counts against compaction_rpm, not the
+    # chat bucket. AIFORGE_COMPACT_ROLE picks another role.
+    return os.environ.get("AIFORGE_COMPACT_ROLE", "").strip() or "learner"
+
+
+def _schedule_llm_summary(middle, complete_fn, run_key, gen: int,
+                          prior: str = "") -> None:
+    """Start the model summary of condense ``gen`` and return at once.
 
     The turn already has the heuristic breadcrumb, so it must not wait on
-    this call. A finished summary is folded into the next condense. One
-    summary per session stays in flight until THAT call returns, so a slow
-    model cannot stack more summaries or take the chat generation slots.
+    this call. The result is spliced into THIS breadcrumb when it lands
+    (:func:`_splice_ready_summary`). No run key, no summary: the key is what
+    keeps parallel runs from reading each other's result.
     """
-    if _compact_mode() != "llm" or not middle:
+    if not run_key or _compact_mode() != "llm" or not middle:
         return
-    key = _summary_key(session_id)
-    with _SUMMARY_LOCK:
-        if key in _SUMMARY_BUSY:
-            return
-        _SUMMARY_BUSY.add(key)
-    snap = list(middle)
-    sum_role = os.environ.get("AIFORGE_COMPACT_ROLE", "").strip() or "learner"
-    msgs = _summary_messages(snap)
+    msgs = _summary_messages(list(middle), prior)
+    role = _summary_role()
+    _summary_bg.schedule(run_key, gen,
+                         lambda: _text_complete(complete_fn, role, msgs))
 
-    def _worker() -> None:
-        try:
-            text = ""
-            try:
-                out = _text_complete(complete_fn, sum_role, msgs)
-                if isinstance(out, str):
-                    text = out.strip()
-            except Exception:  # noqa: BLE001
-                text = ""
-            if text:
-                with _SUMMARY_LOCK:
-                    _SUMMARY_READY[key] = text
-        finally:
-            with _SUMMARY_LOCK:
-                _SUMMARY_BUSY.discard(key)
 
-    import threading as _th
-    _th.Thread(target=_worker, daemon=True, name="aiforge-compact").start()
+def _clean_summary(text: str) -> str:
+    """The model's text, bounded and unable to fake the note's own markers
+    (a later splice or carry would otherwise cut it at the wrong place)."""
+    text = (text or "").replace(_SUM_CLOSE.strip(), "(end)")
+    text = re.sub(r"(?m)^(Earlier (?:asks|outcomes)):", r"\1 -", text)
+    text = text.replace(_CONDENSE_OPEN, "").replace(_CONDENSE_CLOSE, "")
+    return text.strip()[:_SUMMARY_MAX_CHARS]
+
+
+def _with_summary(block: str, summary: str) -> str:
+    summary = _clean_summary(summary)
+    part = _SUM_OPEN + summary + _SUM_CLOSE
+    if _SUM_RE.search(block):
+        return _SUM_RE.sub(lambda _m: part, block, count=1)
+    cut = [i for i in (block.find("\nEarlier asks:"),
+                       block.find("\nEarlier outcomes:"),
+                       block.find("\nRe-read a file")) if i >= 0]
+    at = min(cut) if cut else len(block)
+    return block[:at] + "\n" + part + block[at:]
+
+
+def _splice_ready_summary(convo: list[dict], run_key) -> list[dict]:
+    """Put a finished model summary into the breadcrumb it was written for.
+
+    Checked every step, so the summary lands as soon as it is ready instead
+    of one condense later. A summary for any other condense is discarded."""
+    if not run_key or not convo or convo[0].get("role") != "system":
+        return convo
+    text = convo[0].get("content")
+    if not isinstance(text, str):
+        return convo
+    block = _prior_block(text)
+    if not block:
+        return convo
+    summary = _summary_bg.take(run_key, _block_gen(block))
+    if not summary:
+        return convo
+    new = text.replace(block, _with_summary(block, summary), 1)
+    return [{**convo[0], "content": new}] + convo[1:]
+
+
+def release_run(run_key) -> None:
+    """The run ended: drop its summary, finished or not."""
+    _summary_bg.release(run_key)
 
 
 def _tail_fraction(frac: float = 0.5) -> float:
@@ -288,7 +272,7 @@ def _carry_prior_thread(prior: str, user_asks: list, finals: list) -> tuple[list
                       + re.escape(_CONDENSE_CLOSE), prior or "", flags=re.S)
     if not block:
         return user_asks, finals
-    text = block.group(1)
+    text = _SUM_RE.sub("", block.group(1))    # the model summary is not asks
     pa = re.search(r"Earlier asks: (.+)", text)
     po = re.search(r"Earlier outcomes: (.+)", text)
     if pa:
@@ -311,23 +295,22 @@ def _summary_tail(user_asks: list, finals: list) -> str:
     return ("\n" + "\n".join(bits)) if bits else ""
 
 
-def _breadcrumb(middle: list, used: str, summary: str, llm_summary: str) -> str:
+def _breadcrumb(middle: list, used: str, summary: str, llm_summary: str,
+               gen: int = 1) -> str:
     """The condense note, wrapped in a unique sentinel so the NEXT condense can
     strip exactly THIS block (not a look-alike phrase a rule/skill contains).
 
-    The LLM form appends the structured asks/outcomes tail too, so the next
-    condense's parser can still carry the thread forward — without it, repeated
-    condenses in LLM mode silently dropped everything before the prior summary.
+    ``gen`` numbers the condense; a model summary is only ever spliced into
+    the note with its own number. "Work done so far" is kept in both forms:
+    the model summary may lag this slice, the tool tally never does. The
+    asks/outcomes tail lets the next condense carry the thread forward.
     """
-    if llm_summary:
-        body = (f"[earlier conversation auto-condensed — {len(middle)} messages "
-                f"omitted. Summary of what happened:\n{llm_summary}\n{summary}\n"
-                "Re-read a file or ask the user if you need more detail.]")
-    else:
-        body = ("[earlier conversation auto-condensed to fit the context window "
-                f"— {len(middle)} messages omitted. Work done so far: {used}."
-                f"{summary}\nRe-read a file or ask the user if you need detail "
-                "from before this point.]")
+    llm = (f"\n{_SUM_OPEN}{_clean_summary(llm_summary)}{_SUM_CLOSE}"
+           if llm_summary else "")
+    body = ("[earlier conversation auto-condensed to fit the context window "
+            f"(condense #{gen}) — {len(middle)} messages omitted. Work done so "
+            f"far: {used}.{llm}{summary}\nRe-read a file or ask the user if you "
+            "need detail from before this point.]")
     return f"{_CONDENSE_OPEN}\n{body}\n{_CONDENSE_CLOSE}"
 
 
@@ -365,69 +348,80 @@ def _stripped_system(convo: list[dict]) -> str:
                   "", convo[0].get("content") or "", flags=re.S).rstrip()
 
 
+def _hist_chars(msgs: list[dict]) -> int:
+    return sum(len(_text_of(m)) for m in msgs)
+
+
 def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None = None,
                    complete_fn=None, session_id=None, force: bool = False,
-                   keep_min: int = 0, pin: "str | None" = None) -> list[dict]:
+                   keep_min: int = 0, pin: "str | None" = None,
+                   run_key: "str | None" = None) -> list[dict]:
     """Auto-condense a long chat history so the context can't overflow.
 
     Keeps the system message + the last ``keep_recent`` turns verbatim and
     collapses everything in between into ONE breadcrumb note (count of omitted
-    messages + the tools used so far). Structural only — no extra LLM call, so
-    it's cheap and runs every turn. ``force=True`` condenses regardless of the
-    budget (the caller wants a fresh window, not just a safe one). The agent can
-    re-read files / ask the user if it needs detail from before the condense
-    point. ``keep_min`` trailing messages are always kept: tool results the
-    model has not read yet must not be summarised away."""
+    messages + the tools used so far). Structural only — the model summary
+    (``compact_llm``) is written behind the turn and spliced in when it lands,
+    keyed by ``run_key``; without one there is no model summary. ``force=True``
+    condenses regardless of the budget (the caller wants a fresh window, not
+    just a safe one). ``keep_min`` trailing messages are always kept: tool
+    results the model has not read yet must not be summarised away.
+    ``session_id`` is accepted for callers and unused: a session is not a run."""
+    convo = _splice_ready_summary(convo, run_key)
     # M1: reserve the ACTUAL system-prompt size (convo[0]) rather than the fixed
     # 14K estimate, and DON'T re-count it in the over-budget sum below (it's
-    # reserved, not history) — the old code both subtracted a constant AND
-    # summed the real system chars = a double-count.
+    # reserved, not history).
     budget = _ctx_budget_chars(role, sys_chars=_system_chars(convo))
     if budget <= 0:
         return convo
     # Size-aware tail: keep the newest messages up to ~half the budget (by
-    # CHARS), floor 4 — so condense lands ~50% of budget even when recent turns
-    # are large (a fixed count kept N huge tool-outputs verbatim and barely freed
-    # the window). ``keep_recent`` is the ceiling.
-    # Unread results are kept only while they fit: past the budget, keeping
-    # them would just fail the model call.
-    if keep_min and sum(len(_text_of(m)) for m in convo[-keep_min:]) > budget:
+    # CHARS), floor 4. ``keep_recent`` is the ceiling. Unread results are kept
+    # only while they fit: past the budget, keeping them would just fail the
+    # model call.
+    if keep_min and _hist_chars(convo[-keep_min:]) > budget:
         keep_min = 0
     keep_recent = max(_recent_tail_count(convo, budget, ceiling=keep_recent),
                       keep_min)
     if len(convo) <= keep_recent + 2:
         return convo
     # ``force`` condenses even when the history still FITS — used when the loop
-    # grants a runaway-cap extension: the next slice of work should start from a
-    # summary, not from thousands of accumulated turns that merely happened to
-    # be under budget.
-    if not force and sum(len(_text_of(m)) for m in convo[1:]) <= budget:
+    # grants a runaway-cap extension.
+    if not force and _hist_chars(convo[1:]) <= budget:
         return convo
-    middle = convo[1:-keep_recent]
+    room = max(0, budget - _hist_chars(convo[-keep_recent:]))
+    start, needs_opener = _tail_cut.tail_start(convo, keep_recent, room or 1)
+    middle = convo[1:start]
     if not middle:
         return convo
 
     import collections as _c
+    prior_block = _prior_block(convo[0].get("content") or "")
     tools, user_asks, finals = _middle_signals(middle)
     user_asks, finals = _carry_prior_thread(convo[0].get("content") or "",
                                             user_asks, finals)
     used = (", ".join(f"{t}×{n}" for t, n in _c.Counter(tools).most_common(8))
             or "discussion + reads")
-    # The model summary, if one finished behind an earlier turn. This turn
-    # never waits for it — the heuristic breadcrumb is what keeps the call
-    # inside the window. AIFORGE_COMPACT_ROLE picks the model; the call is
-    # counted as compaction, not chat.
-    llm_summary = _take_ready_summary(session_id)
-    _schedule_llm_summary(middle, complete_fn, session_id)
+    # The model summary rolls: the note keeps the last one until the summary
+    # of THIS condense (which covers it) is spliced in.
+    gen = _block_gen(prior_block) + 1
+    carried = _block_summary(prior_block)
+    _schedule_llm_summary(middle, complete_fn, run_key, gen, carried)
     note = _breadcrumb(middle, used, _summary_tail(user_asks, finals),
-                       llm_summary)
+                       carried, gen)
     # Fold the breadcrumb INTO the system message rather than inserting a
-    # separate 'user' turn — that avoids two consecutive same-role messages
-    # (some providers reject those) and keeps the tail's alternation intact.
+    # separate 'user' turn — that avoids two consecutive same-role messages.
     sys_text = _pin_goal(_stripped_system(convo), convo, pin)
     head = [{"role": "system", "content": (sys_text + "\n\n" + note).strip()}]
+    tail = convo[start:]
+    if needs_opener:
+        tail = [_tail_cut.opener()] + tail
+    kept = head + tail
     # A pointer is only honest while the body it names is still in the kept
     # system message or the tail. Compaction just dropped the middle, so put
-    # that body back if the pointer would otherwise dangle.
+    # that body back if the pointer would otherwise dangle — but only while it
+    # fits, or the next step condenses again at once.
     from aiforge_core.runtime.context_seen import restore_dangling
-    return restore_dangling(head + convo[-keep_recent:], middle)
+    restored = restore_dangling(kept, middle)
+    over = budget - _hist_chars(kept[1:]) - (_system_chars(kept)
+                                             - _system_chars(convo))
+    return _tail_cut.within_budget(kept, restored, max(0, over))

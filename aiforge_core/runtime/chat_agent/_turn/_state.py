@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import types
+import uuid
 
 from .._context import (
     _OUTPUT_REPEAT,
@@ -297,5 +298,8 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         board_used=False, plan_asked=_plan_asked, last_green_fp=None,
         board_nudges=0, board_closed_mark=None, unlimited=_unlimited,
         goal=_turn_goal(messages), steers=[],
+        # Keys this run's background condense summary (never the session:
+        # unattended runs share session None and run in parallel).
+        compact_key=uuid.uuid4().hex,
         **progress_fields())
     return st

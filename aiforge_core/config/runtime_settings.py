@@ -111,41 +111,29 @@ _SPEC: dict[str, tuple[str, int]] = {
     # Retry-After. Declining to self-throttle is a statement about our own
     # preference, not permission to ignore a server that has refused us.
     #
-    # 15 by default — a conservative machine-wide ceiling that keeps the box
-    # under the free-tier / shared-gateway limits most operators actually run
-    # against, out of the box. Raise it in Settings (or via AIFORGE_LLM_MAX_RPM)
-    # when the account allows more; 0 disables OUR throttle entirely. (Was 60,
-    # which over-sent on the common single-key setup before the operator ever
-    # opened Settings.)
-    # The machine-wide GLOBAL cap across every category (chat + compaction +
-    # everything else). The two sub-ceilings below carve this up: compaction
-    # (memory folding) gets a small slice so it can never crowd out a user's
-    # chat, and chat/other gets the rest. 0 disables OUR throttle.
-    #
-    # IT MUST STAY STRICTLY UNDER THE PROVIDER'S LIMIT, NOT EQUAL TO IT. This
-    # was 20 against a gateway that allows 20/min per model, and the sub-ceilings
-    # (chat 15 + compaction 5) sum to exactly that too — so with every role
-    # pinned to one model the box was entitled to send precisely the number that
-    # earns a rejection. Two windows counting the same minute never agree on
-    # where it starts: theirs opens at arrival on their clock, ours at send on
-    # ours, so equal ceilings collide on the first boundary overlap. Under, not
-    # equal.
+    # OFF (0) by default. Most boxes run a local model (LM Studio, mlx) that
+    # has no per-minute limit, and a fixed ceiling there only parks fast
+    # small-model tool steps for up to AIFORGE_LLM_MAX_WAIT_S. A cloud gateway
+    # still gets its 429 / Retry-After honoured (above). An operator on a
+    # metered key sets a number here — STRICTLY UNDER the provider's limit,
+    # not equal to it: two windows counting the same minute never agree on
+    # where it starts, so equal ceilings collide on the first boundary overlap.
     #
     # Kept in step with ``rate_limiter._DEFAULT_GLOBAL_RPM`` by
     # ``tests/python/llm/test_rate_limit_settings.py``.
-    "llm_max_rpm": ("AIFORGE_LLM_MAX_RPM", 30),
+    "llm_max_rpm": ("AIFORGE_LLM_MAX_RPM", 0),
     # Sub-ceiling for memory/compaction LLM calls (okf tier folds,
     # work_notes.consolidate, the boot fold, and a background chat condense —
-    # everything on the "learner" role). While chat has sent in the last
-    # minute this stays at 5 so a fold cannot crowd out the person. When that
-    # minute has no chat send, the limiter raises this to the global ceiling
-    # (30) so an idle box is not stuck folding at 5. Set 0 to drop the
-    # category cap and use only the global window. AIFORGE_COMPACT_DISABLE
-    # skips the LLM condense entirely.
+    # everything on the "learner" role). While chat has been served in the
+    # last minute this stays at 5 so background work never crowds out the
+    # person. On an idle box the limiter lifts it: to the global ceiling minus
+    # a reserve for the next chat send, or unbounded with no global ceiling.
+    # Set 0 to drop the category cap. AIFORGE_COMPACT_DISABLE skips the LLM
+    # condense entirely.
     "compaction_rpm": ("AIFORGE_COMPACTION_RPM", 5),
-    # Sub-ceiling for chat + all other (non-compaction) LLM calls. 0 = bounded
-    # only by the global llm_max_rpm.
-    "chat_rpm": ("AIFORGE_CHAT_RPM", 30),
+    # Sub-ceiling for chat + all other (non-compaction) LLM calls. 0 (the
+    # default) = bounded only by the global llm_max_rpm, itself off by default.
+    "chat_rpm": ("AIFORGE_CHAT_RPM", 0),
     # How long to wait after a provider REJECTS us for sending too fast (a 429,
     # or a 4xx whose body names a rate limit) when it did not send a
     # Retry-After. The provider is counting a minute; a sub-second backoff just

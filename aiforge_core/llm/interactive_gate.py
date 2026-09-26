@@ -22,6 +22,7 @@ continuing to interleave. ``AIFORGE_BACKGROUND_YIELD_S=0`` disables it.
 """
 from __future__ import annotations
 
+import contextvars
 import os
 import threading
 import time
@@ -56,6 +57,21 @@ def _marker() -> "str | None":
 
 _bg: list[threading.Event] = []
 
+# A send that belongs to the turn itself (the condense summary) but runs on the
+# compaction rate category. It must not wait out the window its own turn keeps
+# open, and the turn's next send must not cancel it.
+_EXEMPT: contextvars.ContextVar = contextvars.ContextVar(
+    "aiforge_yield_exempt", default=False)
+
+
+def set_exempt(on: bool) -> None:
+    """Mark THIS thread's sends as part of the interactive turn."""
+    _EXEMPT.set(bool(on))
+
+
+def exempt() -> bool:
+    return bool(_EXEMPT.get())
+
 
 def track_background(ev: threading.Event) -> None:
     with _LOCK:
@@ -82,8 +98,8 @@ def note_interactive(now: "float | None" = None) -> None:
     """Record that an interactive send is going out. Never raises."""
     abort_background()
     global _last_local, _last_touch
-    if window_s() <= 0:
-        return
+    # Stamped even with the yield window off: the rate limiter reads it to
+    # tell an active chat from an idle box (see since_last).
     t = time.time() if now is None else now
     with _LOCK:
         _last_local = t
@@ -100,12 +116,7 @@ def note_interactive(now: "float | None" = None) -> None:
         pass                     # a read-only config dir costs cross-process only
 
 
-def busy_for(now: "float | None" = None) -> float:
-    """Seconds until the interactive window closes (0 when nobody is served)."""
-    win = window_s()
-    if win <= 0:
-        return 0.0
-    t = time.time() if now is None else now
+def _last_seen() -> float:
     last = _last_local
     path = _marker()
     if path:
@@ -113,20 +124,43 @@ def busy_for(now: "float | None" = None) -> float:
             last = max(last, os.path.getmtime(path))
         except OSError:
             pass
-    return max(0.0, last + win - t)
+    return last
 
 
-def yield_to_interactive(max_wait_s: float) -> float:
+def since_last(now: "float | None" = None) -> float:
+    """Seconds since the last interactive send anywhere on this machine
+    (infinity when there has been none). Independent of the yield window, so
+    it still answers when the window is disabled."""
+    last = _last_seen()
+    if last <= 0:
+        return float("inf")
+    t = time.time() if now is None else now
+    return max(0.0, t - last)
+
+
+def busy_for(now: "float | None" = None) -> float:
+    """Seconds until the interactive window closes (0 when nobody is served)."""
+    win = window_s()
+    if win <= 0:
+        return 0.0
+    t = time.time() if now is None else now
+    return max(0.0, _last_seen() + win - t)
+
+
+def yield_to_interactive(max_wait_s: float, cancel=None) -> float:
     """Block a BACKGROUND send while interactive work is being served.
 
     Returns the seconds waited. Bounded by ``max_wait_s``: past it the send
     goes ahead, so continuous interactive use delays memory work but can never
-    stop it.
+    stop it. Returns at once for an exempt send, and as soon as ``cancel`` (an
+    Event) is set.
     """
-    if max_wait_s <= 0 or window_s() <= 0:
+    if max_wait_s <= 0 or window_s() <= 0 or exempt():
         return 0.0
     waited = 0.0
     while waited < max_wait_s:
+        if cancel is not None and cancel.is_set():
+            break
         left = busy_for()
         if left <= 0:
             break
@@ -151,6 +185,6 @@ def reset() -> None:
             pass
 
 
-__all__ = ["abort_background", "busy_for", "note_interactive", "reset",
-           "track_background", "untrack_background", "window_s",
-           "yield_to_interactive"]
+__all__ = ["abort_background", "busy_for", "exempt", "note_interactive",
+           "reset", "set_exempt", "since_last", "track_background",
+           "untrack_background", "window_s", "yield_to_interactive"]

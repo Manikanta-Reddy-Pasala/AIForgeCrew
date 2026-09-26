@@ -154,18 +154,18 @@ def _now() -> float:
     return time.monotonic()
 
 
-#: Machine-wide default requests-per-minute ceiling when nothing overrides it.
-#: Override via the ``llm_max_rpm`` setting or ``AIFORGE_LLM_MAX_RPM``; set
-#: either to 0 to disable the ceiling.
-_DEFAULT_GLOBAL_RPM = 30.0
+#: Machine-wide default requests-per-minute ceiling when nothing overrides it:
+#: 0 = off. A local model has no per-minute limit, and a cloud provider's own
+#: 429 / Retry-After is honoured regardless. Set ``llm_max_rpm`` or
+#: ``AIFORGE_LLM_MAX_RPM`` to turn it on.
+_DEFAULT_GLOBAL_RPM = 0.0
 
 
 def global_rpm() -> float:
     """Operator-set ceiling on model requests per minute; 0 = no ceiling.
 
     Resolves stored setting -> env -> built-in default, like every other runtime
-    knob. The default is enforced, not merely advisory: with nothing set the
-    ceiling is :data:`_DEFAULT_GLOBAL_RPM`, not unlimited.
+    knob. With nothing set the ceiling is :data:`_DEFAULT_GLOBAL_RPM` (off).
 
     NOTE WHICH DEFAULT ANSWERS. ``runtime_settings`` supplies its own when
     nothing is stored, so the constant below is reached only if that read
@@ -185,8 +185,8 @@ def global_rpm() -> float:
 
 
 #: Roles whose LLM traffic is memory/compaction, not interactive. They count
-#: against the "compaction" category: 5/min while chat has sent in the last
-#: minute, and the whole global ceiling (30) when chat has not.
+#: against the "compaction" category: 5/min while chat was served in the last
+#: minute, more when it was not (see rate_limiter._category_limit).
 #:
 #: ``memory`` is here because distillation and consolidation moved to their own
 #: reasoning role: left out, every fold counted against the interactive
@@ -206,10 +206,10 @@ def _compaction_roles() -> frozenset:
     extra = (os.environ.get("AIFORGE_MEMORY_MODEL_ROLE") or "").strip()
     return _COMPACTION_ROLES | ({extra} if extra else frozenset())
 
-# 5 while chat is sending. When the last minute has no chat send, compaction
-# may use the whole global ceiling (see rate_limiter._category_limit).
+# 5 while chat is active; lifted on an idle box (see
+# rate_limiter._category_limit). Chat is uncapped by default.
 _DEFAULT_COMPACTION_RPM = 5.0
-_DEFAULT_CHAT_RPM = 30.0
+_DEFAULT_CHAT_RPM = 0.0
 
 
 def _category(role: "str | None") -> str:

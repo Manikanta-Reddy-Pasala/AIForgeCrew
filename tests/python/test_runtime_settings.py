@@ -38,11 +38,12 @@ def test_defaults(rs, monkeypatch):
         "chat_safety_cap": 0, "chat_turn_deadline_s": 0,
         "chat_cap_extensions": 2,
         "chat_unattended_cap": 2000,
-        # Machine ceiling 30. Chat may use all of it. Compact stays at 5 while
-        # chat is sending, and may use the whole 30 when chat is idle.
-        "llm_max_rpm": 30,
+        # No machine or chat ceiling by default (a local model has no
+        # per-minute limit; a provider's 429 is still honoured). Compaction
+        # keeps 5 while chat is active so it never crowds a person out.
+        "llm_max_rpm": 0,
         "compaction_rpm": 5,
-        "chat_rpm": 30,
+        "chat_rpm": 0,
         "llm_rate_limit_backoff_s": 20,
         "llm_rate_limit_cap_s": 60}
 

@@ -89,7 +89,8 @@ def _step_cap_guard(st, n):
             st.convo = _compact_convo(st.convo, keep_recent=8, role=st.role,
                                    complete_fn=st.complete_fn,
                                    session_id=st.session_id, force=True,
-                                   keep_min=_unread, pin=turn_pin(st))
+                                   keep_min=_unread, pin=turn_pin(st),
+                                   run_key=getattr(st, "compact_key", None))
             _after_condense(st, _unread, _before_ext)
             if len(st.convo) < _before_ext:
                 st.read_sigs_seen.clear()   # results dropped → re-reads are valid
@@ -126,7 +127,8 @@ def _deadline_guard(st, n):
             st.convo = _compact_convo(st.convo, keep_recent=8, role=st.role,
                                    complete_fn=st.complete_fn,
                                    session_id=st.session_id, force=True,
-                                   keep_min=_unread, pin=turn_pin(st))
+                                   keep_min=_unread, pin=turn_pin(st),
+                                   run_key=getattr(st, "compact_key", None))
             _after_condense(st, _unread, _before_ext)
             if len(st.convo) < _before_ext:
                 st.read_sigs_seen.clear()
@@ -177,13 +179,25 @@ def _condense_and_report(st, role, complete_fn, session_id, _meter):
     """Auto-condense the running history to stay within the window (clearing the
     duplicate-read guard + notifying once when it fires), then emit the context-
     fullness + LLM-request usage snapshot."""
+    # The window is resolved ONCE for all of this (condense budget, meter,
+    # source label); the events are yielded after the cache block closes.
+    from .._context._window import step_cache
+    with step_cache():
+        events = _condense_events(st, role, complete_fn, session_id, _meter)
+    yield from events
+
+
+def _condense_events(st, role, complete_fn, session_id, _meter) -> list:
     # Auto-condense the running history before the call so a long session
     # can't overflow the model's context window (MUST). Tell the user it
     # happened (one-time per condense) for transparency.
+    events: list = []
     _before = len(st.convo)
     _unread = _unread_batch_msgs(st)
     st.convo = _compact_convo(st.convo, role=role, complete_fn=complete_fn,
-                           session_id=session_id, keep_min=_unread, pin=turn_pin(st))
+                              session_id=session_id, keep_min=_unread,
+                              pin=turn_pin(st),
+                              run_key=getattr(st, "compact_key", None))
     _after_condense(st, _unread, _before)
     if len(st.convo) < _before:
         # The dropped turns took their tool RESULTS with them, so a read
@@ -194,34 +208,30 @@ def _condense_and_report(st, role, complete_fn, session_id, _meter):
         st.read_sigs_seen.clear()
     if len(st.convo) < _before and not st.condensed_notified:
         st.condensed_notified = True   # notify ONCE, not every over-budget turn
-        yield {"type": "thought", "role": "system",
-               "text": "⚙ condensed earlier context to stay within the window"}
+        events.append({"type": "thought", "role": "system",
+                       "text": "⚙ condensed earlier context to stay within the window"})
     # M3: surface how full the context window is (char-estimate; ~4 chars/
     # token) so the user can see they're approaching the condense point.
     # MUST mirror _compact_convo's math exactly (history-only sum vs a
-    # budget that reserves the ACTUAL system prompt, list-safe _text_of) —
-    # the old raw-len/whole-convo version double-counted the per-turn
-    # system prompt against a 14K estimate, so the meter jumped between
-    # turns and collapsed to ~0 on image turns.
+    # budget that reserves the ACTUAL system prompt, list-safe _text_of).
     _sys_len = (len(_text_of(st.convo[0]))
                 if st.convo and st.convo[0].get("role") == "system" else 0)
     _ctx_chars = sum(len(_text_of(m)) for m in st.convo[1:])
     _ctx_budget = _ctx_budget_chars(role, sys_chars=_sys_len)
     if _ctx_budget > 0:
         # ~4 chars/token. The meter shows the context against the MODEL'S
-        # window ("30k / 256k") and where compaction fires. It used to show the
-        # compaction budget as the denominator, so a 256K model read "96k".
-        from .._context._window import _history_fraction, _window_tokens
+        # window ("30k / 256k") and where compaction fires.
+        from .._context._window import (
+            _history_fraction,
+            _window_source,
+            _window_tokens,
+        )
         _model_win = _window_tokens(role) or (_ctx_budget + _sys_len) // 4
-        try:
-            from aiforge_core.config import model_registry as _mr
-            _win_src = _mr.context_window_source(role)[1]
-        except Exception:  # noqa: BLE001
-            _win_src = ""
+        _win_src = _window_source(role)[1]
         _ctx_tokens = (_ctx_chars + _sys_len) // 4          # what is sent
         _compact_at = (_ctx_budget + _sys_len) // 4
         _calls = _meter.snapshot(session_id) if _meter is not None else {}
-        yield {"type": "usage", "context_chars": _ctx_chars,
+        events.append({"type": "usage", "context_chars": _ctx_chars,
                "budget_chars": _ctx_budget,
                "context_tokens": _ctx_tokens,
                "window_tokens": _model_win,
@@ -242,7 +252,8 @@ def _condense_and_report(st, role, complete_fn, session_id, _meter):
                "llm_failed_per_min": _calls.get("failed_per_minute", 0),
                # Tokens the model has WRITTEN for this message so far,
                # as the provider reported them.
-               "llm_turn_tokens_out": _calls.get("turn_tokens_out", 0)}
+               "llm_turn_tokens_out": _calls.get("turn_tokens_out", 0)})
+    return events
 
 
 def _after_condense(st, unread, before):

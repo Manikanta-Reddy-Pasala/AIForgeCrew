@@ -35,6 +35,15 @@ from ._rate_holds import (  # noqa: F401  # re-exported
     note_rate_limited,
     window_scope,
 )
+from ._rate_category import (  # noqa: F401  # re-exported
+    _CHAT_ACTIVE_S,
+    _CHAT_HEADROOM_FRAC,
+    _cancelled,
+    _category_limit,
+    _chat_active,
+    _chat_sends_recent,
+    _sleep_cancellable,
+)
 from ._rate_settings import (  # noqa: F401  # re-exported
     _ANY,
     _COMPACTION_ROLES,
@@ -114,6 +123,11 @@ def reset_global() -> None:
         # Not cosmetic: a leaked counter shows the toolbar a queue that will
         # never drain, with no way for an operator to clear it.
         _waiting = 0
+    try:                    # "chat was active" is part of the limiter's state
+        from . import interactive_gate as _gate
+        _gate.reset()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _shared():
@@ -125,47 +139,6 @@ def _shared():
         return _sw
     except Exception:  # noqa: BLE001 — never let it break a call
         return None
-
-
-def _chat_sends_recent() -> "int | None":
-    """Chat-category sends in the current minute, or None if the shared
-    window is on but could not be read.
-
-    None is not idle. The shared window is where chat sends live, and a
-    failed read must not raise compaction to the global ceiling while chat
-    is using that window. The in-process list is only the fallback when the
-    shared window is off.
-    """
-    sw = _shared()
-    if sw is not None:
-        try:
-            n = sw.count(cat="chat")
-        except Exception:  # noqa: BLE001
-            n = None
-        if n is None:
-            return None
-        return int(n)
-    with _WINDOW_LOCK:
-        _trim_locked(_now())
-        return sum(1 for _, c in _sends if c == "chat")
-
-
-def _category_limit(cat: str) -> float:
-    """Per-category rpm for this send.
-
-    Compaction's stored cap (default 5) applies while chat has sent in the
-    last minute, so a fold cannot crowd out the person. With no chat send in
-    that window, compaction may use the whole global ceiling (default 30).
-    A stored 0 stays "no category cap" — only the global window binds.
-    """
-    base = _cat_rpm(cat)
-    if cat != "compaction" or base <= 0:
-        return base
-    g = global_rpm()
-    chat_n = _chat_sends_recent()
-    if g > 0 and chat_n == 0:
-        return g if g > base else base
-    return base
 
 
 def _take(rpm: float, cat: str, cat_rpm: float,
@@ -254,15 +227,15 @@ def _overrun_through(waited: float, max_wait_s: float, rpm: float,
         _force_take(rpm, cat)
 
 
-def _acquire_pass(provider, cat: str,
-                  cat_rpm: float) -> tuple[bool, float, float, float]:
+def _acquire_pass(provider, cat: str) -> tuple[bool, float, float, float, float]:
     """One evaluation of the global + category ceilings. Returns
-    ``(done, sleep_s, rpm, hold_s)``: ``done`` when the call may proceed now
-    (uncapped on both axes, or a slot was claimed); otherwise ``sleep_s`` is
-    how long to park before re-evaluating.
+    ``(done, sleep_s, rpm, hold_s, cat_rpm)``: ``done`` when the call may
+    proceed now (uncapped on both axes, or a slot was claimed); otherwise
+    ``sleep_s`` is how long to park before re-evaluating.
 
-    Re-reads the ceiling every pass so an operator who raises it mid-run is not
-    made to wait out the old number. HOLD FIRST, and claim only once it is
+    Re-reads BOTH ceilings every pass: an operator who raises one mid-run is
+    not made to wait out the old number, and compaction's idle allowance
+    shrinks the moment chat starts sending (a wait can last 900s). HOLD FIRST, and claim only once it is
     clear: claiming a slot and handing it back when a hold barred the send
     needed a "give one back" that, with no ownership token, deleted the newest
     row on the MACHINE — another process's real send — systematically
@@ -270,6 +243,7 @@ def _acquire_pass(provider, cat: str,
     the provider's limit for.
     """
     rpm = global_rpm()
+    cat_rpm = _category_limit(cat)
     hold_s = held_for(provider)
     window_s = 0.0
     if hold_s <= 0:
@@ -278,16 +252,17 @@ def _acquire_pass(provider, cat: str,
             # compaction send is still counted, so the meter shows it.
             if cat == "compaction":
                 _force_take(rpm, cat)
-            return True, 0.0, rpm, hold_s
+            return True, 0.0, rpm, hold_s, cat_rpm
         claimed, window_s = _take(rpm, cat, cat_rpm, provider)
         if claimed:
-            return True, 0.0, rpm, hold_s
-    return False, max(hold_s, window_s), rpm, hold_s
+            return True, 0.0, rpm, hold_s, cat_rpm
+    return False, max(hold_s, window_s), rpm, hold_s, cat_rpm
 
 
 def acquire_global(*, max_wait_s: float = 120.0,
                    provider: "str | None" = None,
-                   role: "str | None" = None) -> float:
+                   role: "str | None" = None,
+                   cancel=None) -> float:
     """Block until the operator's rate ceilings allow one more request.
 
     ``role`` selects the category sub-ceiling: memory/compaction roles (see
@@ -297,6 +272,10 @@ def acquire_global(*, max_wait_s: float = 120.0,
     and the global window have room.
 
     Returns the seconds spent waiting (0 when uncapped and unheld).
+
+    ``cancel`` (anything with ``is_set()``, e.g. the turn's Stop event) ends
+    the wait at once WITHOUT claiming a slot: a stopped call never leaves the
+    box, so it must not spend the window. The caller checks it and raises.
 
     A SLIDING WINDOW, not a token bucket. The bucket this replaced started
     FULL and refilled continuously, so a ceiling of N allowed an opening burst
@@ -326,8 +305,9 @@ def acquire_global(*, max_wait_s: float = 120.0,
     a box at its limit as idle.
     """
     global _waiting
+    if _cancelled(cancel):
+        return 0.0
     cat = _category(role)
-    cat_rpm = _category_limit(cat)
     # Compaction/OKF is background — it must RESPECT its ceiling, never overrun
     # it, because no user is waiting on memory folding. Give it a far larger wait
     # budget so it QUEUES for its slot instead of being let through at the
@@ -340,10 +320,13 @@ def acquire_global(*, max_wait_s: float = 120.0,
     # is being served. This must run ahead of the unthrottled fast path below,
     # which returns immediately — and with no ceiling configured (the default)
     # that is the only path there is.
-    yielded = _priority_gate(cat, max_wait_s)
+    yielded = _priority_gate(cat, max_wait_s, cancel)
     if yielded:
         max_wait_s = max(0.0, max_wait_s - yielded)
-    if global_rpm() <= 0 and cat_rpm <= 0 and held_for(provider) <= 0:
+    if _cancelled(cancel):
+        return yielded
+    if (global_rpm() <= 0 and _category_limit(cat) <= 0
+            and held_for(provider) <= 0):
         # Nothing throttles this call — but the window is also the toolbar's
         # METER, and background traffic must never go invisible. Chat keeps the
         # old behaviour (no ceiling asked for, no window kept); compaction does
@@ -358,7 +341,9 @@ def acquire_global(*, max_wait_s: float = 120.0,
         _waiting += 1
     try:
         while True:
-            done, sleep_s, rpm, hold_s = _acquire_pass(provider, cat, cat_rpm)
+            if _cancelled(cancel):
+                return waited
+            done, sleep_s, rpm, hold_s, cat_rpm = _acquire_pass(provider, cat)
             if done:
                 return waited
             if sleep_s <= 0:
@@ -366,21 +351,19 @@ def acquire_global(*, max_wait_s: float = 120.0,
             if waited + sleep_s > max_wait_s:
                 _overrun_through(waited, max_wait_s, rpm, hold_s, cat, cat_rpm)
                 return waited
-            _step = min(sleep_s, 5.0)
-            time.sleep(_step)
-            waited += _step
+            waited += _sleep_cancellable(min(sleep_s, 5.0), cancel)
     finally:
         with _WAIT_LOCK:
             _waiting -= 1
 
 
-def _priority_gate(cat: str, max_wait_s: float) -> float:
+def _priority_gate(cat: str, max_wait_s: float, cancel=None) -> float:
     """Interactive sends mark the endpoint busy; background sends wait while it
     is. Returns the seconds this send waited. Never raises."""
     try:
         from . import interactive_gate as _gate
         if cat == "compaction":
-            return _gate.yield_to_interactive(max_wait_s)
+            return _gate.yield_to_interactive(max_wait_s, cancel)
         _gate.note_interactive()
     except Exception:  # noqa: BLE001  # priority is an optimisation, not a gate
         pass
@@ -389,7 +372,7 @@ def _priority_gate(cat: str, max_wait_s: float) -> float:
 
 def govern_send(*, role: "str | None" = None, provider: "str | None" = None,
                 model: "str | None" = None, max_wait_s: float = 120.0,
-                meter: bool = True) -> "tuple[float, object]":
+                meter: bool = True, cancel=None) -> "tuple[float, object]":
     """THE single gateway every model send passes through. Returns
     ``(waited_s, meter_token)`` — hand the token to :func:`call_meter.record_failure`
     if the send turns out to have failed (``None`` when ``meter=False``).
@@ -416,9 +399,10 @@ def govern_send(*, role: "str | None" = None, provider: "str | None" = None,
     compaction bypass the ceiling and never show on the meter. One place to add
     a send path correctly; one place to change the policy.
     """
-    waited = acquire_global(max_wait_s=max_wait_s, provider=provider, role=role)
+    waited = acquire_global(max_wait_s=max_wait_s, provider=provider, role=role,
+                            cancel=cancel)
     tok = None
-    if meter:
+    if meter and not _cancelled(cancel):
         try:
             from aiforge_core.llm import call_meter as _meter
             tok = _meter.record(role=role, provider=provider, model=model)

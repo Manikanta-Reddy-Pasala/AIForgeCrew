@@ -67,8 +67,9 @@ def test_compaction_subceiling_independent_of_global(monkeypatch):
 
 
 def test_compaction_uses_what_chat_leaves_of_the_total_by_default(monkeypatch):
-    """Default compaction_rpm is 5 while chat is sending. With no chat send
-    in the window, compaction may use the whole global ceiling."""
+    """Default compaction_rpm is 5 while chat is active. On an idle box it
+    rises to the global ceiling MINUS a reserve for the next chat send, so a
+    fold can never spend the whole minute a person is about to need."""
     monkeypatch.setenv("AIFORGE_LLM_SHARED_WINDOW", "0")
     monkeypatch.delenv("AIFORGE_COMPACTION_RPM", raising=False)
     from aiforge_core.config import runtime_settings as rs
@@ -76,17 +77,35 @@ def test_compaction_uses_what_chat_leaves_of_the_total_by_default(monkeypatch):
     rs.unset(["compaction_rpm"])
     assert rl._cat_rpm("compaction") == 5
     rl.reset_global()
-    # Idle: the category limit rises to the global ceiling.
-    assert rl._category_limit("compaction") == 30
-    for _ in range(30):
-        assert rl._take(30, "compaction", 30, "p")[0] is True
-    assert rl._take(30, "compaction", 30, "p")[0] is False
+    idle = rl._category_limit("compaction")
+    assert 5 < idle < 30
+    assert idle == 30 - 8                 # ceil(30 * 0.25) held back for chat
+    for _ in range(int(idle)):
+        assert rl._take(30, "compaction", idle, "p")[0] is True
+    assert rl._take(30, "compaction", idle, "p")[0] is False
+    # ... and chat still has room in that same minute.
+    assert rl._take(30, "chat", 30, "p")[0] is True
     rl.reset_global()
     assert rl._take(30, "chat", 30, "p")[0] is True
     # Chat has used the window: compact is back to its stored 5.
     assert rl._category_limit("compaction") == 5
     got = sum(rl._take(30, "compaction", 5, "p")[0] for _ in range(10))
     assert got == 5
+
+
+def test_idle_compaction_is_capped_after_an_uncapped_chat_send(monkeypatch):
+    """Chat is uncapped by default, so its sends never reach the window. The
+    interactive stamp is what tells the limiter a person is being served."""
+    from aiforge_core.config import runtime_settings as rs
+    from aiforge_core.llm import interactive_gate as gate
+    monkeypatch.delenv("AIFORGE_COMPACTION_RPM", raising=False)
+    rs.set_many({"llm_max_rpm": 0, "chat_rpm": 0})
+    rs.unset(["compaction_rpm"])
+    rl.reset_global()
+    assert rl._category_limit("compaction") == 0      # idle, no global: free
+    assert rl.acquire_global(role="doer", max_wait_s=1) == 0.0
+    assert gate.since_last() < 5
+    assert rl._category_limit("compaction") == 5      # chat active: capped
 
 
 def _fake_clock(monkeypatch):

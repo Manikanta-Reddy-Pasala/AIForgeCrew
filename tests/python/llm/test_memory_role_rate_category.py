@@ -1,7 +1,7 @@
 """Memory work stays on the compaction category, not the chat ceiling.
 
-The stored compaction cap defaults to 5 while chat is sending. With no chat
-send in the minute, the limiter raises that to the global ceiling. Moving
+The stored compaction cap defaults to 5 while chat is active. On an idle box
+the limiter lifts it. Moving
 distillation to its own `memory` role without listing it here put every fold
 on the interactive ceiling instead.
 """
@@ -39,4 +39,4 @@ def test_the_compaction_ceiling_is_five_while_chat_is_sending(monkeypatch, tmp_p
                 "AIFORGE_LLM_MAX_RPM"):
         monkeypatch.delenv(var, raising=False)
     assert rl._cat_rpm("compaction") == 5.0
-    assert rl._cat_rpm("chat") == 30.0
+    assert rl._cat_rpm("chat") == 0.0          # chat is uncapped by default

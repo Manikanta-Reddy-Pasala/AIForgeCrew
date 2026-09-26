@@ -375,3 +375,6 @@ def run_chat_agent(
         # However the turn ends (answer, a pause for the user, a closed
         # stream), batched reads still waiting for a worker never run.
         _cancel_early_reads(st)
+        # Nor does its condense summary: nobody will read it.
+        from ._context._compaction import release_run
+        release_run(getattr(st, "compact_key", None))

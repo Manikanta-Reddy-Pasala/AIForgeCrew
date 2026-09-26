@@ -220,11 +220,20 @@ def _recall_hits(cwd: str, q: str, limit: int, session_id) -> list:
     return (res.get("hits", []) or []) if isinstance(res, dict) else []
 
 
+def _recall_summary_role() -> str:
+    """The role that folds recall hits at turn start. The turn waits on it, so
+    it is an INTERACTIVE role: on the background ``learner`` role the call
+    first sat out the priority window its own turn keeps open."""
+    return (os.environ.get("AIFORGE_RECALL_SUMMARY_ROLE", "").strip()
+            or "enhancer")
+
+
 def _summarised(q: str, hits: list) -> str:
     """One compact briefing over the hits, or "" when the fold is unavailable."""
     try:
         from aiforge_core.memory import recall_summary
-        return recall_summary.summarize_hits(q, hits) or ""
+        return recall_summary.summarize_hits(
+            q, hits, role=_recall_summary_role()) or ""
     except Exception:  # noqa: BLE001
         return ""
 
@@ -263,7 +272,7 @@ def _memory_recall(cwd: str, query: str, limit: int = 6,
     hits = _recall_hits(cwd, q, limit, session_id)
     if not hits:
         return ""
-    # Map→summarize is its own model call (the learner role). A short message
+    # Map→summarize is its own model call (an interactive role). A short message
     # already has the ranked hits; folding them was one of the calls a
     # question paid before the agent spoke. A long prompt still folds.
     body = _ranked_lines(hits, limit)
