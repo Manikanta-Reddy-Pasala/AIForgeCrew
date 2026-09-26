@@ -147,9 +147,12 @@ def _llm(role: str, messages: list, **kw) -> str:
     Delegates to ``rule_capture``'s helper rather than building a second client:
     that one already knows how this codebase reaches a model role.
     """
+    from aiforge_core.llm import model_wait
     from aiforge_core.runtime.rule_capture import _llm_complete
 
-    return _llm_complete(role, messages, **kw)
+    # Optional: a suggestion never waits for a model that is down.
+    with model_wait.optional():
+        return _llm_complete(role, messages, **kw)
 
 
 def _examples(repo: str) -> str:

@@ -157,6 +157,11 @@ for _startup_step in (
     # the @app.on_event decorator calls.
     app.router.add_event_handler("startup", _startup_step)
 
+# Process exit ends every wait for the model (llm/model_wait) instead of
+# leaving worker threads blocked on an endpoint that is down.
+from aiforge_core.llm import model_wait as _model_wait  # noqa: E402
+app.router.add_event_handler("shutdown", _model_wait.shutdown)
+
 # Backwards-compat re-exports: private chat helpers relocated into
 # aiforge_core.api.routes.chat but still imported by name from
 # aiforge_core.api.api (tests). Keep them reachable at the old path.

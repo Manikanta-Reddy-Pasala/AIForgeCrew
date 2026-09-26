@@ -31,6 +31,26 @@ os.environ.setdefault("AIFORGE_OKR_SCOPE_LLM", "0")
 # server-imposed HOLD applies even at rpm=0, lives in module state, and outlives
 # the test that armed it by up to 60 real seconds.
 os.environ.setdefault("AIFORGE_LLM_MAX_RPM", "0")
+
+# Production waits FOREVER for a model that is down (llm/model_wait,
+# AIFORGE_LLM_WAIT_MAX_S=0). The suite points the model at a dead port on
+# purpose so an unstubbed call fails fast — with the unbounded wait those tests
+# would hang. A bound shorter than the first probe gap means "do not wait";
+# the wait's own tests set it explicitly.
+os.environ.setdefault("AIFORGE_LLM_WAIT_MAX_S", "0.01")
+# ...and the same when a test clears every AIFORGE_* variable.
+from aiforge_core.llm import model_wait as _model_wait  # noqa: E402
+
+_model_wait._DEFAULT_MAX_S = 0.01
+
+
+@pytest.fixture(autouse=True)
+def _model_wait_not_shut_down():
+    """An app's shutdown hook ends every model wait for the rest of the
+    PROCESS; a TestClient that ran the lifespan must not leak that into the
+    tests after it."""
+    _model_wait._reset_for_tests()
+    yield
 # Same reason: background sends yield to interactive ones for 45s by
 # default, so a test that sends as chat and then as compaction would sit
 # out the window. The gate's own tests switch it back on.

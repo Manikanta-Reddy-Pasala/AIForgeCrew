@@ -133,9 +133,10 @@ def _acquire_slot(sem, session_id) -> bool:
     return True
 
 
-def _start_call(complete_fn, role, convo, sem, deltas):
+def _start_call(complete_fn, role, convo, sem, deltas, waits=None):
     """Start the call on a daemon thread. Returns (thread, result box, the
-    per-call abort event for the client HTTP layer)."""
+    per-call abort event for the client HTTP layer). ``waits`` receives the
+    status of any wait for the model inside the call (llm/model_wait)."""
     import threading as _th
     box: dict = {}
     ev = _th.Event()
@@ -162,6 +163,9 @@ def _start_call(complete_fn, role, convo, sem, deltas):
             _client.set_cancel_event(ev)
             if deltas is not None:
                 _client.set_delta_sink(lambda kind, text: deltas.put((kind, text)))
+            if waits is not None:
+                from aiforge_core.llm import model_wait
+                model_wait.bind_status_sink(waits.put)
         except Exception:  # noqa: BLE001
             pass
         try:
@@ -190,7 +194,8 @@ def _complete_live(complete_fn, role, convo, session_id, stream: bool = True):
         return _CANCELLED
     import queue as _q
     deltas = _q.SimpleQueue() if stream and _stream_enabled() else None
-    t, box, ev = _start_call(complete_fn, role, convo, sem, deltas)
+    waits = _q.SimpleQueue()
+    t, box, ev = _start_call(complete_fn, role, convo, sem, deltas, waits)
     shaper = _DeltaShaper() if deltas is not None else None
     while t.is_alive():
         if chat_cancel.is_cancelled(session_id):
@@ -199,8 +204,10 @@ def _complete_live(complete_fn, role, convo, session_id, stream: bool = True):
         t.join(timeout=0.06 if shaper else 0.2)
         if shaper:
             yield from shaper.drain(deltas)
+        yield from _drain_waits(waits)
     if shaper:
         yield from shaper.drain(deltas)
+    yield from _drain_waits(waits)
     # The request may have been aborted just as it finished — treat any
     # post-loop cancel as a cancel, not an error.
     if chat_cancel.is_cancelled(session_id):
@@ -208,6 +215,21 @@ def _complete_live(complete_fn, role, convo, session_id, stream: bool = True):
     if "err" in box:
         raise box["err"]
     return box.get("out")
+
+
+def _drain_waits(q) -> list:
+    """The model-wait status lines queued by the call thread, as thoughts."""
+    import queue as _q
+    out: list = []
+    while True:
+        try:
+            st = q.get_nowait()
+        except _q.Empty:
+            return out
+        if isinstance(st, dict) and st.get("text"):
+            out.append({"type": "thought", "role": "system", "text": st["text"],
+                        "llm_wait": {k: st.get(k) for k in
+                                     ("state", "url", "down_s", "next_probe_s")}})
 
 
 # What the user should SEE of a completion while it is written. The text
