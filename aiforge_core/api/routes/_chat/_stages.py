@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 
+from . import _team_route
 from ._core import (
     _af_log,
 )
@@ -213,18 +214,24 @@ def _dispatch_agent_route(_rd, _pp, prompt, cwd, session_id, history,
     _route_pipeline = _rd.route_pipeline
     if _rd.notice:
         yield {"type": "thought", "role": "router", "text": _rd.notice}
-    if (_route_pipeline or team) and not _doc_task:
-        cwd = yield from _team_target_cwd(prompt, history, cwd, rctx,
-                                          session_id,
-                                          sequential=not _route_pipeline)
-        if rctx["done"]:
-            return
-    yield from _dispatch_routes(_rd, _pp, prompt, cwd, session_id, history,
-                                _with_resume, _path, _turn_t0, team,
-                                _resume_brief, rctx)
-    if rctx["done"] and rctx.get("team_ws") is not None:
-        from aiforge_core.runtime import team_workspace as _tw
-        yield from _tw.close(rctx["team_ws"])
+    # A team run's branch + worktree is cleaned up whatever happens: an
+    # exception or a client disconnect closes it here (no yield), a finished
+    # turn closes it — or keeps it for "continue" (see _team_route.finish_run).
+    try:
+        if (_route_pipeline or team) and not _doc_task:
+            cwd = yield from _team_target_cwd(prompt, history, cwd, rctx,
+                                              session_id,
+                                              sequential=not _route_pipeline)
+            prompt, history = _team_route.localize(rctx, prompt, history)
+        if not rctx["done"]:
+            yield from _team_route.watch(rctx, _dispatch_routes(
+                _rd, _pp, prompt, cwd, session_id, history, _with_resume,
+                _path, _turn_t0, team, _resume_brief, rctx))
+    except BaseException:
+        _team_route.abort_run(rctx)
+        raise
+    if rctx["done"]:
+        yield from _team_route.finish_run(rctx, session_id)
 
 
 def _dispatch_routes(_rd, _pp, prompt, cwd, session_id, history, _with_resume,

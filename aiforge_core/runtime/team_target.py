@@ -19,7 +19,6 @@ path-shaped subfolder of the workspace.
 """
 from __future__ import annotations
 
-import functools
 import logging
 import os
 import re
@@ -59,8 +58,11 @@ class TeamTarget:
 # traceback frame or a shell-prompt line naming /opt/app does not ask for work
 # there.
 _FENCE_RE = re.compile(r"```.*?(?:```|$)", re.S)
+# An indented line is pasted code only when it is not a list item: a nested
+# bullet ("    - fix /Users/me/proj/app.py") is the user's own instruction.
 _PASTED_LINE_RE = re.compile(
-    r"^(?:\s*>|\s*\$ |\s{4,}|\t|\s*File \"|\s*at \S|\s*\[?\d{4}-\d\d-\d\d|"
+    r"^(?:\s*>|\s*\$ |(?:\s{4,}|\t)(?![ \t]*(?:[-*+]|\d{1,3}[.)])\s)|"
+    r"\s*File \"|\s*at \S|\s*\[?\d{4}-\d\d-\d\d|"
     r"\s*\d\d:\d\d:\d\d|\s*(?:INFO|DEBUG|WARN(?:ING)?|ERROR|TRACE)\b|\s*Traceback)")
 # System trees are only a target when the user's own phrase directs work
 # there ("in /opt/app", "fix /usr/local/bin/tool"); device/kernel trees never.
@@ -101,11 +103,37 @@ def _raw_paths(text: str) -> list[str]:
     return out
 
 
-@functools.lru_cache(maxsize=256)
+_ROOT_CACHE: dict[str, str] = {}
+_ROOT_CACHE_MAX = 256
+
+
 def _git_root(path: str) -> str:
     """The repo root above ``path`` — found on the filesystem (a ``.git``
     dir or file), no subprocess per path. A "repo" at ``~`` or above (a
-    dotfiles repo) is not a project root."""
+    dotfiles repo) is not a project root.
+
+    Only a FOUND root is cached (and re-checked: its ``.git`` must still be
+    there). "Not a repo" is never cached — a folder the user let the team
+    ``git init`` on turn 1 is a repo on turn 2, and a stale negative made it
+    look new again: a second init, the user's current edits committed as a
+    "baseline" and a fast-forward of a branch that was never fresh."""
+    hit = _ROOT_CACHE.get(path)
+    if hit and os.path.exists(os.path.join(hit, ".git")):
+        return hit
+    root = _find_git_root(path)
+    if root:
+        if len(_ROOT_CACHE) >= _ROOT_CACHE_MAX:
+            _ROOT_CACHE.clear()
+        _ROOT_CACHE[path] = root
+    else:
+        _ROOT_CACHE.pop(path, None)
+    return root
+
+
+_git_root.cache_clear = _ROOT_CACHE.clear  # type: ignore[attr-defined]
+
+
+def _find_git_root(path: str) -> str:
     cur = path
     while cur and cur != os.sep:
         if _broad(cur):
@@ -274,16 +302,21 @@ def clarify_text(missing) -> str:
             "(it must exist where AIForge runs), or tell me to create it.")
 
 
-def anchor_subtask_paths(subs: list, cwd: str) -> tuple[list, list]:
+def anchor_subtask_paths(subs: list, cwd: str, aliases=None) -> tuple[list, list]:
     """Rewrite each subtask ``path`` so it is relative to ``cwd``.
 
     An absolute path under ``cwd`` (or one the planner already stripped of its
     leading ``/`` — ``Users/me/proj/money.py`` when cwd is ``/Users/me/proj``)
-    becomes relative. A path that points OUTSIDE ``cwd`` is dropped: writing
-    it as a relative path would create a literal ``Users/me/...`` folder in
-    the workspace. Returns ``(subs, dropped_paths)``."""
-    base = os.path.realpath(cwd).rstrip(os.sep)
-    rel_base = base.lstrip(os.sep)
+    becomes relative. ``aliases`` are folders that stand for ``cwd``: a team
+    run in the user's repo works in its own worktree, so the planner's
+    ``/Users/me/proj/money.py`` is ``money.py`` of the worktree (default: the
+    repo of the run registered for ``cwd``). A path that points OUTSIDE all of
+    them is dropped: writing it as a relative path would create a literal
+    ``Users/me/...`` folder in the workspace. Returns ``(subs, dropped_paths)``."""
+    if aliases is None:
+        aliases = _run_repo_aliases(cwd)
+    bases = [os.path.realpath(cwd).rstrip(os.sep)]
+    bases += [os.path.realpath(a).rstrip(os.sep) for a in aliases or () if a]
     kept, dropped = [], []
     for s in subs or []:
         p = str((s or {}).get("path") or "").strip()
@@ -291,32 +324,87 @@ def anchor_subtask_paths(subs: list, cwd: str) -> tuple[list, list]:
             kept.append(s)
             continue
         cand = os.path.expanduser(p)
-        if os.path.isabs(cand):
-            real = os.path.realpath(cand)
-            if _inside(real, base):
-                s = dict(s, path=os.path.relpath(real, base))
-            else:
-                dropped.append(p)
-                continue
-        elif rel_base and (cand == rel_base or cand.startswith(rel_base + "/")):
-            s = dict(s, path=cand[len(rel_base):].lstrip("/") or ".")
-        elif _stripped_home_path(cand, base):
+        rel = _rel_to_bases(cand, bases)
+        if rel is not None:
+            s = dict(s, path=rel)
+        elif os.path.isabs(cand) or _stripped_home_path(cand, bases):
             dropped.append(p)
             continue
         kept.append(s)
     return kept, dropped
 
 
-def _stripped_home_path(rel: str, base: str) -> bool:
+def _rel_to_bases(cand: str, bases: list) -> str | None:
+    """``cand`` relative to the first base it lies in — given absolute, or
+    with the base's leading ``/`` stripped. None otherwise."""
+    if os.path.isabs(cand):
+        real = os.path.realpath(cand)
+        for b in bases:
+            for c in (real, cand.rstrip(os.sep)):
+                if _inside(c, b):
+                    return os.path.relpath(c, b)
+        return None
+    for b in bases:
+        rb = b.lstrip(os.sep)
+        if rb and (cand == rb or cand.startswith(rb + "/")):
+            return cand[len(rb):].lstrip("/") or "."
+    return None
+
+
+def _run_repo_aliases(cwd: str) -> list:
+    try:
+        from .team_workspace import for_cwd
+        ws = for_cwd(cwd)
+    except Exception:  # noqa: BLE001
+        ws = None
+    return [ws.repo] if ws is not None and ws.repo else []
+
+
+def localize_paths(text: str, repo: str) -> str:
+    """The user's words with every path under ``repo`` rewritten relative to
+    it (``/Users/me/proj/money.py`` → ``money.py``; the folder itself → ``./``).
+
+    A team run works in its own worktree: an absolute repo path left in the
+    prompt or SPEC sends a writer into the user's real checkout."""
+    from .scope_guard import _USER_PATH_RE
+    if not text or not repo:
+        return text
+    real_repo = os.path.realpath(repo).rstrip(os.sep)
+
+    def _sub(m):
+        raw = m.group(1)
+        p = raw.rstrip(".:!?*_`'\")]")
+        rest = raw[len(p):]
+        try:
+            full = os.path.expanduser(p)
+            real = os.path.realpath(full)
+        except Exception:  # noqa: BLE001
+            return raw
+        for cand in (real, full.rstrip(os.sep)):
+            if _inside(cand, real_repo) or _inside(cand, repo.rstrip(os.sep)):
+                base = real_repo if _inside(cand, real_repo) else repo.rstrip(os.sep)
+                rel = os.path.relpath(cand, base)
+                if rel == ".":
+                    return "./" + rest
+                return rel + ("/" if p.endswith("/") else "") + rest
+        return raw
+    return _USER_PATH_RE.sub(_sub, str(text))
+
+
+def _stripped_home_path(rel: str, bases) -> bool:
     """``Users/me/other/x.py`` — the user's home folder with its leading ``/``
-    stripped, pointing outside ``base``. Only that shape is dropped: a real
-    relative path such as ``var/lib/x.py`` or ``etc/config.py`` is a file the
+    stripped, pointing outside every folder in ``bases``. Only that shape is
+    dropped: a real relative path such as ``var/lib/x.py`` or ``etc/config.py`` is a file the
     project may well contain."""
     home = os.path.realpath(os.path.expanduser("~")).strip(os.sep)
     if not home or not (rel == home or rel.startswith(home + "/")):
         return False
-    return not _inside(os.path.realpath(os.sep + rel), base)
+    if isinstance(bases, str):
+        bases = [bases]
+    real = os.path.realpath(os.sep + rel)
+    return not any(_inside(real, b) for b in bases)
 
 
 __all__ = ["TeamTarget", "anchor_subtask_paths", "clarify_text",
-           "init_question", "resolve_team_target", "user_texts"]
+           "init_question", "localize_paths", "resolve_team_target",
+           "user_texts"]

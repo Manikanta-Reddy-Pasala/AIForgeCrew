@@ -65,7 +65,16 @@ def _max_workers() -> int:
 
 def _git(args: list[str], cwd: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True,
-                          text=True, timeout=120)
+                          text=True, timeout=120, env=_run_env(cwd))
+
+
+def _run_env(cwd):
+    """A team run's per-call git identity (team_workspace.git_env)."""
+    try:
+        from aiforge_core.runtime.team_workspace import git_env
+        return git_env(cwd)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _slugify(text: str) -> str:
@@ -174,7 +183,7 @@ def _retry_subtask(subtask: dict, last: dict, i: int) -> dict:
 
 
 def _run_with_retries(subtask: dict, wt: str, slug: str, base_branch: str,
-                      ticket_id, run_one, validate_one) -> "tuple[dict, int]":
+                      ticket_id, run_one, validate_one) -> tuple[dict, int]:
     """Run+validate the subtask, retrying (bounded) on failure/crash — subtasks
     are the risky unit. The worktree is reset between attempts so nothing leaks
     across tries. Returns ``(last_result, attempts_used_index)``."""

@@ -51,8 +51,9 @@ def dirty_overlap_stop(cwd: str, subs: list):
     ws = team_workspace.for_cwd(cwd)
     if ws is None or not ws.dirty:
         return False
-    planned = {str(s.get("path") or "").lstrip("./") for s in subs}
-    hit = sorted(planned & set(ws.dirty))
+    # _norm strips a leading "./" only — never the dot of ".github/…".
+    planned = {_protected._norm(s.get("path") or "") for s in subs}
+    hit = sorted(planned & {_protected._norm(d) for d in ws.dirty})
     if not hit:
         return False
     yield {"type": "message", "awaiting_input": True, "text":

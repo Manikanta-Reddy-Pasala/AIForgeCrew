@@ -217,14 +217,15 @@ def test_the_pipeline_route_runs_on_a_new_branch_of_the_named_repo(
     assert any(repo in (e.get("text") or "") for e in evs
                if e.get("role") == "router")
     assert not os.path.exists(os.path.join(session_ws, repo.lstrip("/")))
-    # the user's checkout is untouched; the branch survives, the worktree not
+    # the user's checkout is untouched; the worktree is gone — and so is the
+    # branch, since this (fake) run committed nothing on it
     assert _branch(repo) == before
     assert subprocess.run(["git", "-C", repo, "status", "--porcelain"],
                           capture_output=True, text=True).stdout == ""
     assert (tmp_path / "live-ws-team-varied" / ".gitignore").read_text() == "*.log\n"
     assert not os.path.isdir(ws.cwd)
     assert subprocess.run(["git", "-C", repo, "rev-parse", "--verify",
-                           ws.branch], capture_output=True).returncode == 0
+                           ws.branch], capture_output=True).returncode != 0
 
 
 def test_a_missing_named_folder_stops_with_a_question(tmp_path, session_ws,
