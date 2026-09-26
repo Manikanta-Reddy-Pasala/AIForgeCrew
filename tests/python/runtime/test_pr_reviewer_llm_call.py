@@ -64,6 +64,9 @@ def test_the_review_send_is_charged_to_the_ceiling(monkeypatch):
     """Uncapped AND invisible was the defect. One call, one slot."""
     from aiforge_core.llm import rate_limiter as rl
 
+    # The ceiling is off by default; an operator who sets one must see
+    # the review charged to it.
+    monkeypatch.setenv("AIFORGE_LLM_MAX_RPM", "30")
     _fake_litellm(monkeypatch)
     before = rl.global_used()
 
