@@ -13,6 +13,7 @@ _READS = frozenset({"file_read", "read_lines", "read_files"})
 _COMMANDS = frozenset({
     "run_command", "run_shell", "bash", "shell", "run", "run_tests",
 })
+_JOB_TOOLS = frozenset({"command_wait", "command_output", "command_kill"})
 
 
 def _tail(text: str, budget: int) -> str:
@@ -44,8 +45,41 @@ def render_read(result: dict, cap: int) -> str:
     return text
 
 
+def render_job(result: dict, cap: int) -> str:
+    """A command handed back at a check-in, or a look at one. A running job
+    has no exit code: calling it ``exit 0`` told the model a build that was
+    still printing errors had passed."""
+    key = result.get("id") or "?"
+    secs = result.get("elapsed_s")
+    took = f" after {secs}s" if secs is not None else ""
+    if result.get("running") is True:
+        state = [f"STILL RUNNING (job {key}){took} — not finished, no exit code yet"]
+        if result.get("stuck"):
+            state.append("looks stuck: no new output and no CPU")
+        elif "cpu_active" in result:
+            state.append("output growing" if result.get("output_growing")
+                         else "no new output")
+            state.append("using CPU" if result.get("cpu_active") else "idle CPU")
+    else:
+        code = result.get("code")
+        state = [f"FINISHED (job {key}){took}, exit {code if code is not None else '?'}"]
+        if result.get("stopped"):
+            state.append(f"stopped: {result.get('error') or 'killed'}")
+    head = "; ".join(state) + "\n"
+    if result.get("returned_because"):
+        head += f"returned early: {result['returned_because']}\n"
+    hint = str(result.get("hint") or "")
+    tail = ("\nnext: " + hint) if hint else ""
+    body = str(result.get("new_output") or "")
+    label = "new output:\n" if body else "new output: (none)\n"
+    spare = max(0, cap - len(head) - len(label) - len(tail))
+    return (head + label + _tail(body, spare) + tail)[:cap]
+
+
 def render_command(result: dict, cap: int) -> str:
     """Exit code, then the stderr tail, then the stdout tail."""
+    if result.get("running") is True or "new_output" in result:
+        return render_job(result, cap)
     code = result.get("code")
     if code is None:
         code = 0 if result.get("ok") else 1
@@ -78,7 +112,8 @@ def render_observation(name: str, result, cap: int) -> str:
     guide = str(result.get("next_step") or "")
     if name in _READS:
         body = render_read(result, cap)
-    elif name in _COMMANDS or "stdout" in result or "stderr" in result:
+    elif (name in _COMMANDS or name in _JOB_TOOLS or "stdout" in result
+          or "stderr" in result):
         body = render_command(result, cap)
     else:
         return json.dumps(result, ensure_ascii=False)[:cap]
