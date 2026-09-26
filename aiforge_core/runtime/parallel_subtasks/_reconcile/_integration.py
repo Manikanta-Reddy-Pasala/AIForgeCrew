@@ -216,10 +216,12 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None,
                    "text": f"spec-gap patch skipped: {exc}"}
         result["rep"] = build_and_test_report(cwd)
         result["ok"] = ok
+        result["output"] = output
         return
     if ok or os.environ.get("AIFORGE_RECONCILE_INTEGRATION", "1") in ("0", "false"):
         result["rep"] = build_and_test_report(cwd)
         result["ok"] = ok            # authoritative (matches the test runner)
+        result["output"] = output    # the verdict needs the runner's count
         return
 
     if _is_preexisting_failure(cwd, output):
@@ -230,6 +232,7 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None,
                        "not the cause."}
         result["rep"] = build_and_test_report(cwd)
         result["ok"] = None          # pre-existing failure — not a regression
+        result["output"] = output
         return
 
     # CONFIG-VALIDITY GATE (live-e2e finding): ONE unterminated string in a
@@ -254,6 +257,7 @@ def _reconcile_integration(cwd: str, result: dict, should_cancel=None,
 
     result["rep"] = build_and_test_report(cwd)
     result["ok"] = ok                # authoritative final state (the test runner)
+    result["output"] = state.get("output", output)
     if rounds and ok:
         yield {"type": "thought", "role": "reconciler",
                "text": f"Reconciliation green after {rounds} pass(es) ✅"}

@@ -232,7 +232,8 @@ def test_stop_ends_the_stream_immediately(interject, tmp_path):
 
 
 def test_a_green_build_says_so(tmp_path):
-    assert S._build_verdict(True, str(tmp_path)) == "✅ **Built — all tests pass.**"
+    assert S._build_verdict(True, str(tmp_path), "4 passed in 0.2s") \
+        == "✅ **Built — all 4 tests pass.**"
 
 
 def test_a_failing_test_may_be_a_bad_test(tmp_path):
@@ -311,12 +312,12 @@ def test_cleaning_a_workspace_with_no_sidecars_is_quiet(tmp_path):
 @pytest.fixture
 def finalize(monkeypatch):
     state: dict = {"verdict": "every requirement addressed",
-                   "res": {"ok": True}, "rep": {"ok": True, "md": "# report"},
+                   "res": {"ok": True, "output": "3 passed in 0.1s"}, "rep": {"ok": True, "md": "# report"},
                    "changes": [{"type": "changes", "files": 3}]}
     monkeypatch.setattr(S, "_verify_against_spec",
                         lambda cwd, spec: state["verdict"])
 
-    def _integration(cwd, res, should_cancel=None):
+    def _integration(cwd, res, should_cancel=None, spec_gaps=""):
         res.update(state["res"])
         res["rep"] = state["rep"]
         yield {"type": "thought", "role": "verifier", "text": "building…"}
@@ -342,7 +343,7 @@ def test_the_diff_and_the_summary_close_the_run(finalize, tmp_path):
     evs = _final(tmp_path)
     assert any(e.get("type") == "changes" for e in evs)
     assert "**Pipeline complete** — 2/2" in evs[-1]["text"]
-    assert "all tests pass" in evs[-1]["text"]
+    assert "all 3 tests pass" in evs[-1]["text"]
 
 
 def test_the_detailed_report_is_attached_when_it_agrees(finalize, tmp_path):
