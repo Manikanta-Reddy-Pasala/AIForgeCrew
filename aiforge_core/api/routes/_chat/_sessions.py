@@ -107,6 +107,15 @@ def chat_session_create(body: _NewSessionBody) -> dict:
         vision_detect.warm_vision_async(s.get("role") or "chat")
     except Exception:  # noqa: BLE001
         pass
+    # Start the ranked repo map for a pinned project now: the first parse of a
+    # big repo is seconds, and the first turn must not wait on it.
+    if body.cwd:
+        try:
+            from aiforge_core.runtime.chat_agent._context._repomap import (
+                warm_repo_map)
+            warm_repo_map(s.get("cwd") or body.cwd)
+        except Exception:  # noqa: BLE001
+            pass
     return s
 
 

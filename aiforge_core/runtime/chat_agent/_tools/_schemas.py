@@ -75,7 +75,9 @@ CATALOG: dict = {
             ("command", "path")),
     # ── run / build / test ───────────────────────────────────────────────
     "run_command": (
-        "Run a shell command (timeout SECONDS, default 600). "
+        "Run a shell command. No time limit: it runs until it exits, and is "
+        "stopped only if it goes silent (no output, no CPU) for 10 minutes; "
+        "pass timeout SECONDS only to cap it on purpose. "
         "background:true, or a trailing &, returns a handle immediately and "
         "leaves the process running. Several may run at once. The outcome "
         "is posted in this chat. Stop kills them.",

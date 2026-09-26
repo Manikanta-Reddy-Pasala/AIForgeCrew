@@ -24,19 +24,18 @@ from ._base import (
 def _pipeline_deadline_s() -> float:
     """Overall wall-clock ceiling for one pipeline / single-agent run.
 
-    The per-call LLM timeout (900s) and max_llm_calls (600) each bound ONE
-    dimension, but neither stops a run that stalls WITHOUT tripping them — an
-    async await that never resolves, a graph that spins below the call cap, a
-    stage waiting on output that never comes. Without an outer deadline such a
-    run waits forever and the ticket never lands. asyncio.timeout cancels the
-    in-flight run_async so the caller recovers partial state and marks the
-    ticket blocked instead of hanging. Default 90 min (a healthy full+replan
-    run is well under that); 0/negative disables. Tune AIFORGE_PIPELINE_DEADLINE_S.
+    OFF by default (0). A healthy run is never killed for taking long: what
+    stops a BROKEN one is the set of health detectors that fire only on an
+    actual fault — the LLM stream's first-token / idle bounds
+    (AIFORGE_LLM_FIRST_TOKEN_S / AIFORGE_LLM_STREAM_IDLE_S), the per-call read
+    timeout, max_llm_calls, the loop guards, and the shell's output-idle
+    detector (AIFORGE_CMD_IDLE_S). Set AIFORGE_PIPELINE_DEADLINE_S to a number
+    of seconds to put a wall clock back on; 0/negative/junk means none.
     """
     try:
-        v = float(os.environ.get("AIFORGE_PIPELINE_DEADLINE_S", "5400"))
+        v = float(os.environ.get("AIFORGE_PIPELINE_DEADLINE_S", "0"))
     except ValueError:
-        v = 5400.0
+        v = 0.0
     return v
 
 

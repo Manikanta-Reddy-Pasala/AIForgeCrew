@@ -116,23 +116,43 @@ def _read_http_response(conn, url: str) -> dict:
     return body
 
 
-def _read_sse_response(conn, url: str, sink) -> dict:
+def _read_sse_response(conn, url: str, sink, payload: bytes | None = None,
+                       read_timeout: float | None = None) -> dict:
     """Read a streamed completion, feeding each token to ``sink``, and return
     it reassembled as a normal body. A server that ignored ``stream`` and
-    answered with plain JSON is read as such."""
+    answered with plain JSON is read as such.
+
+    Health-bounded (see :mod:`._stream_health`): silence before the first
+    token, or between chunks, past its bound raises the retryable
+    :class:`LLMStreamStalled` instead of waiting out the read timeout."""
+    from ._stream_health import StreamWatch
+    watch = StreamWatch(getattr(conn, "sock", None), payload, read_timeout)
+    watch.arm_first_token()
+    try:
+        return _read_sse_watched(conn, url, sink, watch)
+    except (TimeoutError, OSError) as exc:
+        stalled = watch.stalled(exc)
+        if stalled is exc:
+            raise
+        raise stalled from exc
+
+
+def _read_sse_watched(conn, url: str, sink, watch) -> dict:
     pkg = _pkg()
     resp = conn.getresponse()
     if resp.status >= 400:
+        watch.release()
         data = resp.read()
         raise urllib.error.HTTPError(
             url, resp.status, resp.reason, resp.headers, io.BytesIO(data))
     if "text/event-stream" not in (resp.getheader("Content-Type") or ""):
+        watch.release()
         body = json.loads(resp.read())
         pkg._raise_if_model_dropped(body)
         return body
     asm = _StreamAssembler(sink)
     asm._emit("start", "")          # a retried call starts its text afresh
-    done = _pump_sse(resp, asm)
+    done = _pump_sse(resp, asm, watch)
     if not done and asm.finish is None:
         # Cut off: no [DONE] and no finish_reason. Accepting the partial body
         # made half an answer the FINAL.
@@ -142,10 +162,11 @@ def _read_sse_response(conn, url: str, sink) -> dict:
     return body
 
 
-def _pump_sse(resp, asm: "_StreamAssembler") -> bool:
+def _pump_sse(resp, asm: "_StreamAssembler", watch=None) -> bool:
     """Feed every ``data:`` event to ``asm``; True when ``[DONE]`` arrived. A
     chunked read cut mid-way is a dropped connection (retryable), not the
-    non-OSError IncompleteRead that escaped the retry classifier."""
+    non-OSError IncompleteRead that escaped the retry classifier. The first
+    data event moves ``watch`` from the first-token to the idle bound."""
     try:
         while True:
             line = resp.readline()
@@ -155,6 +176,8 @@ def _pump_sse(resp, asm: "_StreamAssembler") -> bool:
             if not line.startswith(b"data:"):
                 continue
             data = line[5:].strip()
+            if watch is not None:
+                watch.got_data()
             if data == b"[DONE]":
                 return True
             try:

@@ -791,9 +791,30 @@ def test_a_ticket_run_announces_the_backends(entry):
 def test_an_idle_poll_backs_off_quietly(entry, monkeypatch):
     entry["processed"] = False
     monkeypatch.setenv("AIFORGE_POLL_IDLE_S", "3")
+    monkeypatch.setenv("AIFORGE_POLL_IDLE_WINDOW_S", "0")
     assert orc.main() == 0
     assert entry["boot"] == []
     assert entry["slept"] == 3
+
+
+def test_the_idle_poll_defaults_to_two_seconds(monkeypatch):
+    monkeypatch.delenv("AIFORGE_POLL_IDLE_S", raising=False)
+    assert orc._poll_idle_s() == 2.0
+    monkeypatch.setenv("AIFORGE_POLL_IDLE_S", "junk")
+    assert orc._poll_idle_s() == 2.0
+
+
+def test_an_idle_pass_picks_up_a_ticket_that_arrives(entry, monkeypatch):
+    """A ticket filed while the pass is idling starts on the next 2s tick,
+    not after the process exits and the supervisor respawns it."""
+    claims = iter([False, False, False, True])
+    monkeypatch.setattr(orc, "_process_one_ticket", lambda: next(claims))
+    slept = []
+    monkeypatch.setattr(orc.time, "sleep", slept.append)
+    monkeypatch.setenv("AIFORGE_POLL_IDLE_WINDOW_S", "30")
+    assert orc.main() == 0
+    assert slept == [2.0, 2.0, 2.0]
+    assert entry["boot"] == [1]
 
 
 def test_orphaned_tickets_are_requeued_before_claiming(entry):
