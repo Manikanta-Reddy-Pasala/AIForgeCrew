@@ -136,16 +136,23 @@ def test_the_loop_key_follows_the_jobs_progress(env):
 
 
 def test_the_turn_ending_kills_its_handed_off_commands_only(env):
-    turn = cmd_jobs.begin_turn()
-    handed = _run("echo x; sleep 30", env)
-    bg = _run("sleep 30", env, background=True)
-    assert bg["id"].startswith("bg-")
-    h, b = cmd_jobs.find(handed["id"]), cmd_jobs.find(bg["id"])
-    assert cmd_jobs.end_turn(turn) == 1
-    assert not h.alive()
-    assert b.alive()                              # explicit background stays
-    T._t_command_kill({"id": bg["id"]}, str(env))
-    assert not b.alive()
+    from aiforge_core.runtime import chat_cancel
+    # A chat session: the explicit background job outlives the turn and the
+    # next turn of the same chat can still reach it.
+    chat_cancel.set_active(3131)
+    try:
+        turn = cmd_jobs.begin_turn()
+        handed = _run("echo x; sleep 30", env)
+        bg = _run("sleep 30", env, background=True)
+        assert bg["id"].startswith("bg-")
+        h, b = cmd_jobs.find(handed["id"]), cmd_jobs.find(bg["id"])
+        assert cmd_jobs.end_turn(turn) == 1
+        assert not h.alive()
+        assert b.alive()                          # explicit background stays
+        T._t_command_kill({"id": bg["id"]}, str(env))
+        assert not b.alive()
+    finally:
+        chat_cancel.set_active(None)
 
 
 def test_background_jobs_can_be_peeked(env):

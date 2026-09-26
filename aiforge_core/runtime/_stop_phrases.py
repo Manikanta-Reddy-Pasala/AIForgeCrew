@@ -80,6 +80,19 @@ _REPLACE_ANY_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Aimed at work the agent started to keep running: "stop the server", "kill
+# the dev servers", "stop the background jobs", "stop everything".
+_BACKGROUND_OBJECT = (
+    r"(?:everything|all(?:\s+of\s+(?:it|them))?|"
+    r"(?:the|this|that|your|my|these|those|all(?:\s+the)?|any)\s+"
+    r"(?:(?:background|dev|web|local|running|api|preview)\s+)*"
+    r"(?:servers?|services?|daemons?|background\s+\w+|"
+    r"processes)|background\s+\w+)"
+)
+_BACKGROUND_RE = re.compile(
+    r"^" + _FILLER + _CUT_VERB + r"\s+" + _BACKGROUND_OBJECT + _WHERE + _TAIL
+    + _END, re.IGNORECASE)
+
 _QUESTION_START_RE = re.compile(
     r"^(?:how|what|why|when|where|which|who|whose|is|are|was|were|does|did|"
     r"do\s+(?:i|we|you)|should|shall|may|might)\b",
@@ -112,6 +125,15 @@ def cuts_run(text: str) -> bool:
         if _is_question(s):
             continue
         if _CUT_RE.match(s):
+            return True
+    return False
+
+
+def cuts_background(text: str) -> bool:
+    """True when ``text`` explicitly stops work left running in the
+    background (a server, a background job) or everything."""
+    for s in _sentences(text):
+        if not _is_question(s) and _BACKGROUND_RE.match(s):
             return True
     return False
 

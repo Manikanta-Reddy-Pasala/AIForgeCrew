@@ -2,8 +2,9 @@
 
 The saved history keeps the question and the answer, not the file contents.
 The next turn gets those observations back once, and only when it carries on
-the same task: the approved plan being executed, or a planning turn that
-continues after its question. An unrelated follow-up starts clean. A result
+the same task: the approved plan being executed, a planning turn that
+continues after its question, or an act-mode task whose question the next
+message answers. An unrelated follow-up starts clean. A result
 cut to fit is marked partial, and the model may read it again.
 """
 from __future__ import annotations
@@ -18,8 +19,12 @@ _HEADER = ("\n\n---\n[Already read for this task. Reuse these results "
 _pauses: dict[int, dict] = {}
 
 
-def save(session_id, convo, *, asked: bool = False) -> None:
-    """Keep the latest observations for this session. Never raises."""
+def save(session_id, convo, *, asked: bool = False,
+         act_ask: bool = False) -> None:
+    """Keep the latest observations for this session. Never raises.
+
+    ``asked``: a plan-mode question. ``act_ask``: an act-mode task paused on
+    a question — the next message is its answer, so the reads carry on."""
     if session_id is None:
         return
     obs: list[str] = []
@@ -33,7 +38,8 @@ def save(session_id, convo, *, asked: bool = False) -> None:
             obs.append(content)
     if not obs and not asked:
         return
-    _pauses[int(session_id)] = {"obs": obs[-_MAX_OBS:], "asked": bool(asked)}
+    _pauses[int(session_id)] = {"obs": obs[-_MAX_OBS:], "asked": bool(asked),
+                                "act_ask": bool(act_ask)}
 
 
 def take(session_id) -> dict | None:
@@ -46,12 +52,14 @@ def inject(convo: list[dict], pause: dict | None, *, plan_mode: bool = False,
            plan_exec: bool = False) -> bool:
     """Merge saved reads into the latest user turn when this turn continues
     the task they were read for: the approved plan being executed
-    (``plan_exec``), or planning that goes on after its one question.
+    (``plan_exec``), planning that goes on after its one question, or an
+    act-mode task that paused on a question (the answer continues it).
     Returns whether a plan question was already asked."""
     if not pause or not convo:
         return False
     asked = bool(pause.get("asked"))
-    if not (plan_exec or (plan_mode and asked)):
+    act_answer = bool(pause.get("act_ask")) and not plan_mode
+    if not (plan_exec or (plan_mode and asked) or act_answer):
         return False
     obs = pause.get("obs") or []
     if obs:

@@ -311,6 +311,14 @@ def chat_kill_all() -> dict:
             "team_lock_released": lock_freed}
 
 
+def _stop_commands_for(session_id: int, text: str) -> int:
+    try:
+        from aiforge_core.runtime import cmd_jobs
+        return cmd_jobs.stop_for_text(session_id, text)
+    except Exception:  # noqa: BLE001 — a steer must still be queued
+        return 0
+
+
 class _SteerBody(BaseModel):
     content: str = Field(..., description="mid-run guidance to fold in")
 
@@ -333,8 +341,14 @@ def chat_session_steer(session_id: int, body: _SteerBody) -> dict:
     # there's no window between the check and the enqueue for a run-end clear()
     # to slip a stale steer into the next turn (CC3).
     queued = chat_interject.push(session_id, body.content, require_steerable=True)
+    # "stop it" / "kill the build" ends the commands this run handed back to
+    # the model now — not only when the agent next calls command_wait.
+    stopped = _stop_commands_for(session_id, body.content)
     if queued:
-        return {"queued": True, "session_id": session_id}
+        out = {"queued": True, "session_id": session_id}
+        if stopped:
+            out["commands_stopped"] = stopped
+        return out
     # Refused — distinguish blank content from a non-steerable (best-of-N) run.
     if not (body.content or "").strip():
         return {"queued": False, "session_id": session_id, "reason": "empty content"}

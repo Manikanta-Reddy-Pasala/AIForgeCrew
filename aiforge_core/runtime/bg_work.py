@@ -9,7 +9,8 @@ session.
 Rows live in ``$AIFORGE_CONFIG_DIR/background.db``. A restart resumes a
 watch that had not finished, once. A second restart marks it stopped.
 A background command is not started again: if its process is still alive
-the waiter is reattached, otherwise the chat is told it stopped.
+the waiter is reattached, otherwise the chat is told it stopped. The command
+watcher itself is :mod:`aiforge_core.runtime.bg_commands`.
 """
 from __future__ import annotations
 
@@ -304,93 +305,6 @@ def start_gitlab(session_id: int, cwd: str, args: dict) -> dict:
                 "hold this turn. The result will appear in this chat."})
 
 
-def track_command(session_id, cwd: str, cmd: str, proc, spool, *,
-                  close_spool: bool = True, announce: bool = True,
-                  idle_s: float = 0.0, deadline: float | None = None,
-                  owner: str | None = None) -> dict:
-    """Keep ``proc`` running after the tool returns. Stop can still kill it.
-
-    ``close_spool=False`` leaves the output files to their other owner (the
-    agent's job table, which still reads them). ``announce=False`` skips the
-    end-of-run chat line — for a command the agent itself is watching.
-    ``idle_s`` / ``deadline`` carry a handed-off foreground command's
-    last-resort guards: killed after that long with no output and no CPU, or
-    at that ``time.monotonic()`` deadline."""
-    try:
-        pgid = os.getpgid(proc.pid)
-    except OSError:
-        pgid = proc.pid
-    payload = {"cmd": cmd, **({"owner": owner} if owner else {})}
-    wid = _insert(session_id, "command", cwd, payload,
-                  pid=proc.pid, pgid=pgid)
-    ev = _bind(wid)
-    if session_id is not None:
-        try:
-            from aiforge_core.runtime import chat_cancel
-            chat_cancel.track_pgid(int(session_id), pgid)
-        except Exception:  # noqa: BLE001
-            pass
-    opts = {"close_spool": close_spool, "announce": announce,
-            "idle_s": idle_s, "deadline": deadline}
-    threading.Thread(
-        target=_wait_command, name=f"bg-cmd-{wid}", daemon=True,
-        args=(wid, proc, spool, ev, cmd, session_id, pgid, opts)).start()
-    return {"ok": True, "background": True, "pid": proc.pid, "pgid": pgid,
-            "handle": f"bg-{wid}",
-            "note": "Running in the background. This turn can continue. "
-                    "The outcome will show up in this chat when it exits. "
-                    "Stop kills it."}
-
-
-def _guard_tripped(proc, clock, deadline) -> bool:
-    if deadline is not None and time.monotonic() > deadline:
-        return True
-    return clock is not None and clock.stalled()
-
-
-def _wait_command(wid, proc, spool, ev, cmd, session_id, pgid,
-                  opts: dict | None = None) -> None:
-    opts = opts or {}
-    clock = None
-    if opts.get("idle_s") and spool is not None:
-        from aiforge_core.runtime.cmd_idle import ProgressClock
-        clock = ProgressClock(pgid, spool.size, float(opts["idle_s"]))
-    try:
-        while proc.poll() is None:
-            if ev.is_set() or _guard_tripped(proc, clock, opts.get("deadline")):
-                _kill(pgid)
-                try:
-                    proc.wait(timeout=3)
-                except Exception:  # noqa: BLE001
-                    pass
-                break
-            time.sleep(0.2)
-        code = proc.returncode
-        short = (cmd or "").strip().replace("\n", " ")[:80]
-        if ev.is_set():
-            text = f"Background command stopped: {short}"
-        else:
-            text = f"Background command finished (exit {code}): {short}"
-            if code not in (0, None) and spool is not None:
-                try:
-                    _out, err = spool.read()
-                    line = ((err or _out or "").strip().splitlines() or [""])[-1]
-                    if line:
-                        text += f" — {line[:120]}"
-                except Exception:  # noqa: BLE001
-                    pass
-        _update(wid, status="stopped" if ev.is_set() else "done")
-        if opts.get("announce", True):
-            _post(session_id, text)
-    finally:
-        _unbind(wid)
-        if spool is not None and opts.get("close_spool", True):
-            try:
-                spool.close()
-            except Exception:  # noqa: BLE001
-                pass
-
-
 def _spawn(wid: int) -> None:
     ev = _bind(wid)
     threading.Thread(target=_run_saved, name=f"bg-{wid}", daemon=True,
@@ -455,35 +369,6 @@ def _finish_watch(row: dict, res: dict) -> None:
     _post(sid, f"Watch ended: {str(reason)[:180]}")
 
 
-def _reattach_command(row: dict) -> None:
-    ev = _bind(row["id"])
-    threading.Thread(
-        target=_poll_pid, name=f"bg-reattach-{row['id']}", daemon=True,
-        args=(row, ev)).start()
-
-
-def _poll_pid(row: dict, ev: threading.Event) -> None:
-    pid = row.get("pid")
-    sid = row.get("session_id")
-    try:
-        payload = json.loads(row.get("payload") or "{}")
-        short = str(payload.get("cmd") or "command").strip().replace("\n", " ")[:80]
-    except Exception:  # noqa: BLE001
-        short = "command"
-    try:
-        while _alive(pid):
-            if ev.is_set():
-                _kill(row.get("pgid") or pid)
-                _update(row["id"], status="stopped")
-                _post(sid, f"Background command stopped: {short}")
-                return
-            time.sleep(0.5)
-        _update(row["id"], status="done")
-        _post(sid, f"Background command ended: {short}")
-    finally:
-        _unbind(row["id"])
-
-
 def resume_after_restart() -> int:
     """Restart unfinished watches once. Reattach a live command, or say it
     stopped. Never loops."""
@@ -524,3 +409,16 @@ def resume_after_restart() -> int:
             _update(row["id"], status="stopped")
             _post(sid, "Watch stopped: it could not be resumed after restart.")
     return n
+
+
+# Background COMMANDS (the process watcher and its guards) live in their own
+# module; these names stay importable from here.
+from aiforge_core.runtime.bg_commands import (  # noqa: E402
+    _guard_tripped,
+    _poll_pid,
+    _reattach_command,
+    _wait_command,
+    stop_command,
+    track_command,
+    trip_reason,
+)

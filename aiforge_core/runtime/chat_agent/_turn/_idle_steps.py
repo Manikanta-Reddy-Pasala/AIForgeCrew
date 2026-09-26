@@ -20,6 +20,8 @@ from .._registry import _READONLY_TOOLS
 from ._progress import _SHELL_TOOLS, _refresh_tree, _remember
 
 _CHECK_INS = ("command_wait", "command_output")
+
+
 def _fields(st) -> None:
     if not hasattr(st, "np_mark"):
         st.np_mark = (0, 0, 0, 0, 0)
@@ -45,22 +47,39 @@ def _shell_reads_new_path(st, args) -> bool:
     return any([_new(st, f"path:{p}") for p in no_progress.shell_read_paths(args)])
 
 
+def _fails_moved(st, name, args, res) -> bool:
+    """Fewer failing tests, or red turned green, in a FINISHED run — a
+    command checked on until it ended counts; one still running is neither
+    a pass nor a failure."""
+    from aiforge_core.runtime.cmd_finished import as_run
+    run = as_run(name, args, res)
+    if run is None or (run[0] not in _SHELL_TOOLS and run[0] != "run_tests"):
+        return False
+    done = run[2]
+    if done.get("stopped") or done.get("timed_out"):
+        return False                  # ended by someone, not by the code
+    fail = failure_of(result_text(done)) if done.get("ok") is False else None
+    if fail is not None and fail.signature:
+        moved = st.np_fails is not None and fail.count < st.np_fails
+        st.np_fails = fail.count
+        return moved
+    if done.get("ok") is True and st.np_fails:
+        st.np_fails = 0
+        return True
+    return False
+
+
 def _signals(st, name, args, result) -> bool:
     """Progress this step made that the loop state does not count itself."""
     res = result if isinstance(result, dict) else {}
+    progressed = False
     if name in _CHECK_INS and (res.get("output_growing") or res.get("cpu_active")
                                or res.get("running") is False):
-        return True                   # a build being waited on is moving
+        progressed = True             # a build being waited on is moving
     if name in _SHELL_TOOLS:
-        progressed = _shell_reads_new_path(st, args)
-        fail = failure_of(result_text(res)) if res.get("ok") is False else None
-        if fail is not None and fail.signature:
-            if st.np_fails is not None and fail.count < st.np_fails:
-                progressed = True     # fewer failing tests
-            st.np_fails = fail.count
-        elif res.get("ok") is True and st.np_fails:
-            st.np_fails, progressed = 0, True      # red turned green
-        return progressed
+        progressed = _shell_reads_new_path(st, args) or progressed
+    if name in _SHELL_TOOLS or name in _CHECK_INS or name == "run_tests":
+        return _fails_moved(st, name, args, res) or progressed
     if name in _READONLY_TOOLS:
         return _new(st, no_progress.command_template(name, args))
     return False

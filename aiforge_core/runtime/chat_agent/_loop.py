@@ -289,8 +289,8 @@ def _dispatch_step(st, out, n, cwd, role, _complete_fn, session_id, builder,
             return (yield from _idle_reply_guard(st))
         try:
             from ._pause import save as _save_pause
-            _save_pause(session_id, st.convo,
-                        asked=bool(getattr(st, "plan_mode", False)))
+            _plan = bool(getattr(st, "plan_mode", False))
+            _save_pause(session_id, st.convo, asked=_plan, act_ask=not _plan)
         except Exception:  # noqa: BLE001
             pass
         if getattr(st, "plan_mode", False):
@@ -347,9 +347,12 @@ def run_chat_agent(
     complete_fn = st.complete_fn
     n = 0
     from aiforge_core.runtime import cmd_jobs
-    _jobs_turn = cmd_jobs.begin_turn()
-    yield from _emit_loop_prelude(st)
+    _jobs_turn = None
     try:
+        # Inside the try: a prelude that raises (or a closed stream) still
+        # ends the turn's jobs and restores the turn token.
+        _jobs_turn = cmd_jobs.begin_turn()
+        yield from _emit_loop_prelude(st)
         while True:
             n += 1
             # A batch of reads from the last reply runs without asking the model
@@ -385,7 +388,8 @@ def run_chat_agent(
         # Commands this turn handed back to the model (still running at a
         # check-in) end with it; an explicit background command does not.
         try:
-            cmd_jobs.end_turn(_jobs_turn)
+            if _jobs_turn is not None:
+                cmd_jobs.end_turn(_jobs_turn)
         except Exception:  # noqa: BLE001
             pass
         # Nor does its condense summary: nobody will read it.

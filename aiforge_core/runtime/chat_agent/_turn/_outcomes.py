@@ -17,7 +17,7 @@ import os
 import re
 import subprocess
 
-from aiforge_core.runtime import same_failure
+from aiforge_core.runtime import cmd_finished, same_failure
 from aiforge_core.runtime.failure_signature import (
     failure_of,
     result_text,
@@ -95,7 +95,13 @@ def content_fingerprint(cwd) -> str | None:
 
 
 def _note_green_tests(st, name, args, result, cwd) -> None:
-    """Remember a passing FULL test run and the content it ran against."""
+    """Remember a passing FULL test run and the content it ran against. A
+    command checked on until it finished counts as its original command; one
+    still running proves nothing yet."""
+    run = cmd_finished.as_run(name, args, result)
+    if run is None:
+        return
+    name, args, result = run
     if not isinstance(result, dict) or not _is_test_run(name, args):
         return
     if result.get("ok") is not True:
@@ -120,7 +126,13 @@ def _state_key(st) -> str:
 
 def note_failure(st, name, args, result):
     """Feed a failing test/build/command result to the same-failure rule.
-    Returns None, ``("nudge", text)`` or ``("stop", text)``."""
+    Returns None, ``("nudge", text)`` or ``("stop", text)``. A command
+    checked on until it finished is judged on its whole output, as its
+    original command; partial output of one still running never is."""
+    run = cmd_finished.as_run(name, args, result)
+    if run is None:
+        return None
+    name, args, result = run
     if name != "run_tests" and name not in _SHELL_TOOLS:
         return None
     if not isinstance(result, dict) or result.get("ok") is not False:

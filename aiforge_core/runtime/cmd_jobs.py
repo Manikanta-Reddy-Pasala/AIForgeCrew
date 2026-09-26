@@ -18,7 +18,14 @@ A healthy wait that simply ran its time doubles the next default wait
 (15→30→60→120, cap 300); any signal resets it.
 
 Jobs a turn handed off are killed when that turn ends (an explicit background
-command is left running, as before). Stop kills them all through bg_work.
+command is left running, as before). Stop kills them all through bg_work; a
+typed "stop it" kills this chat's handed-off jobs (:func:`stop_for_text`).
+
+A job is reachable only from where it was started: the same chat session,
+the same pipeline owner (ticket), or the same run (turn token) for a
+sessionless Doer or subtask. When a job ends, its whole-output tail and exit
+code are recorded (:mod:`aiforge_core.runtime.cmd_finished`) so the loop
+rules judge it like any finished ``run_command``.
 """
 from __future__ import annotations
 
@@ -27,6 +34,7 @@ import os
 import threading
 import time
 
+from aiforge_core.runtime import cmd_finished
 from aiforge_core.runtime import cmd_signals as sig
 
 _TURN: contextvars.ContextVar = contextvars.ContextVar(
@@ -57,6 +65,14 @@ def stuck_s() -> float:
     return _env_s("AIFORGE_CMD_STUCK_CHECK_S", 45.0)
 
 
+def _active_session():
+    try:
+        from aiforge_core.runtime import chat_cancel
+        return chat_cancel.active()
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class Job:
     """One running (or finished, not yet collected) command."""
 
@@ -67,7 +83,10 @@ class Job:
         self.key, self.proc, self.cmd = key, proc, cmd
         self.streams = streams            # file objects or paths
         self.seen = [0] * len(streams)
+        if session_id is None:
+            session_id = _active_session()
         self.session_id, self.explicit = session_id, explicit
+        self.killed: str | None = None     # who ended it, when not itself
         self._kill, self._close = kill, close
         self.pgid = pgid
         self.turn = _TURN.get()
@@ -127,7 +146,9 @@ class Job:
         return f"{self.size()}:{int(cpu or 0)}:{self.proc.poll()}"
 
     # ── lifecycle ───────────────────────────────────────────────────────
-    def kill(self) -> None:
+    def kill(self, why: str = "stopped: killed with command_kill") -> None:
+        if self.alive():
+            self.killed = self.killed or why
         if self.alive() and self._kill is not None:
             try:
                 self._kill()
@@ -171,7 +192,7 @@ def end_turn(turn) -> int:
         mine = [j for j in _JOBS.values() if j.turn is token]
     for job in mine:
         if job.alive() and not job.explicit:
-            job.kill()
+            job.kill("stopped: the run that started it ended")
             killed += 1
         if not job.alive():
             _forget(job)
@@ -204,7 +225,7 @@ def end_owner(owner) -> int:
     killed = 0
     for job in mine:
         if job.alive():
-            job.kill()
+            job.kill("stopped: the ticket that started it ended")
             killed += 1
         _forget(job)
     return killed
@@ -254,6 +275,8 @@ def adopt_spooled(proc, spool, cmd: str, cwd: str, *, explicit: bool,
     key = handle.get("handle") or f"pid-{proc.pid}"
 
     def _kill():
+        if str(key).startswith("bg-"):   # the watcher marks the row stopped
+            bg_work.stop_command(key[3:])
         spool.kill_group()
 
     def _close():
@@ -280,24 +303,71 @@ def adopt_service(proc, cmd: str, log_path: str, pgid=None) -> Job:
     return _register(job)
 
 
+def _caller() -> tuple:
+    return _active_session(), _OWNER.get(), _TURN.get()
+
+
+def _visible(job: Job, caller: tuple) -> bool:
+    """The caller started this job: same chat session, same pipeline owner,
+    or the same run. A caller with none of the three (no chat, no ticket,
+    between runs) sees only jobs with no chat and no ticket either."""
+    sid, owner, turn = caller
+    if sid is not None and str(job.session_id) == str(sid):
+        return True
+    if owner is not None and job.owner == owner:
+        return True
+    if turn is not None and job.turn is turn:
+        return True
+    return (sid is None and owner is None and turn is None
+            and job.session_id is None and job.owner is None)
+
+
 def find(ref) -> Job | None:
-    """By handle (``bg-7``), bare number (a bg id or a pid) or ``pid-123``."""
+    """By handle (``bg-7``), bare number (a bg id or a pid) or ``pid-123`` —
+    among the caller's own jobs only (see :func:`_visible`)."""
     s = str(ref or "").strip()
+    caller = _caller()
     with _LOCK:
-        if s in _JOBS:
-            return _JOBS[s]
-        for key in (f"bg-{s}", f"pid-{s}"):
-            if key in _JOBS:
-                return _JOBS[key]
-        for j in _JOBS.values():
-            if str(getattr(j.proc, "pid", "")) == s:
-                return j
+        mine = {k: j for k, j in _JOBS.items() if _visible(j, caller)}
+    if s in mine:
+        return mine[s]
+    for key in (f"bg-{s}", f"pid-{s}"):
+        if key in mine:
+            return mine[key]
+    for j in mine.values():
+        if str(getattr(j.proc, "pid", "")) == s:
+            return j
     return None
 
 
 def running() -> list[Job]:
+    """The caller's own live jobs."""
+    caller = _caller()
     with _LOCK:
-        return [j for j in _JOBS.values() if j.alive()]
+        return [j for j in _JOBS.values() if _visible(j, caller) and j.alive()]
+
+
+def stop_for_text(session_id, text: str) -> int:
+    """A typed message that stops the work ("stop", "kill it", "stop the
+    build") kills this chat's handed-off jobs; one aimed at background work
+    ("stop the server", "stop everything") kills its explicit background
+    jobs too. Returns how many were killed."""
+    if session_id is None or not text:
+        return 0
+    from aiforge_core.runtime import _stop_phrases
+    cut = _stop_phrases.cuts_run(text)
+    background = _stop_phrases.cuts_background(text)
+    if not (cut or background):
+        return 0
+    with _LOCK:
+        mine = [j for j in _JOBS.values()
+                if str(j.session_id) == str(session_id) and j.alive()]
+    n = 0
+    for job in mine:
+        if background if job.explicit else cut:
+            job.kill("stopped: the user asked to stop it")
+            n += 1
+    return n
 
 
 # ── looking and waiting ──────────────────────────────────────────────────
@@ -326,12 +396,42 @@ def look(job: Job, why: str | None = None) -> dict:
         out["cpu_active"] = job.cpu_active()
     else:
         code = job.proc.returncode
-        out.update(ok=code == 0, code=code)
+        ended_by = job.killed or _trip_reason(job)
+        out.update(ok=code == 0 and not ended_by, code=code)
+        if ended_by:
+            out.update(stopped=True, error=ended_by)
+        _record_end(job, code, ended_by)
         _forget(job)
     if why:
         out["returned_because"] = why
     out["hint"] = _hint(job, alive)
     return out
+
+
+def _trip_reason(job: Job) -> str | None:
+    """A last-resort guard of the background watcher ended it (idle, wall
+    clock, output too large)."""
+    key = str(job.key)
+    if not key.startswith("bg-"):
+        return None
+    from aiforge_core.runtime import bg_commands
+    return bg_commands.trip_reason(key[3:])
+
+
+def _whole_tail(stream) -> str:
+    end = sig.file_size(stream)
+    start = max(0, end - cmd_finished.TAIL_CHARS)
+    return sig.clean(sig.read_range(stream, start, end))
+
+
+def _record_end(job: Job, code, ended_by) -> None:
+    """The job's WHOLE output tail and exit code, for the loop rules."""
+    try:
+        out = _whole_tail(job.streams[0])
+        err = _whole_tail(job.streams[1]) if len(job.streams) > 1 else ""
+        cmd_finished.record(job.key, job.cmd, code, out, err, stopped=ended_by)
+    except Exception:  # noqa: BLE001 — a record must never break a look
+        pass
 
 
 def default_wait_s(job: Job) -> float:
@@ -353,6 +453,13 @@ def wait(job: Job, max_s: float | None = None, session_id=None) -> dict:
             _forget(job)
             return {"ok": False, "stopped": True, "error": "stopped by user"}
         if why == "steer":
+            from aiforge_core.runtime.run_interrupt import _newest_queued
+            stop_for_text(session_id, _newest_queued(session_id))
+            if job.killed and not job.alive():
+                seen = look(job, "stopped by the user's new message")
+                return steered(id=job.key, killed=True,
+                               new_output=seen.get("new_output", ""),
+                               hint="stopped, as the new message asked.")
             return steered(id=job.key, hint=_hint(job, True))
         found = job.signal()
         if found:
@@ -378,4 +485,4 @@ def wait(job: Job, max_s: float | None = None, session_id=None) -> dict:
 __all__ = ["Job", "adopt_service", "adopt_spooled", "begin_turn",
            "checkin_s", "current_owner", "default_wait_s", "end_owner",
            "end_turn", "find", "look", "progress_suffix", "reset_owner",
-           "running", "set_owner", "stuck_s", "wait"]
+           "running", "set_owner", "stop_for_text", "stuck_s", "wait"]

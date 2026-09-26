@@ -12,8 +12,10 @@ response; a second one flags the Doer loop to exit partial with the reason
 from __future__ import annotations
 
 import collections
+import threading
 
 from aiforge_core.runtime import no_progress
+from aiforge_core.runtime.cmd_finished import as_run
 from aiforge_core.runtime.failure_signature import failure_of, result_text
 
 _CHECK_INS = ("command_wait", "command_output")
@@ -26,6 +28,8 @@ class DoerProgressGuard:
 
     def __init__(self) -> None:
         self._runs: collections.OrderedDict = collections.OrderedDict()
+        # ADK may run a turn's tool calls in parallel: one step at a time.
+        self._lock = threading.RLock()
 
     def _run(self, key) -> dict:
         run = self._runs.pop(key, None) or {"track": {}, "seen": collections.OrderedDict(),
@@ -43,18 +47,33 @@ class DoerProgressGuard:
             run["seen"].popitem(last=False)
         return True
 
+    @staticmethod
+    def _fails_moved(run, name, args, res) -> bool:
+        """Fewer failing tests or red turned green in a FINISHED run (a
+        checked-on command that ended counts as its original command; one
+        still running is neither a pass nor a failure)."""
+        done = as_run(name, args, res)
+        if done is None or (done[0] != "run_tests"
+                            and done[0] not in no_progress._SHELL_TOOLS):
+            return False
+        res = done[2]
+        if res.get("stopped") or res.get("timed_out"):
+            return False
+        fail = failure_of(result_text(res)) if res.get("ok") is False else None
+        if fail is not None and fail.signature:
+            moved = run["fails"] is not None and fail.count < run["fails"]
+            run["fails"] = fail.count
+            return moved
+        if res.get("ok") is True and run["fails"]:
+            run["fails"] = 0
+            return True
+        return False
+
     def _progress(self, run, name, args, res) -> bool:
+        progressed = self._fails_moved(run, name, args, res)
         if name in _CHECK_INS:
             return bool(res.get("output_growing") or res.get("cpu_active")
-                        or res.get("running") is False)
-        progressed = False
-        if name == "run_tests" or name in no_progress._SHELL_TOOLS:
-            fail = failure_of(result_text(res)) if res.get("ok") is False else None
-            if fail is not None and fail.signature:
-                progressed = run["fails"] is not None and fail.count < run["fails"]
-                run["fails"] = fail.count
-            elif res.get("ok") is True and run["fails"]:
-                run["fails"], progressed = 0, True
+                        or res.get("running") is False) or progressed
         if name in no_progress._SHELL_TOOLS:
             paths = no_progress.shell_read_paths(args)
             return any([self._new(run, f"path:{p}") for p in paths]) or progressed
@@ -65,6 +84,10 @@ class DoerProgressGuard:
         or a replacement response carrying the loop guard's note."""
         if not isinstance(response, dict):
             return None
+        with self._lock:
+            return self._step(run_key, name, args, response, state)
+
+    def _step(self, run_key, name, args, response, state):
         run = self._run(run_key)
         if run["stopped"]:
             return {**response, "loop_guard": run["stopped"]}
