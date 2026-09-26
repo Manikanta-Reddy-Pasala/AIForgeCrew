@@ -158,8 +158,15 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
         return tools
     alias_ids = {id(fn) for fn in aliases}
     filtered = [t for t in filtered
-                if id(getattr(t, "func", None)) not in alias_ids]
+                if id(_base_func(t)) not in alias_ids]
     return _apply_integration_gate(filtered)
+
+
+def _base_func(t):
+    """The tool's own function (under the team_repo_net wrapper)."""
+    fn = getattr(t, "func", None)
+    return getattr(fn, "__wrapped__", fn) if getattr(fn, "_team_net", False) \
+        else fn
 
 
 def _apply_integration_gate(tools: list) -> list:

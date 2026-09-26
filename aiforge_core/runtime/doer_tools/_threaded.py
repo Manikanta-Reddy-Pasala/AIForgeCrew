@@ -234,6 +234,8 @@ class OrderedWriteTool(FunctionTool):
 def tool_for(fn) -> FunctionTool:
     """The ADK tool for ``fn``: threaded for a slow read, ordered for a
     file write, plain for everything else (including the shell)."""
+    from ._net_wrap import bracket
+    fn = bracket(fn)         # shell-capable tools: the team_repo_net net
     name = fn.__name__
     if name in THREADED_READS:
         cls = ThreadedReadTool
