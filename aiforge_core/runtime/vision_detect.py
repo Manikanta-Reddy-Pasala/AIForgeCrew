@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 
 # 1x1 transparent PNG — inline fallback if the bundled probe image is missing.
 # Some VLM servers reject a 1x1/degenerate image, so the real probe prefers the
@@ -300,8 +301,44 @@ def _safe_ensure(role: str) -> None:
         ensure_vision_known(role)
 
 
+# (model, base_url) → the probe in flight for it. Adding a model and opening a
+# chat both probe in the background; at a fresh start they fired together, two
+# image prefills competing with the first turn for the server's slots.
+_INFLIGHT: "dict[tuple[str, str], object]" = {}
+_INFLIGHT_LOCK = threading.Lock()
+
+
 def probe_vision_endpoint(model: str, base_url: str, api_key: str | None = None,
                           *, timeout_s: int | None = None) -> bool | None:
+    """Single-flight :func:`_probe_endpoint_once`: a second caller for the same
+    model and endpoint waits for the probe already running and shares its
+    verdict instead of sending another."""
+    import concurrent.futures as _cf
+    key = (model or "", (base_url or "").rstrip("/"))
+    with _INFLIGHT_LOCK:
+        running = _INFLIGHT.get(key)
+        mine = running is None
+        if mine:
+            running = _cf.Future()
+            _INFLIGHT[key] = running
+    if not mine:
+        try:
+            return running.result(timeout=(timeout_s or 8) + 30)
+        except Exception:  # noqa: BLE001 — the owner's failure is inconclusive
+            return None
+    verdict = None
+    try:
+        verdict = _probe_endpoint_once(model, base_url, api_key,
+                                       timeout_s=timeout_s)
+    finally:
+        running.set_result(verdict)
+        with _INFLIGHT_LOCK:
+            _INFLIGHT.pop(key, None)
+    return verdict
+
+
+def _probe_endpoint_once(model: str, base_url: str, api_key: str | None = None,
+                         *, timeout_s: int | None = None) -> bool | None:
     """One-shot vision probe against an EXPLICIT endpoint — used at model-add
     time, before the model is wired to any role (so the role-based
     :func:`_probe_vision` can't reach it). Sends the bundled probe image to the

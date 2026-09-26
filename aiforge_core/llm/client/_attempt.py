@@ -63,12 +63,37 @@ def _attempt_payload(ep: Endpoint, messages: list[dict], attempt: int,
     honour it → skip the reasoning phase) and PROGRESSIVELY widen max_tokens
     (×2, ×3, …) so a still-thinking model has room left to emit the answer.
     """
+    extras = _fast_extras(ep, fast_role, extras)
     if attempt == 0:
         base = _append_no_think(messages) if fast_role else messages
         return _pkg()._build_body(ep, base, temperature, max_tokens, top_p, extras)
     mt = min(int((max_tokens or 4096) * (attempt + 1)), 32768)
     return _pkg()._build_body(ep, _append_no_think(messages), temperature, mt,
                        top_p, extras)
+
+
+def _fast_extras(ep: Endpoint, fast_role: bool, extras):
+    """A fast role also asks the server to skip reasoning outright (see
+    :mod:`aiforge_core.llm.fast_reasoning`); a caller's own extras win."""
+    try:
+        from aiforge_core.llm import fast_reasoning
+        add = fast_reasoning.extras_for(ep.base_url, fast_role)
+    except Exception:  # noqa: BLE001 — never break a call over this
+        add = {}
+    if not add:
+        return extras
+    return {**add, **(extras or {})}
+
+
+def _rejected_fast_extras(ep: Endpoint, fast_role: bool, exc) -> bool:
+    """The server refused the reasoning field: remember it, re-send without."""
+    if not fast_role:
+        return False
+    try:
+        from aiforge_core.llm import fast_reasoning
+        return fast_reasoning.note_rejection(ep.base_url, exc)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _note_transport_failure(shipped: "dict | None", exc: Exception) -> None:
@@ -83,6 +108,22 @@ def _note_transport_failure(shipped: "dict | None", exc: Exception) -> None:
     if _shipped_timeout(exc):
         shipped["timeout"] = True
     shipped["exc"] = exc
+
+
+def _post_fast_aware(ep, payload_fn, timeout_s, role, source, meter,
+                     fast_role):
+    """One post. When the server refuses the fast-role reasoning field, it is
+    remembered and the same request goes once more without it."""
+    try:
+        return _pkg()._post_with_retry(ep, payload_fn(), timeout_s, role=role,
+                                       source=source, meter=meter)
+    except _LLMCancelled:
+        raise
+    except OSError as exc:
+        if not _rejected_fast_extras(ep, fast_role, exc):
+            raise
+    return _pkg()._post_with_retry(ep, payload_fn(), timeout_s, role=role,
+                                   source=source, meter=meter)
 
 
 def _try_post(ep: Endpoint, messages: list[dict],
@@ -106,15 +147,19 @@ def _try_post(ep: Endpoint, messages: list[dict],
                      if empty_retries is None else max(0, empty_retries))
     fast_role = _is_fast_role(role)
     for attempt in range(empty_retries + 1):
-        payload = _attempt_payload(ep, messages, attempt, fast_role,
-                                   temperature, max_tokens, top_p, extras)
+        def _payload(_a=attempt):
+            return _attempt_payload(ep, messages, _a, fast_role,
+                                    temperature, max_tokens, top_p, extras)
         _meter_tok: list = [None]
         try:
-            body = _pkg()._post_with_retry(ep, payload, timeout_s, role=role,
-                                    source=source, meter=_meter_tok)
+            body = _post_fast_aware(ep, _payload, timeout_s, role, source,
+                                    _meter_tok, fast_role)
         except _LLMCancelled:
             raise
-        except (OSError, ValueError) as _texc:
+        except OSError as _texc:
+            _note_transport_failure(shipped, _texc)
+            return None
+        except ValueError as _texc:
             # ValueError covers a non-JSON 200 (proxy HTML error page, truncated
             # / streaming body) so a malformed response falls back to the next
             # provider instead of crashing complete(). Transport errors are NOT

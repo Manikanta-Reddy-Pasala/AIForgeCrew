@@ -195,6 +195,7 @@ class RouteDecision:
     build_escalate: bool    # simple-mode auto-escalation into the pipeline
     route_pipeline: bool    # run the PARALLEL decompose pipeline (else sequential)
     notice: str | None      # one router 'thought' to surface (or None)
+    cat: "str | None" = None  # the classifier's class, when it ran
 
 
 def decide(prompt: str, *, agent_mode: str, team: bool, psub_on: bool,
@@ -243,7 +244,7 @@ def decide(prompt: str, *, agent_mode: str, team: bool, psub_on: bool,
                      build_escalate=build_escalate, route_pipeline=route_pipeline,
                      team_approvals=team_approvals)
     return RouteDecision(doc_task, is_build_task, build_escalate,
-                         route_pipeline, notice)
+                         route_pipeline, notice, cat)
 
 
 def _notice(*, agent_mode, team, psub_on, doc_task, is_build_task,

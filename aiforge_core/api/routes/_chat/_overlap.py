@@ -19,6 +19,7 @@ from __future__ import annotations
 import concurrent.futures as _cf
 import contextvars
 import os
+import re
 import threading
 
 from ._core import _af_log
@@ -76,6 +77,27 @@ def _enhance_will_run(prompt) -> bool:
         return False
 
 
+# Asks for prose, not a change: "do not change any files", "review the design",
+# "explain …". The classifier usually calls these chat/doc, and then the
+# enhancer is skipped (``_routing._ANSWER_CLASSES``) — an early call would be
+# thrown away, and a server keeps generating a cancelled request, so it only
+# slows the agent's first call. Wrong guesses cost only the overlap.
+_READ_ONLY_RE = re.compile(
+    r"\b(?:do not|don'?t|without) (?:change|modify|edit|touch|write)\w*"
+    r"|\b(?:review|assess|explain|summari[sz]e|critique|evaluate)\b"
+    r"|\bassessment\b|\bin prose\b", re.IGNORECASE)
+
+
+def _reads_as_answer(prompt) -> bool:
+    try:
+        from aiforge_core.runtime import chat_router
+        if chat_router.is_advice_question(prompt or ""):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return bool(_READ_ONLY_RE.search(prompt or ""))
+
+
 def _slots_allow() -> bool:
     try:
         from aiforge_core.llm import slots
@@ -98,6 +120,8 @@ def start(pc, _pp) -> "EarlyEnhance | None":
             single_agent=bool(getattr(body, "single_agent", False))):
         return None
     if not _enhance_will_run(pc.prompt) or not _slots_allow():
+        return None
+    if _reads_as_answer(pc.prompt):
         return None
     from aiforge_core.runtime import chat_cancel
     if pc.session_id is not None and chat_cancel.is_cancelled(pc.session_id):
