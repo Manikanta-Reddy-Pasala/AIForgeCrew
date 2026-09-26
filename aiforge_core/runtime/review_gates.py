@@ -161,11 +161,29 @@ def review_spec(request: str, spec_md: str) -> tuple[str, str]:
              "ambiguity, missing edge cases, and scope creep. If it is sound, "
              "reply with the single word CLEAN. If not, output ONLY the corrected "
              "full spec in markdown (no fences, no prose).")
+    # The WHOLE spec goes in, and the budget grows with it: a rewrite cut at
+    # 3072 tokens (of a spec cut at 6000 chars) ended mid ``## Subtasks`` and
+    # the plan then dropped every subtask it never reached.
+    budget = _spec_review_budget(spec_md)
     out = (review_once(f"{instr}\n\n---\n\nREQUEST:\n{request[:2000]}\n\n"
-                       f"SPEC:\n{spec_md[:6000]}", 3072, fast=True) or "").strip()
+                       f"SPEC:\n{spec_md}", budget, fast=True) or "").strip()
     if not out or out.upper().startswith("CLEAN") or len(out) < 60:
         return spec_md, "spec reviewed — sound"
+    from aiforge_core.runtime.parallel_subtasks._spec_align import keep_planned_subtasks
+    out, restored = keep_planned_subtasks(
+        spec_md, out, cut=len(out) >= int(budget * _CHARS_PER_TOKEN * 0.95))
+    if restored:
+        return out, ("spec reviewed + refined; the review reply was cut short, "
+                     "so the original subtask list was kept")
     return out, "spec reviewed + refined (contradictions/ambiguity/scope)"
+
+
+_CHARS_PER_TOKEN = 3.5
+
+
+def _spec_review_budget(spec_md: str) -> int:
+    """Room to echo the whole spec back plus some: never below 3072."""
+    return max(3072, min(16384, int(len(spec_md) / _CHARS_PER_TOKEN * 1.3) + 512))
 
 
 _CODE_SUFFIXES = (".py", ".java", ".js", ".ts", ".tsx", ".go", ".kt", ".rs",
@@ -203,7 +221,7 @@ def review_plan(request: str, subs: list) -> tuple[list, str]:
     return corrected, f"plan reviewed + fixed ({len(subs)}→{len(corrected)} files)"
 
 
-def _plan_line_subtask(line: str, by_path: dict, paths: list, seen: set) -> "dict | None":
+def _plan_line_subtask(line: str, by_path: dict, paths: list, seen: set) -> dict | None:
     """One ``path | goal`` reviewer line → a subtask dict (preserving the closest
     original subtask's fields), or None to skip (no pipe, non-code path, empty,
     or already seen)."""

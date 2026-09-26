@@ -97,7 +97,7 @@ def _compute_caps(max_steps, session_id):
     return _cap_base, _caller_cap, _unattended, safety, _capped
 
 
-def _writable_roots(messages, session_id) -> list:
+def _writable_roots(messages, session_id, cwd=None) -> list:
     """Folders this chat may write to beyond its cwd: the ones the user named
     in their own turns (scope_guard.user_named_roots — `messages` is the real
     history; recall is injected as system blocks, not here), plus the ones the
@@ -113,6 +113,13 @@ def _writable_roots(messages, session_id) -> list:
     try:
         from aiforge_core.runtime import chat_write_grants as _grants
         roots += [r for r in _grants.granted(session_id) if r not in roots]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        # In a team run's worktree the user's real checkout is not writable:
+        # naming it (or allowing the team there) is not a write grant.
+        from aiforge_core.runtime.team_run_life import jail_roots
+        roots = jail_roots(cwd, roots)
     except Exception:  # noqa: BLE001
         pass
     return roots
@@ -167,7 +174,7 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     # with an "[Interpreted request …]" enhancer block; key off the user's RAW
     # words (split that marker off) so recall/skills/mentions aren't diluted by
     # the boilerplate + restatement.
-    _user_roots = _writable_roots(messages, session_id)
+    _user_roots = _writable_roots(messages, session_id, cwd)
 
     _unlimited = not _capped and _turn_budget_s <= 0
     from ._approval import new_turn as _approvals_new_turn
@@ -177,9 +184,9 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         plan_mode=plan_mode, analyze_mode=analyze_mode, builder=builder,
         strict_finish=strict_finish, session_id=session_id, native=_native_on,
         unlimited=_unlimited)
+    from .._native_prompt import is_plan_execution
     from .._pause import inject as _inject_pause
     from .._pause import take as _take_pause
-    from .._native_prompt import is_plan_execution
     _plan_asked = _inject_pause(
         convo, _take_pause(session_id), plan_mode=plan_mode,
         plan_exec=is_plan_execution(_turn_goal(messages)))

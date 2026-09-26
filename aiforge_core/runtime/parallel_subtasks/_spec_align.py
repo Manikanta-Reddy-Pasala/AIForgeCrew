@@ -14,9 +14,16 @@ from __future__ import annotations
 import re
 
 _SECTION = re.compile(r"^#{2,3}\s*Subtasks\b[^\n]*$", re.I | re.M)
+# A subtask line: ``1. <slug> <sep> <goal>``. A slug in backticks or bold is
+# taken whole (``src/user-service.ts``); a bare one is one token. The separator
+# is a colon, an em/en dash, or a hyphen with spaces around it — never the
+# hyphen INSIDE a name: "1. `src/user-service.ts` — add login" once parsed as
+# slug ``src/user`` + a stray root ``service.ts``.
 _ITEM = re.compile(
-    r"^\s*(?:\d{1,3}[.)]|[-*])\s+(?:\*\*|`)?([A-Za-z0-9][\w./-]{0,80}?)(?:\*\*|`)?"
-    r"\s*(?:[—:–-]{1,2})\s*(.+)$")
+    r"^\s*(?:\d{1,3}[.)]|[-*])\s+"
+    r"(?:`([^`\n]{1,160})`|\*\*`?([^*`\n]{1,160}?)`?:?\*\*|"
+    r"([A-Za-z0-9][\w./-]{0,160}?))"
+    r"(?:\s*:\s+|\s*[—–]\s*|\s+-{1,2}\s+)(.+)$")
 _PATH = re.compile(r"`([\w./-]{1,160}\.[A-Za-z0-9]{1,8})`|"
                    r"\b([\w-]{1,80}(?:/[\w.-]{1,80}){0,6}\.[A-Za-z]{1,8})\b")
 _CODE_EXT = (".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".java", ".kt", ".rs",
@@ -39,7 +46,9 @@ def spec_subtasks(spec_md: str) -> list[dict]:
         it = _ITEM.match(line)
         if not it:
             continue
-        slug, goal = it.group(1).strip(), it.group(2).strip()
+        slug = (it.group(1) or it.group(2) or it.group(3) or "").strip()
+        slug = slug.strip("`").rstrip(":").strip()
+        goal = it.group(4).strip()
         paths = []
         for a, b in _PATH.findall(goal):
             p = (a or b).strip().lstrip("./")
@@ -107,4 +116,48 @@ def align_to_spec(subs: list, spec_md: str) -> tuple[list, list, list]:
     return out, dropped, added
 
 
-__all__ = ["align_to_spec", "spec_subtasks"]
+def _subtask_section(text: str) -> tuple[int, int] | None:
+    """``(start, end)`` of the ``## Subtasks`` section (heading included)."""
+    m = _SECTION.search(text)
+    if not m:
+        return None
+    nxt = re.search(r"^#{1,3}\s", text[m.end():], re.M)
+    return m.start(), (m.end() + nxt.start()) if nxt else len(text)
+
+
+def looks_truncated(original: str, reviewed: str, cut: bool = False) -> bool:
+    """A reviewed SPEC that stopped early: the reply hit its token budget
+    (``cut``), a code fence is left open, or the original has sections after
+    ``## Subtasks`` and the rewrite ends inside that section."""
+    if cut or reviewed.count("```") % 2:
+        return True
+    o, r = _subtask_section(original), _subtask_section(reviewed)
+    if o is None:
+        return False
+    if r is None:
+        return True
+    return o[1] < len(original.rstrip()) and r[1] >= len(reviewed.rstrip())
+
+
+def keep_planned_subtasks(original: str, reviewed: str,
+                          cut: bool = False) -> tuple[str, bool]:
+    """The reviewed SPEC, with the original ``## Subtasks`` section (and the
+    sections after it) put back when the rewrite was cut short and lists
+    fewer subtasks — a reply that ran out of tokens mid-list must not drop
+    the subtasks it never reached. A complete rewrite that narrows the list
+    on purpose is kept. ``(spec, restored)``."""
+    before = spec_subtasks(original)
+    if not before or not looks_truncated(original, reviewed, cut):
+        return reviewed, False
+    if len(spec_subtasks(reviewed)) >= len(before) and not cut:
+        return reviewed, False
+    o = _subtask_section(original)
+    r = _subtask_section(reviewed)
+    head = reviewed[:r[0]] if r else reviewed.rstrip() + "\n\n"
+    if head.count("```") % 2:
+        head = head.rstrip() + "\n```\n\n"
+    return head + original[o[0]:], True
+
+
+__all__ = ["align_to_spec", "keep_planned_subtasks", "looks_truncated",
+           "spec_subtasks"]

@@ -40,13 +40,22 @@ _EXCLUDE_LINES = (".aiforge/", ".aiforge-worktrees/", ".aiforge-workspace",
                   "__pycache__/", ".pytest_cache/")
 _OWN_ARTIFACTS = ("SPEC.md", ".aiforge-baseline", ".aiforge-workspace",
                   ".aiforge-contracts", ".aiforge-worktrees", ".aiforge")
-# "…and commit it on my branch" / "merge it into main" — the user asked for the
-# result on the branch they have checked out, not a side branch.
+# Only an explicit imperative in the CURRENT message puts the result on the
+# user's checked-out branch: "commit it to my branch", "merge it into main",
+# "apply it to my branch", "fast-forward". A description ("the test fails on
+# my branch, fix it") is not a request, and an old message never counts.
+_IMPERATIVE_AT = (r"(?:^|[.;!?,:\n]\s*|\b(?:and|then|please|also|just|now)\s+)"
+                  r"(?:please\s+)?")
+_OBJ = r"(?:(?:it|this|them|that|the\s+(?:result|changes?|fix|work|branch))\s+)?"
+_DEST = (r"(?:main|master|develop|trunk|(?:my|the\s+current|this|the\s+checked"
+         r"[- ]out|our)\s+(?:current\s+)?branch)\b")
 _APPLY_RE = re.compile(
-    r"\b(on|to|into|onto)\s+(my|the\s+current|this|the\s+checked[- ]out)\s+"
-    r"branch\b|\bcommit\s+(it\s+|them\s+|this\s+)?(directly\s+)?(to|on|into)\s+"
-    r"(main|master|develop|my\s+branch)\b|\bmerge\s+(it|them|the\s+result)\s+"
-    r"(in|into)\s+(main|master|my\s+branch|the\s+current\s+branch)\b", re.I)
+    _IMPERATIVE_AT + r"(?P<v>"
+    r"(?:apply|commit|merge|push|land|put)\s+" + _OBJ
+    + r"(?:directly\s+|straight\s+)?(?:to|on|onto|into|in)\s+" + _DEST
+    + r"|fast[- ]forward\b)", re.I | re.M)
+_APPLY_NEG = re.compile(r"(?:\bdo\s+not|\bdon[’']?t|\bnever|\bnot|\bno)\s+"
+                        r"(?:\w+\s+){0,2}$", re.I)
 _MAX_INIT_FILES = 2000
 
 
@@ -64,6 +73,15 @@ class TeamWorkspace:
     announced: bool = False
     closed: bool = False
     session_cwd: str = ""
+    # Commit identity for this run's git calls only (a host with none); never
+    # written into os.environ or the user's repo config.
+    ident: dict = field(default_factory=dict)
+    # The lines this run added to the repo's shared info/exclude — removed
+    # again when the last run on the repo closes.
+    exclude_added: list[str] = field(default_factory=list)
+    # Kept alive across turns (Stop / a planner question) — see team_run_life.
+    parked: bool = False
+    prompt: str = ""
 
     def summary(self) -> str:
         where = f"`{self.user_branch}`" if self.user_branch else "your HEAD"
@@ -79,7 +97,24 @@ class TeamWorkspace:
 
 def _git(args, cwd, timeout=60) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True,
-                          text=True, timeout=timeout)
+                          text=True, timeout=timeout, env=git_env(cwd))
+
+
+_IDENT_KEYS = ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME", "GIT_AUTHOR_EMAIL",
+               "GIT_COMMITTER_EMAIL")
+
+
+def git_env(cwd) -> dict | None:
+    """The environment for a git call in ``cwd``: the process env plus the
+    run's commit identity when ``cwd`` belongs to a run that needs one; None
+    (inherit) otherwise."""
+    ws = for_cwd(cwd) if cwd else None
+    if ws is None or not ws.ident:
+        return None
+    env = dict(os.environ)
+    for k, v in ws.ident.items():
+        env.setdefault(k, v)
+    return env
 
 
 def _out(args, cwd) -> str:
@@ -135,8 +170,14 @@ def spec_path(cwd: str) -> str:
 
 
 def write_spec(cwd: str, text: str) -> str:
-    """Write SPEC.md to :func:`spec_path`; returns the path written."""
+    """Write SPEC.md to :func:`spec_path`; returns the path written. For a
+    run in the user's repo, paths under the repo are written relative to it
+    (the run's worktree), never as the user's real checkout."""
     p = spec_path(cwd)
+    ws0 = for_cwd(cwd)
+    if ws0 is not None:
+        from aiforge_core.runtime.team_target import localize_paths
+        text = localize_paths(text, ws0.repo)
     if _key(os.path.dirname(p)) != _key(cwd):
         os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, "w", encoding="utf-8") as fh:
@@ -153,13 +194,24 @@ def write_spec(cwd: str, text: str) -> str:
     return p
 
 
-def ensure_exclude(repo: str) -> None:
-    """Keep the pipeline's own artifacts out of ``git status`` / ``git add``
-    through ``.git/info/exclude`` — the user's ``.gitignore`` is theirs."""
+_EXCLUDE_HEADER = "# AIForge team-run artifacts"
+
+
+def exclude_path(repo: str) -> str:
     path = _out(["rev-parse", "--git-path", "info/exclude"], repo)
     if not path:
-        return
-    path = path if os.path.isabs(path) else os.path.join(repo, path)
+        return ""
+    return path if os.path.isabs(path) else os.path.join(repo, path)
+
+
+def ensure_exclude(repo: str) -> list[str]:
+    """Keep the pipeline's own artifacts out of ``git status`` / ``git add``
+    through ``.git/info/exclude`` — the user's ``.gitignore`` is theirs.
+    Returns the lines it added (with the header), for
+    :func:`team_run_life.drop_exclude` to take back out."""
+    path = exclude_path(repo)
+    if not path:
+        return []
     try:
         have = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
         missing = [ln for ln in _EXCLUDE_LINES if ln not in have.splitlines()]
@@ -167,10 +219,11 @@ def ensure_exclude(repo: str) -> None:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "a", encoding="utf-8") as fh:
                 fh.write(("" if not have or have.endswith("\n") else "\n")
-                         + "# AIForge team-run artifacts\n"
-                         + "\n".join(missing) + "\n")
+                         + _EXCLUDE_HEADER + "\n" + "\n".join(missing) + "\n")
+            return [_EXCLUDE_HEADER, *missing]
     except OSError as exc:
         log.debug("info/exclude update skipped: %s", exc)
+    return []
 
 
 def dirty_files(repo: str) -> list[str]:
@@ -192,7 +245,12 @@ def dirty_files(repo: str) -> list[str]:
 
 
 def wants_apply(texts) -> bool:
-    return any(_APPLY_RE.search(str(t or "")) for t in (texts or ()))
+    """True when the CURRENT message (``texts[0]``, or a plain string) asks
+    for the result on the user's branch — see :data:`_APPLY_RE`."""
+    cur = texts if isinstance(texts, str) else next(iter(texts or ()), "")
+    cur = str(cur or "").split("\n\n---\n[Interpreted request")[0]
+    return any(not _APPLY_NEG.search(cur[:m.start("v")])
+               for m in _APPLY_RE.finditer(cur))
 
 
 def _slug(text: str) -> str:
@@ -223,12 +281,15 @@ def init_repo(folder: str) -> bool:
         return False
     if _git(["init", "-q"], folder).returncode != 0:
         return False
-    ensure_exclude(folder)
+    added = ensure_exclude(folder)
     from aiforge_core.runtime.git_pr import _EXCLUDE_PATHSPECS
+    from aiforge_core.runtime.team_run_life import drop_exclude
     _git(["add", "-A", "--", ".", *_EXCLUDE_PATHSPECS], folder)
-    return _git(["-c", "user.email=aiforge@local", "-c", "user.name=aiforge",
-                 "commit", "-q", "--allow-empty", "-m", "baseline before the "
-                 "AIForge team run"], folder).returncode == 0
+    ok = _git(["-c", "user.email=aiforge@local", "-c", "user.name=aiforge",
+               "commit", "-q", "--allow-empty", "-m", "baseline before the "
+               "AIForge team run"], folder).returncode == 0
+    drop_exclude(folder, added)          # the run adds (and removes) its own
+    return ok
 
 
 def _managed(path: str) -> str:
@@ -248,9 +309,11 @@ def _runs_root() -> str:
 def open_run(repo: str, prompt: str, *, apply: bool = False,
              fresh_repo: bool = False, session_cwd: str = "") -> TeamWorkspace:
     """Create the run branch + worktree for ``repo`` and register it."""
+    from aiforge_core.runtime import team_run_life
+    team_run_life.sweep_once()
     repo = _key(repo)
     token = uuid.uuid4().hex[:6]
-    branch = f"aiforge/{_slug(prompt)}-{token}"
+    branch = f"{_branch_prefix(repo)}/{_slug(prompt)}-{token}"
     run_dir = os.path.join(_runs_root(), f"{os.path.basename(repo)}-{token}")
     wt = os.path.join(run_dir, "work")
     os.makedirs(run_dir, exist_ok=True)
@@ -259,25 +322,45 @@ def open_run(repo: str, prompt: str, *, apply: bool = False,
         raise RuntimeError(f"{repo} has no commit to branch from")
     p = _git(["worktree", "add", "-q", "-b", branch, wt, start], repo, 120)
     if p.returncode != 0:
+        import shutil
+        shutil.rmtree(run_dir, ignore_errors=True)
         raise RuntimeError(f"could not create a worktree for {repo}: "
                            f"{(p.stderr or '').strip()[:200]}")
-    ensure_exclude(wt)
+    ident = {}
     if not _out(["var", "GIT_COMMITTER_IDENT"], wt):
-        # No git identity on this host: commit as aiforge through the
-        # environment, never by writing into the user's repo config.
-        for k in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
-            os.environ.setdefault(k, "aiforge")
-        for k in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
-            os.environ.setdefault(k, "aiforge@local")
+        # No git identity on this host: commit as aiforge through THIS run's
+        # git calls — never os.environ, never the user's repo config.
+        ident = {"GIT_AUTHOR_NAME": "aiforge", "GIT_COMMITTER_NAME": "aiforge",
+                 "GIT_AUTHOR_EMAIL": "aiforge@local",
+                 "GIT_COMMITTER_EMAIL": "aiforge@local"}
     ws = TeamWorkspace(repo=repo, cwd=_key(wt), branch=branch,
                        user_branch=_out(["symbolic-ref", "--short", "-q",
                                          "HEAD"], repo),
                        start_sha=start, run_dir=run_dir,
                        dirty=dirty_files(repo), apply=apply,
-                       fresh_repo=fresh_repo, session_cwd=_managed(session_cwd))
+                       fresh_repo=fresh_repo, session_cwd=_managed(session_cwd),
+                       ident=ident, prompt=str(prompt or ""))
     with _LOCK:
         _RUNS[ws.cwd] = ws
+    ws.exclude_added = ensure_exclude(wt)
+    if os.path.isfile(os.path.join(wt, ".gitmodules")):
+        # A fresh worktree has empty submodule folders: build and tests
+        # would run against nothing.
+        try:
+            _git(["submodule", "update", "--init", "--recursive"], wt, 300)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("submodule init skipped: %s", exc)
     return ws
+
+
+def _branch_prefix(repo: str) -> str:
+    """``aiforge`` — unless the repo has a branch named ``aiforge``, which
+    makes every ``aiforge/…`` ref impossible; then ``aiforge-run``."""
+    for name in ("aiforge", "aiforge-run"):
+        if _git(["show-ref", "--verify", "-q", f"refs/heads/{name}"],
+                repo).returncode != 0:
+            return name
+    return f"aiforge-run-{uuid.uuid4().hex[:4]}"
 
 
 def seal(cwd: str, message: str = "aiforge: remaining edits") -> list[str]:
@@ -286,8 +369,9 @@ def seal(cwd: str, message: str = "aiforge: remaining edits") -> list[str]:
     Returns the files committed. Never used on a user's own checkout."""
     from aiforge_core.runtime.git_pr import _EXCLUDE_PATHSPECS
     from aiforge_core.runtime.parallel_subtasks import _protected
+    ws = for_cwd(cwd)
     try:
-        _protected.revert(cwd, "HEAD")
+        _protected.revert(cwd, ws.start_sha if ws is not None else "HEAD")
         _git(["add", "-A", "--", ".", *_EXCLUDE_PATHSPECS,
               *(f":(exclude){a}" for a in _OWN_ARTIFACTS)], cwd)
         names = _out(["diff", "--cached", "--name-only"], cwd).splitlines()
@@ -300,21 +384,43 @@ def seal(cwd: str, message: str = "aiforge: remaining edits") -> list[str]:
 
 
 def close(ws: TeamWorkspace):
-    """Commit leftovers, drop the worktree (the branch stays) and, when asked,
-    fast-forward the user's branch. Yields at most one note for the chat."""
+    """Commit leftovers, drop the worktree (the branch stays — unless the run
+    made no commit) and, when asked, fast-forward the user's branch. Yields
+    at most one note for the chat."""
+    text = close_quiet(ws)
+    if text:
+        yield {"type": "message", "role": "system", "supplementary": True,
+               "text": text}
+
+
+def close_quiet(ws: TeamWorkspace) -> str:
+    """:func:`close` without yielding — safe in a ``finally`` / on an
+    exception or a client disconnect. Returns the note text."""
     if ws is None or ws.closed:
-        return
+        return ""
     ws.closed = True
+    ws.parked = False
+    from aiforge_core.runtime import team_run_life
     from aiforge_core.runtime.parallel_subtasks import _protected
-    back = _protected.revert(ws.cwd, "HEAD")
-    left = seal(ws.cwd, "aiforge: edits left by the team run")
+    back, left = [], []
+    try:
+        back = _protected.revert(ws.cwd, ws.start_sha or "HEAD")
+        left = seal(ws.cwd, "aiforge: edits left by the team run")
+    except Exception as exc:  # noqa: BLE001 — cleanup below must still run
+        log.debug("close: seal skipped: %s", exc)
     _protected.clear(ws.cwd)
-    _git(["worktree", "remove", "--force", ws.cwd], ws.repo, 120)
-    _git(["worktree", "prune"], ws.repo)
+    try:
+        _git(["worktree", "remove", "--force", ws.cwd], ws.repo, 120)
+        _git(["worktree", "prune"], ws.repo)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("close: worktree remove failed: %s", exc)
     import shutil
     shutil.rmtree(ws.run_dir, ignore_errors=True)   # SPEC.md was mirrored
     with _LOCK:
         _RUNS.pop(ws.cwd, None)
+        others = any(o.repo == ws.repo for o in _RUNS.values())
+    if not others:
+        team_run_life.drop_exclude(ws.repo, ws.exclude_added)
     notes = []
     if back:
         notes.append("Put back read-only file(s) the run changed: "
@@ -322,14 +428,14 @@ def close(ws: TeamWorkspace):
     if left:
         notes.append(f"Committed {len(left)} file(s) the run left uncommitted "
                      f"onto `{ws.branch}`.")
-    if ws.apply or ws.fresh_repo:
+    if team_run_life.drop_if_empty(ws):
+        notes.append(f"The team made no commits, so branch `{ws.branch}` was "
+                     "removed; nothing in your repo changed.")
+    elif ws.apply or ws.fresh_repo:
         notes.append(_fast_forward(ws))
     elif not ws.announced:
         notes.append(ws.summary())
-    text = " ".join(n for n in notes if n)
-    if text:
-        yield {"type": "message", "role": "system", "supplementary": True,
-               "text": text}
+    return " ".join(n for n in notes if n)
 
 
 def _fast_forward(ws: TeamWorkspace) -> str:
@@ -348,6 +454,6 @@ def _fast_forward(ws: TeamWorkspace) -> str:
             f"`{ws.user_branch or 'HEAD'}` (fast-forward from `{ws.branch}`).")
 
 
-__all__ = ["TeamWorkspace", "close", "dirty_files", "ensure_exclude",
-           "for_cwd", "init_repo", "open_run", "seal", "spec_path",
-           "wants_apply", "write_spec"]
+__all__ = ["TeamWorkspace", "close", "close_quiet", "dirty_files",
+           "ensure_exclude", "for_cwd", "git_env", "init_repo", "open_run",
+           "seal", "spec_path", "wants_apply", "write_spec"]

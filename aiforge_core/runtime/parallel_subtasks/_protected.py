@@ -31,15 +31,23 @@ _REG: dict[str, dict] = {}
 
 TESTS = "@tests"          # every test file (gaming_check.is_test_path)
 
-_NEG = r"(?:do\s*n[o']?t|don'?t|never|without|must\s+not|should\s+not|no)"
-_VERB = (r"(?:edit|editing|modify|modifying|change|changing|touch|touching|"
-         r"alter|altering|rewrite|rewriting|update|updating|weaken|weakening|"
-         r"delete|deleting|remove|removing|create|rename)")
-_TESTS_WORD = r"(?:(?:the|any|existing|these|those|my)\s+)*(?:unit\s+)?tests?(?:\s+files?)?\b"
-_TESTS_RULES = (
-    re.compile(_NEG + r"\s+(?:\w+\s+){0,2}?" + _VERB
-               + r"(?:\s*(?:,|or|and|/)\s*" + _VERB + r")*\s+(?:any\s+of\s+)?"
-               + _TESTS_WORD, re.I),
+# Only a prohibition makes a file read-only: don't / do not / never / must not
+# / should not (or "without editing") + an EDIT verb + its object. A DELETE or
+# RENAME prohibition keeps the file in place but lets it be edited, and a
+# word like "no" is not a prohibition ("no update tests needed").
+_NEG = (r"\b(?:do\s+not|don[’']?t|never|must\s+not|mustn[’']?t|should\s+not|"
+        r"shouldn[’']?t|without)")
+_EDIT_V = (r"(?:edit(?:ing)?|modify(?:ing)?|chang(?:e|ing)|touch(?:ing)?|"
+           r"alter(?:ing)?|rewrit(?:e|ing)|updat(?:e|ing)|weaken(?:ing)?)")
+_DEL_V = r"(?:delet(?:e|ing)|remov(?:e|ing)|renam(?:e|ing))"
+_ANY_V = rf"(?:{_EDIT_V}|{_DEL_V})"
+_TESTS_WORD = (r"(?:(?:the|any|all|existing|these|those|my|of\s+the)\s+)*"
+               r"(?:unit\s+)?tests?(?:\s+files?)?\b(?![/\w.])")
+_NEG_VERB = re.compile(_NEG + r"\s+(?:\w+\s+){0,2}?(" + _ANY_V
+                       + r"(?:\s*(?:,|or|and|/)\s*" + _ANY_V + r")*)\b\s*", re.I)
+_EDIT_RE = re.compile(r"\b" + _EDIT_V + r"\b", re.I)
+_TESTS_OBJ = re.compile(r"(?:any\s+of\s+)?" + _TESTS_WORD, re.I)
+_TESTS_RO_RULES = (
     re.compile(r"\b(?:leave|keep)\s+(?:the\s+|all\s+)?tests?\s+"
                r"(?:alone|as\s+(?:is|they\s+are)|unchanged|untouched)", re.I),
     re.compile(r"\btests?(?:\s+files?)?\s+(?:are|is|stay|remain)\s+"
@@ -47,14 +55,27 @@ _TESTS_RULES = (
     re.compile(r"\b(?:tests?|test\s+files?)\s+(?:must|should)\s+not\s+be\s+"
                r"(?:edited|modified|changed|touched)", re.I),
 )
-# A backticked path is protected only as the OBJECT of the refusal: "do not
-# modify `pyproject.toml`, `conftest.py`" or "`tests/` are read-only" — never
-# "do not change the behaviour of `money.py`" or "fixed by modifying `money.py`".
+# An explicit request to change something lifts an earlier protection of it
+# ("now update the tests"), and a file the user asks to create or change is
+# never read-only ("add a test in tests/test_money.py").
+_POS_VERB = re.compile(r"\b(?:add|create|write|edit|update|modify|change|fix|"
+                       r"patch|rewrite|implement|extend|touch|adjust)\s+", re.I)
+# ... unless it is negated or hedged: "no update tests needed" asks for nothing.
+_NEG_BEFORE = re.compile(r"(?:\bno|\bnot|n[’']t|\bnever|\bwithout|\bnor)\s+"
+                         r"(?:\w+\s+){0,2}$", re.I)
+_POS_TESTS = re.compile(r"\b(?:update|edit|modify|change|fix|rewrite|touch|"
+                        r"adjust)\s+" + _TESTS_WORD, re.I)
+_POS_FILLER = re.compile(r"(?:(?:a|an|the|new|one|more|unit|test|tests|file|"
+                         r"files|in|into|to|at|under|inside|for|called|named)"
+                         r"\s+){0,5}", re.I)
+# A backticked (or path-shaped) object is protected only as the OBJECT of the
+# refusal: "do not modify `pyproject.toml`, `conftest.py`" or "`tests/` are
+# read-only" — never "do not change the behaviour of `money.py`" or "fixed by
+# modifying `money.py`".
 _TICK = re.compile(r"`([^`\n]{1,200})`")
-_NEG_VERB = re.compile(_NEG + r"\s+(?:\w+\s+){0,2}?" + _VERB
-                       + r"(?:\s*(?:,|or|and|/)\s*" + _VERB + r")*\s+", re.I)
+_BARE = re.compile(r"([\w.-]+(?:/[\w.-]+)*/?)(?=[\s,;:)]|$)")
 _FILLER = re.compile(r"(?:(?:the|any|file|files|in|under|inside|folder|"
-                     r"directory|of\s+the\s+files?\s+in)\s+){0,3}", re.I)
+                     r"directory|existing|of\s+the\s+files?\s+in)\s+){0,3}", re.I)
 _LIST_SEP = re.compile(r"\s*(?:,\s*(?:or\s+|and\s+)?|\s+or\s+|\s+and\s+)")
 _READ_ONLY = re.compile(r"read[- ]only|must\s+not\s+be\s+(?:edited|modified|"
                         r"changed|touched)", re.I)
@@ -63,35 +84,92 @@ _ONLY_LINE = re.compile(
     r"(?:created\s+or\s+)?(?:modified|changed|edited)", re.I)
 
 
-def _objects_after(clause: str, pos: int) -> list[str]:
-    """Backticked paths that directly follow ``pos`` (a list of them)."""
+def _object_at(clause: str, pos: int) -> tuple[str, int] | None:
+    t = _TICK.match(clause, pos)
+    if t:
+        return t.group(1), t.end()
+    b = _BARE.match(clause, pos)
+    if b and ("/" in b.group(1) or re.search(r"\.[A-Za-z0-9]{1,8}$",
+                                              b.group(1).rstrip("."))):
+        return b.group(1).rstrip("."), b.end()
+    return None
+
+
+def _objects_after(clause: str, pos: int, filler=_FILLER) -> list[str]:
+    """Paths (backticked or path-shaped) that directly follow ``pos``."""
     out: list[str] = []
-    m = _FILLER.match(clause, pos)
+    m = filler.match(clause, pos)
     pos = m.end() if m else pos
     while True:
-        t = _TICK.match(clause, pos)
-        if not t:
+        hit = _object_at(clause, pos)
+        if not hit:
             return out
-        out.append(t.group(1))
-        sep = _LIST_SEP.match(clause, t.end())
+        out.append(hit[0])
+        sep = _LIST_SEP.match(clause, hit[1])
         if not sep:
             return out
         pos = sep.end()
 
 
+def _clause_events(clause: str, positives: bool) -> list[tuple[int, str, str]]:
+    """``(position, kind, target)`` in text order; kind is ``ro`` (read-only),
+    ``keep`` (no delete / rename) or ``allow`` (asked to create/change)."""
+    ev: list[tuple[int, str, str]] = []
+    spans = []
+    for m in _NEG_VERB.finditer(clause):
+        spans.append((m.start(), m.end()))
+        kind = "ro" if _EDIT_RE.search(m.group(1)) else "keep"
+        t = _TESTS_OBJ.match(clause, m.end())
+        if t:
+            ev.append((m.start(), kind, TESTS))
+        ev += [(m.start(), kind, p) for p in _objects_after(clause, m.end())]
+    for r in _TESTS_RO_RULES:
+        ev += [(m.start(), "ro", TESTS) for m in r.finditer(clause)]
+    if _READ_ONLY.search(clause):
+        ev += [(0, "ro", p) for p in _TICK.findall(clause)]
+    if positives:
+        def _negated(i):
+            return any(a <= i < b for a, b in spans) \
+                or bool(_NEG_BEFORE.search(clause[:i]))
+        for m in _POS_TESTS.finditer(clause):
+            if not _negated(m.start()):
+                ev.append((m.start(), "allow", TESTS))
+        for m in _POS_VERB.finditer(clause):
+            if not _negated(m.start()):
+                ev += [(m.start(), "allow", p)
+                       for p in _objects_after(clause, m.end(), _POS_FILLER)]
+    return sorted(ev, key=lambda e: e[0])
+
+
+def _clauses(text: str) -> list[str]:
+    return re.split(r"[.;!?\n]\s", str(text or "") + " ")
+
+
+def _apply(state: dict, kind: str, target: str) -> None:
+    tgt = target if target == TESTS else _clean_path(target)
+    if not tgt:
+        return
+    ro, keep, allow = state["patterns"], state["keep"], state["allow"]
+    if kind == "allow":
+        if tgt in ro:
+            ro.remove(tgt)
+        if tgt not in allow:
+            allow.append(tgt)
+        return
+    if tgt in allow:
+        allow.remove(tgt)
+    bucket = ro if kind == "ro" else keep
+    if tgt not in bucket:
+        bucket.append(tgt)
+
+
 def _forbidden_paths(text: str) -> list[str]:
-    out: list[str] = []
-    for clause in re.split(r"[.;\n]\s", str(text or "") + " "):
-        toks: list[str] = []
-        if _READ_ONLY.search(clause):
-            toks += _TICK.findall(clause)
-        for m in _NEG_VERB.finditer(clause):
-            toks += _objects_after(clause, m.end())
-        for tok in toks:
-            p = _clean_path(tok)
-            if p and p not in out:
-                out.append(p)
-    return out
+    state = {"patterns": [], "keep": [], "allow": []}
+    for clause in _clauses(text):
+        for _pos, kind, tgt in _clause_events(clause, positives=False):
+            if kind == "ro" and tgt != TESTS:
+                _apply(state, kind, tgt)
+    return state["patterns"]
 
 
 def _norm(rel: str) -> str:
@@ -112,15 +190,22 @@ def _clean_path(tok: str) -> str:
     return _norm(tok)
 
 
+def rules_from_texts(texts) -> dict:
+    """``{patterns, keep, allow}`` stated in the user's own words. ``texts``
+    come newest first (team_target.user_texts); they are read oldest first
+    so the latest message wins — "now update the tests" lifts an earlier
+    "don't edit the tests"."""
+    state: dict = {"patterns": [], "keep": [], "allow": []}
+    for t in reversed(list(texts or ())):
+        for clause in _clauses(t):
+            for _pos, kind, tgt in _clause_events(clause, positives=True):
+                _apply(state, kind, tgt)
+    return state
+
+
 def from_texts(texts) -> list[str]:
-    """Protected patterns stated in the user's own words."""
-    out: list[str] = []
-    for t in texts or ():
-        t = str(t or "")
-        if any(r.search(t) for r in _TESTS_RULES) and TESTS not in out:
-            out.append(TESTS)
-        out += [p for p in _forbidden_paths(t) if p not in out]
-    return out
+    """Read-only patterns stated in the user's own words."""
+    return rules_from_texts(texts)["patterns"]
 
 
 def from_spec(spec_md: str) -> tuple[list[str], list[str]]:
@@ -131,9 +216,11 @@ def from_spec(spec_md: str) -> tuple[list[str], list[str]]:
         if _ONLY_LINE.search(line):
             only += [p for p in map(_clean_path, _TICK.findall(line)) if p]
             continue
-        if any(r.search(line) for r in _TESTS_RULES) and TESTS not in protected:
-            protected.append(TESTS)
-        protected += [p for p in _forbidden_paths(line) if p not in protected]
+        for clause in _clauses(line):
+            for _pos, kind, tgt in _clause_events(clause, positives=False):
+                tgt = tgt if tgt == TESTS else _clean_path(tgt)
+                if kind == "ro" and tgt and tgt not in protected:
+                    protected.append(tgt)
     return protected, only
 
 
@@ -144,20 +231,22 @@ def _root(path: str) -> str:
         return str(path)
 
 
-def register(root: str, patterns=(), only=()) -> None:
-    """Add ``patterns`` (and an allow-only list) for the run rooted at
-    ``root``. A file named in the allow-only list is never protected."""
-    if not patterns and not only:
+def register(root: str, patterns=(), only=(), keep=(), allow=()) -> None:
+    """Add read-only ``patterns`` (and an allow-only list, no-delete ``keep``
+    patterns and the files the user asked to change, ``allow``) for the run
+    rooted at ``root``. A file in ``only`` or ``allow`` is never read-only."""
+    if not (patterns or only or keep or allow):
         return
     k = _root(root)
     with _LOCK:
-        cur = _REG.setdefault(k, {"patterns": [], "only": []})
-        for p in patterns or ():
-            if p and p not in cur["patterns"]:
-                cur["patterns"].append(p)
-        for p in only or ():
-            if p and p not in cur["only"]:
-                cur["only"].append(p)
+        cur = _REG.setdefault(k, {"patterns": [], "only": [], "keep": [],
+                                  "allow": []})
+        for key, vals in (("patterns", patterns), ("only", only),
+                          ("keep", keep), ("allow", allow)):
+            lst = cur.setdefault(key, [])
+            for p in vals or ():
+                if p and p not in lst:
+                    lst.append(p)
 
 
 def clear(root: str) -> None:
@@ -199,10 +288,23 @@ def is_protected(root: str, rel: str) -> bool:
     rel = _norm(rel)
     if not rel:
         return False
+    if any(_matches(rel, a) for a in rules.get("allow") or []):
+        return False
     only = rules.get("only") or []
     if only and any(_matches(rel, o) for o in only):
         return False
     return any(_matches(rel, p) for p in rules.get("patterns") or [])
+
+
+def must_keep(root: str, rel: str) -> bool:
+    """True when ``rel`` may be edited but must not be deleted or renamed
+    ("do not delete the existing tests") — or is read-only outright."""
+    rules = rules_for(root)
+    rel = _norm(rel)
+    if not rules or not rel:
+        return False
+    return is_protected(root, rel) or any(
+        _matches(rel, k) for k in rules.get("keep") or [])
 
 
 def refusal(rel: str) -> str:
@@ -223,8 +325,9 @@ def filter_subtasks(subs: list, root: str) -> tuple[list, list]:
 
 
 def _git(args, cwd) -> subprocess.CompletedProcess:
+    from ._worktree import _run_env
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True,
-                          text=True, timeout=60)
+                          text=True, timeout=60, env=_run_env(cwd))
 
 
 def revert(cwd: str, base: str = "HEAD") -> list[str]:
@@ -234,13 +337,16 @@ def revert(cwd: str, base: str = "HEAD") -> list[str]:
         return []
     try:
         changed = _git(["diff", "--name-only", base, "--"], cwd).stdout
+        gone = set(_git(["diff", "--name-only", "--diff-filter=D", base, "--"],
+                        cwd).stdout.split("\n"))
         new = _git(["ls-files", "--others", "--exclude-standard"], cwd).stdout
     except Exception:  # noqa: BLE001
         return []
     done: list[str] = []
     for rel in [*changed.splitlines(), *new.splitlines()]:
         rel = rel.strip()
-        if not rel or not is_protected(cwd, rel):
+        if not rel or not (is_protected(cwd, rel)
+                           or (rel in gone and must_keep(cwd, rel))):
             continue
         in_base = _git(["cat-file", "-e", f"{base}:{rel}"], cwd).returncode == 0
         if in_base:
@@ -256,4 +362,5 @@ def revert(cwd: str, base: str = "HEAD") -> list[str]:
 
 
 __all__ = ["TESTS", "clear", "filter_subtasks", "from_spec", "from_texts",
-           "is_protected", "refusal", "register", "revert", "rules_for"]
+           "is_protected", "must_keep", "refusal", "register", "revert",
+           "rules_for", "rules_from_texts"]

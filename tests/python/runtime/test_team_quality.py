@@ -46,6 +46,7 @@ def _env(tmp_path, monkeypatch):
         monkeypatch.setenv(k, "t@t")
     yield
     prot._REG.clear()
+    tw._RUNS.clear()
 
 
 @pytest.fixture
@@ -104,9 +105,8 @@ def test_git_root_lookup_is_cached_and_runs_no_subprocess(tmp_path,
         raise AssertionError("no subprocess per path")
     monkeypatch.setattr(subprocess, "run", _no)
     assert tt._git_root(os.path.join(repo, "tests")) == repo
-    assert tt._git_root.cache_info().misses == 1
-    tt._git_root(os.path.join(repo, "tests"))
-    assert tt._git_root.cache_info().hits == 1
+    assert tt._ROOT_CACHE[os.path.join(repo, "tests")] == repo
+    assert tt._git_root(os.path.join(repo, "tests")) == repo
 
 
 def _dispatch(prompt, cwd, session_id=None):

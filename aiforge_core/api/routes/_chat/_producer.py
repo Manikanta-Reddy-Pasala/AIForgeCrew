@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import os
 
-from . import _capture_bg, _overlap
+from . import _capture_bg, _overlap, _team_route
 from ._core import (
     _PRODUCE_SEM,
     _af_log,
@@ -189,13 +189,20 @@ def _events(pc):
     # A build that was retargeted to the user's repo and then found ONE task
     # runs the single agent in the same place — the run's own worktree — so
     # every route of the turn uses one cwd (never the repo for SPEC.md and the
-    # session workspace for the agent).
+    # session workspace for the agent), with the repo's paths rewritten to it.
     cwd = rctx.get("cwd") or pc.cwd
-    yield from _single_agent_route(pc, _rd, _pp, rctx, cwd, _doc_task,
-                                   _is_build_task, _route_pipeline)
-    if rctx.get("team_ws") is not None:
-        from aiforge_core.runtime import team_workspace as _tw
-        yield from _tw.close(rctx["team_ws"])
+    orig = (pc.prompt, pc.history)
+    pc.prompt, pc.history = _team_route.localize(rctx, pc.prompt, pc.history)
+    try:
+        yield from _team_route.watch(rctx, _single_agent_route(
+            pc, _rd, _pp, rctx, cwd, _doc_task, _is_build_task,
+            _route_pipeline))
+    except BaseException:
+        _team_route.abort_run(rctx)
+        raise
+    finally:
+        pc.prompt, pc.history = orig
+    yield from _team_route.finish_run(rctx, pc.session_id)
 
 
 def _single_agent_route(pc, _rd, _pp, rctx, cwd, _doc_task, _is_build_task,
@@ -242,8 +249,7 @@ def _single_agent_route(pc, _rd, _pp, rctx, cwd, _doc_task, _is_build_task,
     # the reranker ran twice.
     if _skip_enhance and rctx.get("spec") is None:
         try:
-            from aiforge_core.runtime.chat_agent._context import (
-                _recall_prefetch)
+            from aiforge_core.runtime.chat_agent._context import _recall_prefetch
             _recall_prefetch.start(_enriched_history, cwd, pc.session_id)
         except Exception:  # noqa: BLE001 — recall still runs in the bundle
             pass
@@ -291,8 +297,7 @@ def _single_agent_route(pc, _rd, _pp, rctx, cwd, _doc_task, _is_build_task,
 
 def _warm_repo_map(cwd) -> None:
     try:
-        from aiforge_core.runtime.chat_agent._context._repomap import (
-            warm_repo_map)
+        from aiforge_core.runtime.chat_agent._context._repomap import warm_repo_map
         warm_repo_map(cwd)
     except Exception:  # noqa: BLE001 — a warm-up never breaks a turn
         pass
