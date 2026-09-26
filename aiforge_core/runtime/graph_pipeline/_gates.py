@@ -105,18 +105,54 @@ _PER_ITER_KEYS = (
     # still fires the after-tool callback, which recorded the green suite as
     # tests_ok=False.
     "_repeat_counts",
+    # The failure the last test run in THIS iteration ended on (see
+    # _same_failure_stop). A stale one would count the same run twice.
+    "_iter_fail",
 )
+
+
+def _same_failure_stop(state) -> bool:
+    """The same test failure after yet another Doer pass. Each pass is a
+    different fix; the failure surviving ``AIFORGE_SAME_FAILURE_LIMIT`` of
+    them earns one directed note to the Doer, and surviving that stops the
+    loop (``same_failure``) — no replan: a new plan for the same model on the
+    same failure re-runs the same fixes. The tracker is run-scoped: neither
+    the per-iteration reset nor a replan clears it."""
+    import copy
+
+    from aiforge_core.runtime import same_failure
+    from aiforge_core.runtime.failure_signature import Failure
+    raw = state.get("_iter_fail")
+    if not raw or not isinstance(raw, (list, tuple)) or len(raw) != 3:
+        return False
+    fail = Failure(str(raw[0] or ""), int(raw[1] or 0), str(raw[2] or ""))
+    track = copy.deepcopy(state.get("_same_failure") or {})
+    attempt = f"{state.get('replan_count', 0) or 0}:{state.get('doer_iters', 0) or 0}"
+    verdict = same_failure.observe(track, fail, attempt)
+    state["_same_failure"] = track          # reassigned: a state delta
+    if verdict == same_failure.NUDGE:
+        state["replan_note"] = same_failure.nudge_text(fail)
+        _trace(":SameFailureNudge", {"failure": fail.headline[:120]})
+        return False
+    if verdict == same_failure.STOP:
+        state["loop_budget_kill"] = True
+        state["loop_budget_reason"] = "same_failure"
+        _trace(":SameFailureStop", {"failure": fail.headline[:120]})
+        return True
+    return False
 
 
 def _loop_gate(ctx):  # type: ignore[no-untyped-def]
     state = ctx.state
     iters = int(state.get("doer_iters", 0) or 0) + 1
     state["doer_iters"] = iters
+    passed = _feedback_passed(state)
+    if not passed:
+        _same_failure_stop(state)
     kill = bool(state.get("loop_budget_kill"))
     wall_kill = _wall_clock_kill(state)
     max_iters = _effective_max_iters(state)
     cap_out = iters >= max_iters
-    passed = _feedback_passed(state)
     if not (passed or kill or wall_kill or cap_out):
         # Another Doer iteration is about to run. NOT cleared on the exit
         # branch — the Validator needs the final pass's values. Mirrors the

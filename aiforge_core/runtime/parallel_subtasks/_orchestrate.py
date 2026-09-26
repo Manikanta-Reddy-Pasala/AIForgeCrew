@@ -127,6 +127,7 @@ def _build_one_impl(cwd: str, s: dict, subs: list, run_one, prev_fails: int,
     revert when it rises. Returns ``(committed, fails_now, last_result)``."""
     slug = s.get("slug")
     retries = _retries()
+    prev_sig = ""
     for attempt in range(retries):
         if should_cancel and should_cancel():
             break
@@ -144,6 +145,12 @@ def _build_one_impl(cwd: str, s: dict, subs: list, run_one, prev_fails: int,
         # regression → undo this attempt, retry with the error
         _revert_attempt(cwd)
         s["_retry_error"] = (out or "")[-1500:]
+        sig = _signature(out)
+        if sig and sig == prev_sig:
+            emit({"type": "thought", "role": slug,
+                  "text": f"{slug} failed the same way twice — not retrying"})
+            break
+        prev_sig = sig
         emit({"type": "thought", "role": slug,
               "text": f"{slug} raised failures {prev_fails}→{fails} — reverted, "
                       f"retry {attempt + 1}/{retries}…"})
@@ -231,6 +238,11 @@ def _dispatch_batch(batch: list[dict], *, repo_root, base_branch, ticket_id,
     return out
 
 
+def _signature(output) -> str:
+    from aiforge_core.runtime.failure_signature import signature
+    return signature(output)
+
+
 def _rerun_rounds() -> int:
     try:
         from aiforge_core.runtime.parallel_subtasks._worktree import _max_workers
@@ -250,11 +262,19 @@ def _run_with_restarts(subs: list[dict], should_cancel, **kw) -> list[dict]:
     for _ in range(_rerun_rounds()):
         if should_cancel is not None and should_cancel():
             break
-        failed = [s for s in subs if not (by_slug.get(s["slug"]) or {}).get("ok")]
+        # A subtask that failed the same way twice running (inside its own
+        # retries, or across two restarts) is not restarted again: a fresh
+        # worktree re-runs the same fix.
+        failed = [s for s in subs
+                  if not (by_slug.get(s["slug"]) or {}).get("ok")
+                  and not (by_slug.get(s["slug"]) or {}).get("same_failure")]
         if not failed:
             break
         log.info("orchestrator re-run round: %d failed subtask(s)", len(failed))
         for r in _dispatch_batch(failed, should_cancel=should_cancel, **kw):
+            prev = (by_slug.get(r.get("slug")) or {}).get("fail_sig")
+            if prev and r.get("fail_sig") == prev and not r.get("ok"):
+                r["same_failure"] = True
             by_slug[r.get("slug")] = r      # latest result wins
     return [by_slug[s["slug"]] for s in subs if s["slug"] in by_slug]
 

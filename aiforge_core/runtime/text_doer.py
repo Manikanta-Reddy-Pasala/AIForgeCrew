@@ -69,13 +69,14 @@ _SEED_KEYS = tuple(k for k, _ in _SEED_VARS)
 class _PassOutcome:
     """What one ReAct pass produced: the texts, the quality signals, the edits."""
 
-    __slots__ = ("last_msg", "err_text", "signals", "edits")
+    __slots__ = ("last_msg", "err_text", "signals", "edits", "failure")
 
     def __init__(self) -> None:
         self.last_msg = ""
         self.err_text = ""
         self.signals: dict[str, bool] = {}
         self.edits = 0
+        self.failure: list | None = None     # last test run's failure; [] = green
 
     def text(self) -> str:
         return self.last_msg or self.err_text or ""
@@ -104,6 +105,18 @@ def _absorb_tool_event(ev: dict, out: _PassOutcome) -> None:
     key = _TOOL_SIGNAL_KEYS.get(name)
     if key and isinstance(res, dict) and isinstance(res.get("ok"), bool):
         out.signals[key] = res["ok"]
+    if isinstance(res, dict) and (key == "tests_ok" or _is_test_run(name, ev.get("args"))):
+        from aiforge_core.runtime.quality_gate import test_failure
+        out.failure = test_failure(res)
+
+
+def _is_test_run(name, args) -> bool:
+    """A shell command that runs the tests counts like run_tests."""
+    try:
+        from aiforge_core.runtime.chat_agent._turn._outcomes import _is_test_run as _t
+        return _t(name, args if isinstance(args, dict) else {})
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _one_pass(seed_msg: str, *, cwd: str, role: str, max_steps, complete_fn,
@@ -204,6 +217,8 @@ def run_text_doer(
             _one_pass(seed + _NO_EDIT_CORRECTION, **kw)
         outcome = out.text() or "text-doer produced no final output"
         result["edit_count"] = out.edits
+        if out.failure is not None:
+            result["iter_failure"] = out.failure
         result["doer_outcome"] = outcome
         result.update(out.signals)
         result.update(_no_edit_verdict(outcome, out.edits))
@@ -315,6 +330,9 @@ async def _text_doer_node(ctx):  # type: ignore[no-untyped-def]
     # run must NOT be eligible to ship as pass.
     if out.get("stopped") or out.get("incomplete"):
         state["doer_incomplete"] = True
+    # What the last test run failed on — the loop gate's same-failure rule.
+    if out.get("iter_failure") is not None:
+        state["_iter_fail"] = out["iter_failure"]
 
 
 def make_text_doer_node():

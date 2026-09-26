@@ -91,6 +91,7 @@ from ._turn._limits import (  # noqa: F401
     _condense_and_report,
     _deadline_guard,
     _drain_steering,
+    _idle_reply_guard,
     _may_extend,
     _step_cap_guard,
     _stuck_output_guard,
@@ -246,9 +247,8 @@ def _gated_action(st, step, name, args, sig, n, cwd, session_id):
         return _hb
     result = yield from _dispatch_tool(name, args, cwd, n, _hb,
                                        _take_early_read(st, sig))
-    yield from _post_tool(st, name, args, result, cwd, sig, n,
-                          st.long_chain_help, st.bundle)
-    return None
+    return (yield from _post_tool(st, name, args, result, cwd, sig, n,
+                                  st.long_chain_help, st.bundle))
 
 
 def _dispatch_step(st, out, n, cwd, role, _complete_fn, session_id, builder,
@@ -272,7 +272,7 @@ def _dispatch_step(st, out, n, cwd, role, _complete_fn, session_id, builder,
         if _sig == "return":
             return "return"
         if _sig == "continue":
-            return "continue"
+            return (yield from _idle_reply_guard(st))
     if step["kind"] == "ask":
         # Plan mode gets one question. A second one is an assumption, then
         # the plan. The reads already made are kept for the answer.
@@ -280,7 +280,7 @@ def _dispatch_step(st, out, n, cwd, role, _complete_fn, session_id, builder,
             st.convo.append({"role": "user", "content":
                 "[plan] You already asked once. State the assumption and "
                 "write the numbered plan as FINAL. Do not ask again."})
-            return "continue"
+            return (yield from _idle_reply_guard(st))
         try:
             from ._pause import save as _save_pause
             _save_pause(session_id, st.convo,
@@ -297,8 +297,9 @@ def _dispatch_step(st, out, n, cwd, role, _complete_fn, session_id, builder,
         if _sig == "return":
             return "return"
         if _sig == "continue":
-            return "continue"
+            return (yield from _idle_reply_guard(st))
     st.continue_nudges = 0   # a real action resets the narration guard
+    st.idle_replies = st.idle_trips = 0
     return (yield from _run_action_path(st, step, n, cwd, session_id))
 
 

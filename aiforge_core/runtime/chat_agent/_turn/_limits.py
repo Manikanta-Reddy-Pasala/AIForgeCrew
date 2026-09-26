@@ -293,6 +293,38 @@ def _stuck_output_guard(st, out):
     return None
 
 
+#: Replies in a row that run no tool before the run counts as going round:
+#: above every bounded nudge the final/continue gates can send in a row.
+_IDLE_REPLIES = 8
+
+
+def _idle_reply_guard(st):
+    """A reply that ran no tool and did not end the turn (narration, a
+    refused FINAL, a second plan-mode question). Any tool call resets the
+    count; a run that keeps talking without acting is a loop, whatever its
+    step count. The first trip nudges, the next one stops and asks — that
+    budget refills only when the model acts. Returns continue/return."""
+    st.idle_replies = getattr(st, "idle_replies", 0) + 1
+    if st.idle_replies < _IDLE_REPLIES:
+        return "continue"
+    st.idle_replies = 0
+    st.idle_trips = getattr(st, "idle_trips", 0) + 1
+    if st.idle_trips == 1:
+        yield {"type": "thought", "role": "system",
+               "text": "↺ replying without acting — nudge to act or finish"}
+        st.convo.append({"role": "user", "content":
+            "[loop guard — not the user] Your last replies ran no tool and "
+            "did not finish. Either take the next ACTION now, or answer with "
+            "`FINAL: <answer>` — or, if you need something from the user, "
+            "ask ONE clear question."})
+        return "continue"
+    yield {"type": "message", "awaiting_input": True,
+           "text": "I keep replying without making progress. I've paused — "
+                   "could you tell me what you'd like me to do next?"}
+    yield {"type": "done"}
+    return "return"
+
+
 def _builder_nudge(st, builder, n):
     """Once a builder session has interviewed enough, inject a one-time reminder
     to call the finalize tool NOW so the session ends with an artifact."""

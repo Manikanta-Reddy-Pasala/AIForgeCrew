@@ -59,11 +59,32 @@ def make_quality_signal_callback():
                 state = getattr(tool_context, "state", None)
                 if state is not None:
                     state[key] = ok
+                    # What the run failed on, for the Doer loop's
+                    # same-failure rule; a later green run clears it.
+                    fail = test_failure(tool_response) if key == "tests_ok" else []
+                    if fail:
+                        state["_iter_fail"] = fail
+                    elif key == "tests_ok" and ok and state.get("_iter_fail"):
+                        state["_iter_fail"] = []
         except Exception:  # noqa: BLE001 — signals are best-effort
             pass
         return None
 
     return _cb
+
+
+def test_failure(result) -> list:
+    """What a test run failed on, for the Doer loop's same-failure rule:
+    ``[signature, count, headline]``, or ``[]`` for a pass or an output that
+    names no failure."""
+    try:
+        if not isinstance(result, dict) or result.get("ok") is not False:
+            return []
+        from aiforge_core.runtime.failure_signature import failure_of, result_text
+        fail = failure_of(result_text(result))
+        return list(fail) if fail.signature else []
+    except Exception:  # noqa: BLE001 — signals are best-effort
+        return []
 
 
 def _strict_test_gate() -> bool:

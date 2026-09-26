@@ -11,7 +11,8 @@ Two signals, both hard to fake by accident:
 The loop guard counts repeats of an action per workspace state (with a
 lifetime backstop), and the stuck-recovery budget refills only when one of the
 signals moved. A hard per-run ceiling on recoveries stops a run that keeps
-finding new ways to be stuck.
+finding new ways to be stuck. Neither signal can tell a real fix from a
+different wrong one; the same-failure rule (``_outcomes``) does.
 """
 from __future__ import annotations
 
@@ -48,8 +49,8 @@ def loop_backstop() -> int:
 
 
 def max_recoveries() -> int:
-    """Stuck recoveries one run may use between two closed task-board items
-    (``AIFORGE_CHAT_MAX_RECOVERIES``, default 30)."""
+    """Stuck recoveries one run may use between two task-board items marked
+    done (``AIFORGE_CHAT_MAX_RECOVERIES``, default 30)."""
     return _int_env("AIFORGE_CHAT_MAX_RECOVERIES", 30)
 
 
@@ -73,6 +74,11 @@ def progress_fields() -> dict:
         "new_files": 0,
         "recoveries_total": 0,
         "recovery_mark": None,
+        # actions whose lifetime count a recovery already reset once
+        "lifetime_forgiven": collections.OrderedDict(),
+        # the same-failure rule's tracker (see same_failure): lives here, not
+        # in the conversation, so a condense cannot reset it
+        "same_fail": {},
     }
 
 
@@ -305,19 +311,24 @@ def _over(st, sig, per_state, extra=0) -> bool:
 
 
 def forgive(st, sig) -> None:
-    """After a recovery nudge, give this action a fresh count."""
+    """After a recovery nudge, give this action a fresh count. The lifetime
+    count is reset once per action: a second reset would make the ceiling
+    one that nothing holds."""
     sig = _short(sig)
     st.strikes[f"{sig}@{st.state_fp}"] = 0
     if st.backstop.get(sig, 0) >= loop_backstop():
         st.backstop[sig] = 0
-    if st.lifetime.get(sig, 0) >= 3 * loop_backstop():
+    if (st.lifetime.get(sig, 0) >= 3 * loop_backstop()
+            and sig not in st.lifetime_forgiven):
+        _remember(st.lifetime_forgiven, sig)
         st.lifetime[sig] = 0
 
 
 def _closed_items(st) -> int:
+    """Items the run FINISHED. Giving up on one ("failed", "skipped") is not
+    progress, so it does not refill the recovery ceiling."""
     board = getattr(st, "board", None) or {}
-    return sum(1 for it in board.values()
-               if it.get("status") in ("done", "failed", "skipped"))
+    return sum(1 for it in board.values() if it.get("status") == "done")
 
 
 def may_recover(st) -> bool:
@@ -325,7 +336,7 @@ def may_recover(st) -> bool:
 
     The per-stall budget refills once the workspace reached a state it had
     never been in, or the run read a file it had not read; the per-run
-    ceiling refills only when one more task-board item is closed."""
+    ceiling refills only when one more task-board item is done."""
     if st.tree_pending:
         _refresh_tree(st)
     mark = (st.new_states, st.new_files)

@@ -146,13 +146,22 @@ def _attempt_with_retries(sub, wt, run_one, validate_one, ticket_id, slug,
     the prior failure back into the prompt (a blind identical re-run on a
     deterministic endpoint is a no-op). Count via AIFORGE_DECOMP_RETRIES
     (default 2); depth is threaded into the status so the UI shows nesting."""
+    from aiforge_core.runtime.failure_signature import signature
     pkg = _pkg()
     r = pkg._attempt_subtask(sub, wt, run_one, validate_one)
     tries = 0
     while (not r.get("ok") and tries < _decomp_retries()
            and not (should_cancel and should_cancel())):
         tries += 1
+        prev_sig = signature(sub.get("_retry_error") or "")
         sub["_retry_error"] = str(r.get("error") or "")[:800]
+        if prev_sig and signature(sub["_retry_error"]) == prev_sig:
+            # Told why it failed, and it failed the same way: another retry
+            # re-runs the same fix.
+            r = {**r, "same_failure": True}
+            pkg._emit(ticket_id, slug, "retry",
+                      f"same failure twice (depth {depth}) — no more retries", {})
+            break
         pkg._emit(ticket_id, slug, "retry",
               f"retry {tries}/{_decomp_retries()} (depth {depth}) — "
               f"{str(r.get('error') or '')[:120]}", {})

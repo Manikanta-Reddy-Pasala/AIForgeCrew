@@ -17,73 +17,19 @@ from .._context import (
     _edit_claim_nudge,
     _fire_stop,
     _repo_name,
-    _run_project_verify,
     _text_of,
-    _verify_fix_message,
-    _verify_max_rounds,
-    _verify_on_final_enabled,
     _worktree_fingerprint,
 )
 from .._prompt import _strip_reasoning_prefix
 from .._registry import (
     _BUILDER_FINALIZE_TOOL,
 )
+from ._outcomes import _verify_on_final
 from ._shared import (
     _THE_FINALIZE_TOOL,
     _log,
 )
 from ._tasks import board_nudge_allowed, open_planned, unfinished_reminder
-
-
-def _verify_on_final(st, step, cwd, plan_mode, builder):
-    """Progress-gated verify->fix on FINAL: only an act-mode run that edited
-    files with a real suite; loop while failures drop, else accept honestly.
-    Returns continue or None."""
-    # A + B: enforced verify→fix on FINAL (progress-gated). Only for an
-    # act-mode run that actually EDITED files with a real test suite —
-    # a Q&A turn (0 edits) or read-only plan mode is untouched. Keep
-    # looping while the failure count DROPS; once it stalls (2 rounds no
-    # improvement) accept the HONEST still-failing final rather than
-    # churn. This gives simple/doer runs the pipeline's no-false-green
-    # guarantee. Opt out: AIFORGE_CHAT_VERIFY_ON_FINAL=0.
-    # The agent already ran this suite and the tree has not changed since.
-    # Running it again, then again after the turn, is the triple test run.
-    if getattr(st, "last_green_fp", None):
-        if _worktree_fingerprint(cwd) == st.last_green_fp:
-            return None
-    if (not plan_mode and not builder and st.edits_made > 0
-            and st.verify_rounds < _verify_max_rounds()
-            and _verify_on_final_enabled()):
-        yield {"type": "thought", "role": "system",
-               "text": "⧗ running the project's checks before finishing…"}
-        _vok, _vout = _run_project_verify(cwd)
-        if _vok is False:
-            try:
-                from aiforge_core.runtime.parallel_subtasks import _fail_count
-                _fails = _fail_count(_vout)
-            except Exception:  # noqa: BLE001
-                _fails = 1
-            if st.verify_prev_fails is not None and _fails >= st.verify_prev_fails:
-                st.verify_stalls += 1
-            else:
-                st.verify_stalls = 0
-            st.verify_prev_fails = _fails
-            if st.verify_stalls < 2:
-                st.verify_rounds += 1
-                if step.get("text"):        # the streamed answer, set aside
-                    yield {"type": "thought", "text": step["text"]}
-                yield {"type": "thought", "role": "system",
-                       "text": f"✗ tests failing ({_fails}) — fixing "
-                               f"(verify round {st.verify_rounds}/"
-                               f"{_verify_max_rounds()})…"}
-                st.convo.append({"role": "user",
-                              "content": _verify_fix_message(_vout)})
-                return "continue"
-            yield {"type": "thought", "role": "system",
-                   "text": f"⚠ tests still failing ({_fails}) after "
-                           f"{st.verify_rounds} fix rounds — stopping with "
-                           "the honest state."}
-    return None
 
 
 def _claim_guard(st, step, cwd, readonly_mode, builder, _wt_fp0):

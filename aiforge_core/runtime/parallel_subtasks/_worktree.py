@@ -177,6 +177,13 @@ def _run_with_retries(subtask: dict, wt: str, slug: str, base_branch: str,
     attempts = _retries() + 1
     i = 0
     for i in range(attempts):
+        if i > 0 and last.get("same_failure"):
+            # The retry failed exactly like the attempt before it, although
+            # it was told why: another one re-runs the same fix.
+            _emit(ticket_id, slug, "subtask_retry",
+                  f"{slug}: same failure twice — no more retries",
+                  {"slug": slug, "attempt": i, "same_failure": True})
+            break
         if i > 0:
             subtask = _retry_subtask(subtask, last, i)
             # One slot: keep the file and patch the error. Resetting and
@@ -187,10 +194,23 @@ def _run_with_retries(subtask: dict, wt: str, slug: str, base_branch: str,
                 _reset_worktree(wt, base_branch)
             _emit(ticket_id, slug, "subtask_retry",
                   f"{slug} retry {i}/{attempts - 1}", {"slug": slug, "attempt": i})
+        prev_sig = last.get("fail_sig", "")
         last = _attempt(subtask, wt, slug, run_one, validate_one)
         if last["ok"]:
             break
+        last["fail_sig"] = attempt_signature(last)
+        last["same_failure"] = bool(prev_sig) and last["fail_sig"] == prev_sig
     return last, i
+
+
+def attempt_signature(res: dict) -> str:
+    """What a failed attempt failed on: its error, run result and validation
+    read as one output (see failure_signature)."""
+    from aiforge_core.runtime.failure_signature import signature_of
+    if not isinstance(res, dict):
+        return ""
+    return signature_of(str(res.get("error") or ""), res.get("detail") or {},
+                        res.get("validation") or {})
 
 
 def _run_subtask(repo: str, base_branch: str, ticket_id: int | None,
@@ -223,7 +243,8 @@ def _run_subtask(repo: str, base_branch: str, ticket_id: int | None,
             "validated": last.get("validated"), "attempts": i + 1,
             "branch": branch, "worktree": wt,
             "detail": last.get("detail"), "validation": last.get("validation"),
-            "error": last.get("error")}
+            "error": last.get("error"), "fail_sig": last.get("fail_sig", ""),
+            "same_failure": bool(last.get("same_failure"))}
 
 
 def _project_fail_detail(res: dict) -> str:

@@ -210,14 +210,15 @@ def test_one_slot_endpoint_skips_the_prediction(tmp_path, monkeypatch):
 
 def test_green_suite_is_not_rerun_when_the_tree_is_unchanged(tmp_path, monkeypatch):
     from aiforge_core.runtime.chat_agent._turn import _finish as F
+    from aiforge_core.runtime.chat_agent._turn import _outcomes as O
 
     st = types.SimpleNamespace(last_green_fp="abc", edits_made=1, verify_rounds=0)
-    monkeypatch.setattr(F, "_worktree_fingerprint", lambda _cwd: "abc")
+    monkeypatch.setattr(O, "content_fingerprint", lambda _cwd: "abc")
 
     def _must_not_run(*_a, **_k):
         raise AssertionError("suite already passed on this tree")
 
-    monkeypatch.setattr(F, "_run_project_verify", _must_not_run)
+    monkeypatch.setattr(O, "_run_project_verify", _must_not_run)
     assert list(F._verify_on_final(st, {"text": "done"}, str(tmp_path), False, "")) == []
 
 

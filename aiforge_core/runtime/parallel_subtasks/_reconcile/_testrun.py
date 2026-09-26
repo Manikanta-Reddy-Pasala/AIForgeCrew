@@ -399,16 +399,17 @@ def _dedupe_keep_order(hints: list[str]) -> list[str]:
 
 
 def _failure_signature(output: str) -> str:
-    """The set of failing test node ids. Empty when the output names none.
+    """What the run failed on: the failing test ids of any runner, or the
+    compiler errors, or the first error line (see failure_signature). Empty
+    when the output names no failure.
 
-    The repair loop uses this to stop when a fix leaves the SAME tests
-    failing. A count that wobbles (3 fails, then 2, then 3) used to reset
-    the stall counter and rewrite the same code for the whole round budget.
+    The repair loop uses this to stop when a fix leaves the SAME failure.
+    A count that wobbles (3 fails, then 2, then 3) used to reset the stall
+    counter and rewrite the same code for the whole round budget; reading
+    only pytest FAILED lines made a Java, JS or compile failure never match.
     """
-    nodes = re.findall(r"^FAILED\s+(\S+)", output or "", re.M)
-    if not nodes:
-        return ""
-    return "|".join(sorted(set(nodes))[:40])
+    from aiforge_core.runtime.failure_signature import signature
+    return signature(output)
 
 
 def _fail_count(output: str) -> int:

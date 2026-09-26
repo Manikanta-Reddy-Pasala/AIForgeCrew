@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 
 from .._context import (
     _post_edit_syntax_error,
@@ -20,6 +19,7 @@ from .._shell import _MAX_OBS, _MAX_OBS_READ, _READ_OBS_TOOLS
 from ._approval import (
     _handle_rejection,
 )
+from ._outcomes import _note_green_tests, note_failure
 from ._progress import (
     count_key,
     forgive,
@@ -127,28 +127,6 @@ def _loop_nudge(name, reason, recap) -> str:
             "done (e.g. the next unread file from the request), or output "
             "`FINAL: <answer>` if everything is complete. Do NOT repeat a "
             "previous action.")
-
-
-_TEST_CMD = re.compile(
-    r"\b(pytest|npm test|mvn test|go test|cargo test|gradlew? test)\b")
-
-
-def _note_green_tests(st, name, args, result, cwd) -> None:
-    """Remember a passing test run and the tree it ran against."""
-    if not isinstance(result, dict):
-        return
-    cmd = str((args or {}).get("cmd") or "")
-    is_test = name == "run_tests" or (name == "run_command" and bool(_TEST_CMD.search(cmd)))
-    if not is_test:
-        return
-    if result.get("ok") is not True:
-        st.last_green_fp = None
-        return
-    try:
-        from .._context import _worktree_fingerprint
-        st.last_green_fp = _worktree_fingerprint(cwd)
-    except Exception:  # noqa: BLE001
-        st.last_green_fp = None
 
 
 def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
@@ -379,7 +357,8 @@ def _record_read(st, name, sig, result, _long_chain_help):
 def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     """Post-tool bookkeeping: PostToolUse hook, emit the tool result, count landed
     reads/edits (feeding the progress + verify gates), post-edit syntax self-
-    check, builder-finalize signal, and append the (smart-truncated) OBSERVATION."""
+    check, builder-finalize signal, and append the (smart-truncated) OBSERVATION.
+    Returns "return" when the same-failure rule paused the turn, else None."""
     # PostToolUse hook (best-effort, never blocks).
     try:
         from aiforge_core.runtime import hooks as _hooks
@@ -434,6 +413,20 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     # bodies (same skill/OKF/memory hit already in this turn) stay short.
     obs = render_observation(name, model_result, _obs_cap)
     _note_green_tests(st, name, args, result, cwd)
+    # The same failure after a different fix, again: nudge once (the nudge
+    # rides on this observation), then stop and ask.
+    seen = _safely(note_failure, st, name, args, result)
+    if seen and seen[0] == "stop":
+        st.convo.append({"role": "user", "content": f"OBSERVATION: {obs}"})
+        yield {"type": "thought", "role": "system",
+               "text": "⛔ the same failure survived every fix — pausing"}
+        yield {"type": "message", "awaiting_input": True, "text": seen[1]}
+        yield {"type": "done"}
+        return "return"
+    if seen:
+        yield {"type": "thought", "role": "system",
+               "text": "↺ the same failure again after a different fix — "
+                       "asking for the cause before another edit"}
     # Recency reminder: a strict output format from an APPLICABLE SKILL sits
     # in the system prompt (far above), while this fresh tool result sits at
     # the end where the model attends most — so after a tool round-trip it
@@ -444,4 +437,7 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
              "APPLICABLE SKILL above specifies an output format, reproduce "
              "it EXACTLY — no extra prose, headers, or table it does not "
              "specify.") if _bundle.skills_md else ""
+    if seen:
+        _tail += "\n" + seen[1]
     st.convo.append({"role": "user", "content": f"OBSERVATION: {obs}{_tail}"})
+    return None
