@@ -90,3 +90,28 @@ def test_the_failure_line_is_only_the_failing_line():
     why = failure_in("compiling module 1\nerror: undefined symbol 'x'\nlinking")
     assert why.endswith("error: undefined symbol 'x'")
     assert "compiling" not in why
+
+
+def test_a_buffering_pipe_is_named_as_the_reason_nothing_shows():
+    hint = job_hint("bg-2", True, "check-in: still running",
+                    cmd="./build.sh 2>&1 | tail -20")
+    assert "without the pipe" in hint
+    assert "command_kill(id='bg-2')" in hint
+
+
+def test_a_pipe_into_tee_is_not_called_buffering():
+    hint = job_hint("bg-2", True, None, cmd="./build.sh 2>&1 | tee log.txt")
+    assert "without the pipe" not in hint
+
+
+def test_elapsed_counts_from_the_command_start(tmp_path):
+    from aiforge_core.runtime.chat_agent._shell import _t_run_command
+    turn = cmd_jobs.begin_turn()
+    try:
+        res = _t_run_command(
+            {"cmd": "sleep 1; echo 'error: boom' >&2; sleep 30"}, str(tmp_path))
+        assert res.get("running") is True
+        # handed back on the error line about 1 s in, not "after 0.0s"
+        assert res["elapsed_s"] >= 0.8
+    finally:
+        cmd_jobs.end_turn(turn)

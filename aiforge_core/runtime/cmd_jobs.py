@@ -264,9 +264,12 @@ def _register(job: Job) -> Job:
 
 def adopt_spooled(proc, spool, cmd: str, cwd: str, *, explicit: bool,
                   session_id=None, idle_s: float = 0.0,
-                  deadline: float | None = None) -> Job:
+                  deadline: float | None = None,
+                  started: float | None = None) -> Job:
     """Track a spooled shell command as a job (see bg_work.track_command for
-    the Stop wiring and the end-of-run chat line)."""
+    the Stop wiring and the end-of-run chat line). ``started`` is when the
+    command began (monotonic), so elapsed time is not counted from the
+    hand-off."""
     from aiforge_core.runtime import bg_work
     handle = bg_work.track_command(
         session_id, cwd, cmd, proc, spool, close_spool=False,
@@ -289,6 +292,8 @@ def adopt_spooled(proc, spool, cmd: str, cwd: str, *, explicit: bool,
               explicit=explicit, kill=_kill, close=_close,
               pgid=handle.get("pgid") or proc.pid)
     job.handle = handle
+    if started is not None:
+        job.started = started
     return _register(job)
 
 
@@ -385,7 +390,7 @@ def stop_for_text(session_id, text: str) -> int:
 
 
 def _hint(job: Job, alive: bool, why: str | None = None) -> str:
-    return sig.job_hint(job.key, alive, why)
+    return sig.job_hint(job.key, alive, why, cmd=job.cmd)
 
 
 def look(job: Job, why: str | None = None) -> dict:

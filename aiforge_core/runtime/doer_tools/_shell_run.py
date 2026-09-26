@@ -62,7 +62,8 @@ def run_to_completion(argv, cwd: str, wall_s: float, idle_s: float, *,
     handed = False
     try:
         deadline = time.monotonic() + wall_s if wall_s > 0 else None
-        checkin_at = time.monotonic() + checkin_s if checkin_s > 0 else None
+        began = time.monotonic()
+        checkin_at = began + checkin_s if checkin_s > 0 else None
         seen = [0]
         clock = ProgressClock(spool.pgid, spool.size, idle_s)
         while proc.poll() is None:
@@ -84,7 +85,7 @@ def run_to_completion(argv, cwd: str, wall_s: float, idle_s: float, *,
                 from aiforge_core.runtime import cmd_jobs
                 job = cmd_jobs.adopt_spooled(
                     proc, spool, cmd or str(argv), str(cwd), explicit=False,
-                    idle_s=idle_s, deadline=deadline)
+                    idle_s=idle_s, deadline=deadline, started=began)
                 handed = True
                 return {"job": cmd_jobs.look(job, back)}
             time.sleep(0.1)

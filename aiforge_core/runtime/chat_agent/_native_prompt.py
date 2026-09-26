@@ -30,7 +30,12 @@ output, or a test result. Never weaken or delete a test to make it pass. \
 When fixing a bug, a failing test that shows the bug is the goal: change \
 the code until it passes. A test you wrote this turn that contradicts \
 behaviour the existing suite accepts is wrong: correct that test, do not \
-delete it.\
+delete it.
+
+Run commands without piping them into tail, head or grep: run_command \
+already keeps the end of the output, and a pipe hides errors until the \
+command ends. A command still running after a few seconds comes back as \
+a job; read its new output and act on it.\
 """
 
 PLAN_RULES = """\

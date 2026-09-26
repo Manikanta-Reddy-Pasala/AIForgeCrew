@@ -108,10 +108,21 @@ __all__ = ["SCAN_BYTES", "bounded", "clean", "failure_in", "file_size", "job_hin
            "read_range", "signal_in", "waiting_for_input"]
 
 
-def job_hint(key, alive: bool, why: str | None = None) -> str:
+#: A pipe into one of these holds the command's output until it ends, so a
+#: check-in sees nothing (live: `./build.sh 2>&1 | tail -20` hid an error
+#: printed at 3 s for the whole run).
+_BUFFERING_PIPE = re.compile(r"\|\s*(?:tail|head|sort|uniq|wc|less|more)\b")
+
+
+def job_hint(key, alive: bool, why: str | None = None, cmd: str = "") -> str:
     """What the model should do next with a handed-back job."""
     if not alive:
         return "finished — the output above is final."
+    if cmd and _BUFFERING_PIPE.search(cmd):
+        return (f"still running, and its output is piped through a command "
+                f"that shows nothing until it ends, so progress and errors "
+                f"are hidden. command_kill(id='{key}') and run it again "
+                f"without the pipe — the tool already keeps just the tail.")
     if why and any(why.startswith(kind + ":") for kind, _rx in _FAILURES):
         # Live: the model was told only "command_wait to wait for more" and
         # waited 45 s on a build it had already seen fail.

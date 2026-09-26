@@ -439,7 +439,7 @@ def _hand_off(proc, spool, cmd, base, why, started, timeout, idle_s) -> dict:
         sid = None
     job = cmd_jobs.adopt_spooled(
         proc, spool, cmd, base, explicit=False, session_id=sid, idle_s=idle_s,
-        deadline=(started + timeout) if timeout else None)
+        deadline=(started + timeout) if timeout else None, started=started)
     return cmd_jobs.look(job, why)
 
 
