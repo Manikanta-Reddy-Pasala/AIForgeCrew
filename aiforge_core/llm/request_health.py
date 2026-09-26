@@ -14,9 +14,9 @@ apart:
   completes; the prefill speed seen on each endpoint is learned too
   (:func:`note_prefill`) and lengthens the first-token bound of later calls;
 * a failure that is tied to the request (a stall, 408/502/504, a dropped
-  connection) while the endpoint answers ``/models`` straight after it — or
-  on a re-send made after the endpoint came back — counts against the
-  request; after ``AIFORGE_LLM_SAME_REQUEST_FAILS`` (default 4) in a row it is
+  connection) counts against the request only when a tiny completion to the
+  same model succeeds promptly straight after it (llm/_model_probe) — a
+  router's ``/models`` answering proves nothing about the model behind it; after ``AIFORGE_LLM_SAME_REQUEST_FAILS`` (default 4) in a row it is
   an LLM ISSUE (:class:`~aiforge_core.llm.model_outage.LLMRequestFailing`):
   the turn / ticket stops with a clear error. An allowed stop — the model is
   not down, the request is failing.
@@ -52,11 +52,14 @@ class RequestHealth:
     def __init__(self) -> None:
         self.stalls = 0          # sends cut by a stream health bound
         self.stalls_seen = 0     # of those, already judged by a Waiter
+        self.stalls_counted = 0  # of those, counted against the request
         self.fails = 0           # other failures counted against the request
-        self.resent = False      # a send made after the endpoint came back
 
     def total(self) -> int:
-        return self.stalls + self.fails
+        """Failures counted against THIS request (the model answered a tiny
+        probe promptly straight after each). A stall on a busy or dead box
+        still lengthens the bounds (:meth:`scale`) but is not counted."""
+        return self.stalls_counted + self.fails
 
     def scale(self) -> float:
         return float(2 ** min(self.stalls, _MAX_DOUBLINGS))

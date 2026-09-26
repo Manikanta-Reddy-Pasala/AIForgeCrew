@@ -32,6 +32,8 @@ def _fast(monkeypatch):
     model_wait._reset_for_tests()
     endpoint_breaker.reset()
     request_health._reset_for_tests()
+    from aiforge_core.llm import _model_probe
+    _model_probe._reset_for_tests()
     yield
     model_wait._reset_for_tests()
     endpoint_breaker.reset()
@@ -47,10 +49,13 @@ def _free_port() -> int:
 
 
 class _Srv:
-    """A fake OpenAI-compatible server. ``post(n)`` → (status, delay, sse)."""
+    """A fake OpenAI-compatible server. ``post(n)`` → (status, delay, sse) for
+    the real request; ``probe(n)`` → (status, delay) for model_wait's
+    one-token liveness completion (``max_tokens == 1``)."""
 
-    def __init__(self, post, models=lambda: 200):
+    def __init__(self, post, models=lambda: 200, probe=lambda n: (200, 0.0)):
         self.posts = 0
+        self.probes = 0
         self.port = _free_port()
         self.url = f"http://127.0.0.1:{self.port}/v1"
         srv = self
@@ -72,9 +77,18 @@ class _Srv:
                 self._json(code, {"data": [{"id": "m"}]} if code == 200 else {})
 
             def do_POST(self):
-                self.rfile.read(int(self.headers.get("Content-Length") or 0))
-                srv.posts += 1
-                code, delay, sse = post(srv.posts)
+                raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                try:
+                    is_probe = json.loads(raw or b"{}").get("max_tokens") == 1
+                except ValueError:
+                    is_probe = False
+                if is_probe:
+                    srv.probes += 1
+                    code, delay = probe(srv.probes)
+                    sse = False
+                else:
+                    srv.posts += 1
+                    code, delay, sse = post(srv.posts)
                 time.sleep(delay)
                 try:
                     if code != 200:
@@ -217,17 +231,17 @@ def test_sends_lost_to_an_outage_are_refunded(monkeypatch):
 # ── 1c: a DOWN endpoint is still waited for, however long ───────────────────
 
 def test_a_down_backend_behind_a_proxy_is_waited_for_not_counted():
-    """502 on the send AND on /models (the backend is down) is an outage:
+    """502 on the send AND on the probe (the backend is down) is an outage:
     many more probes than N, then it comes back and the request goes through."""
     state = {"up": False, "probes": 0}
 
-    def models():
+    def probe(n):
         state["probes"] += 1
         if state["probes"] > 12:
             state["up"] = True
-        return 200 if state["up"] else 502
+        return (200 if state["up"] else 502), 0.0
     srv = _Srv(lambda k: (200, 0.0, False) if state["up"] else (502, 0.0, False),
-               models=models)
+               models=lambda: 502, probe=probe)
     try:
         assert model_wait.call_with_wait(lambda: _post(srv.url),
                                          url=srv.url) == "hello"
@@ -255,6 +269,7 @@ def test_busy_and_loading_never_count(monkeypatch):
     import io
     import urllib.error
     monkeypatch.setattr(model_wait, "probe", lambda *a, **k: True)
+    monkeypatch.setattr(model_wait, "live_probe", lambda *a, **k: True)
     calls = []
 
     def call():
@@ -274,6 +289,7 @@ def test_await_wait_raises_the_llm_issue(monkeypatch):
     import io
     import urllib.error
     monkeypatch.setattr(model_wait, "probe", lambda *a, **k: True)
+    monkeypatch.setattr(model_wait, "live_probe", lambda *a, **k: True)
     w = model_wait.Waiter("http://m/v1")
     exc = urllib.error.HTTPError("http://m/v1", 504, "x", {}, io.BytesIO(b"{}"))
 
@@ -283,3 +299,97 @@ def test_await_wait_raises_the_llm_issue(monkeypatch):
     with pytest.raises(model_outage.LLMRequestFailing):
         asyncio.run(go())
     assert w.health.fails == 4
+
+
+# ── review r2: /models is not the model ─────────────────────────────────────
+
+def _in_thread(fn):
+    box: dict = {}
+
+    def run():
+        try:
+            box["out"] = fn()
+        except BaseException as exc:  # noqa: BLE001
+            box["exc"] = exc
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    return t, box
+
+
+def test_a_router_answering_models_while_the_model_502s_is_waited_for():
+    """nuc -> router -> dead MLX: /models answers 200, every completion
+    (the probe too) 502s. Many more failures than N: still waiting, no
+    LLMRequestFailing; the model comes back and the request goes through."""
+    state = {"up": False}
+    srv = _Srv(lambda k: (200, 0.0, False) if state["up"] else (502, 0.0, False),
+               models=lambda: 200,
+               probe=lambda n: (200 if state["up"] else 502, 0.0))
+    try:
+        t, box = _in_thread(lambda: model_wait.call_with_wait(
+            lambda: _post(srv.url), url=srv.url, model="m"))
+        deadline = time.monotonic() + 10
+        while srv.probes < 5 * request_health.same_request_fails() \
+                and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert t.is_alive() and "exc" not in box, box
+        assert srv.probes >= 5 * request_health.same_request_fails()
+        state["up"] = True
+        t.join(10)
+    finally:
+        srv.stop()
+    assert box.get("out") == "hello", box
+
+
+def test_a_busy_queue_that_holds_the_probe_too_is_waited_for(monkeypatch):
+    """A box whose queue holds every request (llama.cpp/vLLM/MLX queue
+    silently): the big request stalls, the tiny probe does not answer
+    promptly either — busy, not an LLM issue. Waits, then completes."""
+    monkeypatch.setenv("AIFORGE_LLM_FIRST_TOKEN_S", "0.05")
+    monkeypatch.setenv("AIFORGE_LLM_LIVE_PROBE_S", "0.5")
+    monkeypatch.setenv("AIFORGE_LLM_SAME_REQUEST_FAILS", "2")
+    state = {"busy": True}
+
+    def queued():                    # held in the queue while the box is busy
+        end = time.monotonic() + 3.0
+        while state["busy"] and time.monotonic() < end:
+            time.sleep(0.02)
+    srv = _Srv(lambda k: (queued(), (200, 0.0, True))[1],
+               probe=lambda n: (queued(), (200, 0.0))[1])
+    try:
+        t, box = _in_thread(lambda: model_wait.call_with_wait(
+            lambda: _stream(srv.url), url=srv.url, model="m"))
+        deadline = time.monotonic() + 15
+        while srv.probes < 4 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert t.is_alive() and "exc" not in box, box
+        state["busy"] = False
+        t.join(60)
+    finally:
+        srv.stop()
+    assert box.get("out") == "hello", box
+
+
+def test_the_model_answers_the_probe_but_always_504s_this_request():
+    """The tiny probe succeeds promptly, the big request always 504s: an LLM
+    issue after N — exactly N sends."""
+    srv = _Srv(lambda k: (504, 0.0, False), models=lambda: 502)
+    try:
+        with pytest.raises(model_outage.LLMRequestFailing):
+            model_wait.call_with_wait(lambda: _post(srv.url), url=srv.url,
+                                      model="m")
+    finally:
+        srv.stop()
+    assert srv.posts == request_health.same_request_fails()
+    assert srv.probes == srv.posts
+
+
+def test_a_doubled_first_token_bound_outlives_the_read_timeout(monkeypatch):
+    from aiforge_core.llm.client._stream_health import StreamWatch
+    monkeypatch.setenv("AIFORGE_LLM_FIRST_TOKEN_S", "100")
+    monkeypatch.setenv("AIFORGE_LLM_PREFILL_TOK_S", "0")
+    assert StreamWatch(None, b"{}", 150)._tightest(200) == 0.0   # first send
+    h = request_health.RequestHealth()
+    h.stalls = 1
+    with request_health.bind(h):
+        w = StreamWatch(None, b"{}", 150)
+        assert w._first == 200 and w._tightest(w._first) == 200

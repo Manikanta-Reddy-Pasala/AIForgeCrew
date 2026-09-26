@@ -269,7 +269,11 @@ class _Server:
 
             def do_POST(self):
                 n = int(self.headers.get("Content-Length") or 0)
-                self.rfile.read(n)
+                raw = self.rfile.read(n)
+                if b'"max_tokens": 1' in raw:        # model_wait's live probe
+                    self._send(200, {"choices": [{"message": {
+                        "role": "assistant", "content": "h"}}]})
+                    return
                 srv.posts += 1
                 if srv.posts <= srv.busy:
                     self._send(503, {"error": "Service Unavailable"})

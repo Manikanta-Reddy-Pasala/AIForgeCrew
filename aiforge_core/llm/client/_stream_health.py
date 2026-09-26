@@ -19,8 +19,9 @@ restarts the clock, so a slow but alive server is never cut off.
   AIFORGE_LLM_STREAM_IDLE_S  — longest silence between chunks once the answer
                                is streaming (default 120).
 
-0 disables a bound (the caller's read timeout alone applies). Neither bound is
-ever LONGER than the caller's own timeout — they only tighten it.
+0 disables a bound (the caller's read timeout alone applies). On a first send
+neither bound is LONGER than the caller's own timeout; once the same request
+has stalled, the doubled bounds may exceed it (see ``StreamWatch._tightest``).
 
 Adaptive (llm/request_health): each stall of the same request doubles both
 bounds for its next send, and the prefill speed seen on an endpoint, when
@@ -95,10 +96,16 @@ class StreamWatch:
 
     def _tightest(self, health: float) -> float:
         """The health bound when it is tighter than the caller's own read
-        timeout; 0 when the caller's timeout governs."""
+        timeout; 0 when the caller's timeout governs. Once the same request
+        has stalled (its bounds doubled) the health bound governs even past
+        the caller's generic read timeout: the doubling exists so a slow
+        prefill on a busy box eventually completes, and handing over to a
+        fixed read timeout would end it as a plain timeout instead. The
+        stream-health detector stays the guard (a stall is still a stall)."""
         if health <= 0:
             return 0.0
-        if self.read_timeout and health >= self.read_timeout:
+        if self.read_timeout and health >= self.read_timeout \
+                and _health().stall_scale() <= 1.0:
             return 0.0
         return health
 

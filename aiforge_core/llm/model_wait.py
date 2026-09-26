@@ -4,8 +4,9 @@
 available — do not stop, in any of the modes." This is the one primitive every
 mode uses for that: on an OUTAGE-class failure (see
 :mod:`aiforge_core.llm.model_outage` for the classification) it blocks, probes
-the endpoint cheaply (``GET <base>/models``) with backoff, and returns once the
-server answers — the caller then re-sends the SAME request.
+the MODEL with a one-token completion (llm/_model_probe — not ``/models``,
+which a router answers while the model behind it is dead) with backoff, and
+returns once it answers — the caller then re-sends the SAME request.
 
     out = model_wait.call_with_wait(lambda: do_call(), url=ep.base_url, ...)
     # or, around an existing retry loop:
@@ -21,8 +22,8 @@ Knobs:
   AIFORGE_LLM_WAIT_STATUS_S     once the gap is at its cap, repeat the status
                                 line this often (default 300).
 
-  AIFORGE_LLM_SAME_REQUEST_FAILS  the endpoint answers but THIS request failed
-                                that many times in a row: an LLM issue, not an
+  AIFORGE_LLM_SAME_REQUEST_FAILS  the model answers a tiny probe promptly but
+                                THIS request failed that many times in a row: an LLM issue, not an
                                 outage — :class:`LLMRequestFailing` (default 4;
                                 see llm/request_health).
 
@@ -49,7 +50,10 @@ import time
 from typing import Any, Callable
 
 from . import model_outage, request_health
-from ._model_probe import probe  # noqa: F401 — tests patch model_wait.probe
+from ._model_probe import (  # noqa: F401 — tests patch model_wait.probe
+    live_probe,
+    probe,
+)
 from ._wait_scope import (  # noqa: F401 — the public surface lives here too
     _HOOKS,
     _OPTIONAL,
@@ -159,6 +163,9 @@ class Waiter:
         self._last_gap = -1.0
         self._sleep = sleep
         self._probe = probe_fn or (lambda u, k: probe(u, k))
+        self._probe_model = (
+            (lambda u, k, m: probe_fn(u, k)) if probe_fn is not None
+            else (lambda u, k, m: probe(u, k, model=m)))
         self.health = health or request_health.RequestHealth()
 
     # — classification ——————————————————————————————————————————————
@@ -266,27 +273,42 @@ class Waiter:
         return up
 
     # — endpoint up, this request failing (llm/request_health) —————————
+    def _up(self) -> bool:
+        """Recovery: does the model answer a tiny completion at all?"""
+        if self.model:
+            return self._probe_model(self.url, self.api_key, self.model)
+        return self._probe(self.url, self.api_key)
+
+    def _live(self) -> bool:
+        """Judgement: did a tiny completion to the SAME model succeed
+        promptly? (``live_probe`` — tests patch the module attribute)."""
+        return bool(live_probe(self.url, self.api_key, self.model))
+
     def _judge(self, exc: BaseException) -> bool:
-        """Count ``exc`` against the request when the endpoint is UP (it
-        answers straight after the failure) or this was a re-send made after
-        it came back. True = counted (re-send without an outage wait). Raises
+        """Count ``exc`` against the request only when the MODEL is up: a
+        tiny completion to it succeeds promptly straight after the failure.
+        A router whose ``/models`` answers while the model behind it is dead,
+        a box whose queue holds the probe too, a probe that times out — all
+        of that is an outage or a busy model: waited for, never counted.
+        True = counted (re-send without an outage wait). Raises
         :class:`LLMRequestFailing` once the request has failed too often."""
         h = self.health
         if model_outage.explicit_busy(exc) or not model_outage.request_bound(exc):
             return False        # the endpoint's state, or a connect failure
-        if model_outage.is_stall(exc) and h.stalls > h.stalls_seen:
-            h.stalls_seen = h.stalls            # counted by the stream watch
-            counted = True
+        stall = model_outage.is_stall(exc) and h.stalls > h.stalls_seen
+        if stall:
+            h.stalls_seen = h.stalls      # the stream watch saw it; judge once
+        if not self._after_probe(self._live()):
+            return False
+        if stall:
+            h.stalls_counted += 1
         else:
-            counted = h.resent or self._after_probe(
-                self._probe(self.url, self.api_key))
-            if counted:
-                h.fails += 1
-        if counted and h.total() >= request_health.same_request_fails():
+            h.fails += 1
+        if h.total() >= request_health.same_request_fails():
             log.warning("llm.request_fails url=%s n=%d err=%.200s", self.url,
                         h.total(), exc)
             raise LLMRequestFailing(self.url, h.total(), exc) from exc
-        return counted
+        return True
 
     def _resend_gap(self, exc: BaseException) -> float:
         """Before re-sending a request the endpoint failed while up: none after
@@ -314,7 +336,6 @@ class Waiter:
             raise exc
         if self._judge(exc):
             self._sleep_cancellable(self._resend_gap(exc), exc)
-            self.health.resent = True
             return True
         self._hook(0)
         try:
@@ -322,8 +343,7 @@ class Waiter:
                 gap = self._next_gap(exc)
                 self._sleep_cancellable(gap, exc)
                 self.waited += gap
-                if self._after_probe(self._probe(self.url, self.api_key)):
-                    self.health.resent = True
+                if self._after_probe(self._up()):
                     return False
         finally:
             self._hook(1)
@@ -335,16 +355,13 @@ class Waiter:
         loop = asyncio.get_running_loop()
         if await loop.run_in_executor(None, self._judge, exc):
             await self._async_sleep(self._resend_gap(exc), exc)
-            self.health.resent = True
             return True
         while True:
             gap = self._next_gap(exc)
             await self._async_sleep(gap, exc)
             self.waited += gap
-            up = await loop.run_in_executor(
-                None, lambda: self._probe(self.url, self.api_key))
+            up = await loop.run_in_executor(None, self._up)
             if self._after_probe(up):
-                self.health.resent = True
                 return False
 
     async def _async_sleep(self, gap: float, exc: BaseException) -> None:
