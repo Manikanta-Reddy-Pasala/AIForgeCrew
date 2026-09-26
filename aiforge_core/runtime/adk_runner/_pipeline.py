@@ -388,17 +388,20 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
                      if ticket is not None else {})
     from ._run_inputs import seed_gaming_base
     seed_gaming_base(initial_state)
-    session = await session_svc.create_session(
-        app_name="aiforge", user_id="aiforge-runner",
-        state=initial_state or None)
-    _key_stateful_tools(session.id)
-    content = gtypes.Content(role="user",
-                             parts=[gtypes.Part.from_text(text=prompt)])
-    if ticket is not None:
-        content = _with_images(content, ticket, gtypes)
-    try:
-        return await _drive_pipeline(runner, session_svc, session.id, content)
+    try:        # the baseline is released however the run ends
+        session = await session_svc.create_session(
+            app_name="aiforge", user_id="aiforge-runner",
+            state=initial_state or None)
+        _key_stateful_tools(session.id)
+        content = gtypes.Content(role="user",
+                                 parts=[gtypes.Part.from_text(text=prompt)])
+        if ticket is not None:
+            content = _with_images(content, ticket, gtypes)
+        try:
+            return await _drive_pipeline(runner, session_svc, session.id,
+                                         content)
+        finally:
+            _destroy_run_resources(session.id)
+            _dump_trajectory(session, ticket, initial_state)
     finally:
-        _destroy_run_resources(session.id)
-        _dump_trajectory(session, ticket, initial_state)
         _release_gaming_base(initial_state)

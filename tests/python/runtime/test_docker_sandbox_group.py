@@ -50,6 +50,13 @@ def _clean(monkeypatch):
     ds._containers.clear()
 
 
+def _eventually(pred, limit: float = 5.0) -> bool:
+    end = time.monotonic() + limit
+    while not pred() and time.monotonic() < end:
+        time.sleep(0.05)
+    return pred()
+
+
 def _local(monkeypatch, script: str) -> None:
     """Run ``script`` on the host in place of ``docker exec`` (the fake exec
     layer): the host process is as idle as a real docker CLI would be."""
@@ -86,7 +93,27 @@ def test_the_idle_detector_and_every_stop_path_reach_the_container(monkeypatch):
         docker_group.register(proc.pid, docker_group.RemoteGroup("box"))
         assert cmd_idle.group_cpu_s(proc.pid) == pytest.approx(3.0)
         proc_signals.stop_group(proc.pid, pause_s=0.0)
-        assert fake.signals[:2] == ["TERM", "KILL"]
+        assert _eventually(lambda: fake.signals.count("KILL") >= 1)
+        assert fake.signals[0] == "TERM"
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_stop_does_not_wait_on_a_slow_docker(monkeypatch):
+    slow = _FakeDocker()
+
+    def hung_docker(args, timeout=30.0):
+        time.sleep(3)
+        return slow(args, timeout)
+    monkeypatch.setattr(docker_group, "_docker", hung_docker)
+    proc = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    try:
+        docker_group.register(proc.pid, docker_group.RemoteGroup("box"))
+        t0 = time.monotonic()
+        proc_signals.stop_group(proc.pid, pause_s=0.0)
+        assert time.monotonic() - t0 < 1.0
+        assert _eventually(lambda: "TERM" in slow.signals, 8)
     finally:
         proc.kill()
         proc.wait()
@@ -121,7 +148,8 @@ def test_a_really_hung_command_is_killed_in_the_container(monkeypatch):
     out = ds.exec_in_container("rid", "read x")
     assert time.monotonic() - t0 < 15
     assert out["ok"] is False and "hung" in out["error"]
-    assert "TERM" in fake.signals and "KILL" in fake.signals
+    assert _eventually(lambda: "TERM" in fake.signals
+                       and "KILL" in fake.signals)
 
 
 def test_stop_ends_a_sandbox_command(monkeypatch):
@@ -137,7 +165,7 @@ def test_stop_ends_a_sandbox_command(monkeypatch):
     _local(monkeypatch, "sleep 30")
     out = ds.exec_in_container("rid", "npm run dev")
     assert out.get("stopped") is True and out["error"] == "stopped by user"
-    assert "TERM" in fake.signals
+    assert _eventually(lambda: "TERM" in fake.signals)
 
 
 def test_a_printing_command_comes_back_as_a_job(monkeypatch):
@@ -156,7 +184,11 @@ def test_a_printing_command_comes_back_as_a_job(monkeypatch):
         assert job is not None
         assert docker_group.lookup(job.pgid) is not None
         job.kill()
-        assert "TERM" in fake.signals or "KILL" in fake.signals
+        assert _eventually(lambda: "TERM" in fake.signals
+                           or "KILL" in fake.signals)
+        pgid = job.pgid
+        assert _eventually(lambda: docker_group.lookup(pgid) is None), \
+            "the entry outlived its job (pgid reuse would misroute signals)"
     finally:
         cmd_jobs.end_turn(turn)
 
@@ -171,7 +203,7 @@ def test_the_shell_timeout_knob_is_honoured(monkeypatch):
     out = ds.exec_in_container("rid", "make")
     assert time.monotonic() - t0 < 15
     assert out["ok"] is False and out["error"] == "timeout"
-    assert "TERM" in fake.signals
+    assert _eventually(lambda: "TERM" in fake.signals)
 
 
 def test_a_finished_command_leaves_no_registry_entry(monkeypatch):

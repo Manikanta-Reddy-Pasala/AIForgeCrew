@@ -27,10 +27,9 @@ import time
 import uuid
 
 ENV = "AIFORGE_JOB"
-#: How long an ended client's entry is kept (a KILL after a TERM still
-#: reaches the container), then pruned.
-_KEEP_S = 60.0
-_TIMEOUT_S = 30.0
+#: A housekeeping ``docker exec`` never holds up a stop or a check for long.
+_TIMEOUT_S = 10.0
+_GRACE_S = 1.0
 
 # $1 = what (stat | a signal name), $2 = the job key.
 _SCRIPT = (
@@ -65,17 +64,17 @@ class RemoteGroup:
         self.container = container
         self.key = key or uuid.uuid4().hex[:16]
         self.local_pgid: int | None = None
-        self.ended_at: float | None = None
 
     def argv(self, command: str) -> list[str]:
         """The ``docker exec`` that runs ``command`` marked with this key."""
         return ["docker", "exec", "-i", "-e", f"{ENV}={self.key}",
                 self.container, "bash", "-lc", command]
 
-    def _run(self, what: str) -> str | None:
+    def _run(self, what: str, runner=None) -> str | None:
         try:
-            proc = _docker(["exec", self.container, "sh", "-c", _SCRIPT,
-                            "aiforge-group", what, self.key])
+            proc = (runner or _docker)([
+                "exec", self.container, "sh", "-c", _SCRIPT,
+                "aiforge-group", what, self.key])
         except Exception:  # noqa: BLE001 — docker gone / hung: cannot say
             return None
         if getattr(proc, "returncode", 1) != 0:
@@ -103,15 +102,28 @@ class RemoteGroup:
         return total / _tick() if seen else None
 
     def signal(self, sig: int) -> bool:
-        """Send ``sig`` to every process of the command in the container."""
+        """Send ``sig`` to the command's processes in the container — on a
+        thread, so Stop never waits on a slow ``docker exec``. A TERM is
+        followed by a KILL after a grace (the caller's own KILL may never
+        come: the host client is gone once it got the TERM)."""
         name = _signal.Signals(sig).name[3:] if sig else "0"
-        return self._run(name) is not None
+        todo = [name] + (["KILL"] if name == "TERM" else [])
+        runner = _docker
+
+        def run():
+            for i, what in enumerate(todo):
+                if i:
+                    time.sleep(_GRACE_S)
+                self._run(what, runner)
+        threading.Thread(target=run, daemon=True,
+                         name=f"docker-signal-{self.key}").start()
+        return True
 
     def stop(self, pause_s: float = 0.5) -> None:
-        """TERM, then KILL."""
-        self.signal(_signal.SIGTERM)
+        """TERM, then KILL (blocking: tests and teardown)."""
+        self._run("TERM")
         time.sleep(pause_s)
-        self.signal(_signal.SIGKILL)
+        self._run("KILL")
 
 
 def _alive(pgid: int) -> bool:
@@ -123,16 +135,22 @@ def _alive(pgid: int) -> bool:
 
 
 def register(local_pgid: int, group: RemoteGroup) -> None:
-    """``group`` is what the host process group ``local_pgid`` stands for."""
+    """``group`` is what the host process group ``local_pgid`` stands for,
+    until :func:`release_when_done` sees the host client end."""
     group.local_pgid = local_pgid
-    now = time.monotonic()
     with _LOCK:
-        for pgid, old in list(_GROUPS.items()):
-            if old.ended_at is None and not _alive(pgid):
-                old.ended_at = now
-            if old.ended_at is not None and now - old.ended_at > _KEEP_S:
-                _GROUPS.pop(pgid, None)
         _GROUPS[local_pgid] = group
+
+
+def release_when_done(proc, group: RemoteGroup) -> None:
+    """Drop ``group``'s entry once its host client ``proc`` has ended — the
+    moment its process-group id could be reused by something unrelated."""
+    def run():
+        while proc.poll() is None:
+            time.sleep(0.5)
+        unregister(group.local_pgid)
+    threading.Thread(target=run, daemon=True,
+                     name=f"docker-group-{group.key}").start()
 
 
 def unregister(local_pgid: int | None) -> None:
@@ -154,4 +172,5 @@ def _reset_for_tests() -> None:
         _GROUPS.clear()
 
 
-__all__ = ["ENV", "RemoteGroup", "lookup", "register", "unregister"]
+__all__ = ["ENV", "RemoteGroup", "lookup", "register", "release_when_done",
+           "unregister"]

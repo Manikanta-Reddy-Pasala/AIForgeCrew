@@ -186,12 +186,19 @@ def _exec_checked(name: str, command: str, wall_s: float) -> dict[str, Any]:
         res = _run_checked(command, wall_s, argv=group.argv(command),
                            spawned=lambda pgid: docker_group.register(pgid,
                                                                       group))
-    finally:
-        # Handed off as a job: its entry lives on (command_kill, Stop, the
-        # watcher's idle kill reach the container through it).
-        pgid = group.local_pgid
-        if pgid is not None and not docker_group._alive(pgid):
-            docker_group.unregister(pgid)
+    except BaseException:
+        docker_group.unregister(group.local_pgid)
+        raise
+    # Handed off as a job: its entry lives until the host client ends
+    # (command_kill, Stop, the watcher's idle kill reach the container
+    # through it); otherwise the command is over now.
+    from aiforge_core.runtime import cmd_jobs
+    job = cmd_jobs._JOBS.get(str(res.get("id") or "")) if res.get(
+        "running") else None
+    if job is not None:
+        docker_group.release_when_done(job.proc, group)
+    else:
+        docker_group.unregister(group.local_pgid)
     return {**res, "sandbox": "docker"}
 
 

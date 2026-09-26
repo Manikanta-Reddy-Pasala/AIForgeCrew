@@ -428,6 +428,8 @@ class EscalatingLlm(_RescueMixin, _StreamMixin, BaseLlm):
                 yield r
             return
         _breaker.record_success(base)
+        from aiforge_core.llm import request_health as _rh
+        _rh.note_answer(base)            # resets a crash count on it
 
         if not buffered or all(_is_empty(r) for r in buffered):
             self._note_empty(label, model, buffered, meter.get("token"))

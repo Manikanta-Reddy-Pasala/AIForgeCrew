@@ -83,8 +83,31 @@ def test_a_resend_waits_while_the_server_still_works_on_the_old_one(
 
 
 def test_a_non_timeout_error_is_not_a_stall():
+    from aiforge_core.runtime._review_stall import as_stall
     exc = ValueError("bad json")
-    assert pr_reviewer._as_stall(exc, {"api_base": ""}, []) is None
+    assert as_stall(exc, {"api_base": ""}, []) is None
+
+
+def test_a_connect_timeout_is_an_outage_not_a_stall(monkeypatch, _fast_wait):
+    """litellm names a CONNECT timeout ``Timeout`` too: the server never had
+    the request — waited for like any outage, the bound not doubled."""
+    from aiforge_core.runtime._review_stall import as_stall
+    assert as_stall(Timeout("Connection timed out: connect timeout"),
+                    {"api_base": ""}, []) is None
+    monkeypatch.setattr(model_wait, "probe", lambda *a, **k: True)
+    monkeypatch.setattr(model_wait, "live_probe", lambda *a, **k: True)
+    ep = {"model": "openai/m", "api_base": "http://m/v1", "api_key": "k"}
+    sends: list = []
+
+    def completion(**kw):
+        sends.append(kw["timeout"])
+        if len(sends) == 1:
+            raise Timeout("httpx.ConnectTimeout: connect timeout")
+        return {"choices": [{"message": {"content": "{}"}}]}
+    send = pr_reviewer._sender(types.SimpleNamespace(completion=completion),
+                               ep, [{"role": "user", "content": "x"}])
+    assert model_wait.call_with_wait(send, url=ep["api_base"], model="m") == "{}"
+    assert sends == [5.0, 5.0]
 
 
 # ── 4: promoted pane jobs ─────────────────────────────────────────────────
