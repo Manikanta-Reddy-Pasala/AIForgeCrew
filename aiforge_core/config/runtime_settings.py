@@ -131,24 +131,21 @@ _SPEC: dict[str, tuple[str, int]] = {
     # ours, so equal ceilings collide on the first boundary overlap. Under, not
     # equal.
     #
-    # 15 is also what ``rate_limiter._DEFAULT_GLOBAL_RPM`` documents, and the
-    # two disagreed — this table is the one that answers, so its 20 silently
-    # won while the limiter's docstring promised 15. Kept in step by
+    # Kept in step with ``rate_limiter._DEFAULT_GLOBAL_RPM`` by
     # ``tests/python/llm/test_rate_limit_settings.py``.
-    "llm_max_rpm": ("AIFORGE_LLM_MAX_RPM", 15),
+    "llm_max_rpm": ("AIFORGE_LLM_MAX_RPM", 30),
     # Sub-ceiling for memory/compaction LLM calls (okf tier folds,
-    # work_notes.consolidate, the boot fold — everything on the "learner" role).
-    # Not on the Settings page (the user: it is only ever "what chat leaves of
-    # the total") — kept as a hidden operator knob.
-    # 0 by default = compaction uses WHATEVER the global llm_max_rpm leaves:
-    # all of it while chat is idle, the remainder while chat is using its
-    # share (the global window counts both). A fixed 5 left 3/4 of the budget
-    # unused on an idle box while a fold took hours. Set a number to cap it;
-    # AIFORGE_COMPACT_DISABLE skips the LLM entirely.
-    "compaction_rpm": ("AIFORGE_COMPACTION_RPM", 0),
-    # Sub-ceiling for chat + all other (non-compaction) LLM calls. 15 rpm by
-    # default. 0 = bounded only by the global llm_max_rpm.
-    "chat_rpm": ("AIFORGE_CHAT_RPM", 15),
+    # work_notes.consolidate, the boot fold, and a background chat condense —
+    # everything on the "learner" role). While chat has sent in the last
+    # minute this stays at 5 so a fold cannot crowd out the person. When that
+    # minute has no chat send, the limiter raises this to the global ceiling
+    # (30) so an idle box is not stuck folding at 5. Set 0 to drop the
+    # category cap and use only the global window. AIFORGE_COMPACT_DISABLE
+    # skips the LLM condense entirely.
+    "compaction_rpm": ("AIFORGE_COMPACTION_RPM", 5),
+    # Sub-ceiling for chat + all other (non-compaction) LLM calls. 0 = bounded
+    # only by the global llm_max_rpm.
+    "chat_rpm": ("AIFORGE_CHAT_RPM", 30),
     # How long to wait after a provider REJECTS us for sending too fast (a 429,
     # or a 4xx whose body names a rate limit) when it did not send a
     # Retry-After. The provider is counting a minute; a sub-second backoff just

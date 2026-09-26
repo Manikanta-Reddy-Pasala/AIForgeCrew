@@ -20,7 +20,7 @@ def _clean(monkeypatch, tmp_path):
     # The shared window has its own suite: test_shared_rate_window.py.
     monkeypatch.setenv("AIFORGE_LLM_SHARED_WINDOW", "0")
     # This file tests the GLOBAL ceiling in isolation. Neutralise the per-
-    # category sub-ceilings (default chat=15/compaction=5) so they never
+    # category sub-ceilings (default chat=30/compaction=5) so they never
     # confound a pure-global assertion; the tests that exercise categories set
     # them explicitly.
     monkeypatch.setenv("AIFORGE_CHAT_RPM", "0")
@@ -67,24 +67,26 @@ def test_compaction_subceiling_independent_of_global(monkeypatch):
 
 
 def test_compaction_uses_what_chat_leaves_of_the_total_by_default(monkeypatch):
-    """Default compaction_rpm is 0: compaction takes the whole global ceiling
-    while chat is idle, and only the remainder while chat is using its share.
-    A fixed 5/min left three quarters of the budget idle while a fold ran."""
+    """Default compaction_rpm is 5 while chat is sending. With no chat send
+    in the window, compaction may use the whole global ceiling."""
     monkeypatch.setenv("AIFORGE_LLM_SHARED_WINDOW", "0")
     monkeypatch.delenv("AIFORGE_COMPACTION_RPM", raising=False)
     from aiforge_core.config import runtime_settings as rs
-    rs.set_many({"llm_max_rpm": 20, "chat_rpm": 15})
+    rs.set_many({"llm_max_rpm": 30, "chat_rpm": 30})
     rs.unset(["compaction_rpm"])
-    assert rl._cat_rpm("compaction") == 0            # no sub-cap by default
+    assert rl._cat_rpm("compaction") == 5
     rl.reset_global()
-    for _ in range(20):                                # chat idle → all 20
-        assert rl._take(20, "compaction", 0, "p")[0] is True
-    assert rl._take(20, "compaction", 0, "p")[0] is False
+    # Idle: the category limit rises to the global ceiling.
+    assert rl._category_limit("compaction") == 30
+    for _ in range(30):
+        assert rl._take(30, "compaction", 30, "p")[0] is True
+    assert rl._take(30, "compaction", 30, "p")[0] is False
     rl.reset_global()
-    for _ in range(12):                                # chat used 12 …
-        assert rl._take(20, "chat", 15, "p")[0] is True
-    got = sum(rl._take(20, "compaction", 0, "p")[0] for _ in range(20))
-    assert got == 8                                    # … compaction gets 8
+    assert rl._take(30, "chat", 30, "p")[0] is True
+    # Chat has used the window: compact is back to its stored 5.
+    assert rl._category_limit("compaction") == 5
+    got = sum(rl._take(30, "compaction", 5, "p")[0] for _ in range(10))
+    assert got == 5
 
 
 def _fake_clock(monkeypatch):
@@ -523,6 +525,9 @@ def test_compaction_strict_wait_can_be_disabled(monkeypatch):
     from aiforge_core.config import runtime_settings as rs
     rs.set_many({"llm_max_rpm": 100, "compaction_rpm": 3, "chat_rpm": 100})
     clock = _fake_clock(monkeypatch)
+    # One chat send, so compaction stays at its stored 3 instead of rising
+    # to the global ceiling (that rise only happens when chat is idle).
+    assert rl.acquire_global(role="doer", max_wait_s=5) == 0.0
     for _ in range(3):
         assert rl.acquire_global(role="learner", max_wait_s=5) == 0.0
     waited = rl.acquire_global(role="learner", max_wait_s=5)

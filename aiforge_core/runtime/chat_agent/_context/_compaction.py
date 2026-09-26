@@ -80,7 +80,9 @@ def _llm_summarize_middle(middle: list[dict], complete_fn, session_id=None) -> s
     body = "\n".join(transcript)
     if len(body) > 24000:        # bound the summariser's own input
         body = body[:12000] + "\n…\n" + body[-12000:]
-    sum_role = os.environ.get("AIFORGE_COMPACT_ROLE", "").strip() or "doer"
+    # learner, not doer: this call is background compaction and must count
+    # against compaction_rpm, not the chat bucket.
+    sum_role = os.environ.get("AIFORGE_COMPACT_ROLE", "").strip() or "learner"
     msgs = [{"role": "system", "content": _COMPACT_SYS},
             {"role": "user", "content": "Summarise this slice:\n\n" + body}]
     timeout = _condense_timeout_s()
@@ -110,6 +112,91 @@ def _llm_summarize_middle(middle: list[dict], complete_fn, session_id=None) -> s
         # cheap non-LLM condense so the turn proceeds.
         return ""
     return box.get("out", "")
+
+
+_SUMMARY_LOCK = __import__("threading").Lock()
+_SUMMARY_READY: dict = {}
+_SUMMARY_BUSY: set = set()
+
+
+def _summary_key(session_id) -> str:
+    return "" if session_id is None else str(session_id)
+
+
+def _take_ready_summary(session_id) -> str:
+    """A model summary that finished after an earlier turn, if one is waiting."""
+    with _SUMMARY_LOCK:
+        return _SUMMARY_READY.pop(_summary_key(session_id), "")
+
+
+def _summary_messages(middle) -> list:
+    """The prompt for a background summary. Bounded so the call cannot be
+    larger than the history it is replacing."""
+    transcript = []
+    for m in middle:
+        r = (m.get("role") or "").upper()
+        c = _text_of(m).strip()
+        if c:
+            transcript.append(f"{r}: {c}")
+    body = "\n".join(transcript)
+    if len(body) > 24000:
+        body = body[:12000] + "\n…\n" + body[-12000:]
+    return [{"role": "system", "content": _COMPACT_SYS},
+            {"role": "user", "content": "Summarise this slice:\n\n" + body}]
+
+
+def _text_complete(complete_fn, role: str, msgs: list):
+    """A plain text completion.
+
+    The turn's native complete_fn owns that turn's tool queue. Calling it
+    from this thread would drop the agent's batched reads or overwrite them
+    with the summarizer's. A function without ``take_queued`` is a test
+    double and is safe to call. Everything else goes through the client,
+    and never through the chat generation slot.
+    """
+    if complete_fn is not None and not hasattr(complete_fn, "take_queued"):
+        return complete_fn(role, msgs)
+    from aiforge_core.llm import client
+    return client.complete(role, msgs)
+
+
+def _schedule_llm_summary(middle, complete_fn, session_id) -> None:
+    """Start the model summary and return at once.
+
+    The turn already has the heuristic breadcrumb, so it must not wait on
+    this call. A finished summary is folded into the next condense. One
+    summary per session stays in flight until THAT call returns, so a slow
+    model cannot stack more summaries or take the chat generation slots.
+    """
+    if _compact_mode() != "llm" or not middle:
+        return
+    key = _summary_key(session_id)
+    with _SUMMARY_LOCK:
+        if key in _SUMMARY_BUSY:
+            return
+        _SUMMARY_BUSY.add(key)
+    snap = list(middle)
+    sum_role = os.environ.get("AIFORGE_COMPACT_ROLE", "").strip() or "learner"
+    msgs = _summary_messages(snap)
+
+    def _worker() -> None:
+        try:
+            text = ""
+            try:
+                out = _text_complete(complete_fn, sum_role, msgs)
+                if isinstance(out, str):
+                    text = out.strip()
+            except Exception:  # noqa: BLE001
+                text = ""
+            if text:
+                with _SUMMARY_LOCK:
+                    _SUMMARY_READY[key] = text
+        finally:
+            with _SUMMARY_LOCK:
+                _SUMMARY_BUSY.discard(key)
+
+    import threading as _th
+    _th.Thread(target=_worker, daemon=True, name="aiforge-compact").start()
 
 
 def _tail_fraction(frac: float = 0.5) -> float:
@@ -326,10 +413,12 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
                                             user_asks, finals)
     used = (", ".join(f"{t}×{n}" for t, n in _c.Counter(tools).most_common(8))
             or "discussion + reads")
-    # Optional CODE-AWARE LLM summary of the dropped middle (swappable model via
-    # AIFORGE_COMPACT_ROLE). Falls back to the heuristic breadcrumb on failure.
-    llm_summary = (_llm_summarize_middle(middle, complete_fn, session_id)
-                   if _compact_mode() == "llm" else "")
+    # The model summary, if one finished behind an earlier turn. This turn
+    # never waits for it — the heuristic breadcrumb is what keeps the call
+    # inside the window. AIFORGE_COMPACT_ROLE picks the model; the call is
+    # counted as compaction, not chat.
+    llm_summary = _take_ready_summary(session_id)
+    _schedule_llm_summary(middle, complete_fn, session_id)
     note = _breadcrumb(middle, used, _summary_tail(user_asks, finals),
                        llm_summary)
     # Fold the breadcrumb INTO the system message rather than inserting a

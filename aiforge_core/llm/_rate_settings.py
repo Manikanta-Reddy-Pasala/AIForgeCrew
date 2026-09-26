@@ -155,10 +155,9 @@ def _now() -> float:
 
 
 #: Machine-wide default requests-per-minute ceiling when nothing overrides it.
-#: A real default the limiter enforces out of the box — conservative enough for
-#: the common single-key / free-tier gateway. Override via the ``llm_max_rpm``
-#: setting or ``AIFORGE_LLM_MAX_RPM``; set either to 0 to disable the ceiling.
-_DEFAULT_GLOBAL_RPM = 15.0
+#: Override via the ``llm_max_rpm`` setting or ``AIFORGE_LLM_MAX_RPM``; set
+#: either to 0 to disable the ceiling.
+_DEFAULT_GLOBAL_RPM = 30.0
 
 
 def global_rpm() -> float:
@@ -186,12 +185,11 @@ def global_rpm() -> float:
 
 
 #: Roles whose LLM traffic is memory/compaction, not interactive. They count
-#: against the "compaction" category, whose default ceiling is 0 = bounded
-#: only by the global window — so compaction uses whatever chat leaves of the
-#: total (all of it while chat is idle).
+#: against the "compaction" category: 5/min while chat has sent in the last
+#: minute, and the whole global ceiling (30) when chat has not.
 #:
 #: ``memory`` is here because distillation and consolidation moved to their own
-#: reasoning role: left out, every fold counted against the 15 rpm INTERACTIVE
+#: reasoning role: left out, every fold counted against the interactive
 #: ceiling and compaction crawled on a completely idle box — the opposite of
 #: what the category exists for.
 _COMPACTION_ROLES = frozenset({"learner", "memory"})
@@ -208,8 +206,10 @@ def _compaction_roles() -> frozenset:
     extra = (os.environ.get("AIFORGE_MEMORY_MODEL_ROLE") or "").strip()
     return _COMPACTION_ROLES | ({extra} if extra else frozenset())
 
-_DEFAULT_COMPACTION_RPM = 0.0
-_DEFAULT_CHAT_RPM = 15.0
+# 5 while chat is sending. When the last minute has no chat send, compaction
+# may use the whole global ceiling (see rate_limiter._category_limit).
+_DEFAULT_COMPACTION_RPM = 5.0
+_DEFAULT_CHAT_RPM = 30.0
 
 
 def _category(role: "str | None") -> str:

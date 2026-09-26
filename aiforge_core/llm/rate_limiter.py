@@ -127,6 +127,47 @@ def _shared():
         return None
 
 
+def _chat_sends_recent() -> "int | None":
+    """Chat-category sends in the current minute, or None if the shared
+    window is on but could not be read.
+
+    None is not idle. The shared window is where chat sends live, and a
+    failed read must not raise compaction to the global ceiling while chat
+    is using that window. The in-process list is only the fallback when the
+    shared window is off.
+    """
+    sw = _shared()
+    if sw is not None:
+        try:
+            n = sw.count(cat="chat")
+        except Exception:  # noqa: BLE001
+            n = None
+        if n is None:
+            return None
+        return int(n)
+    with _WINDOW_LOCK:
+        _trim_locked(_now())
+        return sum(1 for _, c in _sends if c == "chat")
+
+
+def _category_limit(cat: str) -> float:
+    """Per-category rpm for this send.
+
+    Compaction's stored cap (default 5) applies while chat has sent in the
+    last minute, so a fold cannot crowd out the person. With no chat send in
+    that window, compaction may use the whole global ceiling (default 30).
+    A stored 0 stays "no category cap" — only the global window binds.
+    """
+    base = _cat_rpm(cat)
+    if cat != "compaction" or base <= 0:
+        return base
+    g = global_rpm()
+    chat_n = _chat_sends_recent()
+    if g > 0 and chat_n == 0:
+        return g if g > base else base
+    return base
+
+
 def _take(rpm: float, cat: str, cat_rpm: float,
           _provider: "str | None") -> "tuple[bool, float]":
     """Claim one send against BOTH the global ceiling (``rpm``) and this call's
@@ -286,7 +327,7 @@ def acquire_global(*, max_wait_s: float = 120.0,
     """
     global _waiting
     cat = _category(role)
-    cat_rpm = _cat_rpm(cat)
+    cat_rpm = _category_limit(cat)
     # Compaction/OKF is background — it must RESPECT its ceiling, never overrun
     # it, because no user is waiting on memory folding. Give it a far larger wait
     # budget so it QUEUES for its slot instead of being let through at the
@@ -306,9 +347,9 @@ def acquire_global(*, max_wait_s: float = 120.0,
         # Nothing throttles this call — but the window is also the toolbar's
         # METER, and background traffic must never go invisible. Chat keeps the
         # old behaviour (no ceiling asked for, no window kept); compaction does
-        # not, because its own sub-ceiling is 0 by default now ("use whatever
-        # chat leaves"), and uncapped AND unseen is the exact defect this
-        # gateway exists to prevent.
+        # not, because an operator can set its sub-ceiling to 0 ("no category
+        # cap"), and uncapped AND unseen is the exact defect this gateway
+        # exists to prevent.
         if cat == "compaction":
             _force_take(global_rpm(), cat)
         return yielded

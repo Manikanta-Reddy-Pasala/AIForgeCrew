@@ -120,22 +120,18 @@ def test_the_effective_default_is_the_documented_one():
     assert rl.global_rpm() == rl._DEFAULT_GLOBAL_RPM
 
 
-def test_the_ceiling_is_strictly_under_a_20_per_minute_gateway():
-    """UNDER, not equal. Two windows never agree on where a minute starts —
-    theirs opens at arrival on their clock, ours at send on ours — so equal
-    ceilings collide on the first boundary overlap rather than merely touching.
-    20/min is the limit on the gateway this actually failed against.
-    """
-    assert rl.global_rpm() < 20
+def test_the_machine_ceiling_is_thirty():
+    """One box, 30 model calls a minute. Chat may use all of them. Compact's
+    own default is 5, and only rises to 30 when chat has sent nothing."""
+    assert rl.global_rpm() == 30
+    assert rl._cat_rpm("chat") == 30
+    assert rl._cat_rpm("compaction") == 5
 
 
 def test_the_sub_ceilings_cannot_outrun_the_global_one():
-    """chat 15 + compaction 5 summed to exactly the gateway's 20. With every
-    role pinned to one model, "each category is within its own slice" and "the
-    model is within its limit" are different statements — the global cap is
-    what makes the second one true, so it has to bind below their sum.
-    """
+    """Chat 30 plus compact 5 is more than 30. The global window is what
+    stops the sum; compact's 5 only binds while chat is sending."""
     total = rl._cat_rpm("chat") + rl._cat_rpm("compaction")
     assert rl.global_rpm() <= total, \
         "a global ceiling above the sum of its parts constrains nothing"
-    assert rl.global_rpm() < 20
+    assert rl.global_rpm() == 30
