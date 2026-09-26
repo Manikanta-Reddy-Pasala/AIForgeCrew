@@ -30,6 +30,7 @@ from .._context import (
     _verify_max_rounds,
     _verify_on_final_enabled,
 )
+from . import _gaming
 from ._progress import _SHELL_TOOLS, _digest, _refresh_tree
 
 _TEST_CMD = re.compile(
@@ -104,6 +105,7 @@ def _note_green_tests(st, name, args, result, cwd) -> None:
     name, args, result = run
     if not isinstance(result, dict) or not _is_test_run(name, args):
         return
+    _gaming.note_test_result(st, result.get("ok"))
     if result.get("ok") is not True:
         st.last_green_fp = None
         return
@@ -158,6 +160,15 @@ def _judge(st, fail):
 # ── verify on FINAL ──────────────────────────────────────────────────────
 
 def _verify_on_final(st, step, cwd, plan_mode, builder):
+    """Verify->fix on FINAL, then — tests green — the test-gaming check
+    (:mod:`._gaming`). Returns continue or None."""
+    sig = yield from _verify_fix(st, step, cwd, plan_mode, builder)
+    if sig == "continue":
+        return sig
+    return (yield from _gaming.gate(st, step, cwd, plan_mode, builder))
+
+
+def _verify_fix(st, step, cwd, plan_mode, builder):
     """Progress-gated verify->fix on FINAL: only an act-mode run that edited
     files with a real suite; loop while failures drop, else accept honestly.
     Returns continue or None."""
@@ -179,6 +190,7 @@ def _verify_on_final(st, step, cwd, plan_mode, builder):
     yield {"type": "thought", "role": "system",
            "text": "⧗ running the project's checks before finishing…"}
     _vok, _vout = _run_project_verify(cwd)
+    _gaming.note_test_result(st, _vok)
     if _vok is not False:
         return None
     try:

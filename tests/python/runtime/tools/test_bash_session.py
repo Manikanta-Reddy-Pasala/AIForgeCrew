@@ -186,7 +186,8 @@ def test_nothing_is_killed_without_tmux(monkeypatch):
 
 
 def test_a_command_runs_in_the_persistent_session(tmux, repo_root):
-    tmux["panes"] = [f"{_prompt(0)}\n",
+    # create → the first prompt; before typing → the idle screen; then the run.
+    tmux["panes"] = [f"{_prompt(0)}\n", f"{_prompt(0)}\n",
                      f"{_prompt()}\necho hi\nhi\n{_prompt(0)}\n"]
     res = B.bash("echo hi", _run_id="r1")
     assert res["ok"] is True
@@ -195,7 +196,7 @@ def test_a_command_runs_in_the_persistent_session(tmux, repo_root):
 
 
 def test_a_failing_command_is_not_ok(tmux, repo_root):
-    tmux["panes"] = [f"{_prompt(0)}\n",
+    tmux["panes"] = [f"{_prompt(0)}\n", f"{_prompt(0)}\n",
                      f"{_prompt()}\nfalse\n{_prompt(1)}\n"]
     res = B.bash("false", _run_id="r1")
     assert res["ok"] is False
@@ -232,14 +233,15 @@ def test_a_restart_wipes_the_session_first(tmux, repo_root, monkeypatch):
     tmux["exists"] = True
     killed: list = []
     monkeypatch.setattr(B, "destroy_session", lambda rid: killed.append(rid))
-    tmux["panes"] = [f"{_prompt()}\nx\n{_prompt(0)}\n"]
+    tmux["panes"] = [f"{_prompt(0)}\n", f"{_prompt()}\nx\n{_prompt(0)}\n"]
     B.bash("echo x", restart=True, _run_id="r1")
     assert killed == ["r1"]
 
 
 def test_a_huge_answer_is_capped(tmux, repo_root):
     big = "y" * (B._STDOUT_CAP_BYTES + 500)
-    tmux["panes"] = [f"{_prompt(0)}\n", f"{_prompt()}\nc\n{big}\n{_prompt(0)}\n"]
+    tmux["panes"] = [f"{_prompt(0)}\n", f"{_prompt(0)}\n",
+                     f"{_prompt()}\nc\n{big}\n{_prompt(0)}\n"]
     res = B.bash("c", _run_id="r1")
     assert len(res["stdout"]) == B._STDOUT_CAP_BYTES
     assert res["truncated"] is True
