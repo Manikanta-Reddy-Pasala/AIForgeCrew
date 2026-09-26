@@ -20,8 +20,19 @@ _READERS = frozenset({
     "cat", "head", "tail", "less", "more", "grep", "egrep", "fgrep", "rg",
     "ag", "ls", "tree", "diff", "cmp", "wc", "stat", "file", "du", "md5sum",
     "shasum", "sha1sum", "sha256sum", "readlink", "realpath", "basename",
-    "dirname", "test", "[", "echo", "printf", "true", "jq", "bat",
+    "dirname", "test", "[", "echo", "printf", "true", "jq", "bat", "nl",
+    "cut", "tr", "column", "od", "strings",
 })
+#: Readers unless an option makes them write in place / to a file.
+_WRITE_FLAGS = {
+    "sed": ("-i", "--in-place"),
+    "yq": ("-i", "--inplace"),
+    "sort": ("-o", "--output"),
+    "awk": ("-i", "--include"),          # gawk -i inplace
+    "gawk": ("-i", "--include"),
+}
+#: Readers with an optional OUTPUT operand (``uniq in out``, ``xxd in out``).
+_ONE_OPERAND = frozenset({"uniq", "xxd"})
 #: ``find`` reads unless one of these makes it act on what it finds.
 _FIND_ACTS = frozenset({"-delete", "-exec", "-execdir", "-ok", "-okdir",
                         "-fprint", "-fprintf", "-fls"})
@@ -68,6 +79,14 @@ def _reads_only(rest: list[str], hit_idx: set) -> bool:
     head = os.path.basename(rest[0]) if rest else ""
     if head in _READERS:
         return True
+    if head in _WRITE_FLAGS:
+        flags = _WRITE_FLAGS[head]
+        return not any(t == f or t.startswith(f) for t in rest[1:]
+                       for f in flags)
+    if head in _ONE_OPERAND:
+        return (len([t for t in rest[1:] if not t.startswith("-")]) <= 1
+                and "-r" not in rest)
+
     if head == "find":
         return not (_FIND_ACTS & set(rest[1:]))
     if head == "git":

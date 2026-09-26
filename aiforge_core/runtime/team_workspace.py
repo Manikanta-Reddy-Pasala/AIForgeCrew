@@ -406,6 +406,8 @@ def close_quiet(ws: TeamWorkspace) -> str:
     from aiforge_core.runtime import team_run_life
     from aiforge_core.runtime.parallel_subtasks import _protected
     back, left, stuck = [], [], ""
+    from aiforge_core.runtime import team_repo_net
+    net_note = team_repo_net.settle(ws)    # jobs a command left running
     try:
         back = _protected.revert(ws.cwd, ws.start_sha or "HEAD")
         left = seal(ws.cwd, "aiforge: edits left by the team run")
@@ -423,7 +425,8 @@ def close_quiet(ws: TeamWorkspace) -> str:
         # Never delete work that exists nowhere else: keep the worktree and
         # the branch and say where they are.
         log.warning("team run %s kept: %s", ws.cwd, stuck)
-        return (f"Could not commit the team's last edits ({stuck}), so "
+        return ((net_note + " ") if net_note else "") + (
+                f"Could not commit the team's last edits ({stuck}), so "
                 f"nothing was removed: the work is in `{ws.cwd}` on branch "
                 f"`{ws.branch}` — commit it there (e.g. `git -C {ws.cwd} "
                 f"commit -am wip`) and merge the branch.")
@@ -434,7 +437,7 @@ def close_quiet(ws: TeamWorkspace) -> str:
         log.debug("close: worktree remove failed: %s", exc)
     import shutil
     shutil.rmtree(ws.run_dir, ignore_errors=True)   # SPEC.md was mirrored
-    notes = []
+    notes = [net_note] if net_note else []
     if back:
         notes.append("Put back read-only file(s) the run changed: "
                      + ", ".join(f"`{b}`" for b in back[:6]) + ".")

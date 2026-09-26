@@ -251,8 +251,17 @@ def _gated_action(st, step, name, args, sig, n, cwd, session_id):
     _hb = yield from _pre_tool_checks(st, name, args, cwd, st.scope_globs)
     if _hb in ("continue", "return"):
         return _hb
+    # A team run's shell command is bracketed by a snapshot of the user's
+    # real checkout: whatever it changed there is put back (team_repo_net).
+    from aiforge_core.runtime import team_repo_net as _net
+    _h = _net.begin(cwd, name, session_id)
     result = yield from _dispatch_tool(name, args, cwd, n, _hb,
                                        _take_early_read(st, sig))
+    result, _note = _net.end(_h, result) if _h is not None else (
+        result, _net.poll(cwd))
+    if _note:
+        yield {"type": "message", "role": "system", "supplementary": True,
+               "text": _note}
     return (yield from _post_tool(st, name, args, result, cwd, sig, n,
                                   st.long_chain_help, st.bundle))
 

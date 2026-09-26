@@ -117,6 +117,17 @@ def _approvals_on(session_id) -> bool:
     return chat_approve.approvals_required(session_id)
 
 
+def _holds_config_dir(folder) -> bool:
+    """The repo is an ancestor of the config dir (a dotfiles repo at ~)."""
+    try:
+        from aiforge_core.config.paths import config_dir
+        from aiforge_core.runtime.team_run_life import fold
+        cfg, repo = fold(str(config_dir())), fold(folder)
+        return cfg == repo or cfg.startswith(repo.rstrip(os.sep) + os.sep)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _stop(rctx, text):
     rctx["done"] = True
     return {"type": "message", "awaiting_input": True, "text": text}
@@ -129,6 +140,12 @@ def _open_team_workspace(tgt, texts, prompt, cwd, session_id, rctx,
     from aiforge_core.runtime import team_target as _tt
     from aiforge_core.runtime import team_workspace as _tw
     folder = tgt.cwd
+    if _holds_config_dir(folder):
+        yield _stop(rctx, f"`{folder}` contains AIForge's own config folder, "
+                    "where team runs keep their worktrees — a team run cannot "
+                    "work on a repo that holds its own workspace. Name the "
+                    "project folder inside it instead.")
+        return None
     granted = session_id is not None and _granted(session_id, folder)
     if tgt.init_needed and not granted:
         if session_id is None:
