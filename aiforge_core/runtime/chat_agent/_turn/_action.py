@@ -19,6 +19,7 @@ from .._shell import _MAX_OBS, _MAX_OBS_READ, _READ_OBS_TOOLS
 from ._approval import (
     _handle_rejection,
 )
+from ._idle_steps import note_step
 from ._outcomes import _note_green_tests, note_failure
 from ._progress import (
     count_key,
@@ -415,18 +416,22 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     _note_green_tests(st, name, args, result, cwd)
     # The same failure after a different fix, again: nudge once (the nudge
     # rides on this observation), then stop and ask.
+    # Steps that change nothing, read nothing new and move no test, again
+    # and again (varied scripts guessing a hash): the same plumbing.
     seen = _safely(note_failure, st, name, args, result)
+    idle = _safely(note_step, st, name, args, result)
+    seen = seen or idle
     if seen and seen[0] == "stop":
         st.convo.append({"role": "user", "content": f"OBSERVATION: {obs}"})
         yield {"type": "thought", "role": "system",
-               "text": "⛔ the same failure survived every fix — pausing"}
+               "text": "⛔ no progress after the warning — pausing"}
         yield {"type": "message", "awaiting_input": True, "text": seen[1]}
         yield {"type": "done"}
         return "return"
     if seen:
         yield {"type": "thought", "role": "system",
-               "text": "↺ the same failure again after a different fix — "
-                       "asking for the cause before another edit"}
+               "text": "↺ going round without progress — asking why before "
+                       "another try"}
     # Recency reminder: a strict output format from an APPLICABLE SKILL sits
     # in the system prompt (far above), while this fresh tool result sits at
     # the end where the model attends most — so after a tool round-trip it

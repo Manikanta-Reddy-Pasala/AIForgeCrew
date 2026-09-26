@@ -45,10 +45,26 @@ def make_quality_signal_callback():
     ``typecheck_ok`` / ``lint_ok`` from session state — but nothing
     wrote them, so the gate was permanently pass. This callback watches
     the Doer's run_tests / typecheck / format tool results and writes
-    ``result["ok"]`` into the matching key. Always returns ``None`` so
-    the tool response itself is never altered.
+    ``result["ok"]`` into the matching key. Returns ``None`` — the tool
+    response is left alone — except when the no-progress rule trips (see
+    :mod:`aiforge_core.runtime.doer_no_progress`).
     """
+    from aiforge_core.runtime.doer_no_progress import DoerProgressGuard
+    guard = DoerProgressGuard()
+
     def _cb(*, tool, args, tool_context, tool_response, **_kw):
+        _record(tool, tool_context, tool_response)
+        # The no-progress rule: the only time this callback replaces the
+        # response is to put the loop guard's note in front of the model.
+        try:
+            state = getattr(tool_context, "state", None)
+            run_key = getattr(tool_context, "invocation_id", None) or id(state)
+            return guard.step(run_key, getattr(tool, "name", "") or "", args,
+                              tool_response, state)
+        except Exception:  # noqa: BLE001 — a guard must never break a call
+            return None
+
+    def _record(tool, tool_context, tool_response):
         try:
             name = getattr(tool, "name", "") or ""
             key = _TOOL_SIGNAL_KEYS.get(name)

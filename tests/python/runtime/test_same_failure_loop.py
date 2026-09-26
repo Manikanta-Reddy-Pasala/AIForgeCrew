@@ -90,7 +90,7 @@ def test_a_different_fix_each_round_with_the_same_failure_stops(tmp_path):
                                  cwd=str(tmp_path), complete_fn=_scripted(steps)))
     runs = [e for e in evs if e["type"] == "tool" and e["name"] == "run_command"]
     assert len(runs) == 6                      # 3 → nudge, 3 more → stop
-    assert any("same failure again" in str(e.get("text", "")) for e in evs)
+    assert any("going round without progress" in str(e.get("text", "")) for e in evs)
     last_msg = [e for e in evs if e["type"] == "message"][-1]
     assert last_msg.get("awaiting_input") is True
     assert "same failure" in last_msg["text"]
