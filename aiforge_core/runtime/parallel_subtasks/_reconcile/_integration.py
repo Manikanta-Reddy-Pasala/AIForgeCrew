@@ -113,6 +113,10 @@ def _repair_round(cwd: str, output: str, rounds: int, max_rounds: int,
     ``prev_fails``/``stalls`` in ``state``."""
     _prune_quietly(cwd)                    # deterministic, before the LLM round
     esc_model, audit = _round_strategy(output, stalls)
+    if audit:
+        from .._protected import TESTS, rules_for
+        # The user's tests are read-only: no round may "correct" one.
+        audit = TESTS not in (rules_for(cwd).get("patterns") or [])
     yield {"type": "thought", "role": "reconciler",
            "text": _round_plan_text(rounds, max_rounds, prev_fails,
                                     esc_model, audit)}

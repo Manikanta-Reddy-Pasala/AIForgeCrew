@@ -45,7 +45,8 @@ def _spec_goal(cwd: str) -> str:
     """The ORIGINAL GOAL from SPEC.md — re-stated at the top of the merger prompt
     to anchor the model's attention on the primary objective."""
     try:
-        p = os.path.join(cwd, "SPEC.md")
+        from aiforge_core.runtime.team_workspace import spec_path
+        p = spec_path(cwd)
         if os.path.isfile(p):
             import re as _re
             src = open(p, encoding="utf-8", errors="replace").read()

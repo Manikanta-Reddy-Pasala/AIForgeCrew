@@ -97,9 +97,10 @@ def _pipeline_route(_pp, prompt, cwd, session_id, history, _with_resume, _path,
     # agent) ran spec-less — 'sometimes there is no SPEC.md'.
     try:
         _spec_doc = _pp._render_spec_md(_spec, _subs)
-        with open(os.path.join(cwd, "SPEC.md"), "w",
-                  encoding="utf-8") as _fh:
-            _fh.write(_spec_doc)
+        # Never a file of the user's project: a run in their repo keeps its
+        # SPEC beside its worktree (runtime/team_workspace.spec_path).
+        from aiforge_core.runtime.team_workspace import write_spec
+        write_spec(cwd, _spec_doc)
         yield {"type": "thought", "role": "planner",
                "text": "Wrote SPEC.md (single-task plan) — the run "
                        "builds and is verified against it."}

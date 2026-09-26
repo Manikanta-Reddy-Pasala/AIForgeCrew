@@ -252,11 +252,27 @@ def test_stop_everything_kills_both(env):
 
 def test_the_steer_route_kills_now(env):
     from aiforge_core.api.routes._chat import _message as M
+    from aiforge_core.runtime import chat_interject
     chat_cancel.set_active(4103)
+    chat_interject.set_steerable(4103, True)
     h = cmd_jobs.find(_run("echo x; sleep 60", env)["id"])
-    out = M.chat_session_steer(4103, M._SteerBody(content="kill it"))
+    try:
+        out = M.chat_session_steer(4103, M._SteerBody(content="kill it"))
+    finally:
+        chat_interject.clear(4103)
     assert not h.alive()
     assert out.get("commands_stopped", 1) == 1
+
+
+def test_a_refused_steer_kills_nothing(env):
+    """A steer no run accepted (not steerable) must not end the user's jobs."""
+    from aiforge_core.api.routes._chat import _message as M
+    chat_cancel.set_active(4105)
+    h = cmd_jobs.find(_run("echo x; sleep 60", env)["id"])
+    out = M.chat_session_steer(4105, M._SteerBody(content="kill it"))
+    assert out["queued"] is False and "commands_stopped" not in out
+    assert h.alive()
+    cmd_jobs.stop_for_text(4105, "stop everything")
 
 
 def test_a_wait_on_kill_it_stops_the_job(env, monkeypatch):

@@ -285,6 +285,11 @@ def _write_subtask_files(files: dict, worktree: str, scope: list):
         if scope and not _in_scope(rel, scope):
             rejected.append(rel)
             continue
+        from ._protected import is_protected, refusal
+        if is_protected(worktree, rel):
+            log.info("subtask write refused: %s", refusal(rel))
+            rejected.append(rel)
+            continue
         bad = _syntax_rejection(rel, content)
         if bad:
             return written_files, rejected, bad

@@ -62,12 +62,20 @@ def _plan_subtasks(prompt: str, subtasks, state: dict):
     # PLAN REVIEW — a different model checks the file manifest for typos
     # (kvdakade→kvfacade), near-duplicate/missing modules, scope creep BEFORE any
     # code is built (a patch-reconcile can't fix a structural naming error later).
+    early = _early_spec_review(prompt, subs)
     try:
-        subs, note = review_gates.review_plan(prompt, subs)
+        if _only_existing_files(state.get("cwd"), subs):
+            # Every planned file already exists: no filename to typo-check,
+            # and the reviewed SPEC decides the scope. One model call saved.
+            note = "plan names only existing files — plan review skipped"
+        else:
+            subs, note = review_gates.review_plan(prompt, subs)
         if note:
             yield {"type": "thought", "role": "reviewer", "text": f"🔍 {note}"}
     except Exception as exc:  # noqa: BLE001
         log.debug("plan review skipped: %s", exc)
+    if early is not None:
+        state["early_spec_review"] = early
     state["subs"] = subs
     yield {"type": "subtasks", "items": [
         {"slug": s.get("slug") or f"sub-{i+1}",
@@ -86,15 +94,15 @@ def _write_spec(prompt: str, subs: list, cwd: str, state: dict):
     # SPEC REVIEW — check the spec before any code is built (contradictions,
     # ambiguity, missing cases, scope creep). Refines it if needed.
     try:
-        spec_md, note = review_gates.review_spec(prompt, spec_md)
+        spec_md, note = _spec_review(prompt, spec_md, state)
         if note:
             yield {"type": "thought", "role": "reviewer", "text": f"🔍 {note}"}
     except Exception as exc:  # noqa: BLE001
         log.debug("spec review skipped: %s", exc)
     state["spec_md"] = spec_md
     try:
-        with open(os.path.join(cwd, pkg._SPEC_MD), "w", encoding="utf-8") as fh:
-            fh.write(spec_md)
+        from aiforge_core.runtime.team_workspace import write_spec
+        write_spec(cwd, spec_md)
         yield {"type": "thought", "role": "planner",
                "text": f"Wrote SPEC.md ({len(subs)} subtasks) — the shared "
                        "requirements doc each subtask builds against."}
@@ -105,6 +113,49 @@ def _write_spec(prompt: str, subs: list, cwd: str, state: dict):
         yield {"type": "thought", "role": "planner",
                "text": f"⚠ SPEC.md write failed ({exc}) — subtasks still get "
                        "the spec in-context, but nothing is persisted to disk."}
+
+
+def _only_existing_files(cwd, subs: list) -> bool:
+    if not cwd:
+        return False
+    paths = [str(s.get("path") or "").strip().lstrip("/") for s in subs]
+    return bool(paths) and all(p and os.path.isfile(os.path.join(cwd, p))
+                               for p in paths)
+
+
+def _early_spec_review(prompt: str, subs: list):
+    """On a server with a spare slot, review the SPEC while the plan review
+    runs (the two are independent unless the plan review changes the plan).
+    Returns ``(spec_md, future)`` or None."""
+    if len(subs) < 2:
+        return None
+    try:
+        from aiforge_core.llm.slots import llm_slots
+        if llm_slots("doer") < 2:
+            return None
+        import concurrent.futures as _cf
+        import contextvars
+        spec_md = _pkg()._render_spec_md(prompt, subs)
+        ex = _cf.ThreadPoolExecutor(max_workers=1)
+        fut = ex.submit(contextvars.copy_context().run,
+                        review_gates.review_spec, prompt, spec_md)
+        ex.shutdown(wait=False)
+        return spec_md, fut
+    except Exception as exc:  # noqa: BLE001
+        log.debug("early spec review not started: %s", exc)
+        return None
+
+
+def _spec_review(prompt: str, spec_md: str, state: dict):
+    """The early review's answer when it reviewed this very spec, else a
+    review now."""
+    early = state.pop("early_spec_review", None)
+    if early is not None and early[0] == spec_md:
+        try:
+            return early[1].result()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("early spec review failed: %s", exc)
+    return review_gates.review_spec(prompt, spec_md)
 
 
 def _prepare_tree(cwd: str, subs: list):

@@ -178,6 +178,25 @@ def _hard_cap_modules(files: list[dict]) -> list[dict]:
     return files
 
 
+def _existing_repo_note(cwd: str | None) -> str:
+    """In an EXISTING project the "always add tests + a manifest" rule is
+    wrong: "fix money.py so the tests pass" planned a new pyproject.toml and a
+    rewrite of the very tests the user said not to touch."""
+    if not cwd:
+        return ""
+    try:
+        from ._reconcile import _is_greenfield
+        if _is_greenfield(cwd):
+            return ""
+    except Exception:  # noqa: BLE001
+        return ""
+    return ("\n\nEXISTING PROJECT — this overrides the ALWAYS-include rule: plan "
+            "ONLY the files the request changes or creates. Do NOT add a build "
+            "manifest, a new test file or an integration test unless the "
+            "request asks for one, and NEVER plan a file the request says not "
+            "to edit (e.g. 'do not edit the tests' → no test files).")
+
+
 def _architect(spec: str, *, cwd: str | None = None) -> list[dict]:
     """Orchestrator agent 2: design the file structure (disjoint files), guided
     by the repo's skills/workflows/rules. Returns [{path, purpose}, ...] — the
@@ -190,7 +209,8 @@ def _architect(spec: str, *, cwd: str | None = None) -> list[dict]:
         context = _architect_context(spec, cwd)
     except Exception as exc:  # noqa: BLE001
         log.debug("architect context gather failed: %s", exc)
-    user_msg = spec + (("\n\n" + context) if context else "")
+    user_msg = spec + (("\n\n" + context) if context else "") \
+        + _existing_repo_note(cwd)
     try:
         files, issues = _validate_plan(_ask_architect(user_msg))
         if issues:
@@ -285,12 +305,19 @@ def _ensure_git_workspace(cwd: str) -> str:
     """Make ``cwd`` a git repo with a committed baseline so worktrees can branch
     off it. Returns the base branch name."""
     os.makedirs(cwd, exist_ok=True)
-    if _git(["rev-parse", "--git-dir"], cwd).returncode != 0:
+    existing = _git(["rev-parse", "--git-dir"], cwd).returncode == 0
+    if not existing:
         _git(["init"], cwd)
         _git(["config", "user.email", "aiforge@local"], cwd)
         _git(["config", "user.name", "aiforge"], cwd)
-    # A fresh workspace is born with the agent's own artifacts gitignored.
-    ensure_artifact_gitignore(cwd)
+    if existing and not _is_managed_workspace(cwd):
+        # The user's own repo: their .gitignore is theirs — keep the agent's
+        # artifacts out through .git/info/exclude instead.
+        from aiforge_core.runtime.team_workspace import ensure_exclude
+        ensure_exclude(cwd)
+    else:
+        # A fresh workspace is born with the agent's own artifacts gitignored.
+        ensure_artifact_gitignore(cwd)
     # need at least one commit for `worktree add <base>` to resolve
     if _git(["rev-parse", "HEAD"], cwd).returncode != 0:
         readme = os.path.join(cwd, ".aiforge-workspace")

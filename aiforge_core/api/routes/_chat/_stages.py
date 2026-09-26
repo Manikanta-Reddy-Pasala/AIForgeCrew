@@ -12,6 +12,7 @@ from ._routing import (
     _pipeline_route,
     _quick_step_cap,
 )
+from ._team_route import _team_target_cwd
 
 
 def _looks_like_analysis(p: str) -> bool:
@@ -201,31 +202,6 @@ def _chat_enhancer_max_tokens() -> int:
     return max(64, _cap)
 
 
-def _team_target_cwd(prompt, history, cwd, rctx):
-    """The folder a team/build run works in: the one the user named (its git
-    root), else the session cwd — see runtime/team_target. A named folder that
-    does not exist ends the turn with a question instead of a build in an
-    invented path-shaped subfolder of the session workspace."""
-    from aiforge_core.runtime import team_target as _tt
-    tgt = _tt.resolve_team_target(_tt.user_texts(prompt, history), cwd)
-    if tgt.missing and not tgt.retargeted:
-        yield {"type": "message", "awaiting_input": True,
-               "text": _tt.clarify_text(tgt.missing)}
-        rctx["done"] = True
-        return cwd
-    if tgt.retargeted:
-        _af_log.info("team run targets the user-named folder %s (repo root %s)"
-                     " instead of %s", tgt.named, tgt.cwd, cwd)
-        note = f"Working in `{tgt.cwd}` — the folder named in your message"
-        if tgt.named != tgt.cwd:
-            note += f" (git root of `{tgt.named}`)"
-        if tgt.others:
-            note += "; also named (not the build target): " \
-                    + ", ".join(f"`{o}`" for o in tgt.others)
-        yield {"type": "thought", "role": "router", "text": note + "."}
-    return tgt.cwd
-
-
 def _dispatch_agent_route(_rd, _pp, prompt, cwd, session_id, history,
                           _with_resume, _path, _turn_t0, team, _resume_brief,
                           rctx):
@@ -238,9 +214,24 @@ def _dispatch_agent_route(_rd, _pp, prompt, cwd, session_id, history,
     if _rd.notice:
         yield {"type": "thought", "role": "router", "text": _rd.notice}
     if (_route_pipeline or team) and not _doc_task:
-        cwd = yield from _team_target_cwd(prompt, history, cwd, rctx)
+        cwd = yield from _team_target_cwd(prompt, history, cwd, rctx,
+                                          session_id,
+                                          sequential=not _route_pipeline)
         if rctx["done"]:
             return
+    yield from _dispatch_routes(_rd, _pp, prompt, cwd, session_id, history,
+                                _with_resume, _path, _turn_t0, team,
+                                _resume_brief, rctx)
+    if rctx["done"] and rctx.get("team_ws") is not None:
+        from aiforge_core.runtime import team_workspace as _tw
+        yield from _tw.close(rctx["team_ws"])
+
+
+def _dispatch_routes(_rd, _pp, prompt, cwd, session_id, history, _with_resume,
+                     _path, _turn_t0, team, _resume_brief, rctx):
+    """The doc-analysis, pipeline and sequential-team routes, in that order."""
+    _doc_task = _rd.doc_task
+    _route_pipeline = _rd.route_pipeline
     if _doc_task:
         yield from _doc_task_route(prompt, cwd, session_id, _with_resume, rctx)
         if rctx["done"]:

@@ -39,7 +39,8 @@ from ._stream_steer import (  # noqa: F401  # re-exported
     _steer_headings,
     _steering_drain,
 )
-from ._test_evidence import executed_tests, failed_tests
+from ._stream_guard import bind_plan_to_spec, dirty_overlap_stop, run_note, seal_run
+from ._test_evidence import executed_tests, failed_tests, go_packages_passed
 
 
 def _spec_runner(cwd: str, spec_md: str):
@@ -53,7 +54,8 @@ def _spec_runner(cwd: str, spec_md: str):
         # seen by subtasks that start AFTER the steer (sequential on local).
         spec = spec_md
         try:
-            p = os.path.join(cwd, _SPEC_MD)
+            from aiforge_core.runtime.team_workspace import spec_path
+            p = spec_path(cwd)
             if os.path.isfile(p):
                 with open(p, encoding="utf-8", errors="replace") as fh:
                     spec = fh.read()
@@ -184,12 +186,21 @@ def _green_verdict(cwd: str, output) -> str:
     n = executed_tests(output)
     if n:
         return f"✅ **Built — all {n} test{'s' if n != 1 else ''} pass.**"
+    pkgs = go_packages_passed(output) if n is None else 0
+    if pkgs:
+        return (f"✅ **Built — `go test` passed in {pkgs} package"
+                f"{'s' if pkgs != 1 else ''}** (it printed no per-test count).")
     if n == 0:
         return (f"⚠️ **Built — NO tests were run.** The test runner found no "
                 f"tests in `{cwd}`, so nothing checked this change.")
     return (f"⚠️ **Built — NO tests were run** that the check could count: it "
             f"finished cleanly in `{cwd}` but printed no test summary, so "
             "nothing confirms the change works.")
+
+
+def _tests_read_only(cwd: str) -> bool:
+    from ._protected import TESTS, rules_for
+    return TESTS in (rules_for(cwd).get("patterns") or [])
 
 
 def _build_verdict(ok, cwd: str, output: str | None = None) -> str:
@@ -204,6 +215,12 @@ def _build_verdict(ok, cwd: str, output: str | None = None) -> str:
         n = failed_tests(output)
         head = (f"{n} test{'s' if n != 1 else ''} failed" if n
                 else "some tests still fail")
+        if _tests_read_only(cwd):
+            return (f"⚠️ **Built — {head}.** Your tests were left exactly as "
+                    "they were, as you asked. Check whether the failing "
+                    "assertions contradict each other or the request — no "
+                    "implementation can pass two tests that want different "
+                    "results for the same input.")
         return (f"⚠️ **Built — {head}.** This may not be a code "
                 "defect: a local model sometimes writes incorrect tests, which "
                 "the reviewer flags + fixes where it can. Check the remaining "
@@ -279,6 +296,11 @@ def _finalize(cwd: str, subs: list, spec_md: str, agg: dict, start_sha: str,
     except Exception as exc:  # noqa: BLE001
         log.debug("integration report skipped: %s", exc)
     _clean_contract_sidecars(cwd)
+    if (yield from seal_run(cwd, start_sha)) and "ok" in res:
+        # A read-only file was put back: the last test run saw the changed
+        # copy, so its count would describe tests the user never had.
+        from ._reconcile._testrun import _project_test_output
+        res["ok"], res["output"] = _project_test_output(cwd)
 
     # Authoritative outcome from the reconcile's own test runner (matches
     # pytest); the report's ok can disagree — it uses a separate runner that may
@@ -299,7 +321,7 @@ def _finalize(cwd: str, subs: list, spec_md: str, agg: dict, start_sha: str,
     yield {"type": "message", "text":
            f"**Pipeline complete** — {agg.get('done', 0)}/{agg.get('total', 0)} "
            f"subtasks built + merged. {build_verdict}\n\nSPEC.md holds the "
-           "requirements each subtask built against."
+           "requirements each subtask built against." + run_note(cwd)
            + (integ_md if show_report else "")}
 
 
@@ -358,7 +380,7 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
         # Show the layer-1 spec (analyze → enhance) the planner split.
         yield {"type": "thought", "role": "enhancer", "text": prompt[:800]}
 
-    state: dict = {}
+    state: dict = {"cwd": cwd}
     yield from _plan_subtasks(prompt, subtasks, state)
     subs = state.get("subs") or []
     subs = yield from _anchor_paths(subs, cwd)
@@ -366,6 +388,12 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
         return
     yield from _write_spec(prompt, subs, cwd, state)
     spec_md = state["spec_md"]
+    yield from bind_plan_to_spec(subs, spec_md, cwd, state)
+    subs = state.get("subs") or []
+    if not subs:
+        return
+    if (yield from dirty_overlap_stop(cwd, subs)):
+        return
     yield from _prepare_tree(cwd, subs)
     yield from _announce_execution(subs)
 
@@ -376,8 +404,10 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
     # never a previous ticket's edits.
     start_sha = _commit_turn_baseline(cwd) or (
         _git(["rev-parse", "HEAD"], cwd).stdout or "").strip()
-    # B3 — surface a dirty-cwd warning before merging into it.
-    warn = _dirty_warning(cwd)
+    # B3 — surface a dirty-cwd warning before merging into it (a user-repo run
+    # works in its own clean worktree, so there is nothing to warn about).
+    from aiforge_core.runtime.team_workspace import for_cwd
+    warn = None if for_cwd(cwd) else _dirty_warning(cwd)
     if warn:
         yield {"type": "thought", "role": "system", "text": "⚠ " + warn}
 

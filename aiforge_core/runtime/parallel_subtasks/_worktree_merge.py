@@ -28,8 +28,10 @@ def _dirty_warning(cwd: str) -> str | None:
         # agent-artifact lines via ensure_artifact_gitignore BEFORE this check,
         # so on every default run the tree shows ` M .gitignore` and would
         # falsely warn. The agent's own gitignore edit isn't an operator change.
+        # The pipeline's own untracked SPEC.md made a clean repo warn; caches
+        # (__pycache__, .pytest_cache …) are in the excludes already.
         st = _pkg()._git(["status", "--porcelain", "--", ".", *_EXCLUDE_PATHSPECS,
-                   ":(exclude).gitignore"], cwd)
+                          ":(exclude).gitignore", ":(exclude)SPEC.md"], cwd)
     except Exception:  # noqa: BLE001
         return None
     if (st.stdout or "").strip():
