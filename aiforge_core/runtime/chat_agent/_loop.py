@@ -6,6 +6,7 @@ keeps working. Patch a helper in the ``_turn`` module that calls it.
 """
 from __future__ import annotations
 
+import json
 import os
 import time  # noqa: F401  # tests patch time.sleep through this module
 from collections.abc import Callable, Iterator
@@ -262,6 +263,13 @@ def _gated_action(st, step, name, args, sig, n, cwd, session_id):
     if _note:
         yield {"type": "message", "role": "system", "supplementary": True,
                "text": _note}
+    if isinstance(result, dict) and result.get("error") == "changed_users_checkout":
+        # The run pauses for the user (the team route asks); this agent
+        # stops here instead of carrying on.
+        st.convo.append({"role": "user",
+                         "content": f"OBSERVATION: {json.dumps(result)}"})
+        yield {"type": "tool", "name": name, "args": args, "result": result}
+        return "return"
     return (yield from _post_tool(st, name, args, result, cwd, sig, n,
                                   st.long_chain_help, st.bundle))
 

@@ -23,14 +23,36 @@ _READERS = frozenset({
     "dirname", "test", "[", "echo", "printf", "true", "jq", "bat", "nl",
     "cut", "tr", "column", "od", "strings",
 })
-#: Readers unless an option makes them write in place / to a file.
+#: Readers only when no option (alone or in a cluster such as ``-Ei``) and no
+#: script construct makes them write: sed ``-i`` / ``w file`` / ``e``,
+#: awk ``-i inplace`` / ``> "f"`` / ``| "cmd"`` / ``system(``, sort ``-o``,
+#: yq ``-i``.
 _WRITE_FLAGS = {
-    "sed": ("-i", "--in-place"),
-    "yq": ("-i", "--inplace"),
-    "sort": ("-o", "--output"),
-    "awk": ("-i", "--include"),          # gawk -i inplace
-    "gawk": ("-i", "--include"),
+    "sed": ("i", ("--in-place",)),
+    "gsed": ("i", ("--in-place",)),
+    "awk": ("i", ("--include",)),
+    "gawk": ("i", ("--include",)),
+    "sort": ("o", ("--output",)),
+    "yq": ("i", ("--inplace",)),
 }
+_SCRIPT_WRITES = re.compile(
+    r"[>|]|system\s*\(|(?:^|[;{}\s\d$])[we]\s|/[gpIiMm0-9]*[we](?:\s|$)")
+_SCRIPTED = frozenset({"sed", "gsed", "awk", "gawk"})
+
+
+def _writes_by_flag(head: str, args: list[str]) -> bool:
+    letter, longs = _WRITE_FLAGS[head]
+    for t in args:
+        if t.startswith(longs):
+            return True
+        if t.startswith("-") and not t.startswith("--") and letter in t[1:]:
+            return True
+        if head in _SCRIPTED and not t.startswith("-") \
+                and _SCRIPT_WRITES.search(t):
+            return True
+    return False
+
+
 #: Readers with an optional OUTPUT operand (``uniq in out``, ``xxd in out``).
 _ONE_OPERAND = frozenset({"uniq", "xxd"})
 #: ``find`` reads unless one of these makes it act on what it finds.
@@ -80,9 +102,7 @@ def _reads_only(rest: list[str], hit_idx: set) -> bool:
     if head in _READERS:
         return True
     if head in _WRITE_FLAGS:
-        flags = _WRITE_FLAGS[head]
-        return not any(t == f or t.startswith(f) for t in rest[1:]
-                       for f in flags)
+        return not _writes_by_flag(head, rest[1:])
     if head in _ONE_OPERAND:
         return (len([t for t in rest[1:] if not t.startswith("-")]) <= 1
                 and "-r" not in rest)

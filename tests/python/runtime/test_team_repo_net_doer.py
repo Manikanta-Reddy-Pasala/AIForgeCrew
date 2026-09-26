@@ -1,4 +1,4 @@
-"""The team_repo_net safety net on the Doer's own shell tools — the sequential
+"""The team_repo_net check on the Doer's own shell tools — the sequential
 ADK team and the graph-pipeline Doer call run_shell / bash / command_* through
 ADK FunctionTools, not the chat loop."""
 from __future__ import annotations
@@ -36,6 +36,7 @@ def _env(tmp_path, monkeypatch):
     tw._RUNS.clear()
     life._EXCL.clear()
     net._PENDING.clear()
+    net._ALERTS.clear()
 
 
 @pytest.fixture
@@ -73,16 +74,17 @@ def _state(repo):
     "git -C {repo} commit -qam agent",
     "env -C {repo} sh -c 'echo x > f.txt'",
 ])
-def test_doer_shell_tools_put_the_repo_back(run, tool, tmpl):
+def test_doer_shell_tools_report_and_write_nothing(run, tool, tmpl):
     repo, ws = run
     before = _state(repo)
     result = _tool(tool).func(cmd=tmpl.format(repo=repo))
     if result.get("error") != "changed_users_checkout":
         assert _state(repo) == before
         pytest.skip("the command had no effect on this platform")
-    assert _state(repo) == before
-    assert ws.cwd in result["hint"] and "put back" in result["note"]
-    assert not os.path.exists(os.path.join(repo, "f.txt"))
+    assert result["changed"] or result["ref_moved"]
+    assert ws.cwd in result["hint"] and "Nothing was reverted" in result["note"]
+    assert net.alert_for(ws.cwd)                       # the run will pause
+    assert _state(repo)[2] == USER_EDIT                # never touched
 
 
 def test_a_doer_command_in_the_worktree_is_untouched(run):

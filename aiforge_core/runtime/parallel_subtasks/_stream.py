@@ -371,7 +371,7 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
     build/test subprocesses are killed."""
     import queue as _queue
 
-    cancelled = _cancel_checker_for(session_id)
+    cancelled = _cancel_checker_for(session_id, cwd)
     _arm_session(session_id)
     if cancelled():
         yield {"type": "message", "text": "Stopped before the run started."}

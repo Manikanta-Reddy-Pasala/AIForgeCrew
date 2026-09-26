@@ -93,8 +93,10 @@ def _apply_steer(text: str, subs: list, cwd: str) -> str:
     return feedback
 
 
-def _cancel_checker_for(session_id):
+def _cancel_checker_for(session_id, cwd=None):
     def _cancelled() -> bool:
+        if cwd is not None and _repo_alert(cwd):
+            return True        # a command changed the user's checkout: pause
         if session_id is None:
             return False
         try:
@@ -103,6 +105,14 @@ def _cancel_checker_for(session_id):
         except Exception:  # noqa: BLE001
             return False
     return _cancelled
+
+
+def _repo_alert(cwd) -> bool:
+    try:
+        from aiforge_core.runtime import team_repo_net
+        return team_repo_net.alert_for(cwd) is not None
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _steering_drain(session_id, subs: list, cwd: str):

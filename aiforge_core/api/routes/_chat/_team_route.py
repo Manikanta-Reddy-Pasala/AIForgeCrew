@@ -203,10 +203,30 @@ def watch(rctx, events):
             if isinstance(ev, dict) and ev.get("awaiting_input"):
                 rctx["awaiting"] = True
             yield ev
+            pause = _repo_changed_pause(rctx)
+            if pause is not None:
+                # A command changed the user's real checkout: stop the run
+                # here and ask (team_repo_net) — nothing was reverted.
+                rctx["awaiting"] = rctx["done"] = True
+                yield pause
+                return
     finally:
         close = getattr(events, "close", None)
         if close is not None:
             close()
+
+
+def _repo_changed_pause(rctx):
+    ws = rctx.get("team_ws")
+    if ws is None:
+        return None
+    from aiforge_core.runtime import team_repo_net
+    alert = team_repo_net.take_alert(ws) if team_repo_net.alert_for(
+        ws.cwd) else None
+    if not alert:
+        return None
+    return {"type": "message", "awaiting_input": True,
+            "text": team_repo_net.pause_text(ws, alert)}
 
 
 def _stopped(session_id) -> bool:
