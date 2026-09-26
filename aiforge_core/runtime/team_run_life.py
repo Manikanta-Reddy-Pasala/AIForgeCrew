@@ -215,7 +215,9 @@ def park(session_id, ws, reason: str) -> str:
         log.warning("parking %s: %s", ws.cwd, exc)
     ws.parked = True
     from aiforge_core.runtime import team_repo_net
-    team_repo_net.reset(ws)          # no leftover alert / job pauses "continue"
+    # no leftover alert / job pauses "continue"; the halt itself stays until
+    # resume() or close, so a driver still in a model call cannot carry on
+    team_repo_net.reset(ws, keep_halt=True)
     with _LOCK:
         old = _PARKED.pop(str(session_id), None)
         _PARKED[str(session_id)] = (ws, reason, time.time())

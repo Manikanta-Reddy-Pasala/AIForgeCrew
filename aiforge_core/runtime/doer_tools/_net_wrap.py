@@ -24,8 +24,10 @@ SHELL_CAPABLE = frozenset({
     "command_kill", "serve", "stop_service", "execute_ipython_cell",
     "run_tests", "typecheck", "format", "project", "ensure_runtime",
     "git_commit", "commit", "git_add_commit", "github_pr", "mcp",
-    "delegate_to_agent", "task",
 })
+# Not delegate_to_agent / task: a delegation runs for minutes, and one
+# before/after comparison over that span would blame the user's own edits on
+# the team. The tools the delegate itself calls are wrapped one by one.
 
 
 def _cwd() -> str:

@@ -126,7 +126,10 @@ def test_a_pause_stops_the_agent_thread_before_the_run_is_parked(
     assert os.path.exists(os.path.join(repo, "stray.txt"))   # not reverted
     pause = [e for e in evs if e.get("awaiting_input")]
     assert pause and "stray.txt" in pause[-1]["text"]
-    assert net.alert_for(ws.cwd) is None and not net.halted(ws)   # cleared
+    assert net.alert_for(ws.cwd) is None          # the alert is cleared
+    # the halt holds while parked: a driver still stuck in a model call
+    # must find the run stopped when it returns
+    assert net.halted(ws)
 
 
 def test_a_halted_run_refuses_every_further_doer_call(repo, monkeypatch):
@@ -263,3 +266,19 @@ def test_awk_comparisons_are_reads_script_files_are_not(repo, cmd, writes):
     from aiforge_core.runtime.team_repo_guard import touches
     assert bool(touches(cmd.format(r=repo), "/var/empty",
                         life.fold(repo))) is writes
+
+
+def test_park_keeps_the_halt_and_resume_clears_it():
+    ws = SimpleNamespace(cwd="/tmp/aiforge-test-run-x")
+    net._HALTED.add(ws.cwd)
+    net.reset(ws, keep_halt=True)
+    assert ws.cwd in net._HALTED
+    net.reset(ws)
+    assert ws.cwd not in net._HALTED
+
+
+def test_a_whole_delegation_is_not_one_net_window():
+    from aiforge_core.runtime.doer_tools._net_wrap import SHELL_CAPABLE
+    assert "delegate_to_agent" not in SHELL_CAPABLE
+    assert "task" not in SHELL_CAPABLE
+    assert "run_shell" in SHELL_CAPABLE

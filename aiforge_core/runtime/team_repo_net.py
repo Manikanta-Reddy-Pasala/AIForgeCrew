@@ -355,16 +355,19 @@ def halted_session(session_id) -> bool:
                for w in runs)
 
 
-def reset(ws) -> None:
+def reset(ws, keep_halt: bool = False) -> None:
     """Forget the run's job records, alerts and pause — at park, resume and
     close. On "continue" every later command takes a fresh snapshot of the
-    user's checkout as it is now, so only NEW changes pause again."""
+    user's checkout as it is now, so only NEW changes pause again.
+    ``keep_halt`` (park): a driver thread still stuck in a model call when
+    the run is parked must keep finding the run halted when it returns."""
     if ws is None:
         return
     with _LOCK:
         _PENDING.pop(ws.cwd, None)
         _ALERTS.pop(ws.cwd, None)
-        _HALTED.discard(ws.cwd)
+        if not keep_halt:
+            _HALTED.discard(ws.cwd)
 
 
 def alert_for(cwd) -> dict | None:
