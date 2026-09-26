@@ -126,7 +126,8 @@ def _read_sse_response(conn, url: str, sink, payload: bytes | None = None,
     token, or between chunks, past its bound raises the retryable
     :class:`LLMStreamStalled` instead of waiting out the read timeout."""
     from ._stream_health import StreamWatch
-    watch = StreamWatch(getattr(conn, "sock", None), payload, read_timeout)
+    watch = StreamWatch(getattr(conn, "sock", None), payload, read_timeout,
+                        url=url.rsplit("/chat/completions", 1)[0])
     watch.arm_first_token()
     try:
         return _read_sse_watched(conn, url, sink, watch)

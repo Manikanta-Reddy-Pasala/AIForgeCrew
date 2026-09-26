@@ -136,6 +136,12 @@ def _one_pass(seed_msg: str, *, cwd: str, role: str, max_steps, complete_fn,
             out.last_msg = ev["text"]        # last FINAL / message text wins
         elif etype == "error" and ev.get("text"):
             out.err_text = ev["text"]        # fallback outcome if no message
+        elif etype == "stopped" and ev.get("reason") == "llm_request_fails":
+            # An LLM ISSUE (the model is up but keeps failing the request):
+            # the attempt fails with that reason, not as a Doer outcome.
+            from aiforge_core.llm.model_outage import LLMRequestFailing
+            raise LLMRequestFailing("", 0, None, str(ev.get("error") or
+                                                     "LLM issue"))
         elif etype == "done":
             return
 
@@ -224,6 +230,9 @@ def run_text_doer(
         result.update(_no_edit_verdict(outcome, out.edits))
     except Exception as exc:  # noqa: BLE001 — never crash the pipeline
         result["doer_outcome"] = f"text-doer error: {exc}"
+        from aiforge_core.llm import model_outage
+        if model_outage.issue(exc) is not None:
+            result["llm_issue"] = str(exc)
     return result
 
 
@@ -316,6 +325,11 @@ async def _text_doer_node(ctx):  # type: ignore[no-untyped-def]
                 os.environ.pop("AIFORGE_WORKSPACE_DIR", None)
             else:
                 os.environ["AIFORGE_WORKSPACE_DIR"] = _prev_ws
+    if out.get("llm_issue"):
+        # The model is up but keeps failing the request: the attempt fails
+        # with reason llm_request_fails (the pipeline abort names it).
+        from aiforge_core.llm.model_outage import LLMRequestFailing
+        raise LLMRequestFailing("", 0, None, out["llm_issue"])
     state["doer_outcome"] = out.get("doer_outcome", "")
     # Only set a signal when its tool actually ran (value not None) — matches
     # the native after_tool_callback, which never writes a signal for a tool

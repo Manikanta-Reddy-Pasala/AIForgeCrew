@@ -123,14 +123,55 @@ def _stream_enabled() -> bool:
         "0", "false", "no", "off")
 
 
-def _acquire_slot(sem, session_id) -> bool:
+_QUEUED_TEXT = ("⏳ queued — every generation slot is in use by other chats; "
+                "this one starts as soon as a slot frees (Stop ends it)")
+_QUEUED_AFTER_S = 0.5
+
+
+def _acquire_slot(sem, session_id):
     """A generation slot, waited for cancellably. At the cap, a fresh
-    generation blocks until a prior (possibly abandoned) one finishes."""
+    generation blocks until a prior (possibly abandoned) one finishes — and
+    says so once (a "queued" thought) instead of sitting there silently.
+    Returns True when held, False on Stop."""
+    import time as _t
     from aiforge_core.runtime import chat_cancel
+    t0, told = _t.monotonic(), False
     while not sem.acquire(timeout=0.2):
         if chat_cancel.is_cancelled(session_id):
             return False
+        if not told and _t.monotonic() - t0 >= _QUEUED_AFTER_S:
+            told = True
+            yield {"type": "thought", "role": "system", "text": _QUEUED_TEXT,
+                   "llm_wait": {"state": "queued"}}
     return True
+
+
+def _slot_hooks(sem, box, ev, waits):
+    """While the call WAITS for a model that is down (llm/model_wait) it does
+    not hold a generation slot: three chats waiting on a dead local endpoint
+    must not block every other chat, healthy cloud roles included. The slot is
+    taken again once the model is back (queued, cancellably, if all are
+    busy)."""
+    def _on_wait():
+        if box.get("held"):
+            box["held"] = False
+            sem.release()
+
+    def _on_back():
+        import time as _t
+        from aiforge_core.llm import model_wait
+        t0, told = _t.monotonic(), False
+        while not box.get("held"):
+            if sem.acquire(timeout=0.2):
+                box["held"] = True
+                return
+            if ev.is_set() or model_wait.cancel_reason():
+                return           # the re-sent call aborts on the same cancel
+            if not told and waits is not None \
+                    and _t.monotonic() - t0 >= _QUEUED_AFTER_S:
+                told = True
+                waits.put({"text": _QUEUED_TEXT, "state": "queued"})
+    return _on_wait, _on_back
 
 
 def _start_call(complete_fn, role, convo, sem, deltas, waits=None):
@@ -146,6 +187,8 @@ def _start_call(complete_fn, role, convo, sem, deltas, waits=None):
     # the Langfuse session trace). Carry it over explicitly.
     import contextvars as _cv
     _ctx = _cv.copy_context()
+
+    box["held"] = True           # the caller acquired the slot for us
 
     def _call():
         # The role this generation runs as — so the meter's by_role breakdown
@@ -163,9 +206,10 @@ def _start_call(complete_fn, role, convo, sem, deltas, waits=None):
             _client.set_cancel_event(ev)
             if deltas is not None:
                 _client.set_delta_sink(lambda kind, text: deltas.put((kind, text)))
+            from aiforge_core.llm import model_wait
             if waits is not None:
-                from aiforge_core.llm import model_wait
                 model_wait.bind_status_sink(waits.put)
+            model_wait.bind_wait_hooks(*_slot_hooks(sem, box, ev, waits))
         except Exception:  # noqa: BLE001
             pass
         try:
@@ -173,7 +217,8 @@ def _start_call(complete_fn, role, convo, sem, deltas, waits=None):
         except Exception as exc:  # noqa: BLE001 — surfaced on the main thread
             box["err"] = exc
         finally:
-            sem.release()        # free the slot when the call REALLY finishes
+            if box.pop("held", False):
+                sem.release()    # free the slot when the call REALLY finishes
 
     t = _th.Thread(target=lambda: _ctx.run(_call), daemon=True)
     t.start()
@@ -190,7 +235,7 @@ def _complete_live(complete_fn, role, convo, session_id, stream: bool = True):
     if session_id is None:
         return complete_fn(role, convo)
     sem = _gen_sem()
-    if not _acquire_slot(sem, session_id):
+    if not (yield from _acquire_slot(sem, session_id)):
         return _CANCELLED
     import queue as _q
     deltas = _q.SimpleQueue() if stream and _stream_enabled() else None

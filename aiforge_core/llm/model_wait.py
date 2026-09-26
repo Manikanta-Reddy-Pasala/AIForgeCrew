@@ -21,6 +21,11 @@ Knobs:
   AIFORGE_LLM_WAIT_STATUS_S     once the gap is at its cap, repeat the status
                                 line this often (default 300).
 
+  AIFORGE_LLM_SAME_REQUEST_FAILS  the endpoint answers but THIS request failed
+                                that many times in a row: an LLM issue, not an
+                                outage — :class:`LLMRequestFailing` (default 4;
+                                see llm/request_health).
+
 Cancelled by: Stop on the chat session (the client's cancel token, the session
 cancel flag, a worker's stop event), a scope bound with :func:`scope` (a ticket
 whose claim was lost or that was cancelled), :func:`shutdown` (process exit).
@@ -38,30 +43,38 @@ the work, and never fail it either (their callers already fall back).
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import contextvars
 import logging
 import os
-import threading
 import time
 from typing import Any, Callable
 
-from . import model_outage
+from . import model_outage, request_health
+from ._model_probe import probe  # noqa: F401 — tests patch model_wait.probe
+from ._wait_scope import (  # noqa: F401 — the public surface lives here too
+    _HOOKS,
+    _OPTIONAL,
+    _SHUTDOWN,
+    _SINKS,
+    WAITED_ATTR,
+    LLMRequestFailing,
+    _reset_for_tests,
+    bind_status_sink,
+    bind_wait_hooks,
+    cancel_reason,
+    optional,
+    scope,
+    scoped,
+    shutdown,
+    side_call,
+    status_sink,
+    was_waited,
+)
 from .client._errors import _LLMCancelled
 
 log = logging.getLogger("aiforge.llm.model_wait")
 
 _SCHEDULE = (2.0, 5.0, 10.0, 30.0)
 _SLICE_S = 0.25
-_SHUTDOWN = threading.Event()
-
-# Bound per thread/task: extra cancel sources, status sinks, the no-wait flag.
-_SCOPES: contextvars.ContextVar[tuple] = contextvars.ContextVar(
-    "aiforge_model_wait_scopes", default=())
-_SINKS: contextvars.ContextVar[tuple] = contextvars.ContextVar(
-    "aiforge_model_wait_sinks", default=())
-_OPTIONAL: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "aiforge_model_wait_optional", default=False)
 
 
 class ModelWaitCancelled(_LLMCancelled):
@@ -114,134 +127,6 @@ def delays(cap: float | None = None):
         yield cap
 
 
-# ── scopes: cancel sources and status sinks ────────────────────────────────
-
-@contextlib.contextmanager
-def scope(cancel: "threading.Event | Callable[[], bool] | None" = None,
-          reason: str = "cancelled"):
-    """Cancel every model wait inside this block when ``cancel`` fires."""
-    tok = _SCOPES.set(_SCOPES.get() + ((cancel, reason),))
-    try:
-        yield
-    finally:
-        _SCOPES.reset(tok)
-
-
-@contextlib.contextmanager
-def status_sink(fn: Callable[[dict], Any]):
-    """``fn(status)`` receives every status change of waits inside the block."""
-    tok = _SINKS.set(_SINKS.get() + (fn,))
-    try:
-        yield
-    finally:
-        _SINKS.reset(tok)
-
-
-def bind_status_sink(fn: Callable[[dict], Any]) -> None:
-    """Add ``fn`` to this thread's sinks for the rest of its life (a worker
-    thread that has no ``with`` block around its call)."""
-    _SINKS.set(_SINKS.get() + (fn,))
-
-
-@contextlib.contextmanager
-def optional():
-    """Calls inside do not wait for the model — they fail at once."""
-    tok = _OPTIONAL.set(True)
-    try:
-        yield
-    finally:
-        _OPTIONAL.reset(tok)
-
-
-def scoped(fn: Callable, cancel=None, reason: str = "stopped") -> Callable:
-    """``fn`` wrapped to run under :func:`scope` — for a worker-pool thread,
-    which does not inherit the submitting thread's context (so neither its
-    Stop nor its scopes): pass the cancel check explicitly."""
-    def _run(*a, **k):
-        with scope(cancel, reason):
-            return fn(*a, **k)
-    return _run
-
-
-def shutdown() -> None:
-    """Process is exiting: every wait ends with :class:`ModelWaitCancelled`."""
-    _SHUTDOWN.set()
-
-
-def _reset_for_tests() -> None:
-    _SHUTDOWN.clear()
-
-
-def _fired(src) -> bool:
-    try:
-        if src is None:
-            return False
-        if hasattr(src, "is_set"):
-            return bool(src.is_set())
-        return bool(src())
-    except Exception:  # noqa: BLE001 — a broken check never cancels
-        return False
-
-
-def cancel_reason() -> str | None:
-    """Why the wait must end now, or None to keep waiting."""
-    if _SHUTDOWN.is_set():
-        return "shutting down"
-    for src, why in _SCOPES.get():
-        if _fired(src):
-            return why
-    try:
-        from aiforge_core.llm.client._http import _CANCEL
-        if _fired(_CANCEL.get()):
-            return "stopped"
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        from aiforge_core.runtime import run_interrupt
-        if _fired(run_interrupt._stop_event.get()):
-            return "stopped"
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        from aiforge_core.runtime import chat_cancel
-        sid = chat_cancel.active()
-        if sid is not None and chat_cancel.is_cancelled(sid):
-            return "stopped"
-    except Exception:  # noqa: BLE001
-        pass
-    return None
-
-
-# ── the probe ──────────────────────────────────────────────────────────────
-
-def probe(url: str, api_key: str = "", timeout_s: float = 5.0) -> bool:
-    """Does the endpoint answer at all? Any HTTP answer below 500 (other than
-    429) counts: the server is there, the retried call will say the rest."""
-    import urllib.error
-    import urllib.request
-    base = str(url or "").rstrip("/")
-    if not base:
-        return False
-    req = urllib.request.Request(
-        f"{base}/models", headers={"Authorization": f"Bearer {api_key}",
-                                   "Accept": "application/json"})
-    ctx = None
-    if base.lower().startswith("https://"):
-        try:
-            from aiforge_core.llm._ssl import context_for
-            ctx = context_for(base)
-        except Exception:  # noqa: BLE001
-            ctx = None
-    try:
-        with urllib.request.urlopen(req, timeout=timeout_s, context=ctx) as resp:
-            resp.read(1 << 16)
-            return True
-    except urllib.error.HTTPError as exc:
-        return exc.code < 500 and exc.code != 429
-    except Exception:  # noqa: BLE001 — refused, DNS, timeout, TLS: still down
-        return False
-
-
 def _fmt(seconds: float) -> str:
     s = int(max(0, seconds))
     if s < 60:
@@ -259,7 +144,8 @@ class Waiter:
 
     def __init__(self, url: str, *, api_key: str = "", model: str = "",
                  what: str = "", sleep: Callable[[float], None] | None = None,
-                 probe_fn: Callable[[str, str], bool] | None = None) -> None:
+                 probe_fn: Callable[[str, str], bool] | None = None,
+                 health: "request_health.RequestHealth | None" = None) -> None:
         self.url = str(url or "")
         self.api_key = api_key or ""
         self.model = model or ""
@@ -273,6 +159,7 @@ class Waiter:
         self._last_gap = -1.0
         self._sleep = sleep
         self._probe = probe_fn or (lambda u, k: probe(u, k))
+        self.health = health or request_health.RequestHealth()
 
     # — classification ——————————————————————————————————————————————
     def waitable(self, exc: BaseException) -> bool:
@@ -308,6 +195,10 @@ class Waiter:
             text = f"⚠ gave up waiting for the model at {url} after {_fmt(down)}"
         elif state == "cancelled":
             text = f"⏹ stopped waiting for the model at {url}"
+        elif state == "resend":
+            text = (f"⟳ the model at {url} is up but this request failed "
+                    f"({self.health.total()}/{request_health.same_request_fails()})"
+                    " — sending it again")
         else:
             text = (f"⏸ waiting for model at {url} (down {_fmt(down)}, "
                     f"next probe {_fmt(next_s)})")
@@ -355,6 +246,10 @@ class Waiter:
         bound = wait_max_s()
         if bound > 0 and self.waited + gap > bound:
             self._emit("gave_up", force=True)
+            try:
+                setattr(exc, WAITED_ATTR, True)
+            except Exception:  # noqa: BLE001 — an immutable exception
+                pass
             raise exc
         self._gap = gap
         self._emit("waiting", gap)
@@ -370,38 +265,96 @@ class Waiter:
                 pass
         return up
 
-    def wait(self, exc: BaseException) -> None:
+    # — endpoint up, this request failing (llm/request_health) —————————
+    def _judge(self, exc: BaseException) -> bool:
+        """Count ``exc`` against the request when the endpoint is UP (it
+        answers straight after the failure) or this was a re-send made after
+        it came back. True = counted (re-send without an outage wait). Raises
+        :class:`LLMRequestFailing` once the request has failed too often."""
+        h = self.health
+        if model_outage.explicit_busy(exc) or not model_outage.request_bound(exc):
+            return False        # the endpoint's state, or a connect failure
+        if model_outage.is_stall(exc) and h.stalls > h.stalls_seen:
+            h.stalls_seen = h.stalls            # counted by the stream watch
+            counted = True
+        else:
+            counted = h.resent or self._after_probe(
+                self._probe(self.url, self.api_key))
+            if counted:
+                h.fails += 1
+        if counted and h.total() >= request_health.same_request_fails():
+            log.warning("llm.request_fails url=%s n=%d err=%.200s", self.url,
+                        h.total(), exc)
+            raise LLMRequestFailing(self.url, h.total(), exc) from exc
+        return counted
+
+    def _resend_gap(self, exc: BaseException) -> float:
+        """Before re-sending a request the endpoint failed while up: none after
+        a stall (its next send already waits twice as long), else a short
+        backoff."""
+        self._emit("resend", force=True)
+        if model_outage.is_stall(exc):
+            return 0.0
+        return min(probe_max_s(), next(delays()) * max(1, self.health.fails))
+
+    def _hook(self, i: int) -> None:
+        for pair in _HOOKS.get():
+            try:
+                pair[i]()
+            except Exception:  # noqa: BLE001 — a hook never breaks the wait
+                log.debug("llm.wait hook failed", exc_info=True)
+
+    def wait(self, exc: BaseException) -> bool:
         """Block until the endpoint answers. Raises ``exc`` itself when it is
         not an outage (or the bound runs out), :class:`ModelWaitCancelled` on
-        a cancel."""
+        a cancel, :class:`LLMRequestFailing` when the endpoint is up but this
+        request keeps failing. True when the failure was counted against the
+        request (endpoint up), False after a wait for a down endpoint."""
         if not self.waitable(exc):
             raise exc
-        while True:
-            gap = self._next_gap(exc)
-            self._sleep_cancellable(gap, exc)
-            self.waited += gap
-            if self._after_probe(self._probe(self.url, self.api_key)):
-                return
+        if self._judge(exc):
+            self._sleep_cancellable(self._resend_gap(exc), exc)
+            self.health.resent = True
+            return True
+        self._hook(0)
+        try:
+            while True:
+                gap = self._next_gap(exc)
+                self._sleep_cancellable(gap, exc)
+                self.waited += gap
+                if self._after_probe(self._probe(self.url, self.api_key)):
+                    self.health.resent = True
+                    return False
+        finally:
+            self._hook(1)
 
-    async def await_wait(self, exc: BaseException) -> None:
+    async def await_wait(self, exc: BaseException) -> bool:
         """:meth:`wait` for the event loop: sleeps without blocking it."""
         if not self.waitable(exc):
             raise exc
         loop = asyncio.get_running_loop()
+        if await loop.run_in_executor(None, self._judge, exc):
+            await self._async_sleep(self._resend_gap(exc), exc)
+            self.health.resent = True
+            return True
         while True:
             gap = self._next_gap(exc)
-            end = time.monotonic() + gap
-            while True:
-                left = end - time.monotonic()
-                if left <= 0:
-                    break
-                await asyncio.sleep(min(_SLICE_S, left))
-                self._check_cancel(exc)
+            await self._async_sleep(gap, exc)
             self.waited += gap
             up = await loop.run_in_executor(
                 None, lambda: self._probe(self.url, self.api_key))
             if self._after_probe(up):
+                self.health.resent = True
+                return False
+
+    async def _async_sleep(self, gap: float, exc: BaseException) -> None:
+        end = time.monotonic() + gap
+        while True:
+            self._check_cancel(exc)
+            left = end - time.monotonic()
+            if left <= 0:
                 return
+            await asyncio.sleep(min(_SLICE_S, left))
 
     def _check_cancel(self, exc: BaseException) -> None:
         why = cancel_reason()
@@ -442,20 +395,29 @@ def call_with_wait(call: Callable[[], Any], *, url: str = "",
     generation budget (call_meter's step counter) is put back after each one,
     so a model that was down for an hour does not leave the step with no
     retries for a real bad answer afterwards. ``endpoint()`` → ``(url, key,
-    model)`` is asked only once a call has failed."""
+    model)`` is asked only once a call has failed.
+
+    Every send of the request shares one llm/request_health record: a stall
+    makes the next send's stream bounds longer, and a request the endpoint
+    keeps failing while UP ends in :class:`LLMRequestFailing` (those sends DO
+    spend the step's budget — they were real generations)."""
     waiter: Waiter | None = None
+    health = request_health.RequestHealth()
     counter = _step_counter()
     spent0 = int(counter.get("n") or 0) if counter is not None else 0
     while True:
         try:
-            out = call()
+            with request_health.bind(health):
+                out = call()
         except Exception as exc:
             if waiter is None:
                 if endpoint is not None:
                     url, api_key, model = endpoint()
-                waiter = Waiter(url, api_key=api_key, model=model, what=what)
-            waiter.wait(exc)
-            if counter is not None:
+                waiter = Waiter(url, api_key=api_key, model=model, what=what,
+                                health=health)
+            if waiter.wait(exc):
+                spent0 = int(counter.get("n") or 0) if counter is not None else 0
+            elif counter is not None:
                 counter["n"] = spent0
             continue
         if waiter is not None:
@@ -463,6 +425,8 @@ def call_with_wait(call: Callable[[], Any], *, url: str = "",
         return out
 
 
-__all__ = ["ModelWaitCancelled", "Waiter", "call_with_wait", "cancel_reason",
-           "delays", "optional", "probe", "probe_max_s", "scope", "shutdown",
-           "status_sink", "bind_status_sink", "wait_max_s"]
+__all__ = ["ModelWaitCancelled", "LLMRequestFailing", "Waiter", "WAITED_ATTR",
+           "call_with_wait", "cancel_reason", "delays", "optional", "probe",
+           "probe_max_s", "scope", "scoped", "shutdown", "side_call",
+           "status_sink", "bind_status_sink", "bind_wait_hooks", "was_waited",
+           "wait_max_s"]

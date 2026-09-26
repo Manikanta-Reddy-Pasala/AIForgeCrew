@@ -76,6 +76,10 @@ def _drive_doer(msg: str, worktree: str, own_scope, complete_fn) -> dict:
                                  scope_globs=own_scope, strict_finish=True):
             if ev.get("type") == "error":
                 return {"ok": False, "error": ev.get("text")}
+            if ev.get("type") == "stopped" \
+                    and ev.get("reason") == "llm_request_fails":
+                return {"ok": False, "error": ev.get("error"),
+                        "reason": "llm_request_fails"}
             if ev.get("type") == "message" and not ev.get("awaiting_input"):
                 # The runaway-safety-cap stop also emits a plain message — that
                 # is a FAILURE (the Doer thrashed without finishing), not success.
@@ -251,7 +255,9 @@ def run_subtasks_parallel(ticket, *, run_one=None) -> dict:
         return {"ok": False, "error": "already running (claimed by another run)"}
     from aiforge_core.tickets.lease import hold_claim, worktree_lock
     _stack = contextlib.ExitStack()
-    _stack.enter_context(hold_claim(tid))
+    # The claim's `lost` event (cancelled / taken over) is the run's cancel:
+    # subtasks stop, and their model waits end, when it fires.
+    _lost = _stack.enter_context(hold_claim(tid))
     _root = _root_identifier_of(ticket)
     if not _stack.enter_context(worktree_lock(_root)):
         _stack.close()
@@ -271,7 +277,8 @@ def run_subtasks_parallel(ticket, *, run_one=None) -> dict:
         agg = run_parallel(wt, base_branch, getattr(ticket, "id", None),
                            subs, run_one or _default_subtask_runner(),
                            validate_one=default_validate_one,
-                           integration_test=default_integration_test)
+                           integration_test=default_integration_test,
+                           should_cancel=_claim_cancel(_lost))
         _emit(getattr(ticket, "id", None), "*", "parallel_review",
               agg.get("review", ""),
               {k: agg.get(k) for k in ("total", "done", "validated", "failed",
@@ -285,6 +292,13 @@ def run_subtasks_parallel(ticket, *, run_one=None) -> dict:
         _stack.close()
         with _INFLIGHT_LOCK:
             _INFLIGHT.discard(tid)
+
+
+def _claim_cancel(lost):
+    """A should_cancel check from hold_claim's ``lost`` event."""
+    if lost is None or not hasattr(lost, "is_set"):
+        return None
+    return lost.is_set
 
 
 def _root_identifier_of(ticket) -> str:

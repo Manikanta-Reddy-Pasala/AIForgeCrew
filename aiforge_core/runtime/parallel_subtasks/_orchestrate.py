@@ -218,14 +218,19 @@ def _dispatch_batch(batch: list[dict], *, repo_root, base_branch, ticket_id,
                     should_cancel) -> list[dict]:
     """Run one batch of subtasks concurrently, each in its own worktree."""
     out: list[dict] = []
-    # A pool thread does not see the caller's Stop; hand it the cancel check
-    # so a subtask waiting for a model that is down (llm/model_wait) stops too.
+    # A pool thread starts with an EMPTY context: run each subtask in a copy of
+    # the caller's, so it inherits the ticket claim's scope (a cancelled or
+    # taken-over ticket ends its model waits), status sinks and command-job
+    # owner (the claim's end stops its commands) — and hand it the cancel
+    # check too, so a subtask waiting for a model that is down stops.
+    import contextvars
+
     from aiforge_core.llm import model_wait
     run_sub = model_wait.scoped(_run_subtask, should_cancel)
     with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers()) as ex:
-        futs = [ex.submit(run_sub, repo_root, base_branch, ticket_id, s,
-                          run_one, validate_one, on_status, run_token,
-                          should_cancel)
+        futs = [ex.submit(contextvars.copy_context().run, run_sub, repo_root,
+                          base_branch, ticket_id, s, run_one, validate_one,
+                          on_status, run_token, should_cancel)
                 for s in batch]
         for f in concurrent.futures.as_completed(futs):
             # On Stop, cancel every still-queued (not-yet-started) future so no

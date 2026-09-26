@@ -43,9 +43,11 @@ def _classifier_role() -> str:
 
 
 def _classifier_will_run(prompt, history, *, team, quick, single_agent) -> bool:
-    """Mirrors the gate in ``_routing._decide_chat_route``: the classifier runs
-    on a fresh, non-quick turn whose prompt is not short. Team turns are left
-    alone — they end in the pipeline or the team, never the chat enhance."""
+    """The gate in ``_routing._decide_chat_route``: the classifier runs on a
+    fresh, non-quick turn that ``_routing._classify_needed`` says needs it (a
+    long prompt, or a short one the build regex fires on) — the SAME predicate,
+    not a copy of it. Team turns are left alone — they end in the pipeline or
+    the team, never the chat enhance."""
     if team or quick or single_agent:
         return False
     try:
@@ -53,7 +55,9 @@ def _classifier_will_run(prompt, history, *, team, quick, single_agent) -> bool:
         if turn_router.is_followup(history):
             return False
         from aiforge_core.runtime import chat_router
-        return not chat_router.is_short_prompt(prompt or "")
+
+        from ._routing import _classify_needed
+        return _classify_needed(chat_router, prompt or "")
     except Exception:  # noqa: BLE001 — unsure means no overlap
         return False
 

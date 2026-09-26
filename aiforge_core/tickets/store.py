@@ -300,9 +300,16 @@ def max_reclaims() -> int:
         return 3
 
 
-def renew_claim(ticket_id: int) -> bool:
-    """Heartbeat for a ticket this process is running (see tickets.lease)."""
-    return get_backend().renew_claim(ticket_id)
+def renew_claim(ticket_id: int, token: "str | None" = None) -> "bool | str":
+    """Heartbeat for a ticket this process is running (see tickets.lease).
+
+    With ``token`` (the ``claimed_at`` this run's claim set) only that claim is
+    renewed: the new token on success, False when the ticket is no longer
+    ``in_progress`` or was claimed again by another run meanwhile."""
+    backend = get_backend()
+    if token is not None and hasattr(backend, "renew_claim_token"):
+        return backend.renew_claim_token(ticket_id, token) or False
+    return backend.renew_claim(ticket_id)
 
 
 def claim_ticket(ticket_id: int) -> "Ticket | None":

@@ -122,16 +122,37 @@ def _emit_completion_failure(_cfg_error, _meter, _step_tok, worked=False):
 def _outage_wait_s() -> float:
     """How long a chat run waits for an unreachable model: 0 = until it comes
     back (the default — the run never ends because the model is down), >0 = a
-    bound in seconds, <0 = do not wait. ``AIFORGE_CHAT_OUTAGE_WAIT_S`` when set,
-    else the shared ``AIFORGE_LLM_WAIT_MAX_S`` (llm/model_wait)."""
-    raw = os.environ.get("AIFORGE_CHAT_OUTAGE_WAIT_S", "").strip()
-    if raw:
-        try:
-            return float(raw)
-        except ValueError:
-            pass
+    bound in seconds, <0 = do not wait. ONE knob for every mode:
+    ``AIFORGE_LLM_WAIT_MAX_S`` (llm/model_wait). The client call owns the wait;
+    this loop waits only for a completion function that does not."""
     from aiforge_core.llm import model_wait
     return model_wait.wait_max_s()
+
+
+def _emit_llm_issue(issue, _meter, _step_tok):
+    """The endpoint is up but keeps failing this request: an LLM ISSUE, not an
+    outage. Say so and pause for the user (Retry sends it again) — waiting
+    longer would only re-send the same failing request forever."""
+    yield {"type": "message", "awaiting_input": True, "text": (
+        f"⚠️ LLM issue: {issue}. The model server answers, so this is not an "
+        "outage — the request itself keeps failing (a prompt too big for it to "
+        "start answering in time, a server that crashes on it, or a gateway "
+        "that times it out). The work done so far is on disk. Send the message "
+        "again (or Retry) to try once more, or shorten the request / check the "
+        "model server.")}
+    yield {"type": "stopped", "reason": "llm_request_fails",
+           "error": str(issue)}
+    yield {"type": "done"}
+    if _meter is not None:
+        _meter.step_reset(_step_tok)
+
+
+def _llm_issue(exc):
+    try:
+        from aiforge_core.llm import model_outage
+        return model_outage.issue(exc)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 _CANCEL_POLL_S = 0.25
@@ -141,11 +162,22 @@ def _outage_waitable(exc) -> bool:
     """The model server is unreachable, reloading, or behind a gateway that
     says it is down — worth waiting for. THE classification lives in
     llm/model_outage; not a call the model is still generating, not a config
-    or auth error, not a server that rejects this prompt."""
+    or auth error, not a server that rejects this prompt. Not a failure the
+    client call already waited out to its bound either: one layer owns the
+    wait, so the bound is the configured one, not a multiple of it."""
     try:
-        from aiforge_core.llm import model_outage
-        return model_outage.classify(exc) == model_outage.OUTAGE
+        from aiforge_core.llm import model_outage, model_wait
+        return (model_outage.classify(exc) == model_outage.OUTAGE
+                and not model_wait.was_waited(exc))
     except Exception:  # noqa: BLE001 — unknown → do not wait
+        return False
+
+
+def _waited(exc) -> bool:
+    try:
+        from aiforge_core.llm import model_wait
+        return model_wait.was_waited(exc)
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -214,6 +246,10 @@ def _retry_completion(complete_fn, role, convo, session_id, exc,
     progress/stop events; returns the completion text (possibly None) on
     recovery, or ``_RETRY_STOP`` when the caller must end the turn."""
     from aiforge_core.runtime import chat_cancel
+    _issue = _llm_issue(exc)
+    if _issue is not None:
+        yield from _emit_llm_issue(_issue, _meter, _step_tok)
+        return _RETRY_STOP
     # RESILIENCE: a local model can transiently drop a request (mid-load,
     # busy, a one-off empty/4xx). Retry a few times before surfacing, and
     # never show the raw `llm.exhausted role=chat …` stack; give a plain,
@@ -237,7 +273,8 @@ def _retry_completion(complete_fn, role, convo, session_id, exc,
     _last = exc
     # A model OUTAGE is not a bad answer: skip the sweep (its sends would only
     # hit the same dead endpoint and spend the step's budget) and wait.
-    if _will_wait(wait_s) and _outage_waitable(exc):
+    # One already waited out to its bound by the client is not re-sent either.
+    if _will_wait(wait_s) and (_outage_waitable(exc) or _waited(exc)):
         _retries = 0
     for _rn in range(_retries):
         if session_id is not None and chat_cancel.is_cancelled(session_id):
@@ -262,11 +299,18 @@ def _retry_completion(complete_fn, role, convo, session_id, exc,
             _last = exc2
     if out is _STEERED or out is _CANCELLED:
         return out
+    _issue = _llm_issue(_last)
+    if _issue is not None:
+        yield from _emit_llm_issue(_issue, _meter, _step_tok)
+        return _RETRY_STOP
     if _last is not None and _will_wait(wait_s) and _outage_waitable(_last):
         out, _last = yield from _wait_out_outage(
             complete_fn, role, convo, session_id, _last, wait_s)
         if out is _STEERED or out is _CANCELLED:
             return out
+        if _llm_issue(_last) is not None:
+            yield from _emit_llm_issue(_llm_issue(_last), _meter, _step_tok)
+            return _RETRY_STOP
     if _last is not None:
         yield from _emit_completion_failure(_cfg_error, _meter, _step_tok,
                                             worked=worked and not _cfg_error)

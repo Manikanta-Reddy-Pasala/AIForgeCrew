@@ -69,6 +69,12 @@ class StoreBackend(Protocol):
         reaper off a live run. True when a row was renewed."""
         ...
 
+    def renew_claim_token(self, ticket_id: int, token: str) -> "str | None":
+        """:meth:`renew_claim`, but only while ``claimed_at`` still equals
+        ``token`` (this run's claim). The new ``claimed_at``, or None when the
+        ticket left ``in_progress`` or another run claimed it. Optional."""
+        ...
+
     def claim_ticket(self, ticket_id: int) -> "dict | None":
         """Atomically claim ONE specific ticket (→ ``in_progress``, claimed_at
         = now) unless it is already ``in_progress``. None when it is."""
