@@ -44,6 +44,26 @@ def _add_language(llm_request: LlmRequest, role: str) -> None:
         log.debug("response language not applied", exc_info=True)
 
 
+class _StopEvent:
+    """Set by a cancelled task, or by the run's own LLM cancel token."""
+
+    def __init__(self) -> None:
+        import threading
+        self._ev = threading.Event()
+        try:
+            from aiforge_core.llm.client._http import _CANCEL
+            self._run = _CANCEL.get()
+        except Exception:  # noqa: BLE001
+            self._run = None
+
+    def set(self) -> None:
+        self._ev.set()
+
+    def is_set(self) -> bool:
+        return self._ev.is_set() or bool(
+            self._run is not None and self._run.is_set())
+
+
 async def _throttle_global(role: "str | None" = None) -> None:
     """Obey the operator's calls-per-minute ceiling on the PIPELINE path too.
 
@@ -63,12 +83,21 @@ async def _throttle_global(role: "str | None" = None) -> None:
         # rejection, the only path that disobeyed a 429. It fast-returns on its
         # own when there is nothing to wait for.
         loop = asyncio.get_running_loop()
+        # Stop cancels this task, but not the worker thread parked in the
+        # limiter. Hand it an event that the cancellation sets, merged with
+        # the run's own cancel token, so a stopped call leaves the queue.
+        stop = _StopEvent()
         # The one gateway (throttle only here: this path counts the send AFTER
         # the response, in _meter_record, so it can attach token usage).
-        await loop.run_in_executor(None, lambda: _rl.govern_send(
+        fut = loop.run_in_executor(None, lambda: _rl.govern_send(
             role=role,
             max_wait_s=float(_os.environ.get("AIFORGE_LLM_MAX_WAIT_S", "120")),
-            meter=False))
+            meter=False, cancel=stop))
+        try:
+            await fut
+        except asyncio.CancelledError:
+            stop.set()
+            raise
     except Exception:  # noqa: BLE001 — a throttle must never break a call
         # Including the limiter giving up: acquire_global lets the call through
         # rather than raising, and even if that changes, one throttled call

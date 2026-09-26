@@ -11,6 +11,7 @@ server-side and never returned (only ``api_key_set``).
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -85,17 +86,43 @@ def _path() -> str:
     return os.path.join(root, "model_registry.json")
 
 
-def _load() -> list[dict]:
+# (path, mtime_ns, size) -> parsed rows. Every chat step asks for the
+# window several times; re-reading and re-parsing the file each time was
+# measurable on a turn of many fast tool steps. A write changes the stamp.
+_CACHE: dict = {"stamp": None, "rows": []}
+_CACHE_LOCK = threading.Lock()
+
+
+def _stamp(path: str):
     try:
-        with open(_path(), encoding="utf-8") as f:
+        st = os.stat(path)
+    except OSError:
+        return (path, None, None)
+    return (path, st.st_mtime_ns, st.st_size)
+
+
+def _load() -> list[dict]:
+    """The registry rows. A private copy each call: callers edit and save."""
+    path = _path()
+    stamp = _stamp(path)
+    with _CACHE_LOCK:
+        if _CACHE["stamp"] == stamp and stamp[1] is not None:
+            return copy.deepcopy(_CACHE["rows"])
+    try:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, list) else []
+        rows = data if isinstance(data, list) else []
     except Exception:  # noqa: BLE001 — missing/corrupt → empty
-        return []
+        rows = []
+    with _CACHE_LOCK:
+        _CACHE["stamp"], _CACHE["rows"] = stamp, rows
+    return copy.deepcopy(rows)
 
 
 def _save(rows: list[dict]) -> None:
     _atomic.write_text(_path(), json.dumps(rows, indent=2))
+    with _CACHE_LOCK:
+        _CACHE["stamp"] = None
 
 
 def _slug(label: str, model: str) -> str:

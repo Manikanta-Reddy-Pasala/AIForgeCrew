@@ -1,9 +1,49 @@
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import logging
 import os
 
 log = logging.getLogger("aiforge.chat.window")
+
+# One chat step asks for the window several times (the condense budget, the
+# usage meter, its source label). Inside :func:`step_cache` each is resolved
+# once; outside it every call resolves afresh, as before.
+_STEP: contextvars.ContextVar = contextvars.ContextVar(
+    "aiforge_window_step", default=None)
+
+
+@contextlib.contextmanager
+def step_cache():
+    """Resolve the model window at most once per key for this block. Do not
+    yield from a generator inside it: the block must start and end in the
+    same context."""
+    tok = _STEP.set({})
+    try:
+        yield
+    finally:
+        _STEP.reset(tok)
+
+
+def _memo(key, fn):
+    memo = _STEP.get()
+    if memo is None:
+        return fn()
+    if key not in memo:
+        memo[key] = fn()
+    return memo[key]
+
+
+def _window_source(role: str | None = None) -> "tuple[int, str]":
+    """``model_registry.context_window_source(role)``, once per step."""
+    def _resolve():
+        try:
+            from aiforge_core.config import model_registry as _mr
+            return _mr.context_window_source(role)
+        except Exception:  # noqa: BLE001
+            return 0, ""
+    return _memo(("src", role), _resolve)
 
 
 def _resolved_window(role: str | None = None) -> int:
@@ -116,11 +156,13 @@ def _window_tokens(role: str | None = None) -> int:
     else the global setting); 0 when unknown."""
     win = 0
     if role:
-        try:
-            from aiforge_core.config import model_registry
-            win = int(model_registry.context_window_for_role(role))
-        except Exception:  # noqa: BLE001
-            win = 0
+        def _for_role() -> int:
+            try:
+                from aiforge_core.config import model_registry
+                return int(model_registry.context_window_for_role(role))
+            except Exception:  # noqa: BLE001
+                return 0
+        win = _memo(("win", role), _for_role)
     if win <= 0:
         try:
             from aiforge_core.config import runtime_settings

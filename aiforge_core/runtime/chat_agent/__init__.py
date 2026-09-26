@@ -252,8 +252,6 @@ from ._context import (
     _compact_mode,
     _COMPACT_SYS,
     _text_of,
-    _condense_timeout_s,
-    _llm_summarize_middle,
     _compact_convo,
     _ctx_on,
     _repomap_max_chars,

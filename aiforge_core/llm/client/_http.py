@@ -413,10 +413,12 @@ def _post_after_cancel(ep, payload, timeout_s, *, role, sent, throttled, meter, 
     # _record_request below, which has the cancel-check that must sit BETWEEN
     # the throttle and the count. Provider-scoped so a 429 from a cloud gateway
     # does not stall the local mlx server; role picks the category sub-ceiling.
+    # ``cancel`` lets Stop end a parked wait at once, and a stopped call
+    # never claims a slot in the window it did not use.
     _throttled, _ = _rl.govern_send(
         role=role, provider=ep.provider,
         max_wait_s=float(_int_env("AIFORGE_LLM_MAX_WAIT_S", 120)),
-        meter=False)
+        meter=False, cancel=cancel)
     if throttled is not None:
         throttled[0] = _throttled
     # ONE meter token for BOTH paths, and the failure counted here rather than
