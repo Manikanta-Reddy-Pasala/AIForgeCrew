@@ -77,7 +77,13 @@ def seal_run(cwd: str, start_sha: str):
         yield {"type": "thought", "role": "system",
                "text": "Put back read-only file(s) a writer changed: "
                        + ", ".join(f"`{b}`" for b in back[:8])}
-    done = team_workspace.seal(cwd, "reconcile: integration repairs")
+    try:
+        done = team_workspace.seal(cwd, "reconcile: integration repairs")
+    except team_workspace.SealError as exc:
+        done = []
+        yield {"type": "thought", "role": "system",
+               "text": f"Could not commit the repair pass's edits ({exc}); "
+                       "they stay uncommitted in the run's worktree."}
     if done:
         yield {"type": "thought", "role": "system",
                "text": f"Committed the repair pass's edits ({len(done)} file(s)) "

@@ -47,6 +47,8 @@ def _env(tmp_path, monkeypatch):
     yield
     prot._REG.clear()
     tw._RUNS.clear()
+    from aiforge_core.runtime import team_run_life
+    team_run_life._EXCL.clear()
 
 
 @pytest.fixture

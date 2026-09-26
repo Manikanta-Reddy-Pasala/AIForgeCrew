@@ -47,6 +47,10 @@ def _team_target_cwd(prompt, history, cwd, rctx, session_id=None,
     if not tgt.retargeted:
         return cwd
     if resumed is not None:
+        from aiforge_core.runtime import team_workspace as _tw
+        # This turn's words decide: "continue and merge it into main" applies.
+        resumed.apply = _tw.wants_apply(prompt)
+        resumed.dirty = _tw.dirty_files(resumed.repo)
         _protected.clear(resumed.cwd)
         _protected.register(resumed.cwd, **rules)
         rctx["team_ws"], rctx["cwd"] = resumed, resumed.cwd
