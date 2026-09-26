@@ -54,12 +54,17 @@ def test_hard_stop_is_only_an_explicit_stop_phrase():
 
 
 def test_a_watch_only_cuts_on_an_explicit_stop_phrase():
-    """only_replace still sees don't/instead. A watch uses only_cut."""
+    """only_replace still sees "instead". A watch uses only_cut.
+    "don't forget" is a reminder: it replaces nothing and cuts nothing."""
     chat_interject.clear(83)
     chat_interject.push(83, "don't forget the date")
+    assert run_interrupt.replaces_running_work(83) is False
+    assert run_interrupt.attention(83, only_replace=True) is None
+    assert run_interrupt.attention(83, only_cut=True) is None
+    chat_interject.clear(83)
+    chat_interject.push(83, "use grep instead")
     assert run_interrupt.replaces_running_work(83) is True
     assert run_interrupt.attention(83, only_replace=True) == "steer"
-    assert run_interrupt.attention(83, only_cut=True) is None
     chat_interject.clear(83)
     chat_interject.push(83, "use grep instead")
     assert run_interrupt.attention(83, only_cut=True) is None

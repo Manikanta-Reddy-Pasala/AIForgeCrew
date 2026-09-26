@@ -277,6 +277,18 @@ def _plan_mode_route(_pp, _enriched, _enriched_history, cwd, role, session_id,
         yield _pending_done
 
 
+def _classify_needed(_cr, prompt: str) -> bool:
+    """Whether a simple-mode turn waits on the task classifier.
+
+    A long prompt: yes. A short one only when the build regex fires and the
+    small-chore rule would not keep it on the single agent anyway — the
+    regex alone must not escalate a short remark into the pipeline."""
+    if not _cr.is_short_prompt(prompt):
+        return True
+    return bool(_cr.regex_build_fallback(prompt)
+                and not _cr.is_small_task(prompt))
+
+
 def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
                        history, quick=False, session_id=None,
                        single_agent=False):
@@ -305,13 +317,15 @@ def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
         except Exception:  # noqa: BLE001
             greenfield = True
     cat = None
-    # A quick turn is one doer: no classifier. A short message is also one
-    # doer — the classifier is a model call (5–15s) before the agent speaks,
-    # and on a short question it was one of the three calls the turn paid
-    # for. A long prompt still classifies, so a build the regex missed is
-    # still caught. Team mode classifies too: that route is the pipeline.
+    # A quick turn is one doer: no classifier. A short message the regex
+    # does not call a build is also one doer — the classifier is a model call
+    # (5–15s) before the agent speaks. A long prompt still classifies, so a
+    # build the regex missed is caught. A short prompt the regex DOES call a
+    # build classifies too: that regex alone would escalate "create the user
+    # through the api" into the build pipeline, and the classifier is its
+    # veto. Team mode classifies: that route is the pipeline.
     from aiforge_core.runtime import chat_router as _cr
-    _needs_class = team or not _cr.is_short_prompt(prompt or "")
+    _needs_class = team or _classify_needed(_cr, prompt or "")
     # An approved plan is carried out by this agent. Classifying it as a
     # document sends it down the read-only research path, so the plan's
     # edits never happen.

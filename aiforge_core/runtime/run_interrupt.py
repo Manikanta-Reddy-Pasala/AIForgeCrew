@@ -9,16 +9,8 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
-import re
 
-# The latest message asks to stop or replace the work already running.
-# "also name it add_numbers" does not. The newest message wins.
-_REPLACE_RE = re.compile(
-    r"\b(stop|cancel|abort|drop|kill|halt|quit|forget|instead|"
-    r"scratch|never\s*mind|do not|don't|dont|no longer|hold on|"
-    r"wait no|actually no|switch)\b",
-    re.IGNORECASE,
-)
+from aiforge_core.runtime import _stop_phrases
 
 # Shown to the model when a tool bails out because the user typed something.
 # The steer text itself is folded in by the turn loop; this only says why the
@@ -71,22 +63,19 @@ def process_owned_by_watch() -> bool:
 
 
 def text_replaces_work(text: str) -> bool:
-    """True when ``text`` itself asks to stop or replace running work."""
-    return bool(_REPLACE_RE.search(text or ""))
+    """True when ``text`` itself asks to stop or replace running work.
+
+    "also name it add_numbers" and "don't forget the README" do not."""
+    return _stop_phrases.replaces_run(text or "")
 
 
-# Hard stop for a scheduled agent or a background watch. Only an explicit
-# stop phrase ends the run. "don't", "instead", "forget" and other extra
-# detail stay queued and must not cut it off.
-_CUT_RE = re.compile(
-    r"\b(stop|cancel|abort|drop|kill|halt)\b",
-    re.IGNORECASE,
-)
-
-
+# Hard stop for a scheduled agent or a background watch. Only an
+# imperative aimed at the run ends it ("stop", "cancel the watch", "stop
+# watching"). "add a Cancel button", "how do I kill the process on :3000",
+# "don't", "instead" and "forget" stay queued and must not cut it off.
 def text_cuts_running_work(text: str) -> bool:
     """True when the message itself is an explicit stop phrase."""
-    return bool(_CUT_RE.search(text or ""))
+    return _stop_phrases.cuts_run(text or "")
 
 # A retry or outage wait ended because a new message arrived. The step
 # loop drains it and calls the model again. A task that is already
