@@ -85,4 +85,32 @@ def reset() -> None:
         _FINAL.clear()
 
 
-__all__ = ["TAIL_CHARS", "as_run", "get", "is_running", "record", "reset"]
+def trip_reason(key) -> str | None:
+    """A last-resort guard of the background watcher ended job ``key``
+    (idle, wall clock, output too large)."""
+    key = str(key)
+    if not key.startswith("bg-"):
+        return None
+    from aiforge_core.runtime import bg_commands
+    return bg_commands.trip_reason(key[3:])
+
+
+def _whole_tail(stream) -> str:
+    from aiforge_core.runtime import cmd_signals as sig
+    end = sig.file_size(stream)
+    start = max(0, end - TAIL_CHARS)
+    return sig.clean(sig.read_range(stream, start, end))
+
+
+def record_job(job, code, ended_by) -> None:
+    """A cmd_jobs job's WHOLE output tail and exit code, for the loop rules."""
+    try:
+        out = _whole_tail(job.streams[0])
+        err = _whole_tail(job.streams[1]) if len(job.streams) > 1 else ""
+        record(job.key, job.cmd, code, out, err, stopped=ended_by)
+    except Exception:  # noqa: BLE001 — a record must never break a look
+        pass
+
+
+__all__ = ["TAIL_CHARS", "as_run", "get", "is_running", "record",
+           "record_job", "reset", "trip_reason"]

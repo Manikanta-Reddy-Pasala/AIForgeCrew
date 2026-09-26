@@ -302,4 +302,13 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         # unattended runs share session None and run in parallel).
         compact_key=uuid.uuid4().hex,
         **progress_fields())
+    # What the tree already held before this turn (the user's own dirty and
+    # untracked code): the test-gaming check scans only THIS turn's lines.
+    st.gaming_base = ""
+    if not readonly_mode and not builder:
+        try:
+            from aiforge_core.runtime.gaming_changes import baseline
+            st.gaming_base = baseline(str(cwd or ""), background=True)
+        except Exception:  # noqa: BLE001 — the check falls back to HEAD
+            pass
     return st

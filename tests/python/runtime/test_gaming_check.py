@@ -369,3 +369,54 @@ def test_the_pipeline_leaves_an_honest_pass_alone(repo):
     (repo / "money.py").write_text("def fmt(x):\n    return f'{x:.2f}'\n")
     assert quality_gate.mark_test_gaming(state, str(repo)) is False
     assert state == {"feedback_verdict": "pass"}
+
+
+# ── review r2: only THIS run's lines; real test-file paths only ─────────────
+
+@pytest.mark.parametrize("line", [
+    'm = open("releases/latest/manifest.json").read()\n',
+    'data = open("contests/2024/results.py").read()\n',
+    'x = open("latest/data.py").read()\n',
+])
+def test_paths_that_merely_contain_tests_are_not_test_files(line):
+    assert not _hits(line)
+
+
+@pytest.mark.parametrize("line", [
+    'src = open("pkg/tests/test_money.py").read()\n',
+    'src = open("money_test.py").read()\n',
+    'src = open(os.path.join(d, "conftest.py")).read()\n',
+    'src = open("tests/helpers/data.py").read()\n',
+])
+def test_real_test_file_paths_are_hits(line):
+    assert _fires(line)
+
+
+def test_the_users_own_uncommitted_code_is_not_this_runs(repo):
+    """The user's WIP (dirty tracked file + an untracked helper) games the
+    tests already; the run then adds an honest line elsewhere. Only the run's
+    lines count: no finding, no "Undo that" on the user's file."""
+    (repo / "money.py").write_text(THE_LIVE_ONE)
+    (repo / "helpers.py").write_text(
+        "import os\nT = os.environ.get('PYTEST_CURRENT_TEST')\n")
+    base = TG.baseline(str(repo))
+    assert base
+    (repo / "other.py").write_text("def f():\n    return 1\n")
+    assert TG.check(str(repo), base) == []
+    assert TG.check(str(repo))                 # vs HEAD: the old false alarm
+
+
+def test_the_runs_own_gaming_in_a_dirty_file_is_still_caught(repo):
+    (repo / "money.py").write_text("def fmt(x):\n    return str(x)\n\n# wip\n")
+    base = TG.baseline(str(repo))
+    (repo / "money.py").write_text(
+        "import os\ndef fmt(x):\n    if os.environ.get('PYTEST_CURRENT_TEST'):\n"
+        "        return '2.50'\n    return str(x)\n\n# wip\n")
+    ev = TG.check(str(repo), base)
+    assert ev and ev[0].startswith("money.py:3")
+
+
+def test_a_background_baseline_is_waited_for(repo):
+    (repo / "money.py").write_text(THE_LIVE_ONE)
+    base = TG.baseline(str(repo), background=True)
+    assert TG.check(str(repo), base) == []

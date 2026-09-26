@@ -377,6 +377,8 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
                     plugins=_build_context_plugins())
     initial_state = (_ticket_state(ticket, scope_seed, rules_md, memory_md)
                      if ticket is not None else {})
+    from ._run_inputs import seed_gaming_base
+    seed_gaming_base(initial_state)
     session = await session_svc.create_session(
         app_name="aiforge", user_id="aiforge-runner",
         state=initial_state or None)

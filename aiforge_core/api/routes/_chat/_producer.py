@@ -343,6 +343,7 @@ def _produce(pc):
     try:
         _awake_acquire()
         held.append(True)
+        _capture_bg.start_turn(pc)   # a late capture waits for this turn
         _sess_token = _reqctx.set_session_id(pc.session_id)
         # THE turn boundary for the request meter. Here, not inside the ReAct
         # loop: the enhancer / team-downgrade classifier / capture probes

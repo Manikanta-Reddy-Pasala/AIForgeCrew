@@ -43,6 +43,17 @@ class _Box:
                 self.end_headers()
                 self.wfile.write(b'{"data": []}')
 
+            def do_POST(self):  # noqa: N802 — model_wait's 1-token probe
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                box.probes += 1
+                if box.up_after and box.probes >= box.up_after:
+                    box.is_up.set()
+                code = 200 if box.is_up.is_set() else 503
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"choices": [{"message": {"content": "k"}}]}')
+
             def log_message(self, *a):  # quiet
                 pass
 

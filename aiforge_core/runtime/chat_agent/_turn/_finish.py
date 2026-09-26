@@ -110,8 +110,9 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
             return "continue"
     # A command this turn handed back is still running: an answer now would
     # report its output so far as the result (live: "batch 29/40" given as
-    # the end of a 40-batch job). One nudge; the model may still answer and
-    # say it is running.
+    # the end of a 40-batch job). One nudge; the model may still answer —
+    # the jobs are then promoted to background jobs (_handle_final), so
+    # "still running" stays true after the turn ends.
     if not getattr(st, "running_job_nudged", False):
         try:
             from aiforge_core.runtime import cmd_jobs
@@ -127,8 +128,10 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
                 f"[harness — not the user] Command(s) {ids} you started are "
                 "STILL RUNNING, so their output so far is not the result. "
                 "command_wait for them before answering, or command_kill "
-                "them — or, if the answer does not depend on them, say "
-                "plainly that they are still running."})
+                "them — or, if the answer does not depend on them, answer "
+                "now: they will keep running as background jobs (Stop ends "
+                "them) and their result is posted to this chat when they "
+                "finish. Say plainly that they are still running."})
             return "continue"
     # Task board gate: the model planned items and some are still open. A
     # long run must not stop to report half the work; bounded so a model
@@ -357,8 +360,13 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
     # done goes out before any next-step prediction; a one-slot server skips it.
     _sugg = None if _endpoint_one_slot() else _start_suggestion(
         _last_user_message(st), _turn_summary(st), cwd)
+    # Still-running handed-off jobs outlive this answer as background jobs
+    # (end_turn would otherwise kill what the answer calls "still running").
+    from aiforge_core.runtime import cmd_jobs_promote as _promote
+    _bg_note = _promote.answer_suffix(_promote.promote_turn_jobs())
     try:
-        yield {"type": "message", "text": _strip_reasoning_prefix(step["text"])}
+        yield {"type": "message",
+               "text": _strip_reasoning_prefix(step["text"]) + _bg_note}
         yield {"type": "done"}
         # The run stays open after done until the producer finishes, and the
         # UI applies a suggestion that arrives then. Wait out the rest of the

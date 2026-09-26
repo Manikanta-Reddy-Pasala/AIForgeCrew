@@ -32,7 +32,6 @@ from aiforge_core.runtime.sandbox import root
 from ._trace import emit
 
 _STDOUT_CAP_BYTES = 8000
-_DEFAULT_TIMEOUT_S = 90
 _POLL_INTERVAL_S = 0.1
 # Bound the post-exit communicate() drain: a daemon grandchild (`npm run dev &`,
 # a spawned server) can inherit the stdout pipe and keep communicate() blocked
@@ -280,7 +279,54 @@ def _run_plain(command: str, timeout: int) -> dict[str, Any]:
     return _completed_result(command, proc.returncode, proc.stdout, proc.stderr)
 
 
+def _run_checked(command: str, wall_s: float) -> dict[str, Any]:
+    """No wall clock unless one was asked for: checked on like run_shell —
+    still running at the check-in (or printing an error / a prompt) it comes
+    back as a job for command_wait / command_output / command_kill; killed
+    only when it looks hung (no output, no CPU for AIFORGE_CMD_IDLE_S)."""
+    from aiforge_core.runtime import chat_cancel, cmd_jobs
+    from aiforge_core.runtime.cmd_idle import idle_limit_s
+    from aiforge_core.runtime.doer_tools._shell_run import run_to_completion
+    from aiforge_core.runtime.run_interrupt import attention as _why
+    from aiforge_core.runtime.run_interrupt import steered as _steered
+    sid = chat_cancel.active()
+
+    def _hit():
+        if sid is None:
+            return None
+        got = _why(sid, only_replace=True)
+        if got == "steer":
+            return "steer"
+        return "stop" if got == "stop" or chat_cancel.is_cancelled(sid) else None
+
+    def _track(pgid):
+        if sid is not None:
+            chat_cancel.track_pgid(sid, pgid)
+    res = run_to_completion(command, root(), wall_s, idle_limit_s(),
+                            checkin_s=cmd_jobs.checkin_s(), cmd=command,
+                            on_spawn=_track, interrupt=_hit)
+    if "job" in res:
+        return {**res["job"], "command": command}
+    why = res.get("why")
+    if why == "steer":
+        return _steered(command=command)
+    if why == "stop":
+        return _err_result(command, "stopped by user", stopped=True)
+    if why:
+        msg = {"timeout": "timeout",
+               "hung": "hung: no output and no CPU activity — the command "
+                       "looks HUNG"}.get(why, why)
+        return _err_result(command, msg, truncated=True,
+                           stdout=(res.get("out") or "")[:_STDOUT_CAP_BYTES])
+    return _completed_result(command, res.get("code"),
+                             (res.get("out") or "").encode(),
+                             (res.get("err") or "").encode())
+
+
 def _fallback_run(command: str, timeout: int) -> dict[str, Any]:
+    if not timeout or timeout <= 0:
+        from aiforge_core.runtime.cmd_idle import wall_cap_s
+        return _run_checked(command, wall_cap_s(None, "AIFORGE_SHELL_TIMEOUT"))
     from aiforge_core.runtime import chat_cancel
     from aiforge_core.runtime.run_interrupt import attention as _why
     from aiforge_core.runtime.run_interrupt import steered as _steered
@@ -314,7 +360,9 @@ def bash(
     back as a running job (``id``, output so far) for command_wait /
     command_output / command_kill; the pane stays busy until it ends.
     ``timeout`` (or AIFORGE_SHELL_TIMEOUT) is an explicit wall clock. The
-    sandbox and tmux-less paths keep their 90 s default.
+    sandbox and tmux-less paths have none by default either: the tmux-less
+    one is checked on the same way, the sandbox one is stopped only when it
+    looks hung (the idle detector).
     """
     if not command or not command.strip():
         return _err_result(command or "", "empty_command")
@@ -327,13 +375,12 @@ def bash(
     from aiforge_core.runtime import docker_sandbox
     if docker_sandbox.is_enabled():
         return docker_sandbox.exec_in_container(
-            _effective_run_id(_run_id), command,
-            timeout=timeout or _DEFAULT_TIMEOUT_S,
+            _effective_run_id(_run_id), command, timeout=timeout or 0,
         )
 
     if not _tmux_available():
         emit("BashFallback", {"reason": "tmux_missing"})
-        return _fallback_run(command, timeout or _DEFAULT_TIMEOUT_S)
+        return _fallback_run(command, timeout or 0)
 
     _run_id = _effective_run_id(_run_id)
 

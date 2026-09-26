@@ -77,7 +77,14 @@ def _fast_extras(ep: Endpoint, fast_role: bool, extras):
     :mod:`aiforge_core.llm.fast_reasoning`); a caller's own extras win."""
     try:
         from aiforge_core.llm import fast_reasoning
-        add = fast_reasoning.extras_for(ep.base_url, fast_role)
+        model = getattr(ep, "model", "")
+        add = fast_reasoning.extras_for(ep.base_url, fast_role, model)
+        if extras and fast_reasoning.FIELD in extras \
+                and fast_reasoning.rejected(ep.base_url, model):
+            # This model refused the field: a caller's own copy would fail
+            # the same way.
+            extras = {k: v for k, v in extras.items()
+                      if k != fast_reasoning.FIELD}
     except Exception:  # noqa: BLE001 — never break a call over this
         add = {}
     if not add:
@@ -85,15 +92,37 @@ def _fast_extras(ep: Endpoint, fast_role: bool, extras):
     return {**add, **(extras or {})}
 
 
-def _rejected_fast_extras(ep: Endpoint, fast_role: bool, exc) -> bool:
-    """The server refused the reasoning field: remember it, re-send without."""
-    if not fast_role:
-        return False
+def _rejected_fast_extras(ep: Endpoint, payload, exc) -> bool:
+    """The model refused the reasoning field this payload carried (whoever
+    put it there): remember it, re-send without."""
     try:
         from aiforge_core.llm import fast_reasoning
-        return fast_reasoning.note_rejection(ep.base_url, exc)
+        if fast_reasoning.FIELD not in _as_dict(payload):
+            return False
+        return fast_reasoning.note_rejection(ep.base_url, exc,
+                                             getattr(ep, "model", ""))
     except Exception:  # noqa: BLE001
         return False
+
+
+def _as_dict(payload) -> dict:
+    import json as _json
+    try:
+        got = _json.loads(payload)
+    except (TypeError, ValueError):
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
+def _without_reasoning(payload):
+    """``payload`` with the reasoning field removed, whatever its source."""
+    import json as _json
+
+    from aiforge_core.llm import fast_reasoning
+    body = _as_dict(payload)
+    body.pop(fast_reasoning.FIELD, None)
+    out = _json.dumps(body)
+    return out.encode() if isinstance(payload, (bytes, bytearray)) else out
 
 
 def _note_transport_failure(shipped: "dict | None", exc: Exception) -> None:
@@ -114,16 +143,18 @@ def _post_fast_aware(ep, payload_fn, timeout_s, role, source, meter,
                      fast_role):
     """One post. When the server refuses the fast-role reasoning field, it is
     remembered and the same request goes once more without it."""
+    payload = payload_fn()
     try:
-        return _pkg()._post_with_retry(ep, payload_fn(), timeout_s, role=role,
+        return _pkg()._post_with_retry(ep, payload, timeout_s, role=role,
                                        source=source, meter=meter)
     except _LLMCancelled:
         raise
     except OSError as exc:
-        if not _rejected_fast_extras(ep, fast_role, exc):
+        if not _rejected_fast_extras(ep, payload, exc):
             raise
-    return _pkg()._post_with_retry(ep, payload_fn(), timeout_s, role=role,
-                                   source=source, meter=meter)
+    return _pkg()._post_with_retry(ep, _without_reasoning(payload_fn()),
+                                   timeout_s, role=role, source=source,
+                                   meter=meter)
 
 
 def _try_post(ep: Endpoint, messages: list[dict],

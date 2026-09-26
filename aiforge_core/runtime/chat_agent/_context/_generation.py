@@ -166,7 +166,11 @@ def _slot_hooks(sem, box, ev, waits):
                 box["held"] = True
                 return
             if ev.is_set() or model_wait.cancel_reason():
-                return           # the re-sent call aborts on the same cancel
+                # Returning without the slot: make sure the re-sent call
+                # aborts (a scope/shutdown cancel alone does not reach the
+                # client's HTTP layer) instead of running slot-less.
+                ev.set()
+                return
             if not told and waits is not None \
                     and _t.monotonic() - t0 >= _QUEUED_AFTER_S:
                 told = True

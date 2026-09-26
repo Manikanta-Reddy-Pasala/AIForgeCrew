@@ -124,6 +124,20 @@ def _user_prefs_md() -> str:
     return "\n\n".join(parts)
 
 
+def seed_gaming_base(state: dict) -> dict:
+    """The tree before the run (a user's uncommitted work in a pinned repo):
+    the test-gaming check judges only the lines THIS run adds."""
+    try:
+        from aiforge_core.runtime.gaming_changes import baseline
+        from aiforge_core.runtime.graph_pipeline._scope import _repo_root_for_scope
+        base = baseline(_repo_root_for_scope())
+        if base:
+            state["gaming_base"] = base
+    except Exception:  # noqa: BLE001 — the check falls back to HEAD
+        pass
+    return state
+
+
 def _ticket_state(ticket, scope_seed: list, rules_md: str,
                   memory_md: str) -> dict:
     """The session state seeded from the ticket."""

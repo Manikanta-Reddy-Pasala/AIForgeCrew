@@ -75,8 +75,25 @@ class _FakeRC:
         return None
 
 
+class _Run:
+    def __init__(self):
+        self.events, self.done = [], False
+
+    def publish(self, ev):
+        if not self.done:
+            self.events.append(ev)
+
+
 def _pc():
-    return types.SimpleNamespace(prompt=LONG, cwd="/tmp", session_id="s1")
+    return types.SimpleNamespace(prompt=LONG, cwd="/tmp", session_id="s1",
+                                 run=_Run())
+
+
+def _eventually(fn, secs=5.0):
+    deadline = time.time() + secs
+    while not fn() and time.time() < deadline:
+        time.sleep(0.02)
+    return fn()
 
 
 def _install(monkeypatch, rc):
@@ -94,10 +111,12 @@ def test_nothing_is_sent_before_the_agent_answers(monkeypatch):
     _capture_bg.begin(pc)
     assert pc._bg_capture is not None and pc._bg_capture.future is None
     _capture_bg.kick(pc)                            # the agent's done
-    evs = list(_capture_bg.events(pc))
-    assert evs and evs[0]["type"] == "captured" and evs[0]["id"] == "r1"
-    assert len(rc.stored) == 1
-    _capture_bg.flush(pc)                           # already finished: no-op
+    evs = list(_capture_bg.events(pc))              # never waits (default 0)
+    _capture_bg.flush(pc)
+    assert _eventually(lambda: len(rc.stored) == 1)
+    got = evs + pc.run.events                       # inline or published
+    assert got and got[0]["type"] == "captured" and got[0]["id"] == "r1"
+    time.sleep(0.1)
     assert len(rc.stored) == 1
 
 
@@ -176,3 +195,125 @@ def test_concurrent_vision_probes_share_one_request(monkeypatch):
     # A later probe runs again (nothing left in flight).
     assert vd.probe_vision_endpoint("m", "http://s/v1") is True
     assert calls == ["m", "m"]
+
+
+# ── review r2: capture after Stop / during the next turn ───────────────────
+
+def test_a_stopped_turn_stores_no_rule(monkeypatch):
+    from aiforge_core.runtime import chat_cancel
+    rc = _FakeRC()
+    _install(monkeypatch, rc)
+    monkeypatch.setattr(chat_cancel, "is_cancelled", lambda sid: True)
+    pc = _pc()
+    _capture_bg.start_turn(pc)
+    _capture_bg.begin(pc)
+    _capture_bg.kick(pc)
+    assert list(_capture_bg.events(pc)) == []
+    _capture_bg.flush(pc)
+    time.sleep(0.2)
+    assert rc.stored == []
+
+
+def test_a_capture_landing_mid_next_turn_waits_for_it_to_end(monkeypatch):
+    gate = threading.Event()
+    rc = _FakeRC(gate)
+    _install(monkeypatch, rc)
+    pc = _pc()
+    _capture_bg.start_turn(pc)
+    _capture_bg.begin(pc)
+    _capture_bg.kick(pc)
+    list(_capture_bg.events(pc))
+    _capture_bg.flush(pc)                           # turn 1 over, classify slow
+    pc2 = _pc()
+    _capture_bg.start_turn(pc2)                     # turn 2 of the same chat
+    gate.set()
+    time.sleep(0.3)
+    assert rc.stored == []                          # not mid-run
+    _capture_bg.flush(pc2)
+    assert _eventually(lambda: len(rc.stored) == 1)
+
+
+def test_the_capture_classify_is_a_side_call(monkeypatch):
+    from aiforge_core.llm import model_wait
+    seen = []
+
+    class RC(_FakeRC):
+        def classify(self, prompt, **kw):
+            seen.append(model_wait._OPTIONAL.get())
+            return super().classify(prompt, **kw)
+    rc = RC()
+    _install(monkeypatch, rc)
+    pc = _pc()
+    _capture_bg.begin(pc)
+    _capture_bg.kick(pc)
+    assert _eventually(lambda: seen)
+    assert seen == [True]
+
+
+# ── review r2: the enhancer skip needs more than one triage word ───────────
+
+EDIT = ("Add a --dry-run flag to the CLI in cli.py, update the README to "
+        "describe it, fix the failing test in tests/test_cli.py and rename "
+        "the helper parse_args to build_parser across the package. " * 2)
+
+
+@pytest.mark.parametrize("cat", ["chat", "doc_analysis"])
+def test_a_long_edit_request_labelled_chat_keeps_the_enhancer(cat):
+    assert not _should_skip_enhance(False, False, False, None, EDIT, cat=cat)
+
+
+def test_review_as_a_noun_in_an_edit_request_is_not_read_only():
+    from aiforge_core.api.routes._chat import _overlap
+    assert not _overlap._reads_as_answer("add a review widget to the dashboard")
+    assert _overlap._reads_as_answer("Please review the auth module.")
+
+
+# ── review r2: vision single-flight ─────────────────────────────────────────
+
+def test_vision_probes_with_different_keys_do_not_share(monkeypatch):
+    from aiforge_core.runtime import vision_detect as vd
+    calls = []
+    release = threading.Event()
+
+    def _once(model, base_url, api_key=None, *, timeout_s=None):
+        calls.append(api_key)
+        release.wait(5)
+        return api_key == "good"
+    monkeypatch.setattr(vd, "_probe_endpoint_once", _once)
+    out = {}
+    ths = [threading.Thread(target=lambda k=k: out.__setitem__(
+        k, vd.probe_vision_endpoint("m", "http://s/v1", k))) for k in ("good", "bad")]
+    for th in ths:
+        th.start()
+    time.sleep(0.2)
+    release.set()
+    for th in ths:
+        th.join(5)
+    assert sorted(calls) == ["bad", "good"]
+    assert out == {"good": True, "bad": False}
+
+
+def test_a_vision_waiter_waits_for_the_owner_past_its_timeout(monkeypatch):
+    from aiforge_core.runtime import vision_detect as vd
+    release = threading.Event()
+    calls = []
+
+    def _once(model, base_url, api_key=None, *, timeout_s=None):
+        calls.append(1)
+        release.wait(10)
+        return True
+    monkeypatch.setattr(vd, "_probe_endpoint_once", _once)
+    out = []
+    owner = threading.Thread(target=lambda: out.append(
+        vd.probe_vision_endpoint("m", "http://s/v1", timeout_s=0)))
+    owner.start()
+    time.sleep(0.1)
+    waiter = threading.Thread(target=lambda: out.append(
+        vd.probe_vision_endpoint("m", "http://s/v1", timeout_s=0)))
+    waiter.start()
+    time.sleep(0.5)
+    assert waiter.is_alive()                   # still waiting, not "None"
+    release.set()
+    owner.join(5)
+    waiter.join(5)
+    assert out == [True, True] and calls == [1]

@@ -254,11 +254,11 @@ def _forget(job: Job) -> None:
 def _register(job: Job) -> Job:
     with _LOCK:
         _JOBS[job.key] = job
-        if len(_JOBS) > _MAX_JOBS:
-            done = [j for j in _JOBS.values() if not j.alive()]
-            for old in done[: len(_JOBS) - _MAX_JOBS]:
-                _JOBS.pop(old.key, None)
-                old.close()
+        over = len(_JOBS) - _MAX_JOBS
+        extra = list(_JOBS.values()) if over > 0 else []
+    if extra:                # alive() / close() outside the lock (tmux, ps)
+        for old in [j for j in extra if j is not job and not j.alive()][:over]:
+            _forget(old)
     return job
 
 
@@ -284,13 +284,14 @@ def adopt_spooled(proc, spool, cmd: str, cwd: str, *, explicit: bool,
 
     def _close():
         try:
-            if not explicit:        # a bare `cmd &` inside dies with it
+            if not job.explicit:    # a bare `cmd &` inside dies with it
                 spool.release_children()
         finally:
             spool.close()
     job = Job(key, proc, cmd, [spool.out, spool.err], session_id=session_id,
               explicit=explicit, kill=_kill, close=_close,
               pgid=handle.get("pgid") or proc.pid)
+    job.watch_opts = handle.pop("opts", None)   # the bg watcher's (promote)
     job.handle = handle
     if started is not None:
         job.started = started
@@ -351,16 +352,17 @@ def turn_running() -> list[Job]:
     token = _TURN.get()
     if token is None:
         return []
-    with _LOCK:
-        return [j for j in _JOBS.values()
-                if j.turn is token and not j.explicit and j.alive()]
+    with _LOCK:              # snapshot only: alive() may run tmux / ps
+        mine = [j for j in _JOBS.values() if j.turn is token and not j.explicit]
+    return [j for j in mine if j.alive()]
 
 
 def running() -> list[Job]:
     """The caller's own live jobs."""
     caller = _caller()
     with _LOCK:
-        return [j for j in _JOBS.values() if _visible(j, caller) and j.alive()]
+        mine = [j for j in _JOBS.values() if _visible(j, caller)]
+    return [j for j in mine if j.alive()]
 
 
 def stop_for_text(session_id, text: str) -> int:
@@ -421,29 +423,11 @@ def look(job: Job, why: str | None = None) -> dict:
 
 
 def _trip_reason(job: Job) -> str | None:
-    """A last-resort guard of the background watcher ended it (idle, wall
-    clock, output too large)."""
-    key = str(job.key)
-    if not key.startswith("bg-"):
-        return None
-    from aiforge_core.runtime import bg_commands
-    return bg_commands.trip_reason(key[3:])
-
-
-def _whole_tail(stream) -> str:
-    end = sig.file_size(stream)
-    start = max(0, end - cmd_finished.TAIL_CHARS)
-    return sig.clean(sig.read_range(stream, start, end))
+    return cmd_finished.trip_reason(job.key)
 
 
 def _record_end(job: Job, code, ended_by) -> None:
-    """The job's WHOLE output tail and exit code, for the loop rules."""
-    try:
-        out = _whole_tail(job.streams[0])
-        err = _whole_tail(job.streams[1]) if len(job.streams) > 1 else ""
-        cmd_finished.record(job.key, job.cmd, code, out, err, stopped=ended_by)
-    except Exception:  # noqa: BLE001 — a record must never break a look
-        pass
+    cmd_finished.record_job(job, code, ended_by)
 
 
 def default_wait_s(job: Job) -> float:

@@ -38,7 +38,7 @@ def test_exec_happy(monkeypatch):
     monkeypatch.setattr(ds, "_container_exists", lambda n: True)
     fake_proc = MagicMock(returncode=0, stdout=b"hi\n", stderr=b"")
     with patch.object(ds.subprocess, "run", return_value=fake_proc):
-        out = ds.exec_in_container("rid", "echo hi")
+        out = ds.exec_in_container("rid", "echo hi", timeout=30)
     assert out["ok"]
     assert out["stdout"].strip() == "hi"
     assert out["sandbox"] == "docker"
@@ -57,7 +57,7 @@ def test_exec_nonzero_exit(monkeypatch):
     monkeypatch.setattr(ds, "_container_exists", lambda n: True)
     fake_proc = MagicMock(returncode=1, stdout=b"", stderr=b"boom\n")
     with patch.object(ds.subprocess, "run", return_value=fake_proc):
-        out = ds.exec_in_container("rid", "false")
+        out = ds.exec_in_container("rid", "false", timeout=30)
     assert out["ok"] is False
     assert out["returncode"] == 1
     assert "boom" in out["stderr"]
@@ -89,3 +89,19 @@ def test_destroy_idempotent(monkeypatch):
     monkeypatch.setattr(ds, "_docker_available", lambda: True)
     monkeypatch.setattr(ds, "_container_exists", lambda n: False)
     ds.destroy_container("never-existed")  # must not raise
+
+
+def test_exec_has_no_wall_clock_by_default(monkeypatch):
+    """No 90 s default: only the idle detector stops a sandbox command."""
+    monkeypatch.setattr(ds, "_docker_available", lambda: True)
+    monkeypatch.setattr(ds, "_container_exists", lambda n: True)
+    seen = {}
+
+    def _run(argv, cwd, wall_s, idle_s, **kw):
+        seen.update(wall=wall_s, idle=idle_s, argv=argv)
+        return {"out": "hi\n", "err": "", "code": 0, "why": None}
+    from aiforge_core.runtime.doer_tools import _shell_run
+    monkeypatch.setattr(_shell_run, "run_to_completion", _run)
+    out = ds.exec_in_container("rid", "echo hi")
+    assert out["ok"] and out["stdout"] == "hi\n" and out["sandbox"] == "docker"
+    assert seen["wall"] == 0.0 and seen["idle"] > 0

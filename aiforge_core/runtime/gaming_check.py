@@ -28,13 +28,11 @@ from __future__ import annotations
 import ast
 import os
 import re
-import subprocess
 from dataclasses import dataclass
 
 STRONG, WEAK = 1.0, 0.5
 _THRESHOLD = 1.0
 _MAX_FILES = 200
-_MAX_BYTES = 512 * 1024
 
 _TEST_PATH = re.compile(
     r"(^|/)(tests?|__tests__|spec|specs|testing|fixtures?)/|(^|/)conftest\.py$|"
@@ -53,9 +51,15 @@ _LINE_RULES = (
         r"""|JEST_WORKER_ID|VITEST_WORKER_ID|process\.env\.VITEST\b"""
         r"""|typeof\s+(jest|describe|it)\s*[!=]==?\s*["']"""),
      "branches on whether it is running under the test runner"),
+    # A real test-FILE path (test_*.py, *_test.py, conftest.py, *.spec.ts …,
+    # or a tests/ directory at a path segment start) opened for reading — not
+    # any path that merely contains "tests/" ("contests/", "latest/").
     ("reads_tests", re.compile(
         r"""(open|read_text|read_bytes|readFileSync|readFile|getlines|getline)"""
-        r"""\s*\([^\n]*["'][^"'\n]*(test_[\w*]*\.py|_test\.py|\.(test|spec)\.[jt]s|conftest\.py|tests?/)"""),
+        r"""\s*\([^\n]*["'](?:[^"'\n]*/)?"""
+        r"""(test_[\w*]*\.py|[\w*]+_test\.(py|go)|conftest\.py"""
+        r"""|[\w*.-]+\.(test|spec)\.[cm]?[jt]sx?|[\w*]+Tests?\.(java|kt|cs)"""
+        r"""|(__)?tests?(__)?/[\w*./-]*\.(py|[cm]?[jt]sx?|go))["']"""),
      "reads the test files' contents from production code"),
     ("patches_runner", re.compile(
         r"""^\s*(pytest|_pytest|unittest)(\.\w+)+\s*=[^=]|setattr\(\s*(pytest|_pytest|unittest)\b"""
@@ -102,71 +106,26 @@ def is_test_path(path: str) -> bool:
     return bool(_TEST_PATH.search(path.replace(os.sep, "/")))
 
 
-# ── what was added ───────────────────────────────────────────────────────
+# ── what was added (only by THIS turn / run: see gaming_changes) ───────
 
-def _git(cwd: str, *args: str) -> str | None:
-    try:
-        out = subprocess.run(["git", "--no-optional-locks", *args], cwd=cwd,
-                             capture_output=True, timeout=20)
-    except Exception:  # noqa: BLE001
-        return None
-    if out.returncode != 0:
-        return None
-    return out.stdout.decode("utf-8", "replace")
+from aiforge_core.runtime.gaming_changes import (  # noqa: E402,F401
+    _git,
+    _read,
+    added_lines,
+    baseline,
+)
+from aiforge_core.runtime.gaming_changes import repo_changes as _changes  # noqa: E402
 
 
-_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
-
-
-def added_lines(diff: str) -> dict[str, set[int]]:
-    """``{path: {new line numbers added}}`` from a unified diff."""
-    out: dict[str, set[int]] = {}
-    path, lineno = None, 0
-    for raw in diff.splitlines():
-        if raw.startswith("+++ "):
-            p = raw[4:].strip()
-            path = None if p == "/dev/null" else p[2:] if p.startswith("b/") else p
-            continue
-        m = _HUNK.match(raw)
-        if m:
-            lineno = int(m.group(1))
-            continue
-        if path is None or raw.startswith(("--- ", "diff ", "index ")):
-            continue
-        if raw.startswith("+"):
-            out.setdefault(path, set()).add(lineno)
-            lineno += 1
-        elif raw.startswith(" "):
-            lineno += 1
-    return out
-
-
-def repo_changes(cwd: str) -> dict[str, set[int] | None]:
-    """Added lines per changed source file against HEAD; ``None`` = the
-    whole file is new (untracked)."""
-    diff = _git(cwd, "diff", "HEAD", "-U0", "--no-ext-diff", "--no-color")
-    if diff is None:
-        return {}
-    changes: dict[str, set[int] | None] = dict(added_lines(diff))
-    listing = _git(cwd, "ls-files", "--others", "--exclude-standard") or ""
-    for rel in listing.splitlines()[:_MAX_FILES]:
-        changes.setdefault(rel.strip(), None)
-    return {p: v for p, v in changes.items()
-            if p.endswith(_SOURCE_EXT) and not is_test_path(p)}
+def repo_changes(cwd: str, base: str | None = None) -> dict[str, set[int] | None]:
+    """Added lines per changed non-test source file — since the ``base``
+    snapshot (:func:`baseline`) when given, else since HEAD; ``None`` = the
+    whole file is new."""
+    return _changes(cwd, base, keep=lambda p: p.endswith(_SOURCE_EXT)
+                    and not is_test_path(p))
 
 
 # ── the scan ─────────────────────────────────────────────────────────────
-
-def _read(root: str, rel: str) -> str | None:
-    try:
-        full = os.path.join(root, rel)
-        if os.path.getsize(full) > _MAX_BYTES:
-            return None
-        with open(full, encoding="utf-8", errors="replace") as fh:
-            return fh.read()
-    except OSError:
-        return None
-
 
 def _docstring_lines(src: str) -> set[int]:
     """Lines of Python docstrings — prose ABOUT pytest is not code."""
@@ -440,13 +399,14 @@ def verdict(findings: list[Finding]) -> bool:
     return sum(f.weight for f in findings) >= _THRESHOLD
 
 
-def scan_repo(cwd: str) -> list[Finding]:
-    """Findings in what the working tree ADDED to non-test source files
-    since HEAD. Empty outside a git repository or on any error."""
+def scan_repo(cwd: str, base: str | None = None) -> list[Finding]:
+    """Findings in what THIS turn / run ADDED to non-test source files
+    (since the ``base`` snapshot; since HEAD without one). Empty outside a
+    git repository or on any error."""
     try:
         if not cwd or not os.path.isdir(cwd):
             return []
-        changes = repo_changes(cwd)
+        changes = repo_changes(cwd, base)
         if not changes:
             return []
         asserted = test_literals(cwd)
@@ -460,9 +420,10 @@ def scan_repo(cwd: str) -> list[Finding]:
         return []
 
 
-def check(cwd: str) -> list[str]:
-    """Evidence lines when the tree's new code games the tests, else []."""
-    found = scan_repo(cwd)
+def check(cwd: str, base: str | None = None) -> list[str]:
+    """Evidence lines when the turn's / run's new code games the tests, else
+    [] (``base``: the :func:`baseline` token taken when it started)."""
+    found = scan_repo(cwd, base)
     if not verdict(found):
         return []
     return [f.evidence() for f in found[:6]]
@@ -490,6 +451,6 @@ def warning_text(evidence: list[str]) -> str:
     return WARNING.format(evidence="\n".join(f"- {e}" for e in evidence))
 
 
-__all__ = ["Finding", "added_lines", "check", "is_test_path", "nudge_text",
+__all__ = ["Finding", "added_lines", "baseline", "check", "is_test_path", "nudge_text",
            "repo_changes", "scan_file", "scan_repo", "test_literals",
            "verdict", "warning_text"]

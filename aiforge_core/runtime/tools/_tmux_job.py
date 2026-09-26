@@ -33,6 +33,7 @@ from typing import Any
 
 from aiforge_core.runtime import cmd_jobs
 from aiforge_core.runtime import cmd_signals as sig
+from aiforge_core.runtime.cmd_idle import ProgressClock
 
 _POLL_S = 0.1
 _KILL_GRACE_S = 3.0
@@ -96,6 +97,23 @@ class PaneRun:
         fd, self.path = tempfile.mkstemp(prefix="aiforge-pane-", suffix=".log")
         os.close(fd)
         self._written = ""
+        self.closed = False
+        self._fg: tuple[float, int | None] = (float("-inf"), None)
+
+    def current_pgid(self, max_age_s: float = 0.5) -> int | None:
+        """The pane's foreground process group NOW. An interactive shell
+        gives each command of ``a && b`` its own group, so the group seen at
+        hand-off is dead once ``a`` ends; every check/kill resolves it again
+        (cached for ``max_age_s`` — a poll 10x a second must not fork ``ps``
+        10x a second). None when the shell is at its prompt."""
+        at, pgid = self._fg
+        now = time.monotonic()
+        if self.done:
+            return None
+        if now - at > max_age_s:
+            pgid = _foreground_pgid(self.name)
+            self._fg = (now, pgid)
+        return pgid
 
     # ── reading the pane ────────────────────────────────────────────────
     def refresh(self) -> None:
@@ -138,6 +156,8 @@ class PaneRun:
         return bool(target) and target.startswith(got)
 
     def _spool(self, text: str, final: bool = False) -> None:
+        if self.closed:              # the job was forgotten: no new spool file
+            return
         if final and text and not text.endswith("\n"):
             text += "\n"
         if text.startswith(self._written):
@@ -173,29 +193,72 @@ class PaneRun:
                        capture_output=True)
 
     def kill(self) -> None:
-        """Ctrl-C; the foreground group is killed if it ignores that."""
+        """Ctrl-C; the CURRENT foreground group is killed if it ignores that
+        (again for the next command of a chain, a few times at most)."""
         self.interrupt()
-        end = time.monotonic() + _KILL_GRACE_S
-        while self.poll() is None and time.monotonic() < end:
-            time.sleep(_POLL_S)
-        if self.done:
-            return
-        pgid = self.pgid or _foreground_pgid(self.name)
-        if pgid:
+        for _ in range(3):
+            end = time.monotonic() + _KILL_GRACE_S
+            while self.poll() is None and time.monotonic() < end:
+                time.sleep(_POLL_S)
+            if self.done:
+                return
+            pgid = _foreground_pgid(self.name)
+            if not pgid:
+                continue             # between two commands: look again
             try:
                 os.killpg(pgid, signal.SIGKILL)
             except OSError:
                 pass
 
     def close(self) -> None:
+        self.closed = True
         try:
             os.unlink(self.path)
         except OSError:
             pass
 
 
+class _PaneClock(ProgressClock):
+    """The stuck detector on the pane's CURRENT foreground group: a new
+    group (the next command of ``a && b``) is progress, and its CPU is
+    measured from its own start, not against the dead group's."""
+
+    def __init__(self, run: "PaneRun", *a, **k) -> None:
+        self._run = run
+        super().__init__(run.current_pgid(), *a, **k)
+
+    def _cpu_moved(self) -> bool:
+        pgid = self._run.current_pgid()
+        if pgid != self.pgid:
+            self.pgid, self._cpu = pgid, None
+            if pgid is not None:
+                return True
+        return super()._cpu_moved()
+
+
 class PaneJob(cmd_jobs.Job):
     """A cmd_jobs job whose process is a command running in a tmux pane."""
+
+    def __init__(self, *a, **k) -> None:
+        super().__init__(*a, **k)
+        self.clock = _PaneClock(self.proc, self.size, cmd_jobs.stuck_s())
+        self._cpu_group: int | None = None
+
+    @property
+    def pgid(self) -> int | None:            # resolved on every check
+        return self.proc.current_pgid()
+
+    @pgid.setter
+    def pgid(self, _value) -> None:          # Job.__init__ assigns it
+        pass
+
+    def cpu_active(self) -> bool | None:
+        group = self.pgid
+        if group != self._cpu_group:         # the chain moved on: progress
+            self._cpu_group, self._cpu_at_look = group, None
+            super().cpu_active()             # the new group's baseline
+            return True if group is not None else None
+        return super().cpu_active()
 
     def _tail(self) -> str:
         # The unfinished last line is not in the spool: read it live, so a
@@ -215,7 +278,9 @@ class PaneJob(cmd_jobs.Job):
 
 
 def busy(name: str):
-    """The live job holding pane ``name``, else None."""
+    """The live job holding pane ``name``, else None. Held until the pane is
+    back at its prompt — even after the job was forgotten (a kill that did
+    not take), so the next ``bash`` is never typed into a running program."""
     job = _BUSY.get(name)
     if job is None:
         return None
@@ -230,7 +295,8 @@ def _adopt(run: PaneRun, run_id: str) -> PaneJob:
     run.pid = run.pgid
 
     def _close():
-        _BUSY.pop(run.name, None)
+        if run.poll() is not None:   # back at the prompt: the pane is free
+            _BUSY.pop(run.name, None)
         run.close()
     job = PaneJob(f"tmux-{next(_SEQ)}", run, run.command, [run.path],
                   kill=run.kill, close=_close, pgid=run.pgid)

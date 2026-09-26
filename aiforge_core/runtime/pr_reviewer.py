@@ -183,6 +183,38 @@ def _send_kwargs(ep: dict[str, Any]) -> dict[str, Any]:
     return kwargs
 
 
+def _read_bound(ep: dict[str, Any], messages: list) -> float | None:
+    """The longest silence one read may take: the stream-health first-token
+    bound (scaled with the prompt and doubled per stall of this request),
+    never shorter than the idle bound. None (no bound) when both are off."""
+    import json as _json
+
+    from aiforge_core.llm.client._stream_health import first_token_s, idle_s
+    payload = _json.dumps(messages, default=str).encode()
+    bound = max(first_token_s(payload, str(ep.get("api_base") or "")), idle_s())
+    return bound or None
+
+
+def _reply_text(resp: Any) -> str:
+    """The reply of a streamed completion (or of a plain one — a server or a
+    test double that ignored ``stream``)."""
+    if isinstance(resp, dict) or hasattr(resp, "choices"):
+        return resp["choices"][0]["message"]["content"]
+    parts: list[str] = []
+    for chunk in resp:
+        try:
+            choice = chunk["choices"][0] if isinstance(chunk, dict) \
+                else chunk.choices[0]
+            delta = choice["delta"] if isinstance(choice, dict) else choice.delta
+            text = delta.get("content") if isinstance(delta, dict) \
+                else getattr(delta, "content", None)
+        except (AttributeError, IndexError, KeyError, TypeError):
+            continue
+        if text:
+            parts.append(text)
+    return "".join(parts)
+
+
 def _sender(litellm: Any, ep: dict[str, Any], messages: list) -> Any:
     """One send, as a no-arg callable ``model_wait`` can re-run after an
     outage. Every attempt is charged to the ceiling and settled on failure —
@@ -205,14 +237,19 @@ def _sender(litellm: Any, ep: dict[str, Any], messages: list) -> Any:
                                           model=model, max_wait_s=60.0)
             except Exception:  # noqa: BLE001 — a limiter fault never skips a review
                 pass
+            # Streamed, with the stream-health bounds as the per-read
+            # timeout (silence before the first token / between chunks), not
+            # a fixed wall clock: a long review on a slow box keeps going
+            # while tokens flow; a dead one is an outage for model_wait.
             resp = litellm.completion(
                 model=model,
                 api_base=ep["api_base"], api_key=ep["api_key"],
                 extra_headers={"User-Agent": user_agent()},
-                messages=messages,
-                temperature=0.1, timeout=120, **_send_kwargs(ep),
+                messages=messages, stream=True,
+                temperature=0.1, timeout=_read_bound(ep, messages),
+                **_send_kwargs(ep),
             )
-            return resp["choices"][0]["message"]["content"]
+            return _reply_text(resp)
         except Exception as exc:
             # Settle the meter token. A send counted at the gateway and never
             # settled reads as a success, so the review that failed would be

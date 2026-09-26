@@ -237,9 +237,15 @@ def _should_skip_enhance(auto_downgraded, route_pipeline, is_build_task,
     if route_pipeline:
         return False
     # The classifier read this request as a question or a review/analysis:
-    # nothing is built, so the long prompt goes to the agent unrestated.
+    # nothing is built, so the long prompt goes to the agent unrestated —
+    # unless the prompt itself asks to change code. The label is one word
+    # from an 8-token triage; a long multi-part edit request it called CHAT
+    # must not lose the enhancer on its say-so.
     if cat in _ANSWER_CLASSES and _answer_skip_enabled():
-        return True
+        from ._overlap import has_edit_intent
+        if not has_edit_intent(prompt):
+            return True
+        return False            # an edit request: keep the restatement
     if _followup_needs_enhance(prompt):
         return False
     from aiforge_core.runtime.chat_router import direct_reply

@@ -189,6 +189,8 @@ def gate_verdict(model_verdict: str, gate: dict[str, Any]) -> str:
 def mark_test_gaming(state, repo_root: str) -> bool:
     """A Doer pass the Feedback judged ``pass``: do its edits make the tests
     pass by DETECTING the test (:mod:`aiforge_core.runtime.gaming_check`)?
+    Only the run's own lines count: ``state['gaming_base']`` is the snapshot
+    taken when the run started (adk_runner ``_ticket_state``).
     On a hit the verdict becomes ``partial test_gaming: <evidence>`` — shipped
     for review with the evidence, never as a success — and
     ``state['quality_issue']`` / ``state['test_gaming_evidence']`` carry it.
@@ -197,7 +199,8 @@ def mark_test_gaming(state, repo_root: str) -> bool:
         return False
     try:
         from aiforge_core.runtime import gaming_check as test_gaming
-        evidence = test_gaming.check(repo_root)
+        evidence = test_gaming.check(repo_root,
+                                     state.get("gaming_base") or None)
     except Exception:  # noqa: BLE001
         return False
     if not evidence:

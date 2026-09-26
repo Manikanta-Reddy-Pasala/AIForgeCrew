@@ -82,20 +82,52 @@ def _enhance_will_run(prompt) -> bool:
 # enhancer is skipped (``_routing._ANSWER_CLASSES``) — an early call would be
 # thrown away, and a server keeps generating a cancelled request, so it only
 # slows the agent's first call. Wrong guesses cost only the overlap.
+#: Read-only phrasing, judged per SENTENCE: the sentence opens with a
+#: read-only verb ("Review the design…", "Please explain…"), or says not to
+#: change anything, or asks for an assessment / prose. "Add a review widget"
+#: is not read-only — the word alone never decides.
 _READ_ONLY_RE = re.compile(
-    r"\b(?:do not|don'?t|without) (?:change|modify|edit|touch|write)\w*"
-    r"|\b(?:review|assess|explain|summari[sz]e|critique|evaluate)\b"
-    r"|\bassessment\b|\bin prose\b", re.IGNORECASE)
+    r"\b(?:do not|don'?t|without|never) (?:change|modify|edit|touch|write)\w*"
+    r"|^\W*(?:(?:please|pls|kindly|can you|could you|would you|i want you to"
+    r"|i'?d like you to)\s+)?(?:review|assess|explain|summari[sz]e|critique"
+    r"|evaluate|analy[sz]e|describe)\b"
+    r"|\b(?:written )?assessment\b|\bin prose\b", re.IGNORECASE)
+_SENTENCE_RE = re.compile(r"(?<=[.!?;:])\s+|\n+")
+
+#: Edit / build intent: an imperative change verb that is not negated, and
+#: something in code to change.
+_EDIT_VERB_RE = re.compile(
+    r"(?<!not )(?<!n't )(?<!never )(?<!without )(?<!no need to )"
+    r"\b(?:add|fix|change|implement|refactor|create|update|remove|delete"
+    r"|rename|write|build|modify|replace|rewrite|migrate|introduce|extend"
+    r"|make)\b", re.IGNORECASE)
+_CODE_NOUN_RE = re.compile(
+    r"\b(?:files?|functions?|methods?|class(?:es)?|modules?|tests?|code"
+    r"|endpoints?|api|components?|widgets?|pages?|scripts?|services?"
+    r"|fields?|columns?|config|bug|feature|handler|route|schema|migration"
+    r"|package|library|cli|ui|button|form|query|model|table|repo)\b"
+    r"|\b[\w/.-]+\.(?:py|[cm]?[jt]sx?|go|java|kt|rb|rs|cs|php|css|html|sql"
+    r"|ya?ml|json|toml|md)\b", re.IGNORECASE)
+
+
+def has_edit_intent(prompt) -> bool:
+    """Does the message ask to CHANGE code (an un-negated change verb plus a
+    file / code noun)?"""
+    text = prompt or ""
+    return bool(_EDIT_VERB_RE.search(text) and _CODE_NOUN_RE.search(text))
 
 
 def _reads_as_answer(prompt) -> bool:
+    if has_edit_intent(prompt):
+        return False
     try:
         from aiforge_core.runtime import chat_router
         if chat_router.is_advice_question(prompt or ""):
             return True
     except Exception:  # noqa: BLE001
         pass
-    return bool(_READ_ONLY_RE.search(prompt or ""))
+    return any(_READ_ONLY_RE.search(part)
+               for part in _SENTENCE_RE.split(prompt or "") if part.strip())
 
 
 def _slots_allow() -> bool:

@@ -62,7 +62,7 @@ def track_command(session_id, cwd: str, cmd: str, proc, spool, *,
         target=_wait_command, name=f"bg-cmd-{wid}", daemon=True,
         args=(wid, proc, spool, ev, cmd, session_id, pgid, opts)).start()
     return {"ok": True, "background": True, "pid": proc.pid, "pgid": pgid,
-            "handle": f"bg-{wid}",
+            "handle": f"bg-{wid}", "opts": opts,
             "note": "Running in the background. This turn can continue. "
                     "The outcome will show up in this chat when it exits. "
                     "Stop kills it."}

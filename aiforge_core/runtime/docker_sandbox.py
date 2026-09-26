@@ -143,9 +143,13 @@ def ensure_container(run_id: str) -> str:
 
 
 def exec_in_container(
-    run_id: str, command: str, *, timeout: int = 90,
+    run_id: str, command: str, *, timeout: int = 0,
 ) -> dict[str, Any]:
     """Run ``command`` inside the per-run container (``bash -lc``).
+
+    ``timeout`` > 0 is an explicit wall clock; 0 (the default) is none — the
+    command is stopped only when it looks hung (no output and no CPU for
+    ``AIFORGE_CMD_IDLE_S``), like every other shell path.
 
     Consults :func:`resolve_exec`. A ``"refuse"`` decision (mandatory
     sandbox + docker unavailable) returns a refusal result instead of
@@ -164,6 +168,8 @@ def exec_in_container(
             "command": command,
         }
     name = ensure_container(run_id)
+    if not timeout or timeout <= 0:
+        return _exec_idle_guarded(name, command)
     try:
         proc = subprocess.run(
             ["docker", "exec", "-i", name, "bash", "-lc", command],
@@ -193,6 +199,25 @@ def exec_in_container(
         ),
         "sandbox": "docker",
     }
+
+
+def _exec_idle_guarded(name: str, command: str) -> dict[str, Any]:
+    """``docker exec`` with no wall clock: stopped only when hung."""
+    from aiforge_core.runtime.cmd_idle import idle_limit_s
+    from aiforge_core.runtime.doer_tools._shell_run import run_to_completion
+    res = run_to_completion(["docker", "exec", "-i", name, "bash", "-lc",
+                             command], os.getcwd(), 0.0, idle_limit_s(),
+                            cmd=command)
+    out, err = res.get("out") or "", res.get("err") or ""
+    base = {"command": command, "stdout": out[:_STDOUT_CAP_BYTES],
+            "stderr": err[:_STDOUT_CAP_BYTES], "sandbox": "docker",
+            "truncated": (len(out) > _STDOUT_CAP_BYTES
+                          or len(err) > _STDOUT_CAP_BYTES)}
+    if res.get("why"):
+        return {**base, "ok": False, "returncode": None, "truncated": True,
+                "error": "hung: no output and no CPU activity"
+                if res["why"] == "hung" else str(res["why"])}
+    return {**base, "ok": res.get("code") == 0, "returncode": res.get("code")}
 
 
 def destroy_container(run_id: str) -> None:

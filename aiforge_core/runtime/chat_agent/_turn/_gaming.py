@@ -34,7 +34,8 @@ def gate(st, step, cwd, plan_mode, builder):
         return None
     try:
         from aiforge_core.runtime import gaming_check as test_gaming
-        evidence = test_gaming.check(str(cwd or ""))
+        evidence = test_gaming.check(str(cwd or ""),
+                                     getattr(st, "gaming_base", "") or None)
     except Exception:  # noqa: BLE001 — the check never breaks a turn
         log.debug("test-gaming check failed", exc_info=True)
         return None

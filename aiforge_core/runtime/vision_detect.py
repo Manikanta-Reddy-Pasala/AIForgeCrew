@@ -304,7 +304,7 @@ def _safe_ensure(role: str) -> None:
 # (model, base_url) → the probe in flight for it. Adding a model and opening a
 # chat both probe in the background; at a fresh start they fired together, two
 # image prefills competing with the first turn for the server's slots.
-_INFLIGHT: "dict[tuple[str, str], object]" = {}
+_INFLIGHT: "dict[tuple[str, str, str], object]" = {}
 _INFLIGHT_LOCK = threading.Lock()
 
 
@@ -312,9 +312,15 @@ def probe_vision_endpoint(model: str, base_url: str, api_key: str | None = None,
                           *, timeout_s: int | None = None) -> bool | None:
     """Single-flight :func:`_probe_endpoint_once`: a second caller for the same
     model and endpoint waits for the probe already running and shares its
-    verdict instead of sending another."""
+    verdict instead of sending another. The key includes the api key (as a
+    hash): two keys on one gateway can see different model permissions.
+    A waiter waits as long as the owner's probe runs — giving up earlier
+    would send the probe it was meant to share, or report "inconclusive"
+    while the answer is still coming."""
     import concurrent.futures as _cf
-    key = (model or "", (base_url or "").rstrip("/"))
+    import hashlib as _hl
+    key = (model or "", (base_url or "").rstrip("/"),
+           _hl.sha256((api_key or "").encode()).hexdigest()[:16])
     with _INFLIGHT_LOCK:
         running = _INFLIGHT.get(key)
         mine = running is None
@@ -323,7 +329,7 @@ def probe_vision_endpoint(model: str, base_url: str, api_key: str | None = None,
             _INFLIGHT[key] = running
     if not mine:
         try:
-            return running.result(timeout=(timeout_s or 8) + 30)
+            return running.result()
         except Exception:  # noqa: BLE001 — the owner's failure is inconclusive
             return None
     verdict = None

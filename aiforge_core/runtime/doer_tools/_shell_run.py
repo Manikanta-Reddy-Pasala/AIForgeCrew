@@ -37,7 +37,8 @@ def _read_all(fh) -> str:
 
 
 def run_to_completion(argv, cwd: str, wall_s: float, idle_s: float, *,
-                      checkin_s: float = 0.0, cmd: str = "") -> dict:
+                      checkin_s: float = 0.0, cmd: str = "",
+                      on_spawn=None, interrupt=None) -> dict:
     """``{"out", "err", "code", "why"}`` — ``why`` is None when the command
     exited on its own, else "timeout" (wall clock) or "hung" (idle).
 
@@ -45,6 +46,9 @@ def run_to_completion(argv, cwd: str, wall_s: float, idle_s: float, *,
     output already shows an error or a prompt — is not waited out: it is
     handed to the job table and ``{"job": <what it printed so far>}`` comes
     back, for the Doer to command_wait / command_output / command_kill."""
+    # ``on_spawn(pgid)`` is told the new process group (Stop's registry);
+    # ``interrupt()`` is polled — a truthy answer ("stop" / "steer") kills
+    # the group and comes back as ``why``.
     from aiforge_core.runtime.chat_agent._shell_wait import _checkin_due
     from aiforge_core.runtime.chat_agent._spool import Spool
     from aiforge_core.runtime.cmd_idle import ProgressClock
@@ -58,6 +62,11 @@ def run_to_completion(argv, cwd: str, wall_s: float, idle_s: float, *,
         spool.close()
         raise
     spool.pgid = proc.pid
+    if on_spawn is not None:
+        try:
+            on_spawn(proc.pid)
+        except Exception:  # noqa: BLE001
+            pass
     why = None
     handed = False
     try:
@@ -67,7 +76,10 @@ def run_to_completion(argv, cwd: str, wall_s: float, idle_s: float, *,
         seen = [0]
         clock = ProgressClock(spool.pgid, spool.size, idle_s)
         while proc.poll() is None:
-            if deadline is not None and time.monotonic() > deadline:
+            hit = interrupt() if interrupt is not None else None
+            if hit:
+                why = str(hit)
+            elif deadline is not None and time.monotonic() > deadline:
                 why = "timeout"
             elif clock.stalled():
                 why = "hung"

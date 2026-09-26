@@ -111,7 +111,7 @@ __all__ = ["SCAN_BYTES", "bounded", "clean", "failure_in", "file_size", "job_hin
 #: A pipe into one of these holds the command's output until it ends, so a
 #: check-in sees nothing (live: `./build.sh 2>&1 | tail -20` hid an error
 #: printed at 3 s for the whole run).
-_BUFFERING_PIPE = re.compile(r"\|\s*(?:tail|head|sort|uniq|wc|less|more)\b")
+_BUFFERING_PIPE = re.compile(r"\|\s*(?:tail|sort|uniq|wc|less|more)\b")
 
 
 def job_hint(key, alive: bool, why: str | None = None, cmd: str = "") -> str:
