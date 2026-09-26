@@ -13,6 +13,9 @@ from aiforge_core.llm import rate_limiter as rl
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    # A server with spare slots: the idle lift below only happens there
+    # (one slot keeps compaction capped; see test_llm_slots_compaction.py).
+    monkeypatch.setenv("AIFORGE_LLM_PARALLEL", "2")
     # THE IN-PROCESS WINDOW, deliberately. It is the real fallback whenever the
     # shared store is unavailable (locked, read-only config dir, disabled), so
     # its math still has to hold — and it is the only half a driven monotonic

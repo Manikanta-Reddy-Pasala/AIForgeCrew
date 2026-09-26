@@ -20,7 +20,9 @@ from ._tool_dispatch import _invoke_tool
 
 def _parallel_cap() -> int:
     """Most slow reads of one batch running in the background at once,
-    besides the reply's first call (servers rate-limit)."""
+    besides the reply's first call (servers rate-limit). These are tool
+    reads, not model calls, so the default does not scale with the model
+    server's slots (``llm/slots.py``)."""
     try:
         return max(0, int(os.environ.get("AIFORGE_CHAT_PARALLEL_READS", "4")))
     except (TypeError, ValueError):

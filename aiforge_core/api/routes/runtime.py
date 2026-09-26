@@ -294,6 +294,8 @@ class _RuntimeSettingsBody(BaseModel):
     # store's own bound unreachable and the UI 422s on a value it offers.
     llm_rate_limit_backoff_s: int | None = Field(None, ge=0, le=3_600)
     llm_rate_limit_cap_s: int | None = Field(None, ge=1, le=3_600)
+    # Concurrent model requests the server serves; 0 = auto-detect.
+    llm_parallel: int | None = Field(None, ge=0, le=1024)
     # Names to FORGET, so those knobs fall back to env / built-in default
     # (the store otherwise shadows the documented env var forever).
     unset: list[str] | None = None

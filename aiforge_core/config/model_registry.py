@@ -31,6 +31,7 @@ from ._model_context import (  # noqa: F401  # re-exported
     context_window_for_role,
     context_window_source,
     effective_context_window,
+    parallel_for,
     thinking_for,
     vision_for,
 )
@@ -155,6 +156,7 @@ def _public(row: dict) -> dict:
             "has_vision": _resolve(vision, mid, "vision"),
             "has_thinking": _resolve(thinking, mid, "thinking"),
             "context_window": int(row.get("context_window") or 0),
+            "parallel": int(row.get("parallel") or 0),
             "api_key_set": bool(row.get("api_key"))}
 
 
@@ -248,6 +250,8 @@ def _apply_model_fields(r: dict, fields: dict) -> None:
         r["thinking"] = fields["thinking"]
     if fields.get("context_window") is not None:
         r["context_window"] = max(0, int(fields["context_window"] or 0))
+    if fields.get("parallel") is not None:
+        r["parallel"] = max(0, int(fields["parallel"] or 0))
     if fields.get("api_key"):
         r["api_key"] = fields["api_key"]
 

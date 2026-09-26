@@ -45,7 +45,9 @@ def test_defaults(rs, monkeypatch):
         "compaction_rpm": 5,
         "chat_rpm": 0,
         "llm_rate_limit_backoff_s": 20,
-        "llm_rate_limit_cap_s": 60}
+        "llm_rate_limit_cap_s": 60,
+        # 0 = auto: probe the model server for its concurrent slots.
+        "llm_parallel": 0}
 
 
 def test_stale_cave_zero_migrated_to_default(rs, monkeypatch):

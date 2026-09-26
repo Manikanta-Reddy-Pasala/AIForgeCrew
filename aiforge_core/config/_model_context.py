@@ -136,3 +136,20 @@ def vision_for(model: str, base_url: str = "") -> str | None:
             v = r.get("vision") or "auto"
             return v if v in ("yes", "no") else None
     return None
+
+
+def parallel_for(model: str, base_url: str = "") -> int:
+    """The model's registered concurrent-request slots, or 0 when unset (the
+    caller then uses the global setting or probes the server). Matched like
+    :func:`thinking_for`."""
+    model = (model or "").strip()
+    bare = model.split("/", 1)[1] if model.startswith("openai/") else model
+    for r in _pkg()._load():
+        row_url = (r.get("base_url") or "").rstrip("/")
+        if r.get("model") in (model, bare) and (
+                not base_url or not row_url or row_url == base_url.rstrip("/")):
+            try:
+                return max(0, int(r.get("parallel") or 0))
+            except (TypeError, ValueError):
+                return 0
+    return 0

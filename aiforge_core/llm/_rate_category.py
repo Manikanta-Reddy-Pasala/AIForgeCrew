@@ -3,6 +3,7 @@ and how much of the global window idle compaction may take."""
 from __future__ import annotations
 
 import math
+import os
 import time
 
 from ._rate_holds import _trim_locked
@@ -61,6 +62,27 @@ def _chat_active() -> bool:
     return _chat_sends_recent() != 0
 
 
+def _compaction_slots() -> int:
+    """Slots on the server compaction shares with chat: the smaller of the
+    two roles' servers. Unknown is 1."""
+    try:
+        from . import slots as _slots
+        role = os.environ.get("AIFORGE_COMPACT_ROLE", "").strip() or "learner"
+        return min(_slots.llm_slots(role), _slots.llm_slots(_slots.CHAT_ROLE))
+    except Exception:  # noqa: BLE001 — a failed read is the safe answer
+        return 1
+
+
+def _turn_summary() -> bool:
+    """This send is the chat turn's own condense summary (it runs with the
+    interactive yield turned off, see chat_agent/_context/_summary_bg)."""
+    try:
+        from . import interactive_gate as _gate
+        return _gate.exempt()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _category_limit(cat: str) -> float:
     """Per-category rpm for this send, evaluated at the moment of the send.
 
@@ -68,9 +90,24 @@ def _category_limit(cat: str) -> float:
     fold cannot crowd out the person. On an idle box it rises: to the global
     ceiling minus a reserve kept for the next chat send, or — with no global
     ceiling — to unbounded. A stored 0 stays "no category cap".
+
+    Only on a server with more than one slot (see ``llm/slots.py``): with one,
+    the cap holds even when idle, and there the chat's own condense summary
+    is capped too. With several, that summary is not category-capped.
     """
     base = _pkg()._cat_rpm(cat)
-    if cat != "compaction" or base <= 0 or _chat_active():
+    if cat != "compaction" or base <= 0:
+        return base
+    slots = _compaction_slots()
+    if slots <= 1:
+        # One slot: a fold in flight is a fold the person's next message
+        # queues behind, so compaction keeps its cap even on an idle box.
+        return base
+    if _turn_summary():
+        # The turn's own condense summary, on a server with a spare slot:
+        # it runs beside the chat instead of ahead of it — no category cap.
+        return 0.0
+    if _chat_active():
         return base
     g = _pkg().global_rpm()
     if g <= 0:

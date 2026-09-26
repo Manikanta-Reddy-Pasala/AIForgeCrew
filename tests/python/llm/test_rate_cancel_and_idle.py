@@ -13,6 +13,9 @@ from aiforge_core.llm import rate_limiter as rl
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    # A server with spare slots: the idle lift below only happens there
+    # (one slot keeps compaction capped; see test_llm_slots_compaction.py).
+    monkeypatch.setenv("AIFORGE_LLM_PARALLEL", "2")
     monkeypatch.setenv("AIFORGE_LLM_SHARED_WINDOW", "0")
     for var in ("AIFORGE_LLM_MAX_RPM", "AIFORGE_CHAT_RPM",
                 "AIFORGE_COMPACTION_RPM"):

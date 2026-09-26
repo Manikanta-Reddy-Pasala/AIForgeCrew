@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 
+from . import _overlap
 from ._core import (
     _PRODUCE_SEM,
     _af_log,
@@ -113,6 +114,7 @@ def _events(pc):
     # waits for it only briefly (see _repomap._aider_digest_bounded).
     if not pc.team:
         _warm_repo_map(pc.cwd)
+    _overlap.warm_slots()
     # Staleness auto-curation: a session bound to a jira/confluence
     # context folder (cwd = work/<kind>/<key>) re-verifies that context's
     # note when its updated_at crossed AIFORGE_NOTE_STALE_HOURS. The
@@ -153,6 +155,9 @@ def _events(pc):
     #                code_edit) or None → chat_router falls back to regex;
     #   • _team_approvals  Pipeline-approvals ON → force the gated sequential
     #                pipeline (the parallel path can't gate — J).
+    # On a server with a spare slot the enhancer starts now, beside the
+    # classifier (see _overlap); on one slot this is a no-op.
+    _overlap.start(pc, _pp)
     _rd = _decide_chat_route(_pp, pc.prompt, pc.agent_mode, pc.team,
                              pc._parallel_team, pc.cwd, pc.history,
                              quick=bool(getattr(pc.body, "quick", False)),
@@ -166,11 +171,14 @@ def _events(pc):
     _is_build_task = _rd.is_build_task
     _build_escalate = _rd.build_escalate
     _route_pipeline = _rd.route_pipeline
+    if _route_pipeline:
+        _overlap.discard(pc)     # the pipeline writes its own spec
     rctx = {"done": False}
     yield from _dispatch_agent_route(
         _rd, _pp, pc.prompt, pc.cwd, pc.session_id, pc.history, lambda t: _with_resume(pc, t), pc._path,
         pc._turn_t0, pc.team, pc._resume_brief, rctx)
     if rctx["done"]:
+        _overlap.discard(pc)     # another route answered: free its slot now
         return
     # SIMPLE and PLAN modes. A short non-build message skips the enhancer:
     # it is a model call that restates the prompt, and on a 27B that is the
@@ -196,8 +204,10 @@ def _events(pc):
         if not _skip_enhance:
             yield {"type": "thought", "role": "enhancer",
                    "text": "Enhancing request + gathering context…"}
-        _enriched = _enhance_prompt(_pp, pc.prompt, pc.history, pc.cwd,
-                                    _skip_enhance, pc.session_id)
+        _early = None if _skip_enhance else _overlap.claim(pc)
+        _enriched = (_overlap.take(_early, pc.session_id) if _early is not None
+                     else _enhance_prompt(_pp, pc.prompt, pc.history, pc.cwd,
+                                          _skip_enhance, pc.session_id))
         if _turn_was_stopped(pc.session_id):
             yield from _stopped_turn()
             return
@@ -342,6 +352,7 @@ def _produce(pc):
         pc.run.publish({"type": "error", "text": str(exc)})
         pc.run.publish({"type": "done"})
     finally:
+        _overlap.discard(pc)     # an early enhance the turn never used
         _finalize_produce_turn(
             pc.session_id, pc.cwd, pc.prompt, st["final_text"], steps, st["awaiting"],
             pc.team, pc._path, pc._turn_mode, pc._turn_t0,
