@@ -186,6 +186,23 @@ async def _session_state(session_svc, session_id: str) -> dict:
         return {}
 
 
+def _begin_jobs():
+    """Commands this run's Doer hands back still running (run_shell
+    check-ins) belong to the run and die with it — however it ends."""
+    from aiforge_core.runtime import cmd_jobs
+    return cmd_jobs.begin_turn()
+
+
+def _end_jobs(turn) -> None:
+    try:
+        from aiforge_core.runtime import cmd_jobs
+        killed = cmd_jobs.end_turn(turn)
+        if killed:
+            log.info("stopped %d command(s) the run left running", killed)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def _drive_single(runner, session_svc, session_id: str,
                         kwargs: dict) -> dict:
     """Run to completion under the pipeline deadline; on an abort recover the
@@ -193,6 +210,7 @@ async def _drive_single(runner, session_svc, session_id: str,
     deadline = _pipeline_deadline_s()
     cm = (asyncio.timeout(deadline) if deadline and deadline > 0
           else contextlib.nullcontext())
+    jobs_turn = _begin_jobs()
     try:
         async with cm:
             async for _event in runner.run_async(**kwargs):
@@ -207,6 +225,8 @@ async def _drive_single(runner, session_svc, session_id: str,
         state["_pipeline_abort"] = ("deadline" if is_deadline
                                     else type(exc).__name__)
         return state
+    finally:
+        _end_jobs(jobs_turn)
 
 
 async def _run_single_agent(agent, prompt: str, *, ticket=None) -> dict:
@@ -254,6 +274,7 @@ async def _drive_pipeline(runner, session_svc, session_id: str,
     deadline = _pipeline_deadline_s()
     cm = (asyncio.timeout(deadline) if deadline and deadline > 0
           else contextlib.nullcontext())
+    jobs_turn = _begin_jobs()
     try:
         async with cm:
             async for _event in runner.run_async(**kwargs):
@@ -282,6 +303,8 @@ async def _drive_pipeline(runner, session_svc, session_id: str,
         state["_pipeline_abort_detail"] = (
             "llm call cap reached" if is_limit else str(exc))[:300]
         return state
+    finally:
+        _end_jobs(jobs_turn)
 
 
 def _destroy_run_resources(session_id: str) -> None:

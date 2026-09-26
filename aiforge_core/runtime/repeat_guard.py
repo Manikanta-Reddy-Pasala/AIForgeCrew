@@ -9,6 +9,7 @@ circuits with a firm "you're repeating yourself — stop and change
 approach or finish" message so the agent breaks out instead of looping.
 
 Tunable: ``AIFORGE_TOOL_REPEAT_LIMIT`` (default 4); ``0`` disables.
+``command_wait`` / ``command_output`` also key on the job's progress.
 """
 from __future__ import annotations
 
@@ -33,6 +34,11 @@ def make_repeat_guard_callback():
             name = getattr(tool, "name", "") or ""
             sig = name + "|" + json.dumps(args or {}, sort_keys=True,
                                           default=str)[:600]
+            # Waiting on / peeking at a running command is keyed on that
+            # job's progress: a job that keeps working is a new call each
+            # time, one that did nothing since is the same call again.
+            from aiforge_core.runtime.cmd_jobs import progress_suffix
+            sig += progress_suffix(name, args)
             key = hashlib.sha1(sig.encode(), usedforsecurity=False).hexdigest()[:12]
             state = getattr(tool_context, "state", None)
             if state is None:

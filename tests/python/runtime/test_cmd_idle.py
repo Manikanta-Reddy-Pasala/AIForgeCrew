@@ -179,6 +179,7 @@ def doer_repo(monkeypatch, tmp_path):
     from aiforge_core.runtime import request_context
     monkeypatch.setattr(request_context, "get_repo_root", lambda: str(tmp_path))
     monkeypatch.delenv("AIFORGE_SHELL_TIMEOUT", raising=False)
+    monkeypatch.setenv("AIFORGE_CMD_CHECKIN_S", "0")   # blocking: the idle guard
     from aiforge_core.runtime.tools import command_risk
     monkeypatch.setattr(command_risk, "assess", lambda cmd: {"level": "safe"})
     return tmp_path

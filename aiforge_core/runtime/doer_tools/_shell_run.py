@@ -36,9 +36,16 @@ def _read_all(fh) -> str:
     return head + "\n…\n" + tail
 
 
-def run_to_completion(argv, cwd: str, wall_s: float, idle_s: float) -> dict:
+def run_to_completion(argv, cwd: str, wall_s: float, idle_s: float, *,
+                      checkin_s: float = 0.0, cmd: str = "") -> dict:
     """``{"out", "err", "code", "why"}`` — ``why`` is None when the command
-    exited on its own, else "timeout" (wall clock) or "hung" (idle)."""
+    exited on its own, else "timeout" (wall clock) or "hung" (idle).
+
+    With ``checkin_s`` > 0 a command still running at the check-in — or whose
+    output already shows an error or a prompt — is not waited out: it is
+    handed to the job table and ``{"job": <what it printed so far>}`` comes
+    back, for the Doer to command_wait / command_output / command_kill."""
+    from aiforge_core.runtime.chat_agent._shell_wait import _checkin_due
     from aiforge_core.runtime.chat_agent._spool import Spool
     from aiforge_core.runtime.cmd_idle import ProgressClock
     spool = Spool()
@@ -52,8 +59,11 @@ def run_to_completion(argv, cwd: str, wall_s: float, idle_s: float) -> dict:
         raise
     spool.pgid = proc.pid
     why = None
+    handed = False
     try:
         deadline = time.monotonic() + wall_s if wall_s > 0 else None
+        checkin_at = time.monotonic() + checkin_s if checkin_s > 0 else None
+        seen = [0]
         clock = ProgressClock(spool.pgid, spool.size, idle_s)
         while proc.poll() is None:
             if deadline is not None and time.monotonic() > deadline:
@@ -69,12 +79,21 @@ def run_to_completion(argv, cwd: str, wall_s: float, idle_s: float) -> dict:
                 except subprocess.TimeoutExpired:
                     proc.kill()
                 break
+            back = _checkin_due(checkin_at, spool, seen)
+            if back and proc.poll() is None:
+                from aiforge_core.runtime import cmd_jobs
+                job = cmd_jobs.adopt_spooled(
+                    proc, spool, cmd or str(argv), str(cwd), explicit=False,
+                    idle_s=idle_s, deadline=deadline)
+                handed = True
+                return {"job": cmd_jobs.look(job, back)}
             time.sleep(0.1)
         return {"out": _read_all(spool.out), "err": _read_all(spool.err),
                 "code": proc.returncode if why is None else None, "why": why}
     finally:
-        spool.release_children()
-        spool.close()
+        if not handed:
+            spool.release_children()
+            spool.close()
 
 
 __all__ = ["run_to_completion"]

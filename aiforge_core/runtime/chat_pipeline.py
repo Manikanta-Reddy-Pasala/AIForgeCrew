@@ -290,6 +290,8 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
     _run_ok = False
     _handed_off = False                  # answer posted, Learner still running
     _run_id = None                       # keys this run's shell/browser/kernel
+    from aiforge_core.runtime import cmd_jobs
+    _jobs_turn = cmd_jobs.begin_turn()   # commands handed back die with the run
     try:
         os.environ["AIFORGE_REPO_ROOT"] = cwd
         from aiforge_core.runtime import request_context
@@ -417,6 +419,10 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
         # expensive path to repeat.
         q.put({"type": "stopped", "reason": "pipeline_error"})
     finally:
+        try:
+            cmd_jobs.end_turn(_jobs_turn)
+        except Exception:  # noqa: BLE001
+            pass
         if _run_id is not None:
             from .run_resources import destroy_run_resources
             destroy_run_resources(_run_id)

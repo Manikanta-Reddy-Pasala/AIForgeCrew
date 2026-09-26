@@ -54,16 +54,8 @@ def _t_command_kill(args: dict, _cwd: str) -> dict:
 
 
 def progress_sig(name: str, args: dict) -> str:
-    """Extra loop-guard key for a wait/peek: the job's progress. A repeated
-    wait on a job that keeps producing output (or burning CPU) is a new call
-    each time; one on a job that did nothing since is the same call again."""
-    if name not in ("command_wait", "command_output"):
-        return ""
-    try:
-        job, _ = _job_or_error(args if isinstance(args, dict) else {})
-        return "|" + (job.progress_token() if job is not None else "gone")
-    except Exception:  # noqa: BLE001 — the guard must never break a call
-        return ""
+    """See :func:`cmd_jobs.progress_suffix`."""
+    return cmd_jobs.progress_suffix(name, args)
 
 
 TOOLS = {

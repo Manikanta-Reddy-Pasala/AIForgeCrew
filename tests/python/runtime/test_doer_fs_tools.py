@@ -287,6 +287,7 @@ def test_the_fail_closed_gate_can_be_overridden(repo, monkeypatch):
 
 def test_a_timeout_returns_what_was_captured(repo, risk, monkeypatch):
     monkeypatch.setenv("AIFORGE_SHELL_TIMEOUT", "1")
+    monkeypatch.setenv("AIFORGE_CMD_CHECKIN_S", "0")     # the old blocking run
     out = _fs.run_shell("echo 'partial out'; "
                         "echo 'Traceback (most recent call last):' >&2; "
                         "while true; do sleep 0.2; done")
@@ -303,9 +304,9 @@ def test_a_junk_timeout_value_means_no_wall_clock(repo, risk, monkeypatch):
     seen: dict = {}
     real = _shell_run.run_to_completion
 
-    def _run(argv, cwd, wall_s, idle_s):
+    def _run(argv, cwd, wall_s, idle_s, **kw):
         seen.update(wall=wall_s, idle=idle_s)
-        return real(argv, cwd, wall_s, idle_s)
+        return real(argv, cwd, wall_s, idle_s, **kw)
     monkeypatch.setattr(_shell_run, "run_to_completion", _run)
     assert _fs.run_shell("true")["ok"] is True
     assert seen == {"wall": 0.0, "idle": 600.0}

@@ -220,6 +220,31 @@ def stop_session(session_id) -> int:
     return len(rows)
 
 
+def stop_owner(owner) -> int:
+    """Stop every running command tagged with ``owner`` — including ones a
+    crashed earlier process started (the row keeps the process group)."""
+    if not owner:
+        return 0
+    try:
+        rows = [r for r in _running() if r.get("kind") == "command"]
+    except Exception:  # noqa: BLE001
+        return 0
+    n = 0
+    for row in rows:
+        try:
+            payload = json.loads(row.get("payload") or "{}")
+        except (TypeError, ValueError):
+            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        if (payload or {}).get("owner") != owner:
+            continue
+        if _alive(row.get("pid")):
+            _stop_row(row)
+            n += 1
+        else:                          # long gone: just close the row
+            _update(row["id"], status="stopped")
+    return n
+
+
 def _claim_attempt(wid: int, expected: int) -> bool:
     """One process wins this restart of a background row."""
     with _LOCK:
@@ -281,7 +306,8 @@ def start_gitlab(session_id: int, cwd: str, args: dict) -> dict:
 
 def track_command(session_id, cwd: str, cmd: str, proc, spool, *,
                   close_spool: bool = True, announce: bool = True,
-                  idle_s: float = 0.0, deadline: float | None = None) -> dict:
+                  idle_s: float = 0.0, deadline: float | None = None,
+                  owner: str | None = None) -> dict:
     """Keep ``proc`` running after the tool returns. Stop can still kill it.
 
     ``close_spool=False`` leaves the output files to their other owner (the
@@ -294,7 +320,8 @@ def track_command(session_id, cwd: str, cmd: str, proc, spool, *,
         pgid = os.getpgid(proc.pid)
     except OSError:
         pgid = proc.pid
-    wid = _insert(session_id, "command", cwd, {"cmd": cmd},
+    payload = {"cmd": cmd, **({"owner": owner} if owner else {})}
+    wid = _insert(session_id, "command", cwd, payload,
                   pid=proc.pid, pgid=pgid)
     ev = _bind(wid)
     if session_id is not None:

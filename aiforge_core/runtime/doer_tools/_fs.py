@@ -272,7 +272,9 @@ def run_shell(cmd: str) -> dict:
 
     No time limit by default: stopped only when it goes silent (no output,
     no CPU) for AIFORGE_CMD_IDLE_S (default 600s), or at AIFORGE_SHELL_TIMEOUT
-    when the operator sets one. Output truncated to 8 KB per stream so a
+    when the operator sets one. Still running after AIFORGE_CMD_CHECKIN_S
+    (15s), or printing an error/prompt first, it comes back as a running job
+    (``id``, new output) for command_wait / command_output / command_kill. Output truncated to 8 KB per stream so a
     runaway test suite cannot blow up session state.
 
     Refuses DANGEROUS commands (rm -rf /, fork bombs, disk wipes, …) even in
@@ -300,9 +302,14 @@ def run_shell(cmd: str) -> dict:
     from ..cmd_idle import idle_limit_s, wall_cap_s
     from ._shell_run import run_to_completion
     _argv = ["bash", "-c", cmd] if shutil.which("bash") else cmd
+    from ..cmd_jobs import checkin_s
     ran = run_to_completion(_argv, root(),
                             wall_cap_s(None, "AIFORGE_SHELL_TIMEOUT"),
-                            idle_limit_s())
+                            idle_limit_s(), checkin_s=checkin_s(), cmd=cmd)
+    if "job" in ran:
+        # Still running at the check-in (or it just printed an error or a
+        # prompt): not killed, not waited out — the Doer decides.
+        return ran["job"]
     out, err = ran["out"], ran["err"]
     if ran["why"] is not None:
         _r = {"ok": False, "error": "timeout",

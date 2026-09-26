@@ -31,6 +31,10 @@ from aiforge_core.runtime import cmd_signals as sig
 
 _TURN: contextvars.ContextVar = contextvars.ContextVar(
     "aiforge_cmd_turn", default=None)
+#: Who a job belongs to beyond the turn: a pipeline ticket (``ticket-12``),
+#: so a claim that ends — or is taken over after a crash — can stop them.
+_OWNER: contextvars.ContextVar = contextvars.ContextVar(
+    "aiforge_cmd_owner", default=None)
 _JOBS: dict[str, "Job"] = {}
 _LOCK = threading.Lock()
 _MAX_JOBS = 64
@@ -67,6 +71,7 @@ class Job:
         self._kill, self._close = kill, close
         self.pgid = pgid
         self.turn = _TURN.get()
+        self.owner = _OWNER.get()
         self.started = time.monotonic()
         self.streak = 0
         self.stuck_reported = False
@@ -173,6 +178,52 @@ def end_turn(turn) -> int:
     return killed
 
 
+def current_owner():
+    return _OWNER.get()
+
+
+def set_owner(owner):
+    """Tag jobs started from here on with ``owner``; returns the reset token."""
+    return _OWNER.set(owner)
+
+
+def reset_owner(tok) -> None:
+    try:
+        _OWNER.reset(tok)
+    except (ValueError, RuntimeError):
+        pass
+
+
+def end_owner(owner) -> int:
+    """Kill every live job ``owner`` started (explicit background included:
+    the ticket they served is over). Returns how many were killed."""
+    if owner is None:
+        return 0
+    with _LOCK:
+        mine = [j for j in _JOBS.values() if j.owner == owner]
+    killed = 0
+    for job in mine:
+        if job.alive():
+            job.kill()
+            killed += 1
+        _forget(job)
+    return killed
+
+
+def progress_suffix(name: str, args) -> str:
+    """Extra loop-guard key for a wait/peek: the job's progress. A repeated
+    wait on a job that keeps producing output (or burning CPU) is a new call
+    each time; one on a job that did nothing since is the same call again."""
+    if name not in ("command_wait", "command_output"):
+        return ""
+    try:
+        a = args if isinstance(args, dict) else {}
+        job = find(a.get("id") if a.get("id") not in (None, "") else a.get("pid"))
+        return "|" + (job.progress_token() if job is not None else "gone")
+    except Exception:  # noqa: BLE001 — a guard must never break a call
+        return ""
+
+
 def _forget(job: Job) -> None:
     with _LOCK:
         _JOBS.pop(job.key, None)
@@ -198,7 +249,8 @@ def adopt_spooled(proc, spool, cmd: str, cwd: str, *, explicit: bool,
     from aiforge_core.runtime import bg_work
     handle = bg_work.track_command(
         session_id, cwd, cmd, proc, spool, close_spool=False,
-        announce=explicit, idle_s=idle_s, deadline=deadline)
+        announce=explicit, idle_s=idle_s, deadline=deadline,
+        owner=_OWNER.get())
     key = handle.get("handle") or f"pid-{proc.pid}"
 
     def _kill():
@@ -324,5 +376,6 @@ def wait(job: Job, max_s: float | None = None, session_id=None) -> dict:
 
 
 __all__ = ["Job", "adopt_service", "adopt_spooled", "begin_turn",
-           "checkin_s", "default_wait_s", "end_turn", "find", "look",
-           "running", "stuck_s", "wait"]
+           "checkin_s", "current_owner", "default_wait_s", "end_owner",
+           "end_turn", "find", "look", "progress_suffix", "reset_owner",
+           "running", "set_owner", "stuck_s", "wait"]
