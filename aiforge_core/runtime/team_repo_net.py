@@ -40,6 +40,7 @@ _HASH_MAX = 16 * 1024 * 1024          # bigger files: size + mtime, not hashed
 _LOCK = threading.Lock()
 _PENDING: dict[str, list] = {}          # ws.cwd → [(job, snap)]
 _ALERTS: dict[str, dict] = {}           # ws.cwd → {changed, ref_moved}
+_HALTED: set[str] = set()               # ws.cwd of runs the net paused
 
 
 class SnapError(RuntimeError):
@@ -90,27 +91,58 @@ def _parse(status: bytes) -> list[str]:
     return out
 
 
-def _mark(path: str) -> str:
-    """What a path holds now: a content hash, a size+mtime for a big file,
-    ``dir`` for a folder / submodule, ``-`` when missing."""
+_HASH_BUDGET = 64 * 1024 * 1024       # per snapshot; beyond → size+mtime
+_DIR_ENTRIES = 2000                     # an untracked folder's listing cap
+
+
+def _mark(path: str, budget: list) -> str:
+    """What a path holds now: a content hash (within the snapshot's hashing
+    ``budget``), size+mtime for a big file or once the budget is spent, a
+    listing digest for a folder (an untracked folder, a submodule), ``-``
+    when missing. Any OS error → SnapError (never a guess)."""
     try:
         st = os.lstat(path)
-    except OSError:
+        if os.path.islink(path):
+            return "link:" + os.readlink(path)
+        if os.path.isdir(path):
+            return _dir_mark(path)
+    except FileNotFoundError:
         return "-"
-    if os.path.isdir(path) and not os.path.islink(path):
-        return "dir"
-    if os.path.islink(path):
-        return "link:" + os.readlink(path)
-    if st.st_size > _HASH_MAX:
+    except OSError as exc:
+        raise SnapError(f"stat {path}: {exc}") from exc
+    if st.st_size > _HASH_MAX or st.st_size > budget[0]:
         return f"big:{st.st_size}:{st.st_mtime_ns}"
+    budget[0] -= st.st_size
     h = hashlib.sha1(usedforsecurity=False)
     try:
         with open(path, "rb") as fh:
             for chunk in iter(lambda: fh.read(1 << 20), b""):
                 h.update(chunk)
+    except FileNotFoundError:
+        return "-"
     except OSError as exc:
         raise SnapError(f"read {path}: {exc}") from exc
     return h.hexdigest()
+
+
+def _dir_mark(path: str) -> str:
+    """Names, sizes and mtimes under ``path`` (capped), as one digest."""
+    h = hashlib.sha1(usedforsecurity=False)
+    n = 0
+    for root, dirs, files in os.walk(path):
+        dirs.sort()
+        for f in sorted(files):
+            p = os.path.join(root, f)
+            try:
+                st = os.lstat(p)
+            except OSError:
+                continue
+            h.update(f"{os.path.relpath(p, path)}\0{st.st_size}\0"
+                     f"{st.st_mtime_ns}\n".encode("utf-8", "surrogateescape"))
+            n += 1
+            if n >= _DIR_ENTRIES:
+                return "dir:" + h.hexdigest() + ":capped"
+    return "dir:" + h.hexdigest()
 
 
 def snapshot(repo: str) -> Snap:
@@ -125,7 +157,9 @@ def snapshot(repo: str) -> Snap:
     ref_sha = _git(repo, "rev-parse", ref).decode().strip() if ref else ""
     status = _git(repo, "status", "--porcelain=v1", "-z",
                   "--untracked-files=normal")
-    marks = {rel: _mark(os.path.join(repo, rel)) for rel in _parse(status)}
+    budget = [_HASH_BUDGET]
+    marks = {rel: _mark(os.path.join(repo, rel.rstrip("/")), budget)
+             for rel in _parse(status)}
     return Snap(repo, head, ref, ref_sha, status, marks)
 
 
@@ -160,38 +194,61 @@ def _ws_for(cwd, name: str, session_id):
 
 
 def begin(cwd, name: str, session_id=None):
-    """The handle :func:`end` needs; None when the net does not apply."""
-    ws = _ws_for(cwd, name, session_id)
+    """The handle :func:`end` needs; None when the net does not apply. A run
+    the net already paused gets ``{"halt": True}``: the call must not run
+    (:func:`halt_result`). Never raises — a failure is a warning and the
+    command runs unwatched."""
+    try:
+        ws = _ws_for(cwd, name, session_id)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("team repo net skipped (%s): %s", cwd, exc)
+        return None
     if ws is None:
         return None
-    from aiforge_core.runtime import cmd_jobs
-    with cmd_jobs._LOCK:
-        jobs = set(cmd_jobs._JOBS)
+    if halted(ws):
+        return {"ws": ws, "halt": True}
     try:
-        snap = snapshot(ws.repo)
-    except SnapError as exc:
-        return {"ws": ws, "snap": None, "warn": str(exc), "jobs": jobs}
-    return {"ws": ws, "snap": snap, "warn": "", "jobs": jobs}
+        from aiforge_core.runtime import cmd_jobs
+        with cmd_jobs._LOCK:
+            jobs = set(cmd_jobs._JOBS)
+        return {"ws": ws, "snap": snapshot(ws.repo), "warn": "", "jobs": jobs}
+    except Exception as exc:  # noqa: BLE001 — SnapError or anything else
+        return {"ws": ws, "snap": None, "warn": str(exc), "jobs": set()}
+
+
+def halt_result(handle) -> dict | None:
+    """The terminal result for a call made after the net paused the run."""
+    if not handle or not handle.get("halt"):
+        return None
+    ws = handle["ws"]
+    return {"ok": False, "error": "changed_users_checkout", "stop": True,
+            "hint": ("STOP: this team run is paused because a command changed "
+                     f"the user's checkout {ws.repo}. Do not run anything "
+                     "else; the user has been asked.")}
 
 
 def end(handle, result):
-    """``(result, note)`` after the call. See module doc."""
-    if handle is None:
+    """``(result, note)`` after the call. See module doc. Never raises."""
+    if handle is None or handle.get("halt"):
         return result, ""
     ws, snap = handle["ws"], handle["snap"]
-    if snap is None:
-        return result, _warn_note(ws, handle["warn"])
-    _adopt_new_jobs(ws, snap, handle["jobs"])
     try:
-        now = snapshot(ws.repo)
-    except SnapError as exc:
+        if snap is None:
+            return result, _warn_note(ws, handle["warn"])
+        _adopt_new_jobs(ws, snap, handle["jobs"])
+        try:
+            now = snapshot(ws.repo)
+        except SnapError as exc:
+            return result, _warn_note(ws, str(exc))
+        changed, moved = diff(snap, now)
+        pending_note = check_pending(ws, skip=snap)
+        if not changed and not moved:
+            return result, pending_note
+        _raise_alert(ws, changed, moved)
+        return (_refusal(ws, changed, moved, result),
+                note_for(ws, changed, moved))
+    except Exception as exc:  # noqa: BLE001
         return result, _warn_note(ws, str(exc))
-    changed, moved = diff(snap, now)
-    pending_note = check_pending(ws, skip=snap)
-    if not changed and not moved:
-        return result, pending_note
-    _raise_alert(ws, changed, moved)
-    return _refusal(ws, changed, moved, result), note_for(ws, changed, moved)
 
 
 def _adopt_new_jobs(ws, snap, before) -> None:
@@ -211,12 +268,12 @@ def check_pending(ws, skip=None, final: bool = False) -> str:
     the turn's handed-off jobs as always). Returns the chat note."""
     with _LOCK:
         items = list(_PENDING.get(ws.cwd, ()))
-    if not items:
+    if not items or halted(ws):
         return ""
     keep, note = [], ""
     try:
         now = snapshot(ws.repo)
-    except SnapError as exc:
+    except Exception as exc:  # noqa: BLE001
         return _warn_note(ws, str(exc))
     for job, snap in items:
         if snap is not skip:
@@ -236,25 +293,30 @@ def check_pending(ws, skip=None, final: bool = False) -> str:
 
 def poll(cwd) -> str:
     """After any tool call of a team run: re-check jobs a command left
-    running. Returns the chat note."""
-    from aiforge_core.runtime import team_workspace
-    ws = team_workspace.for_cwd(cwd) if cwd else None
-    if ws is None:
-        return ""
-    with _LOCK:
-        if not _PENDING.get(ws.cwd):
+    running. Returns the chat note. Never raises."""
+    try:
+        from aiforge_core.runtime import team_workspace
+        ws = team_workspace.for_cwd(cwd) if cwd else None
+        if ws is None:
             return ""
-    return check_pending(ws)
+        with _LOCK:
+            if not _PENDING.get(ws.cwd):
+                return ""
+        return check_pending(ws)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("team repo poll skipped: %s", exc)
+        return ""
 
 
 def settle(ws) -> str:
     """The run closes: a last look for jobs it left running."""
     try:
         return check_pending(ws, final=True)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("team repo settle skipped: %s", exc)
+        return ""
     finally:
-        with _LOCK:
-            _PENDING.pop(ws.cwd, None)
-            _ALERTS.pop(ws.cwd, None)
+        reset(ws)
 
 
 # ── pausing the run ────────────────────────────────────────────────────────
@@ -264,6 +326,45 @@ def _raise_alert(ws, changed, moved) -> None:
         cur = _ALERTS.setdefault(ws.cwd, {"changed": [], "ref_moved": False})
         cur["changed"] += [c for c in changed if c not in cur["changed"]]
         cur["ref_moved"] = cur["ref_moved"] or moved
+        _HALTED.add(ws.cwd)
+
+
+def halted(ws) -> bool:
+    """The net paused this run: no further command may run until the user
+    answers (the run is parked, then resumed / closed — :func:`reset`)."""
+    with _LOCK:
+        return ws is not None and ws.cwd in _HALTED
+
+
+def halted_cwd(cwd) -> bool:
+    try:
+        from aiforge_core.runtime import team_workspace
+        return halted(team_workspace.for_cwd(cwd) if cwd else None)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def halted_session(session_id) -> bool:
+    """A run of ``session_id`` the net paused (the ADK driver's stop check)."""
+    if session_id is None:
+        return False
+    from aiforge_core.runtime import team_workspace
+    with team_workspace._LOCK:
+        runs = list(team_workspace._RUNS.values())
+    return any(getattr(w, "session_id", None) == session_id and halted(w)
+               for w in runs)
+
+
+def reset(ws) -> None:
+    """Forget the run's job records, alerts and pause — at park, resume and
+    close. On "continue" every later command takes a fresh snapshot of the
+    user's checkout as it is now, so only NEW changes pause again."""
+    if ws is None:
+        return
+    with _LOCK:
+        _PENDING.pop(ws.cwd, None)
+        _ALERTS.pop(ws.cwd, None)
+        _HALTED.discard(ws.cwd)
 
 
 def alert_for(cwd) -> dict | None:
@@ -300,10 +401,11 @@ def _listed(paths) -> str:
 
 def _refusal(ws, changed, moved, result) -> dict:
     out = {"ok": False, "error": "changed_users_checkout", "changed": changed,
-           "ref_moved": moved,
-           "hint": (f"That command changed the user's checkout {ws.repo} — "
-                    "nothing was reverted and the run is paused for the "
-                    f"user. Work only in the worktree {ws.cwd}.")}
+           "ref_moved": moved, "stop": True,
+           "hint": (f"STOP: that command changed the user's checkout "
+                    f"{ws.repo} — nothing was reverted and the run is paused "
+                    "for the user. Do not run anything else; once the user "
+                    f"says continue, work only in the worktree {ws.cwd}.")}
     if isinstance(result, dict):
         out["command_result"] = {k: result.get(k) for k in
                                  ("ok", "code", "returncode", "output",
@@ -327,5 +429,6 @@ def _warn_note(ws, why: str) -> str:
 
 
 __all__ = ["SnapError", "alert_for", "begin", "check_pending", "diff", "end",
-           "note_for", "pause_text", "poll", "settle", "snapshot",
+           "halt_result", "halted", "halted_cwd", "halted_session",
+           "note_for", "pause_text", "poll", "reset", "settle", "snapshot",
            "take_alert"]

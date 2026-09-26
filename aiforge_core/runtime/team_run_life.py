@@ -214,6 +214,8 @@ def park(session_id, ws, reason: str) -> str:
     except SealError as exc:        # the worktree is kept either way
         log.warning("parking %s: %s", ws.cwd, exc)
     ws.parked = True
+    from aiforge_core.runtime import team_repo_net
+    team_repo_net.reset(ws)          # no leftover alert / job pauses "continue"
     with _LOCK:
         old = _PARKED.pop(str(session_id), None)
         _PARKED[str(session_id)] = (ws, reason, time.time())
@@ -242,6 +244,8 @@ def resume(session_id, repo: str, prompt: str):
     same = fold(repo or "") == fold(ws.repo)
     if fresh and same and not ws.closed and continues(prompt, reason):
         ws.parked = False
+        from aiforge_core.runtime import team_repo_net
+        team_repo_net.reset(ws)      # re-baseline: only NEW changes pause
         return ws, ""
     return None, _close(ws)
 

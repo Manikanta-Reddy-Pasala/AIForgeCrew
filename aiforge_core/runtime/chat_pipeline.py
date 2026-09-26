@@ -61,6 +61,7 @@ from .chat_pipeline_turn import (  # noqa: F401  # re-exported
     _persist_fallback_turn,
     _persist_stop_before_start,
     _promote_team_answer,
+    _repo_net_halted,
     _run_async_in_thread,
     _run_pipeline_fallback,
     _tail_team_queue,
@@ -204,6 +205,10 @@ async def _drive_run_events(agen, runner, q, session_id, chat_interject,
             if session_id is not None and chat_cancel.is_cancelled(session_id):
                 await _close_team_run(agen, runner)
                 q.put({"type": "error", "text": "stopped by user", "stopped": True})
+                break
+            if _repo_net_halted(session_id):    # team_repo_net paused it
+                await _close_team_run(agen, runner)
+                q.put({"type": "stopped", "reason": "paused"})
                 break
             if on_answer is not None and _answer_ready(event):
                 answered = True

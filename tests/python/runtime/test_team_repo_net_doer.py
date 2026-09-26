@@ -37,6 +37,7 @@ def _env(tmp_path, monkeypatch):
     life._EXCL.clear()
     net._PENDING.clear()
     net._ALERTS.clear()
+    net._HALTED.clear()
 
 
 @pytest.fixture

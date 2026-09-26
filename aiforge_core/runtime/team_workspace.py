@@ -65,6 +65,7 @@ class TeamWorkspace:
     # Kept alive across turns (Stop / a planner question) — see team_run_life.
     parked: bool = False
     prompt: str = ""
+    session_id: object = None
 
     def summary(self) -> str:
         where = f"`{self.user_branch}`" if self.user_branch else "your HEAD"

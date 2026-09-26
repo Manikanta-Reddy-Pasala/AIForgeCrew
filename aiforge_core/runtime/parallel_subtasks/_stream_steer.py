@@ -110,7 +110,7 @@ def _cancel_checker_for(session_id, cwd=None):
 def _repo_alert(cwd) -> bool:
     try:
         from aiforge_core.runtime import team_repo_net
-        return team_repo_net.alert_for(cwd) is not None
+        return team_repo_net.halted_cwd(cwd)
     except Exception:  # noqa: BLE001
         return False
 

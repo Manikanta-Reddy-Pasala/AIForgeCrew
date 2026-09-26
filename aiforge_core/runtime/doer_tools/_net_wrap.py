@@ -4,9 +4,12 @@ The chat loop brackets its shell calls (chat_agent/_loop); the sequential ADK
 team and the graph-pipeline Doer call their tools through ADK FunctionTools
 instead — ``run_shell`` (and its aliases, including the check-in hand-off),
 the tmux ``bash`` tool, and ``command_wait`` / ``command_output`` /
-``command_kill``. :func:`bracket` wraps each of those so that, in a team run
-(team_workspace.for_cwd of the tool root), whatever the command changed in
-the user's real checkout is put back and the result says so.
+``command_kill``, and every other Doer tool that runs code (``serve``, the
+IPython cell, tests / typecheck / format / project runners, commits, MCP,
+delegation). :func:`bracket` wraps each of those so that, in a team run
+(team_workspace.for_cwd of the tool root), a change to the user's real
+checkout is REPORTED and the run paused (nothing is reverted); once paused,
+the tool refuses to run at all and returns a terminal STOP result.
 """
 from __future__ import annotations
 
@@ -15,9 +18,14 @@ import logging
 
 log = logging.getLogger(__name__)
 
-#: Doer tool names that run (or check on) a shell command.
-SHELL_CAPABLE = frozenset({"run_shell", "shell", "bash", "run", "command_wait",
-                           "command_output", "command_kill"})
+#: Doer tool names that run code (or check on a command that does).
+SHELL_CAPABLE = frozenset({
+    "run_shell", "shell", "bash", "run", "command_wait", "command_output",
+    "command_kill", "serve", "stop_service", "execute_ipython_cell",
+    "run_tests", "typecheck", "format", "project", "ensure_runtime",
+    "git_commit", "commit", "git_add_commit", "github_pr", "mcp",
+    "delegate_to_agent", "task",
+})
 
 
 def _cwd() -> str:
@@ -41,6 +49,9 @@ def bracket(fn):
         from aiforge_core.runtime import team_repo_net as net
         cwd = _cwd()
         handle = net.begin(cwd, "run_shell") if cwd else None
+        halt = net.halt_result(handle)
+        if halt is not None:
+            return halt                  # the run is paused: run nothing
         result = fn(*args, **kwargs)
         if handle is None:
             note = net.poll(cwd) if cwd else ""

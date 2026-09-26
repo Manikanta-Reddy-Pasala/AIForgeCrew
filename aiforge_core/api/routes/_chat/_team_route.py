@@ -56,6 +56,7 @@ def _team_target_cwd(prompt, history, cwd, rctx, session_id=None,
         resumed.dirty = _tw.dirty_files(resumed.repo)
         _protected.clear(resumed.cwd)
         _protected.register(resumed.cwd, **rules)
+        resumed.session_id = session_id
         rctx["team_ws"], rctx["cwd"] = resumed, resumed.cwd
         yield {"type": "thought", "role": "router", "text":
                f"Continuing the team run on branch `{resumed.branch}` (its "
@@ -69,6 +70,7 @@ def _team_target_cwd(prompt, history, cwd, rctx, session_id=None,
                  "branch %s in %s instead of %s", tgt.named, ws.repo,
                  ws.branch, ws.cwd, cwd)
     _protected.register(ws.cwd, **rules)
+    ws.session_id = session_id
     rctx["team_ws"], rctx["cwd"] = ws, ws.cwd
     note = f"Working in `{ws.repo}` — the folder named in your message"
     if tgt.named != ws.repo:
@@ -205,15 +207,35 @@ def watch(rctx, events):
             yield ev
             pause = _repo_changed_pause(rctx)
             if pause is not None:
-                # A command changed the user's real checkout: stop the run
-                # here and ask (team_repo_net) — nothing was reverted.
+                # A command changed the user's real checkout: the net has
+                # halted the run (no further command runs, the agents stop at
+                # their next check). Let them wind down — bounded — so the
+                # run is parked with nothing still working, then ask.
                 rctx["awaiting"] = rctx["done"] = True
+                yield from _wind_down(events)
                 yield pause
                 return
     finally:
         close = getattr(events, "close", None)
         if close is not None:
             close()
+
+
+def _wind_down(events):
+    """Consume the halted run's remaining events (keep-alive pings pass) for
+    at most AIFORGE_TEAM_PAUSE_DRAIN_S (default 60 s)."""
+    import time as _time
+    try:
+        limit = float(os.environ.get("AIFORGE_TEAM_PAUSE_DRAIN_S", "60"))
+    except (TypeError, ValueError):
+        limit = 60.0
+    end = _time.monotonic() + max(0.0, limit)
+    for ev in events:
+        if isinstance(ev, dict) and ev.get("type") == "ping":
+            yield ev
+        if _time.monotonic() >= end:
+            _af_log.warning("team run did not wind down within %ss", limit)
+            return
 
 
 def _repo_changed_pause(rctx):

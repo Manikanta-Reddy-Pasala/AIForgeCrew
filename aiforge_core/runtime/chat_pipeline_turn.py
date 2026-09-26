@@ -432,3 +432,13 @@ async def _next_event(it, deadline):
         log.warning("team learner still running %.0f s after the answer — "
                     "closing it so the team lock is released", _learner_budget_s())
         return _TIMED_OUT
+
+
+def _repo_net_halted(session_id) -> bool:
+    """A command changed the user's checkout and team_repo_net paused the
+    run: the driver stops the agents at its next event check."""
+    try:
+        from aiforge_core.runtime import team_repo_net
+        return team_repo_net.halted_session(session_id)
+    except Exception:  # noqa: BLE001
+        return False

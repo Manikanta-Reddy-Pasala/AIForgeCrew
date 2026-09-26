@@ -42,6 +42,7 @@ def _env(tmp_path, monkeypatch):
     life._EXCL.clear()
     net._PENDING.clear()
     net._ALERTS.clear()
+    net._HALTED.clear()
 
 
 @pytest.fixture
@@ -221,7 +222,7 @@ def test_submodule_big_file_and_case_rename_only_reported(run, tmp_path,
                           (f"printf y >> {big}", True),
                           # case-only: git (ignorecase) may not see it at all
                           (f"cd {repo} && mv README.md readme.md", False)):
-        net._ALERTS.clear()
+        net.reset(ws)                       # as "continue" does
         result, _n, after_cmd, after_net = _shell(cmd, ws.cwd)
         assert after_net == after_cmd, cmd              # nothing written
         if must_see:
@@ -309,6 +310,8 @@ def test_the_team_run_pauses_and_continue_resumes(tmp_path, monkeypatch):
         res, note = net.end(h, {"ok": True})
         yield {"type": "tool", "name": "run_command", "result": res}
         yield {"type": "message", "role": "system", "text": note}
+        if net.halted_cwd(cwd):                 # the agents' stop check
+            return
         after.append("kept going")              # must never be reached
         yield {"type": "message", "text": "built"}
         a[-1]["done"] = True

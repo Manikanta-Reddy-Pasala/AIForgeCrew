@@ -24,31 +24,36 @@ _READERS = frozenset({
     "cut", "tr", "column", "od", "strings",
 })
 #: Readers only when no option (alone or in a cluster such as ``-Ei``) and no
-#: script construct makes them write: sed ``-i`` / ``w file`` / ``e``,
-#: awk ``-i inplace`` / ``> "f"`` / ``| "cmd"`` / ``system(``, sort ``-o``,
-#: yq ``-i``.
+#: script construct makes them write or run something: sed ``-i`` / ``w file``
+#: / ``e cmd``, awk ``-i inplace`` / ``print > "f"`` / ``print | "cmd"`` /
+#: ``"cmd" | getline`` / ``system(``, sort ``-o``, yq ``-i``. A script read
+#: from a file (``sed -f`` / ``awk -f``) cannot be checked: not a reader.
 _WRITE_FLAGS = {
-    "sed": ("i", ("--in-place",)),
-    "gsed": ("i", ("--in-place",)),
-    "awk": ("i", ("--include",)),
-    "gawk": ("i", ("--include",)),
+    "sed": ("if", ("--in-place", "--file")),
+    "gsed": ("if", ("--in-place", "--file")),
+    "awk": ("if", ("--include", "--file")),
+    "gawk": ("if", ("--include", "--file")),
     "sort": ("o", ("--output",)),
     "yq": ("i", ("--inplace",)),
 }
-_SCRIPT_WRITES = re.compile(
-    r"[>|]|system\s*\(|(?:^|[;{}\s\d$])[we]\s|/[gpIiMm0-9]*[we](?:\s|$)")
-_SCRIPTED = frozenset({"sed", "gsed", "awk", "gawk"})
+_SCRIPT_WRITES = {
+    "sed": re.compile(r"(?:^|[;{}\s\d$])[we]\s|/[gpIiMm0-9]*[we](?:\s|$)"),
+    "awk": re.compile(r"(?:>>?|\|)\s*[\"'(]|\|\s*getline|system\s*\("),
+}
+_SCRIPT_WRITES["gsed"] = _SCRIPT_WRITES["sed"]
+_SCRIPT_WRITES["gawk"] = _SCRIPT_WRITES["awk"]
 
 
 def _writes_by_flag(head: str, args: list[str]) -> bool:
-    letter, longs = _WRITE_FLAGS[head]
+    letters, longs = _WRITE_FLAGS[head]
+    script = _SCRIPT_WRITES.get(head)
     for t in args:
         if t.startswith(longs):
             return True
-        if t.startswith("-") and not t.startswith("--") and letter in t[1:]:
+        if t.startswith("-") and not t.startswith("--") \
+                and any(c in t[1:] for c in letters):
             return True
-        if head in _SCRIPTED and not t.startswith("-") \
-                and _SCRIPT_WRITES.search(t):
+        if script is not None and not t.startswith("-") and script.search(t):
             return True
     return False
 
