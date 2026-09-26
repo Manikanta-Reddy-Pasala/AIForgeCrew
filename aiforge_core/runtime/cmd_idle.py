@@ -10,7 +10,7 @@ keeps burning CPU while it compiles quietly, is working and runs unbounded.
                        command is treated as hung (default 600; 0 = never).
 
 CPU is read for the command's whole process group (the shell's children do
-the work). psutil when present, else ``/proc`` on Linux; where neither can
+the work) — inside the container for a sandbox command (runtime/docker_group). psutil when present, else ``/proc`` on Linux; where neither can
 tell, output alone decides.
 """
 from __future__ import annotations
@@ -53,6 +53,11 @@ def group_cpu_s(pgid: int | None) -> float | None:
     this platform cannot say."""
     if pgid is None:
         return None
+    from aiforge_core.runtime import docker_group
+    remote = docker_group.lookup(pgid)
+    if remote is not None:
+        # A sandbox command: the host group is only the docker CLI.
+        return remote.cpu_s()
     try:
         import psutil
     except ImportError:

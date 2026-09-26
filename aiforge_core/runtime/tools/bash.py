@@ -279,11 +279,14 @@ def _run_plain(command: str, timeout: int) -> dict[str, Any]:
     return _completed_result(command, proc.returncode, proc.stdout, proc.stderr)
 
 
-def _run_checked(command: str, wall_s: float) -> dict[str, Any]:
+def _run_checked(command: str, wall_s: float, *, argv=None,
+                 spawned=None) -> dict[str, Any]:
     """No wall clock unless one was asked for: checked on like run_shell —
     still running at the check-in (or printing an error / a prompt) it comes
     back as a job for command_wait / command_output / command_kill; killed
-    only when it looks hung (no output, no CPU for AIFORGE_CMD_IDLE_S)."""
+    only when it looks hung (no output, no CPU for AIFORGE_CMD_IDLE_S).
+    ``argv`` runs instead of ``command`` itself (the docker sandbox's
+    ``docker exec``); ``spawned(pgid)`` is told the new process group first."""
     from aiforge_core.runtime import chat_cancel, cmd_jobs
     from aiforge_core.runtime.cmd_idle import idle_limit_s
     from aiforge_core.runtime.doer_tools._shell_run import run_to_completion
@@ -300,9 +303,11 @@ def _run_checked(command: str, wall_s: float) -> dict[str, Any]:
         return "stop" if got == "stop" or chat_cancel.is_cancelled(sid) else None
 
     def _track(pgid):
+        if spawned is not None:
+            spawned(pgid)
         if sid is not None:
             chat_cancel.track_pgid(sid, pgid)
-    res = run_to_completion(command, root(), wall_s, idle_limit_s(),
+    res = run_to_completion(argv or command, root(), wall_s, idle_limit_s(),
                             checkin_s=cmd_jobs.checkin_s(), cmd=command,
                             on_spawn=_track, interrupt=_hit)
     if "job" in res:
@@ -360,9 +365,9 @@ def bash(
     back as a running job (``id``, output so far) for command_wait /
     command_output / command_kill; the pane stays busy until it ends.
     ``timeout`` (or AIFORGE_SHELL_TIMEOUT) is an explicit wall clock. The
-    sandbox and tmux-less paths have none by default either: the tmux-less
-    one is checked on the same way, the sandbox one is stopped only when it
-    looks hung (the idle detector).
+    sandbox and tmux-less paths have none by default either and are checked
+    on the same way (the sandbox one measures and stops the command inside
+    its container).
     """
     if not command or not command.strip():
         return _err_result(command or "", "empty_command")
@@ -375,8 +380,7 @@ def bash(
     from aiforge_core.runtime import docker_sandbox
     if docker_sandbox.is_enabled():
         return docker_sandbox.exec_in_container(
-            _effective_run_id(_run_id), command, timeout=timeout or 0,
-        )
+            _effective_run_id(_run_id), command, timeout=timeout or 0)
 
     if not _tmux_available():
         emit("BashFallback", {"reason": "tmux_missing"})

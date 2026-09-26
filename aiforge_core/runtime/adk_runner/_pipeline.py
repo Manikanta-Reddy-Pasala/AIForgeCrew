@@ -156,6 +156,15 @@ def _run_live_verifier(ticket, pr_url: str) -> dict | None:
             os.environ["PR_URL"] = prev_pr
 
 
+def _release_gaming_base(state: dict) -> None:
+    """The run is over: its test-gaming baseline is not needed any more."""
+    try:
+        from aiforge_core.runtime.gaming_changes import release
+        release(state.get("gaming_base"))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _key_stateful_tools(session_id: str) -> None:
     """Key bash / browser / IPython to THIS run (see runtime.run_resources)."""
     from ..run_resources import key_stateful_tools
@@ -392,3 +401,4 @@ async def _run_pipeline(prompt: str, *, skip_researcher: bool = False,
     finally:
         _destroy_run_resources(session.id)
         _dump_trajectory(session, ticket, initial_state)
+        _release_gaming_base(initial_state)

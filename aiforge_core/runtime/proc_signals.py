@@ -67,6 +67,19 @@ def _check_pid(pid: object) -> tuple[int | None, str]:
     return pid, ""
 
 
+def _signal_remote(pgid: int, sig: int) -> None:
+    """A sandbox command's host group is the ``docker exec`` client: the
+    command itself runs in the container and must get the signal there
+    (runtime/docker_group) — killing the client alone leaves it running."""
+    try:
+        from aiforge_core.runtime import docker_group
+        remote = docker_group.lookup(pgid)
+        if remote is not None:
+            remote.signal(sig)
+    except Exception:  # noqa: BLE001 — a stop path never raises
+        log.debug("proc: remote signal to %s failed", pgid, exc_info=True)
+
+
 def kill_group(pgid: int | None, sig: int = _signal.SIGKILL) -> bool:
     """Signal a process group AIForge started. True when the signal was sent.
 
@@ -77,6 +90,7 @@ def kill_group(pgid: int | None, sig: int = _signal.SIGKILL) -> bool:
     if target is None:
         log.debug("proc: refusing to signal %s — %s", pgid, why)
         return False
+    _signal_remote(target, sig)
     try:
         # NOSONAR (S4828) — signalling IS this module's job, and the review the
         # rule asks for is _check_group above: the pgid must be an int > 1 and

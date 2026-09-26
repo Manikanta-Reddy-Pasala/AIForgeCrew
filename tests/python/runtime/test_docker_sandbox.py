@@ -33,12 +33,22 @@ def test_is_enabled_on_when_env_and_docker_ok(monkeypatch):
         assert ds.is_enabled() is True
 
 
+def _fake_run(monkeypatch, result):
+    from aiforge_core.runtime.doer_tools import _shell_run
+    seen = {}
+
+    def _run(argv, cwd, wall_s, idle_s, **kw):
+        seen.update(wall=wall_s, idle=idle_s, argv=argv, **kw)
+        return dict(result)
+    monkeypatch.setattr(_shell_run, "run_to_completion", _run)
+    return seen
+
+
 def test_exec_happy(monkeypatch):
     monkeypatch.setattr(ds, "_docker_available", lambda: True)
     monkeypatch.setattr(ds, "_container_exists", lambda n: True)
-    fake_proc = MagicMock(returncode=0, stdout=b"hi\n", stderr=b"")
-    with patch.object(ds.subprocess, "run", return_value=fake_proc):
-        out = ds.exec_in_container("rid", "echo hi", timeout=30)
+    _fake_run(monkeypatch, {"out": "hi\n", "err": "", "code": 0, "why": None})
+    out = ds.exec_in_container("rid", "echo hi", timeout=30)
     assert out["ok"]
     assert out["stdout"].strip() == "hi"
     assert out["sandbox"] == "docker"
@@ -55,9 +65,8 @@ def test_exec_empty_command(monkeypatch):
 def test_exec_nonzero_exit(monkeypatch):
     monkeypatch.setattr(ds, "_docker_available", lambda: True)
     monkeypatch.setattr(ds, "_container_exists", lambda n: True)
-    fake_proc = MagicMock(returncode=1, stdout=b"", stderr=b"boom\n")
-    with patch.object(ds.subprocess, "run", return_value=fake_proc):
-        out = ds.exec_in_container("rid", "false", timeout=30)
+    _fake_run(monkeypatch, {"out": "", "err": "boom\n", "code": 1, "why": None})
+    out = ds.exec_in_container("rid", "false", timeout=30)
     assert out["ok"] is False
     assert out["returncode"] == 1
     assert "boom" in out["stderr"]
@@ -66,13 +75,12 @@ def test_exec_nonzero_exit(monkeypatch):
 def test_exec_timeout(monkeypatch):
     monkeypatch.setattr(ds, "_docker_available", lambda: True)
     monkeypatch.setattr(ds, "_container_exists", lambda n: True)
-    timeout_exc = ds.subprocess.TimeoutExpired(cmd="cmd", timeout=1)
-    timeout_exc.stdout = b"x"
-    timeout_exc.stderr = b"y"
-    with patch.object(ds.subprocess, "run", side_effect=timeout_exc):
-        out = ds.exec_in_container("rid", "sleep 5", timeout=1)
+    seen = _fake_run(monkeypatch, {"out": "x", "err": "", "code": None,
+                                   "why": "timeout"})
+    out = ds.exec_in_container("rid", "sleep 5", timeout=1)
     assert out["ok"] is False
     assert out["error"] == "timeout"
+    assert seen["wall"] == 1.0
 
 
 def test_container_reuse_across_calls(monkeypatch):
@@ -96,6 +104,8 @@ def test_exec_has_no_wall_clock_by_default(monkeypatch):
     monkeypatch.setattr(ds, "_docker_available", lambda: True)
     monkeypatch.setattr(ds, "_container_exists", lambda n: True)
     seen = {}
+
+    monkeypatch.delenv("AIFORGE_SHELL_TIMEOUT", raising=False)
 
     def _run(argv, cwd, wall_s, idle_s, **kw):
         seen.update(wall=wall_s, idle=idle_s, argv=argv)

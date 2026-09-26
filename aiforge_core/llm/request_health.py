@@ -23,6 +23,16 @@ apart:
 
 The server saying "busy" or "loading" (429, 503, "model is loading") is the
 endpoint's state, not the request's: it never counts.
+
+A request that CRASHES the server (OOM, a segfault on that prompt) looks like
+an outage every time — the probe fails while it restarts — so on its own it
+would be re-sent into the crash forever, taking the server down for everyone.
+So a send made right after the endpoint was confirmed serving (a recovery
+probe answered), that failed with the server holding it, and after which the
+server is DOWN (refused / reset / 502 — not merely busy) within
+``AIFORGE_LLM_CRASH_WINDOW_S`` (default 300) is a crash cycle; after
+``AIFORGE_LLM_CRASH_RESENDS`` (default 2) of them the request is an LLM issue
+("the request crashes the model server").
 """
 from __future__ import annotations
 
@@ -35,6 +45,23 @@ _HEALTH: contextvars.ContextVar = contextvars.ContextVar(
     "aiforge_request_health", default=None)
 
 _MAX_DOUBLINGS = 8
+
+
+def _env_num(name: str, default: float, low: float) -> float:
+    try:
+        return max(low, float(os.environ.get(name) or default))
+    except ValueError:
+        return default
+
+
+def crash_resends() -> int:
+    """``AIFORGE_LLM_CRASH_RESENDS`` (default 2, at least 1)."""
+    return int(_env_num("AIFORGE_LLM_CRASH_RESENDS", 2, 1))
+
+
+def crash_window_s() -> float:
+    """``AIFORGE_LLM_CRASH_WINDOW_S`` (default 300)."""
+    return _env_num("AIFORGE_LLM_CRASH_WINDOW_S", 300.0, 0.0)
 
 
 def same_request_fails() -> int:
@@ -54,6 +81,8 @@ class RequestHealth:
         self.stalls_seen = 0     # of those, already judged by a Waiter
         self.stalls_counted = 0  # of those, counted against the request
         self.fails = 0           # other failures counted against the request
+        self.crashes = 0         # resends after which the server went DOWN
+        self.up_at: float | None = None   # serving confirmed before a resend
 
     def total(self) -> int:
         """Failures counted against THIS request (the model answered a tiny
@@ -121,4 +150,5 @@ def _reset_for_tests() -> None:
 
 
 __all__ = ["RequestHealth", "bind", "current", "note_stall", "stall_scale",
-           "note_prefill", "prefill_tps", "same_request_fails"]
+           "note_prefill", "prefill_tps", "same_request_fails",
+           "crash_resends", "crash_window_s"]

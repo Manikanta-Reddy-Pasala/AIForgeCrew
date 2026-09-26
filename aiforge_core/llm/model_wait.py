@@ -49,7 +49,7 @@ import os
 import time
 from typing import Any, Callable
 
-from . import model_outage, request_health
+from . import _model_probe, model_outage, request_health
 from ._model_probe import (  # noqa: F401 — tests patch model_wait.probe
     live_probe,
     probe,
@@ -279,26 +279,59 @@ class Waiter:
             return self._probe_model(self.url, self.api_key, self.model)
         return self._probe(self.url, self.api_key)
 
-    def _live(self) -> bool:
-        """Judgement: did a tiny completion to the SAME model succeed
-        promptly? (``live_probe`` — tests patch the module attribute)."""
-        return bool(live_probe(self.url, self.api_key, self.model))
+    def _live(self, fresh: bool = False) -> str:
+        """Judgement: the state of a tiny completion to the SAME model
+        (``live_probe`` — tests patch the module attribute with a bool)."""
+        got = live_probe(self.url, self.api_key, self.model, state=True,
+                         fresh=fresh)
+        if got is True or got is False:
+            return _model_probe.OK if got else _model_probe.BUSY
+        return str(got)
+
+    def _crashed(self, exc: BaseException, resent_at: float | None) -> None:
+        """The server went DOWN right after a resend it had confirmed it
+        could take: one crash cycle. Raises :class:`LLMRequestFailing` once
+        this request has crashed the server too often."""
+        h = self.health
+        if resent_at is None \
+                or time.monotonic() - resent_at > request_health.crash_window_s():
+            return
+        h.crashes += 1
+        if h.crashes < request_health.crash_resends():
+            return
+        log.warning("llm.request_crashes url=%s n=%d err=%.200s", self.url,
+                    h.crashes, exc)
+        err = LLMRequestFailing(
+            self.url, h.crashes, exc,
+            f"LLM issue: the model server at {self.url or '?'} went down "
+            f"right after this request was sent, {h.crashes} times — the "
+            "request crashes the model server")
+        err.cause = "request crashes the model server"
+        raise err from exc
 
     def _judge(self, exc: BaseException) -> bool:
         """Count ``exc`` against the request only when the MODEL is up: a
-        tiny completion to it succeeds promptly straight after the failure.
-        A router whose ``/models`` answers while the model behind it is dead,
-        a box whose queue holds the probe too, a probe that times out — all
-        of that is an outage or a busy model: waited for, never counted.
+        tiny completion to it succeeds promptly straight after the failure —
+        or the probe itself is refused as a client error (INCONCLUSIVE: the
+        server is up; count, as the old ``/models`` check did). A router
+        whose ``/models`` answers while the model behind it is dead, a box
+        whose queue holds the probe too, a probe that times out — all of that
+        is an outage or a busy model: waited for, never counted (unless it
+        is the server crashing on this very request: :meth:`_crashed`).
         True = counted (re-send without an outage wait). Raises
         :class:`LLMRequestFailing` once the request has failed too often."""
         h = self.health
+        resent_at, h.up_at = h.up_at, None
         if model_outage.explicit_busy(exc) or not model_outage.request_bound(exc):
             return False        # the endpoint's state, or a connect failure
         stall = model_outage.is_stall(exc) and h.stalls > h.stalls_seen
         if stall:
             h.stalls_seen = h.stalls      # the stream watch saw it; judge once
-        if not self._after_probe(self._live()):
+        state = self._live(fresh=resent_at is not None)
+        if not self._after_probe(state in (_model_probe.OK,
+                                           _model_probe.INCONCLUSIVE)):
+            if state == _model_probe.DOWN:
+                self._crashed(exc, resent_at)
             return False
         if stall:
             h.stalls_counted += 1
@@ -344,6 +377,7 @@ class Waiter:
                 self._sleep_cancellable(gap, exc)
                 self.waited += gap
                 if self._after_probe(self._up()):
+                    self.health.up_at = time.monotonic()
                     return False
         finally:
             self._hook(1)
@@ -362,6 +396,7 @@ class Waiter:
             self.waited += gap
             up = await loop.run_in_executor(None, self._up)
             if self._after_probe(up):
+                self.health.up_at = time.monotonic()
                 return False
 
     async def _async_sleep(self, gap: float, exc: BaseException) -> None:

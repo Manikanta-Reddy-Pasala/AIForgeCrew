@@ -369,9 +369,10 @@ def test_a_busy_queue_that_holds_the_probe_too_is_waited_for(monkeypatch):
     assert box.get("out") == "hello", box
 
 
-def test_the_model_answers_the_probe_but_always_504s_this_request():
+def test_the_model_answers_the_probe_but_always_504s_this_request(monkeypatch):
     """The tiny probe succeeds promptly, the big request always 504s: an LLM
-    issue after N — exactly N sends."""
+    issue after N — exactly N sends. (Probe reuse off: one probe per send.)"""
+    monkeypatch.setenv("AIFORGE_LLM_PROBE_CACHE_S", "0")
     srv = _Srv(lambda k: (504, 0.0, False), models=lambda: 502)
     try:
         with pytest.raises(model_outage.LLMRequestFailing):

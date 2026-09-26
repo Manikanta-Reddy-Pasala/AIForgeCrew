@@ -392,9 +392,11 @@ def run_chat_agent(
                 cmd_jobs.end_turn(_jobs_turn)
         except Exception:  # noqa: BLE001
             pass
-        # Nor does its condense summary: nobody will read it.
+        # Nor does its condense summary / test-gaming baseline.
         try:
             from ._context._compaction import release_run
             release_run(getattr(st, "compact_key", None))
+            from aiforge_core.runtime.gaming_changes import release
+            release(getattr(st, "gaming_base", None))
         except Exception:  # noqa: BLE001
             pass

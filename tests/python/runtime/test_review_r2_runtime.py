@@ -35,6 +35,8 @@ def test_an_answer_promotes_the_running_job_and_says_so(tmp_path, monkeypatch):
     posted = []
     monkeypatch.setattr(bg_work, "_post", lambda sid, text: posted.append(text))
     monkeypatch.setenv("AIFORGE_CMD_CHECKIN_S", "0.5")
+    # A chat's job (a sessionless one is not promoted: nothing could stop it).
+    monkeypatch.setattr(cmd_jobs, "_active_session", lambda: 4242)
     turn = cmd_jobs.begin_turn()
     try:
         res = _t_run_command({"cmd": "sleep 2; echo built"}, str(tmp_path))
@@ -70,9 +72,10 @@ def test_a_pane_job_is_promoted_with_its_own_watcher(monkeypatch):
     monkeypatch.setattr(cmd_jobs_promote, "_POLL_S", 0.05)
     job = types.SimpleNamespace(
         key="tmux-9", cmd="make build", explicit=False, owner=None,
-        session_id=None, killed=None, streams=[],
+        session_id=7, killed=None, streams=[],
         proc=types.SimpleNamespace(returncode=0),
-        alive=lambda: state["alive"], kill=lambda why="": None)
+        alive=lambda: state["alive"], kill=lambda why="": None,
+        size=lambda: 0, _tail=lambda: "", close=lambda: None)
     cmd_jobs_promote.promote(job)
     assert job.explicit is True
     state["alive"] = False

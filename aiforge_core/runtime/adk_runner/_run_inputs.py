@@ -133,8 +133,8 @@ def seed_gaming_base(state: dict) -> dict:
         base = baseline(_repo_root_for_scope())
         if base:
             state["gaming_base"] = base
-    except Exception:  # noqa: BLE001 — the check falls back to HEAD
-        pass
+    except Exception:  # noqa: BLE001 — no baseline: the check is skipped
+        state["gaming_base"] = "unavailable"
     return state
 
 

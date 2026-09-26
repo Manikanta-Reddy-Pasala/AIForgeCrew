@@ -147,9 +147,14 @@ def exec_in_container(
 ) -> dict[str, Any]:
     """Run ``command`` inside the per-run container (``bash -lc``).
 
-    ``timeout`` > 0 is an explicit wall clock; 0 (the default) is none — the
-    command is stopped only when it looks hung (no output and no CPU for
-    ``AIFORGE_CMD_IDLE_S``), like every other shell path.
+    Checked on like every other shell path (``tools.bash._run_checked``):
+    still running at the check-in — or printing an error / a prompt — it
+    comes back as a job for command_wait / command_output / command_kill;
+    Stop and a new message end it. ``timeout`` > 0 (else
+    ``AIFORGE_SHELL_TIMEOUT``) is an explicit wall clock; with neither there
+    is none — the command is stopped only when it looks hung: no output and
+    no CPU for ``AIFORGE_CMD_IDLE_S``, the CPU measured INSIDE the container
+    (runtime/docker_group), where every stop also lands.
 
     Consults :func:`resolve_exec`. A ``"refuse"`` decision (mandatory
     sandbox + docker unavailable) returns a refusal result instead of
@@ -168,56 +173,26 @@ def exec_in_container(
             "command": command,
         }
     name = ensure_container(run_id)
-    if not timeout or timeout <= 0:
-        return _exec_idle_guarded(name, command)
+    from aiforge_core.runtime.cmd_idle import wall_cap_s
+    return _exec_checked(name, command,
+                         wall_cap_s(timeout or None, "AIFORGE_SHELL_TIMEOUT"))
+
+
+def _exec_checked(name: str, command: str, wall_s: float) -> dict[str, Any]:
+    from aiforge_core.runtime import docker_group
+    from aiforge_core.runtime.tools.bash import _run_checked
+    group = docker_group.RemoteGroup(name)
     try:
-        proc = subprocess.run(
-            ["docker", "exec", "-i", name, "bash", "-lc", command],
-            capture_output=True, timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        return {
-            "ok": False, "error": "timeout", "command": command,
-            "stdout": (exc.stdout or b"").decode("utf-8", "replace")[
-                :_STDOUT_CAP_BYTES
-            ],
-            "stderr": (exc.stderr or b"").decode("utf-8", "replace")[
-                :_STDOUT_CAP_BYTES
-            ],
-            "truncated": True,
-        }
-    out = proc.stdout.decode("utf-8", "replace")
-    err = proc.stderr.decode("utf-8", "replace")
-    return {
-        "ok": proc.returncode == 0,
-        "returncode": proc.returncode,
-        "command": command,
-        "stdout": out[:_STDOUT_CAP_BYTES],
-        "stderr": err[:_STDOUT_CAP_BYTES],
-        "truncated": (
-            len(out) > _STDOUT_CAP_BYTES or len(err) > _STDOUT_CAP_BYTES
-        ),
-        "sandbox": "docker",
-    }
-
-
-def _exec_idle_guarded(name: str, command: str) -> dict[str, Any]:
-    """``docker exec`` with no wall clock: stopped only when hung."""
-    from aiforge_core.runtime.cmd_idle import idle_limit_s
-    from aiforge_core.runtime.doer_tools._shell_run import run_to_completion
-    res = run_to_completion(["docker", "exec", "-i", name, "bash", "-lc",
-                             command], os.getcwd(), 0.0, idle_limit_s(),
-                            cmd=command)
-    out, err = res.get("out") or "", res.get("err") or ""
-    base = {"command": command, "stdout": out[:_STDOUT_CAP_BYTES],
-            "stderr": err[:_STDOUT_CAP_BYTES], "sandbox": "docker",
-            "truncated": (len(out) > _STDOUT_CAP_BYTES
-                          or len(err) > _STDOUT_CAP_BYTES)}
-    if res.get("why"):
-        return {**base, "ok": False, "returncode": None, "truncated": True,
-                "error": "hung: no output and no CPU activity"
-                if res["why"] == "hung" else str(res["why"])}
-    return {**base, "ok": res.get("code") == 0, "returncode": res.get("code")}
+        res = _run_checked(command, wall_s, argv=group.argv(command),
+                           spawned=lambda pgid: docker_group.register(pgid,
+                                                                      group))
+    finally:
+        # Handed off as a job: its entry lives on (command_kill, Stop, the
+        # watcher's idle kill reach the container through it).
+        pgid = group.local_pgid
+        if pgid is not None and not docker_group._alive(pgid):
+            docker_group.unregister(pgid)
+    return {**res, "sandbox": "docker"}
 
 
 def destroy_container(run_id: str) -> None:
