@@ -197,26 +197,12 @@ def _predict_next_step(message: str, did: str, cwd):
                               "clean_tree": _is_clean_tree(cwd)}, store=False)
 
 
-# 3 s, not less: a slow local model rarely writes ~250 tokens in 1.5 s, and a
-# grace it can never meet silently kills the feature.
-_DEFAULT_SUGGEST_GRACE_S = 3.0
-
-
 def _suggest_grace_s() -> float:
-    """How long the end of a turn waits for the prediction before dropping it.
-    ``AIFORGE_PREDICT_GRACE_S``; 0 = emit only one that is already done.
-    Default = the prediction's own timeout, so a slow local model still gets
-    its suggestion shown (as before); the saving is the overlap with the
-    answer being streamed, not a shorter wait."""
-    try:
-        from aiforge_core.runtime.next_step._predict import _timeout
-        default = float(_timeout())
-    except Exception:  # noqa: BLE001
-        default = _DEFAULT_SUGGEST_GRACE_S
-    try:
-        return max(0.0, float(os.environ.get("AIFORGE_PREDICT_GRACE_S") or default))
-    except ValueError:
-        return default
+    """How long the end of a turn waits, AFTER ``done``, for the prediction
+    before dropping it (see ``_suggest_wait``: default 3 s). The prediction
+    started beside the answer, so it has had the whole answer's time too."""
+    from ._suggest_wait import after_done_grace_s
+    return after_done_grace_s()
 
 
 def _start_suggestion(message: str, did: str, cwd):
@@ -256,23 +242,24 @@ def _cancel_suggestion(handle) -> None:
         handle[1].set()
 
 
-def _collect_suggestion(handle):
+def _collect_suggestion(handle, session_id=None):
     """Yield at most one ``suggestion`` event: the prediction if it is ready
     within the grace, else nothing. Never raises. A late prediction is
     cancelled and dropped unrecorded — the user never saw it, so it must not
-    suppress a repeat."""
+    suppress a repeat. Stop or a new message ends the wait at once."""
     if handle is None:
         return
     try:
-        yield from _ready_suggestion(handle)
+        yield from _ready_suggestion(handle, session_id)
     finally:
         _cancel_suggestion(handle)
 
 
-def _ready_suggestion(handle):
+def _ready_suggestion(handle, session_id=None):
+    from ._suggest_wait import await_ready
     ready, _cancel, box, message, cwd, t0 = handle
     grace = _suggest_grace_s()
-    if not ready.wait(max(0.0, grace - (time.monotonic() - t0))):
+    if not await_ready(ready, session_id, grace):
         # info, not debug: a grace the model never meets is a dead feature,
         # and it should be visible as one.
         _log.info("next_step: suggestion dropped — not ready %.1fs after the "
@@ -307,8 +294,8 @@ def _emit_suggestion(message: str, did: str, cwd):
     """Yield at most one ``suggestion`` event. Never raises.
 
     Emitted AFTER ``done``. A prediction that is slow, wrong or broken costs
-    the user nothing: it is waited for at most ``AIFORGE_PREDICT_GRACE_S``
-    (default: the prediction timeout), then dropped.
+    the user nothing: it is waited for at most ``AIFORGE_PREDICT_AFTER_DONE_S``
+    (default 3 s), then dropped.
     """
     yield from _collect_suggestion(_start_suggestion(message, did, cwd))
 
@@ -354,7 +341,7 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
         # The run stays open after done until the producer finishes, and the
         # UI applies a suggestion that arrives then. Wait out the rest of the
         # grace here: the answer is already on screen.
-        yield from _collect_suggestion(_sugg)
+        yield from _collect_suggestion(_sugg, getattr(st, "session_id", None))
     finally:
         _cancel_suggestion(_sugg)
     return "return"

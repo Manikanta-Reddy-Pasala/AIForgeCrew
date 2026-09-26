@@ -259,6 +259,7 @@ def test_an_echo_emits_no_event_at_all(monkeypatch, tmp_path):
 def _timing(monkeypatch, grace):
     """Every timing test pins its own grace and runs with the feature ON."""
     monkeypatch.setenv("AIFORGE_PREDICT_GRACE_S", str(grace))
+    monkeypatch.delenv("AIFORGE_PREDICT_AFTER_DONE_S", raising=False)
     monkeypatch.delenv("AIFORGE_PREDICT_DISABLE", raising=False)
 
 
@@ -282,6 +283,9 @@ def _final_st():
 
 def _final_gen(monkeypatch, tmp_path):
     monkeypatch.setattr(_finish, "_fire_stop", lambda *a, **k: None)
+    # These tests are about the prediction's timing, on a server with a spare
+    # slot (a one-slot server skips the prediction: test_parallel_slots_turn).
+    monkeypatch.setattr(_finish, "_endpoint_one_slot", lambda: False)
     return _finish._handle_final(_final_st(), {"type": "final", "text": "x"},
                                  None, False, False, False, str(tmp_path), [], "")
 
@@ -349,8 +353,9 @@ def test_a_timely_prediction_is_emitted_between_answer_and_done(monkeypatch, tmp
     p = _unique()
     monkeypatch.setattr(_finish, "_predict_next_step", lambda *a, **k: p)
     evs = list(_final_gen(monkeypatch, tmp_path))
-    assert [e["type"] for e in evs] == ["message", "suggestion", "done"]
-    assert evs[1]["id"] == p.id
+    # done goes out first (the answer is complete); the suggestion follows.
+    assert [e["type"] for e in evs] == ["message", "done", "suggestion"]
+    assert evs[2]["id"] == p.id
     assert p.id in _stored_ids(), "an emitted suggestion is recorded as offered"
 
 
@@ -368,23 +373,40 @@ def test_the_prediction_runs_while_the_answer_is_consumed(monkeypatch, tmp_path)
     gen = _final_gen(monkeypatch, tmp_path)
     assert next(gen)["type"] == "message"
     assert started.wait(5), "prediction must already be running"
-    assert [e["type"] for e in gen] == ["suggestion", "done"]
+    assert [e["type"] for e in gen] == ["done", "suggestion"]
 
 
 def test_the_grace_is_env_tunable_and_survives_garbage(monkeypatch):
-    """Default = the prediction's own timeout: a slow local model still gets
-    its suggestion shown, as before the prediction moved off the answer path."""
-    for key in ("AIFORGE_PREDICT_GRACE_S", "AIFORGE_PREDICT_TIMEOUT_S"):
+    """The grace runs AFTER done and is short (the answer is already out; the
+    prediction has had the answer's whole time too): 3 s by default, not the
+    prediction's 10 s timeout that kept the stream open after done."""
+    for key in ("AIFORGE_PREDICT_GRACE_S", "AIFORGE_PREDICT_AFTER_DONE_S",
+                "AIFORGE_PREDICT_TIMEOUT_S"):
         monkeypatch.delenv(key, raising=False)
-    assert _finish._suggest_grace_s() == 10.0
+    assert _finish._suggest_grace_s() == 3.0
     monkeypatch.setenv("AIFORGE_PREDICT_TIMEOUT_S", "25")
-    assert _finish._suggest_grace_s() == 25.0
-    monkeypatch.setenv("AIFORGE_PREDICT_GRACE_S", "0.3")
+    assert _finish._suggest_grace_s() == 3.0
+    monkeypatch.setenv("AIFORGE_PREDICT_GRACE_S", "0.3")      # the older name
     assert _finish._suggest_grace_s() == 0.3
-    monkeypatch.setenv("AIFORGE_PREDICT_GRACE_S", "soon")
-    assert _finish._suggest_grace_s() == 25.0
+    monkeypatch.setenv("AIFORGE_PREDICT_AFTER_DONE_S", "1.5")
+    assert _finish._suggest_grace_s() == 1.5
+    monkeypatch.setenv("AIFORGE_PREDICT_AFTER_DONE_S", "soon")
+    assert _finish._suggest_grace_s() == 0.3
     monkeypatch.setenv("AIFORGE_PREDICT_GRACE_S", "-4")
     assert _finish._suggest_grace_s() == 0.0
+
+
+def test_stop_or_a_new_message_ends_the_after_done_wait(monkeypatch):
+    """The wait after done is Stop-aware and ends on a new message too."""
+    import time as _t
+
+    from aiforge_core.runtime import run_interrupt
+    from aiforge_core.runtime.chat_agent._turn._suggest_wait import await_ready
+    ev = threading.Event()
+    monkeypatch.setattr(run_interrupt, "attention", lambda sid: "steer")
+    t0 = _t.monotonic()
+    assert await_ready(ev, 77, grace_s=5.0) is False
+    assert _t.monotonic() - t0 < 1.0
 
 
 def test_the_clean_tree_probe_takes_no_optional_locks(monkeypatch):

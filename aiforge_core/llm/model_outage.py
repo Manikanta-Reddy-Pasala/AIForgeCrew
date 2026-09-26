@@ -32,6 +32,11 @@ Verdicts (:func:`classify`):
 
 ``cancelled`` — Stop / cancel. Never waited for.
 
+``llm_issue`` — :class:`LLMRequestFailing`: the endpoint answers, but THIS
+  request failed the same way several times in a row (see
+  :mod:`aiforge_core.llm.request_health`). An LLM issue, reported — never
+  waited for again.
+
 ``other`` — anything else (a 500 with no lifecycle wording, a malformed answer,
   a bug). Existing retry/escalation behaviour applies; no outage wait.
 """
@@ -45,6 +50,29 @@ CONFIG = "config"
 SHIPPED = "shipped"
 CANCELLED = "cancelled"
 OTHER = "other"
+LLM_ISSUE = "llm_issue"
+
+
+class LLMRequestFailing(RuntimeError):
+    """The model endpoint is UP (it answers ``/models``) but this one request
+    keeps failing — a prompt it cannot prefill in time, a server that crashes
+    on it, a proxy that always times it out. Waiting cannot fix that, so it is
+    an LLM ISSUE: the turn/ticket stops with this, instead of re-sending the
+    same request forever. ``reason`` is ``llm_request_fails``."""
+
+    reason = "llm_request_fails"
+
+    def __init__(self, url: str, failures: int, last: "BaseException | None",
+                 message: str = "") -> None:
+        self.url = url
+        self.failures = failures
+        self.last = last
+        if not message:
+            what = (str(last).strip().splitlines() or [""])[0][:200] \
+                or type(last).__name__
+            message = (f"LLM issue: the model at {url or '?'} is up but "
+                       f"failed this request {failures} times in a row ({what})")
+        super().__init__(message)
 
 _OUTAGE_STATUS = frozenset({408, 502, 503, 504})
 _AUTH_STATUS = frozenset({401, 403})
@@ -187,6 +215,8 @@ def classify(exc: BaseException | None) -> str:
     links = chain(exc)
     if any(_is_cancel(e) for e in links[:1]):
         return CANCELLED
+    if any(isinstance(e, LLMRequestFailing) for e in links):
+        return LLM_ISSUE
     if any(_is_shipped(e) for e in links):
         return SHIPPED
     try:
@@ -203,6 +233,59 @@ def is_outage(exc: BaseException | None) -> bool:
     return classify(exc) == OUTAGE
 
 
+def issue(exc: BaseException | None) -> "LLMRequestFailing | None":
+    """The :class:`LLMRequestFailing` in ``exc``'s chain, or None."""
+    for e in chain(exc):
+        if isinstance(e, LLMRequestFailing):
+            return e
+    return None
+
+
+#: The server itself says "busy / loading, come back later": the endpoint's
+#: state, not this request's — always waited for, never counted against it.
+_BUSY_STATUS = frozenset({429, 503})
+
+
+def explicit_busy(exc: BaseException | None) -> bool:
+    for e in chain(exc):
+        if _status(e) in _BUSY_STATUS or type(e).__name__.lower() in (
+                "serviceunavailableerror", "ratelimiterror", "_modelreloading"):
+            return True
+        if any(m in _text(e) for m in _LOADING_MARKERS):
+            return True
+    return False
+
+
+def is_stall(exc: BaseException | None) -> bool:
+    return any(type(e).__name__ == "LLMStreamStalled" for e in chain(exc))
+
+
+def request_bound(exc: BaseException | None) -> bool:
+    """Did this failure happen AFTER the server took the request (a stall, a
+    gateway timeout, the connection dropped mid-answer)? A connect failure
+    never is — it says nothing about the request."""
+    for e in chain(exc):
+        if type(e).__name__ == "LLMStreamStalled":
+            return True
+        if _status(e) in (408, 502, 504):
+            return True
+        if isinstance(e, (ConnectionResetError, ConnectionAbortedError,
+                          BrokenPipeError)):
+            return True
+        text = _text(e)
+        if any(p in text for p in ("connection reset", "connection aborted",
+                                   "remote end closed", "remotedisconnected",
+                                   "server disconnected", "broken pipe")):
+            return True
+        # A provider SDK's read timeout (litellm on the ADK path): the server
+        # had the request. Not our client's bare TimeoutError (pre-send).
+        if type(e).__name__.lower() in ("timeout", "apitimeouterror",
+                                        "readtimeout") \
+                and "connect" not in text:
+            return True
+    return False
+
+
 def names_loading(exc: BaseException | None) -> bool:
     """Does the failure say the model is not loaded (vs the box being down)?
     Only then is it worth asking ``/v1/models`` whether the id exists at all."""
@@ -210,5 +293,7 @@ def names_loading(exc: BaseException | None) -> bool:
                for e in chain(exc))
 
 
-__all__ = ["OUTAGE", "CONFIG", "SHIPPED", "CANCELLED", "OTHER", "classify",
-           "is_outage", "names_loading", "chain"]
+__all__ = ["OUTAGE", "CONFIG", "SHIPPED", "CANCELLED", "OTHER", "LLM_ISSUE",
+           "LLMRequestFailing", "classify", "is_outage", "issue",
+           "explicit_busy", "is_stall", "request_bound", "names_loading",
+           "chain"]

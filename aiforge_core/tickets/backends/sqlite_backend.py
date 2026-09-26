@@ -239,6 +239,20 @@ class SqliteBackend:
                 "WHERE id=? AND status='in_progress'", (ticket_id,))
             return bool(upd.rowcount and upd.rowcount > 0)
 
+    def renew_claim_token(self, ticket_id, token) -> "str | None":
+        """Renew only the claim whose ``claimed_at`` is ``token``; the new
+        token, or None when the claim is gone or someone else's."""
+        with _LOCK, self._conn() as c:
+            upd = c.execute(
+                f"UPDATE tickets SET claimed_at={_NOW} "
+                "WHERE id=? AND status='in_progress' AND claimed_at=?",
+                (ticket_id, token))
+            if not (upd.rowcount and upd.rowcount > 0):
+                return None
+            r = c.execute("SELECT claimed_at FROM tickets WHERE id=?",
+                          (ticket_id,)).fetchone()
+            return str(r["claimed_at"]) if r and r["claimed_at"] else None
+
     def claim_ticket(self, ticket_id) -> "dict | None":
         with _LOCK, self._conn() as c:
             upd = c.execute(

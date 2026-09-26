@@ -21,10 +21,15 @@ restarts the clock, so a slow but alive server is never cut off.
 
 0 disables a bound (the caller's read timeout alone applies). Neither bound is
 ever LONGER than the caller's own timeout — they only tighten it.
+
+Adaptive (llm/request_health): each stall of the same request doubles both
+bounds for its next send, and the prefill speed seen on an endpoint, when
+slower than AIFORGE_LLM_PREFILL_TOK_S, is what the first-token bound assumes.
 """
 from __future__ import annotations
 
 import socket
+import time
 
 from ._helpers import _estimate_tokens, _float_env
 
@@ -48,17 +53,26 @@ class LLMStreamStalled(ConnectionError):
                          "(read timed out waiting on the model server)")
 
 
-def first_token_s(payload: bytes | None) -> float:
+def _health():
+    from aiforge_core.llm import request_health
+    return request_health
+
+
+def first_token_s(payload: bytes | None, url: str = "") -> float:
     base = _float_env("AIFORGE_LLM_FIRST_TOKEN_S", 180.0)
     if base <= 0:
         return 0.0
     tps = _float_env("AIFORGE_LLM_PREFILL_TOK_S", 200.0)
+    learned = _health().prefill_tps(url) if url else None
+    if learned and (tps <= 0 or learned < tps):
+        tps = learned
     scaled = (_estimate_tokens(payload or b"") / tps) if tps > 0 else 0.0
-    return max(base, scaled)
+    return max(base, scaled) * _health().stall_scale()
 
 
 def idle_s() -> float:
-    return max(0.0, _float_env("AIFORGE_LLM_STREAM_IDLE_S", 120.0))
+    idle = max(0.0, _float_env("AIFORGE_LLM_STREAM_IDLE_S", 120.0))
+    return idle * _health().stall_scale()
 
 
 class StreamWatch:
@@ -67,13 +81,17 @@ class StreamWatch:
     ``sock`` may be None (a test double, or a connection that was never
     opened): the watch then does nothing and the reads behave as before."""
 
-    def __init__(self, sock, payload: bytes | None, read_timeout: float | None):
+    def __init__(self, sock, payload: bytes | None, read_timeout: float | None,
+                 url: str = ""):
         self.sock = sock
         self.read_timeout = float(read_timeout) if read_timeout else 0.0
-        self._first = first_token_s(payload)
+        self.url = url
+        self._tokens = _estimate_tokens(payload or b"")
+        self._first = first_token_s(payload, url)
         self._idle = idle_s()
         self.phase = "first_token"
         self.bound = 0.0
+        self._armed = time.monotonic()
 
     def _tightest(self, health: float) -> float:
         """The health bound when it is tighter than the caller's own read
@@ -95,12 +113,16 @@ class StreamWatch:
 
     def arm_first_token(self) -> None:
         self.phase = "first_token"
+        self._armed = time.monotonic()
         self._apply(self._first)
 
     def got_data(self) -> None:
-        """First real data event: from now on the idle bound applies."""
+        """First real data event: from now on the idle bound applies. The
+        wait for it is this endpoint's prefill speed, learned."""
         if self.phase != "idle":
             self.phase = "idle"
+            _health().note_prefill(self.url, self._tokens,
+                                   time.monotonic() - self._armed)
             self._apply(self._idle)
 
     def release(self) -> None:
@@ -119,6 +141,7 @@ class StreamWatch:
         """``exc`` as an LLMStreamStalled when one of OUR bounds fired it; else
         ``exc`` unchanged (the caller's own read timeout keeps its meaning)."""
         if self.bound and isinstance(exc, (socket.timeout, TimeoutError)):
+            _health().note_stall()      # the next send waits twice as long
             return LLMStreamStalled(self.phase, self.bound)
         return exc
 

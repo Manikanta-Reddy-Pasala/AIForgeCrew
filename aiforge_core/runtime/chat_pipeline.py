@@ -455,19 +455,16 @@ async def _events_under_deadline(agen, runner, q, session_id, chat_interject,
         return None
 
 
-
 def _drive_awake(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state,
                  turn_epoch=None):
     _bind_turn_epoch(turn_epoch)     # before the loop: its tasks copy this context
-    # A team run is minutes of work. Locking the screen and walking away
-    # used to let the box idle into sleep mid-run, which suspends the whole
-    # process: the model socket dies and everything already done waits to
-    # be re-done. The assertion lives in a child process, so it goes away
-    # with this run even if the API is killed outright.
+    # A team run is minutes of work: keep the box from idling into sleep (that
+    # kills the model socket). The assertion lives in a child process, so it
+    # ends with this run even if the API is killed outright.
     from aiforge_core.runtime.keep_awake import keep_awake
     with keep_awake(f"team run session={session_id}"):
-        _run_async_in_thread(lambda: _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state))
-
+        _run_async_in_thread(lambda: _drive(q, session_id, cwd, raw_prompt,
+                                            started_at, prompt, _team_state))
 
 
 def stream_chat_pipeline(prompt: str, *, cwd: str,
@@ -479,7 +476,6 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
     driver handed the turn off (answer posted and persisted, Learner still
     running); the caller then finishes the chat run itself."""
     q: queue.Queue = queue.Queue()
-    from aiforge_core.runtime import chat_cancel
     raw_prompt = prompt   # the user's actual request (before context augmentation)
     prompt, _team_state = _build_team_prompt(cwd, prompt, history, session_id,
                                              resume_brief)

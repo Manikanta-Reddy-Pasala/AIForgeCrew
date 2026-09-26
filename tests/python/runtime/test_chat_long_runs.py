@@ -583,16 +583,17 @@ def test_stop_during_the_wait_stops_the_run(_no_sleep, monkeypatch):
 
 
 def test_outage_wait_setting(monkeypatch):
+    """ONE knob for every mode (AIFORGE_LLM_WAIT_MAX_S); the old chat-only
+    AIFORGE_CHAT_OUTAGE_WAIT_S is gone — it never reached the client's wait."""
     from aiforge_core.llm import model_wait
-    monkeypatch.delenv("AIFORGE_CHAT_OUTAGE_WAIT_S", raising=False)
     monkeypatch.delenv("AIFORGE_LLM_WAIT_MAX_S", raising=False)
     monkeypatch.setattr(model_wait, "_DEFAULT_MAX_S", 0.0)  # production default
     assert _completion._outage_wait_s() == 0          # forever, by default
     monkeypatch.setenv("AIFORGE_LLM_WAIT_MAX_S", "600")
     assert _completion._outage_wait_s() == 600        # the shared knob
     monkeypatch.setenv("AIFORGE_CHAT_OUTAGE_WAIT_S", "0")
-    assert _completion._outage_wait_s() == 0          # the chat knob wins
-    monkeypatch.setenv("AIFORGE_CHAT_OUTAGE_WAIT_S", "-5")
+    assert _completion._outage_wait_s() == 600        # no second knob
+    monkeypatch.setenv("AIFORGE_LLM_WAIT_MAX_S", "-5")
     assert _completion._outage_wait_s() == -5         # negative: do not wait
 
 

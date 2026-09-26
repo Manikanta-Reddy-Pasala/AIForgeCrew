@@ -352,7 +352,8 @@ def _run_claimed_ticket(ticket) -> None:
         try:
             tickets_mod.update_status(
                 ticket.id, "blocked", role="adk_runner",
-                metadata_patch={"error": str(exc)[:500], **rescue_meta})
+                metadata_patch={"error": str(exc)[:500], **_issue_meta(exc),
+                                **rescue_meta})
         except Exception as exc2:  # noqa: BLE001
             # Not silent: a ticket left in_progress here is reaped, and after
             # AIFORGE_TICKET_MAX_RECLAIMS it is blocked — say why in the log.
@@ -364,6 +365,19 @@ def _run_claimed_ticket(ticket) -> None:
         set_force_provider(None)
         if prior_env is not None:
             _restore_env(prior_env)
+
+
+def _issue_meta(exc: BaseException) -> dict:
+    """An LLM ISSUE (the model is up but keeps failing this request) fails the
+    attempt with its own reason, so it reads as that and not as a crash."""
+    try:
+        from aiforge_core.llm import model_outage
+        issue = model_outage.issue(exc)
+    except Exception:  # noqa: BLE001
+        issue = None
+    if issue is None:
+        return {}
+    return {"failure_reason": issue.reason, "blocked_reason": str(issue)[:500]}
 
 
 def _wait_was_cancelled(exc: BaseException) -> bool:

@@ -45,16 +45,26 @@ def hold_claim(ticket_id: int, interval_s: "float | None" = None):
     ticket no longer ``in_progress`` (cancelled, or taken over), the claim is
     LOST: every model wait inside the block ends (ModelWaitCancelled) instead
     of waiting for a model on behalf of a run nobody wants any more. The block
-    also reports each wait's status on the ticket as an ``llm_wait`` event."""
+    also reports each wait's status on the ticket as an ``llm_wait`` event.
+
+    The claim is THIS run's: the beat renews it only while ``claimed_at`` is
+    still the value this run set (a token), so a ticket reaped and claimed by
+    another runner reads as taken over, not as renewed. Yields the ``lost``
+    event — a cancel check for work the run hands to other threads."""
     stop = threading.Event()
     lost = threading.Event()
     every = interval_s or _interval_s()
+    token = [_claim_token(ticket_id)]
 
     def _beat():
         while not stop.wait(every):
             try:
-                if store.renew_claim(ticket_id) is False:
+                renewed = (store.renew_claim(ticket_id, token[0]) if token[0]
+                           else store.renew_claim(ticket_id))
+                if renewed is False or renewed is None:
                     lost.set()
+                elif isinstance(renewed, str):
+                    token[0] = renewed
             except Exception as exc:  # noqa: BLE001 — a missed beat is not fatal
                 log.debug("claim heartbeat ticket=%s failed: %s", ticket_id, exc)
 
@@ -68,12 +78,22 @@ def hold_claim(ticket_id: int, interval_s: "float | None" = None):
         with model_wait.scope(lost, "ticket claim lost (cancelled or taken "
                                     "over)"), \
                 model_wait.status_sink(_wait_event(ticket_id)):
-            yield
+            yield lost
     finally:
         stop.set()
         t.join(timeout=5)
         _disown_jobs(tok)
         _stop_jobs(owner)        # this attempt's commands end with its claim
+
+
+def _claim_token(ticket_id) -> "str | None":
+    """The claim this run holds (its ``claimed_at``), or None when unknown."""
+    try:
+        row = store.get_backend().fetch_ticket(int(ticket_id))
+        return str(row.get("claimed_at")) if row and row.get("claimed_at") \
+            else None
+    except Exception:  # noqa: BLE001 — unknown: renew by status alone
+        return None
 
 
 def _wait_event(ticket_id):

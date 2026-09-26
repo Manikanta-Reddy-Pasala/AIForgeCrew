@@ -203,6 +203,19 @@ def _end_jobs(turn) -> None:
         pass
 
 
+def _abort_name(exc: BaseException) -> str:
+    """The abort's name — ``llm_request_fails`` for an LLM ISSUE (the model is
+    up but keeps failing the request: llm/request_health), else the class."""
+    try:
+        from aiforge_core.llm import model_outage
+        issue = model_outage.issue(exc)
+        if issue is not None:
+            return issue.reason
+    except Exception:  # noqa: BLE001
+        pass
+    return type(exc).__name__
+
+
 async def _drive_single(runner, session_svc, session_id: str,
                         kwargs: dict) -> dict:
     """Run to completion under the pipeline deadline; on an abort recover the
@@ -223,7 +236,7 @@ async def _drive_single(runner, session_svc, session_id: str,
                     type(exc).__name__, " [deadline]" if is_deadline else "")
         state = await _session_state(session_svc, session_id)
         state["_pipeline_abort"] = ("deadline" if is_deadline
-                                    else type(exc).__name__)
+                                    else _abort_name(exc))
         return state
     finally:
         _end_jobs(jobs_turn)
@@ -299,7 +312,7 @@ async def _drive_pipeline(runner, session_svc, session_id: str,
         # operator the code was judged bad when the model was unreachable.
         # The cause travels with it so the audit row can say what happened.
         state["feedback_verdict"] = "fail"
-        state["_pipeline_abort"] = "deadline" if is_deadline else name
+        state["_pipeline_abort"] = "deadline" if is_deadline else _abort_name(exc)
         state["_pipeline_abort_detail"] = (
             "llm call cap reached" if is_limit else str(exc))[:300]
         return state
