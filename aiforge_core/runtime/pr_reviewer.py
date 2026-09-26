@@ -195,33 +195,6 @@ def _read_bound(ep: dict[str, Any], messages: list) -> float | None:
     return bound or None
 
 
-def _is_read_timeout(exc: BaseException) -> bool:
-    """litellm's / httpx's read timeout: the per-read bound ran out."""
-    names = {type(e).__name__.lower() for e in (exc, exc.__cause__,
-                                                  exc.__context__) if e}
-    return bool(names & {"timeout", "apitimeouterror", "readtimeout",
-                         "timeoutexception", "timeouterror"})
-
-
-def _as_stall(exc: BaseException, ep: dict[str, Any], messages: list):
-    """A read that timed out at :func:`_read_bound` is a STALL of this
-    request, exactly like the client's stream watch cutting one: counted in
-    llm/request_health (so the next send's bound doubles) and raised as
-    ``LLMStreamStalled``, which model_wait judges — while the server is still
-    busy with the abandoned request the liveness probe queues, so the resend
-    waits for the probe to be answered instead of piling another prompt on."""
-    if not _is_read_timeout(exc):
-        return None
-    try:
-        from aiforge_core.llm import request_health
-        from aiforge_core.llm.client._stream_health import LLMStreamStalled
-        bound = _read_bound(ep, messages) or 0.0
-        request_health.note_stall()
-        return LLMStreamStalled("first_token", float(bound))
-    except Exception:  # noqa: BLE001
-        return None
-
-
 def _reply_text(resp: Any) -> str:
     """The reply of a streamed completion (or of a plain one — a server or a
     test double that ignored ``stream``)."""
@@ -242,11 +215,22 @@ def _reply_text(resp: Any) -> str:
     return "".join(parts)
 
 
+def _ua() -> str:
+    from aiforge_core.llm.user_agent import user_agent
+    return user_agent()
+
+
 def _sender(litellm: Any, ep: dict[str, Any], messages: list) -> Any:
     """One send, as a no-arg callable ``model_wait`` can re-run after an
     outage. Every attempt is charged to the ceiling and settled on failure —
     a re-send after the model came back is a real send."""
     model = ep["model"]
+    try:        # model_wait's liveness probe goes the way the review does
+        from aiforge_core.llm import _model_probe
+        _model_probe.register_send(ep["api_base"], model, {
+            **_send_kwargs(ep), "extra_headers": {"User-Agent": _ua()}})
+    except Exception:  # noqa: BLE001
+        pass
 
     def _send() -> str:
         # Bound BEFORE the try: the failure handler below reads it, and an
@@ -286,7 +270,8 @@ def _sender(litellm: Any, ep: dict[str, Any], messages: list) -> Any:
                 _meter.record_failure(_tok, "transport_" + type(exc).__name__[:24])
             except Exception:  # noqa: BLE001 — metering never breaks a review
                 pass
-            stalled = _as_stall(exc, ep, messages)
+            from aiforge_core.runtime._review_stall import as_stall
+            stalled = as_stall(exc, ep, messages)
             if stalled is not None:
                 raise stalled from exc
             raise

@@ -286,6 +286,36 @@ def request_bound(exc: BaseException | None) -> bool:
     return False
 
 
+def crash_evidence(exc: BaseException | None) -> bool:
+    """Could this failure be the model server itself dying under the
+    request? Only its own connection being reset / closed mid-request. Not a
+    proxy's 502/504 (the proxy is up, whatever is behind it), not a stall
+    (our own bound cut it), not a connect failure or anything on our side."""
+    links = chain(exc)
+    if any(_status(e) in (408, 429, 502, 503, 504) for e in links):
+        return False
+    if is_stall(exc):
+        return False
+    try:
+        from aiforge_core.llm import endpoint_breaker
+        if endpoint_breaker.is_connect_error(exc):
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    for e in links:
+        if isinstance(e, (ConnectionResetError, ConnectionAbortedError,
+                          BrokenPipeError)):
+            return True
+        if type(e).__name__ in ("RemoteDisconnected", "IncompleteRead"):
+            return True
+        text = _text(e)
+        if any(p in text for p in ("connection reset", "remote end closed",
+                                   "server disconnected", "connection aborted",
+                                   "peer closed", "incomplete read")):
+            return True
+    return False
+
+
 def names_loading(exc: BaseException | None) -> bool:
     """Does the failure say the model is not loaded (vs the box being down)?
     Only then is it worth asking ``/v1/models`` whether the id exists at all."""
@@ -295,5 +325,5 @@ def names_loading(exc: BaseException | None) -> bool:
 
 __all__ = ["OUTAGE", "CONFIG", "SHIPPED", "CANCELLED", "OTHER", "LLM_ISSUE",
            "LLMRequestFailing", "classify", "is_outage", "issue",
-           "explicit_busy", "is_stall", "request_bound", "names_loading",
+           "explicit_busy", "is_stall", "request_bound", "crash_evidence", "names_loading",
            "chain"]

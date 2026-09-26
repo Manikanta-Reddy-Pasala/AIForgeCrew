@@ -27,12 +27,15 @@ endpoint's state, not the request's: it never counts.
 A request that CRASHES the server (OOM, a segfault on that prompt) looks like
 an outage every time — the probe fails while it restarts — so on its own it
 would be re-sent into the crash forever, taking the server down for everyone.
-So a send made right after the endpoint was confirmed serving (a recovery
-probe answered), that failed with the server holding it, and after which the
-server is DOWN (refused / reset / 502 — not merely busy) within
-``AIFORGE_LLM_CRASH_WINDOW_S`` (default 300) is a crash cycle; after
-``AIFORGE_LLM_CRASH_RESENDS`` (default 2) of them the request is an LLM issue
-("the request crashes the model server").
+The evidence has to be clear, because anything ambiguous is an outage and is
+waited for: a crash cycle is a send made right after a probe confirmed the
+model up, whose connection the model server itself reset / closed
+(model_outage.crash_evidence — not a proxy's 502/504, not our network) within
+``AIFORGE_LLM_CRASH_WINDOW_S`` (default 15) of the send, after which the
+server's own host REFUSES connections (not DNS, not a proxy). After
+``AIFORGE_LLM_CRASH_RESENDS`` (default 3) such cycles IN A ROW — any other
+outcome, or a successful answer on that endpoint, starts the count again — the
+request is an LLM issue ("the request crashes the model server").
 """
 from __future__ import annotations
 
@@ -40,6 +43,7 @@ import contextlib
 import contextvars
 import os
 import threading
+import time
 
 _HEALTH: contextvars.ContextVar = contextvars.ContextVar(
     "aiforge_request_health", default=None)
@@ -55,13 +59,46 @@ def _env_num(name: str, default: float, low: float) -> float:
 
 
 def crash_resends() -> int:
-    """``AIFORGE_LLM_CRASH_RESENDS`` (default 2, at least 1)."""
-    return int(_env_num("AIFORGE_LLM_CRASH_RESENDS", 2, 1))
+    """``AIFORGE_LLM_CRASH_RESENDS`` (default 3, at least 1)."""
+    return int(_env_num("AIFORGE_LLM_CRASH_RESENDS", 3, 1))
 
 
 def crash_window_s() -> float:
-    """``AIFORGE_LLM_CRASH_WINDOW_S`` (default 300)."""
-    return _env_num("AIFORGE_LLM_CRASH_WINDOW_S", 300.0, 0.0)
+    """``AIFORGE_LLM_CRASH_WINDOW_S`` (default 15)."""
+    return _env_num("AIFORGE_LLM_CRASH_WINDOW_S", 15.0, 0.0)
+
+
+# ── real answers per endpoint (reset a crash count) ────────────────────────
+
+_ANSWERED: dict = {}
+_TRACKED: set = set()
+
+
+def _ep(url: str) -> str:
+    return str(url or "").rstrip("/")
+
+
+def note_answer(url: str) -> None:
+    """A real request to ``url`` was answered."""
+    if url:
+        with _PREFILL_LOCK:
+            _ANSWERED[_ep(url)] = time.monotonic()
+
+
+def last_answer(url: str) -> "float | None":
+    with _PREFILL_LOCK:
+        return _ANSWERED.get(_ep(url))
+
+
+def track_crashes(url: str, on: bool) -> None:
+    """Some request is counting crashes on ``url``: its answers matter."""
+    with _PREFILL_LOCK:
+        (_TRACKED.add if on else _TRACKED.discard)(_ep(url))
+
+
+def crashes_tracked() -> bool:
+    with _PREFILL_LOCK:
+        return bool(_TRACKED)
 
 
 def same_request_fails() -> int:
@@ -81,8 +118,10 @@ class RequestHealth:
         self.stalls_seen = 0     # of those, already judged by a Waiter
         self.stalls_counted = 0  # of those, counted against the request
         self.fails = 0           # other failures counted against the request
-        self.crashes = 0         # resends after which the server went DOWN
+        self.crashes = 0         # crash cycles in a row (see module doc)
+        self.crash_at: float | None = None
         self.up_at: float | None = None   # serving confirmed before a resend
+        self.sent_at: float | None = None  # the latest send of the request
 
     def total(self) -> int:
         """Failures counted against THIS request (the model answered a tiny
@@ -147,8 +186,11 @@ def prefill_tps(url: str) -> "float | None":
 def _reset_for_tests() -> None:
     with _PREFILL_LOCK:
         _PREFILL.clear()
+        _ANSWERED.clear()
+        _TRACKED.clear()
 
 
 __all__ = ["RequestHealth", "bind", "current", "note_stall", "stall_scale",
            "note_prefill", "prefill_tps", "same_request_fails",
-           "crash_resends", "crash_window_s"]
+           "crash_resends", "crash_window_s", "note_answer", "last_answer",
+           "track_crashes", "crashes_tracked"]

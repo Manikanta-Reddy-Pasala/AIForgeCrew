@@ -49,7 +49,13 @@ import os
 import time
 from typing import Any, Callable
 
-from . import _model_probe, model_outage, request_health
+from . import (
+    _crash_watch,
+    _model_probe,
+    _probe_states,
+    model_outage,
+    request_health,
+)
 from ._model_probe import (  # noqa: F401 — tests patch model_wait.probe
     live_probe,
     probe,
@@ -239,6 +245,7 @@ class Waiter:
         self.waited = 0.0
         self._gaps = delays()
         self._last_gap = -1.0
+        _crash_watch.note_answer(self, self.url, None)
 
     # — one wait cycle ———————————————————————————————————————————————
     def _next_gap(self, exc: BaseException) -> float:
@@ -285,54 +292,49 @@ class Waiter:
         got = live_probe(self.url, self.api_key, self.model, state=True,
                          fresh=fresh)
         if got is True or got is False:
-            return _model_probe.OK if got else _model_probe.BUSY
-        return str(got)
+            return _model_probe.State(_model_probe.OK if got
+                                      else _model_probe.BUSY)
+        return got if isinstance(got, str) else str(got)
 
-    def _crashed(self, exc: BaseException, resent_at: float | None) -> None:
-        """The server went DOWN right after a resend it had confirmed it
-        could take: one crash cycle. Raises :class:`LLMRequestFailing` once
-        this request has crashed the server too often."""
-        h = self.health
-        if resent_at is None \
-                or time.monotonic() - resent_at > request_health.crash_window_s():
-            return
-        h.crashes += 1
-        if h.crashes < request_health.crash_resends():
-            return
-        log.warning("llm.request_crashes url=%s n=%d err=%.200s", self.url,
-                    h.crashes, exc)
-        err = LLMRequestFailing(
-            self.url, h.crashes, exc,
-            f"LLM issue: the model server at {self.url or '?'} went down "
-            f"right after this request was sent, {h.crashes} times — the "
-            "request crashes the model server")
-        err.cause = "request crashes the model server"
-        raise err from exc
+    def _crashed(self, exc: BaseException, sent: float | None,
+                 failed_at: float) -> None:
+        """A crash cycle when the evidence is clear (llm/_crash_watch)."""
+        _crash_watch.judge(self, exc, sent, failed_at)
 
     def _judge(self, exc: BaseException) -> bool:
-        """Count ``exc`` against the request only when the MODEL is up: a
-        tiny completion to it succeeds promptly straight after the failure —
-        or the probe itself is refused as a client error (INCONCLUSIVE: the
-        server is up; count, as the old ``/models`` check did). A router
-        whose ``/models`` answers while the model behind it is dead, a box
-        whose queue holds the probe too, a probe that times out — all of that
-        is an outage or a busy model: waited for, never counted (unless it
-        is the server crashing on this very request: :meth:`_crashed`).
+        """Count ``exc`` against the request only when it is CLEAR the model
+        is up: a tiny completion to it succeeds promptly straight after the
+        failure, or the probe and the request were refused with the same
+        client error (a config problem). Anything ambiguous — a probe that
+        fails, queues, times out, says "loading", or is refused differently —
+        is an outage or a busy model: waited for, never counted (unless the
+        server clearly crashes on this very request: :meth:`_crashed`).
         True = counted (re-send without an outage wait). Raises
         :class:`LLMRequestFailing` once the request has failed too often."""
         h = self.health
+        failed_at = time.monotonic()
         resent_at, h.up_at = h.up_at, None
+        sent = resent_at
+        if resent_at is not None and h.sent_at is not None \
+                and h.sent_at >= resent_at:
+            sent = h.sent_at
         if model_outage.explicit_busy(exc) or not model_outage.request_bound(exc):
+            h.crashes = 0
             return False        # the endpoint's state, or a connect failure
         stall = model_outage.is_stall(exc) and h.stalls > h.stalls_seen
         if stall:
             h.stalls_seen = h.stalls      # the stream watch saw it; judge once
         state = self._live(fresh=resent_at is not None)
-        if not self._after_probe(state in (_model_probe.OK,
-                                           _model_probe.INCONCLUSIVE)):
-            if state == _model_probe.DOWN:
-                self._crashed(exc, resent_at)
+        codes = {model_outage._status(e) for e in model_outage.chain(exc)}
+        config = state == _model_probe.INCONCLUSIVE and \
+            _probe_states.same_client_error(getattr(state, "code", 0), codes)
+        if not self._after_probe(state == _model_probe.OK or config):
+            if state == _model_probe.REFUSED and resent_at is not None:
+                self._crashed(exc, sent, failed_at)
+            else:
+                h.crashes = 0
             return False
+        h.crashes = 0
         if stall:
             h.stalls_counted += 1
         else:
@@ -340,7 +342,11 @@ class Waiter:
         if h.total() >= request_health.same_request_fails():
             log.warning("llm.request_fails url=%s n=%d err=%.200s", self.url,
                         h.total(), exc)
-            raise LLMRequestFailing(self.url, h.total(), exc) from exc
+            msg = "" if not config else (
+                f"LLM configuration issue: the model at {self.url or '?'} "
+                f"refused both this request and a one-token probe with HTTP "
+                f"{state.code} — check the API key / model id / endpoint")
+            raise LLMRequestFailing(self.url, h.total(), exc, msg) from exc
         return True
 
     def _resend_gap(self, exc: BaseException) -> float:
@@ -460,6 +466,7 @@ def call_with_wait(call: Callable[[], Any], *, url: str = "",
     while True:
         try:
             with request_health.bind(health):
+                health.sent_at = time.monotonic()
                 out = call()
         except Exception as exc:
             if waiter is None:
@@ -474,6 +481,7 @@ def call_with_wait(call: Callable[[], Any], *, url: str = "",
             continue
         if waiter is not None:
             waiter.recovered()
+        _crash_watch.note_answer(waiter, url, endpoint)
         return out
 
 

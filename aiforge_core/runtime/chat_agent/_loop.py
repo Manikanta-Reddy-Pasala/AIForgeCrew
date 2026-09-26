@@ -396,6 +396,9 @@ def run_chat_agent(
         try:
             from ._context._compaction import release_run
             release_run(getattr(st, "compact_key", None))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
             from aiforge_core.runtime.gaming_changes import release
             release(getattr(st, "gaming_base", None))
         except Exception:  # noqa: BLE001

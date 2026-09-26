@@ -132,6 +132,9 @@ def _build_one(cfg: dict[str, Any]) -> BaseLlm:
     from aiforge_core.llm import reasoning as _reasoning
     if _reasoning.reasoning_off(cfg["model_id"], api_base):
         kwargs["extra_body"] = dict(_reasoning.NO_THINK_KWARGS)
+    # model_wait's liveness probe of this model goes the same way.
+    from aiforge_core.llm import _model_probe
+    _model_probe.register_send(api_base, cfg["model_id"], kwargs)
     return LiteLlm(**kwargs)
 
 
