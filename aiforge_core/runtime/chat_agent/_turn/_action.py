@@ -244,7 +244,7 @@ def _team_repo_guard(st, name, args, cwd):
         return None
     result = {
         "ok": False, "error": "writes_users_checkout", "blocked_paths": hits,
-        "hint": (f"Refused: this command writes into the user's checkout "
+        "hint": (f"Refused: this command enters or changes the user's checkout "
                  f"{ws.repo}. This team run works in its own worktree "
                  f"{ws.cwd} — run the command there (use paths under "
                  f"{ws.cwd}, or relative paths). Reading or copying FROM "

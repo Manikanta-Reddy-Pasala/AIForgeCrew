@@ -82,9 +82,12 @@ def exc_state(exc: BaseException) -> State:
     names = " ".join(type(x).__name__.lower() for x in links)
     text = " ".join(str(x).lower() for x in links)
     code = getattr(exc, "status_code", None)
-    if isinstance(code, int) and 100 <= code < 600:
+    answered = "connection" not in names or getattr(exc, "response", None) is not None
+    if isinstance(code, int) and 100 <= code < 600 and answered:
         # an HTTP answer came back (a proxy's 503 whose body says
-        # "connection refused" is the proxy talking, not a refused socket)
+        # "connection refused" is the proxy talking, not a refused socket).
+        # litellm's APIConnectionError carries a status_code with no
+        # response: nothing answered, so it is read as a socket failure.
         return status_state(code, text)
     if any(isinstance(x, TimeoutError) for x in links) \
             or "timeout" in names or "timed out" in text:

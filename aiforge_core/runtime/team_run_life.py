@@ -359,9 +359,9 @@ def _under(path: str, root_folded: str) -> bool:
 
 def repo_writes(cwd, name: str, args: dict) -> list[str]:
     """The paths under the user's REAL repo that a shell command in a team
-    run would write (``cd <repo> && echo >> x``, ``git -C <repo> commit``,
-    ``sed -i <repo>/x``, a redirect / tee / cp / mv / rm TARGET there). Reads
-    and copies FROM the repo are not writes. Empty outside a team run."""
+    run enters or names in a command that does not only read them
+    (runtime/team_repo_guard). Reads and copies FROM the repo pass. Empty
+    outside a team run."""
     from aiforge_core.runtime import shell_writes as sw
     from aiforge_core.runtime.team_workspace import for_cwd
     ws = for_cwd(cwd) if cwd else None
@@ -370,37 +370,12 @@ def repo_writes(cwd, name: str, args: dict) -> list[str]:
     cmd = sw.command_of(args)
     if not cmd:
         return []
-    root = fold(ws.repo)
-    hits: list[str] = []
+    from aiforge_core.runtime.team_repo_guard import touches
     try:
-        _walk(cmd, os.path.realpath(ws.cwd), root, hits)
+        return touches(cmd, os.path.realpath(ws.cwd), fold(ws.repo))
     except Exception as exc:  # noqa: BLE001 — a matcher bug never blocks
         log.debug("repo write check skipped: %s", exc)
-    return hits
-
-
-def _walk(cmd: str, here: str, root: str, hits: list) -> None:
-    from aiforge_core.runtime import shell_writes as sw
-    for line in sw._strip_heredocs(cmd):
-        for seg in sw._segments(sw._tokens(line)):
-            if seg[0] == "cd":
-                here = sw._resolve(seg[1] if len(seg) > 1 else "~", here) or here
-                continue
-            redirs, rest = sw._redirect_targets(seg)
-            rest = sw._strip_prefixes(rest)
-            if rest and os.path.basename(rest[0]) in sw._SHELLS \
-                    and "-c" in rest[1:-1]:
-                _walk(rest[rest.index("-c") + 1], here, root, hits)
-                continue
-            raws = redirs + (sw._command_targets(rest, here) if rest else [])
-            if rest and os.path.basename(rest[0]) == "git" and "-C" not in rest:
-                sub = next((t for t in rest[1:] if not t.startswith("-")), "")
-                if sub and sub not in sw._GIT_READONLY:
-                    raws.append(here)             # `cd <repo> && git commit`
-            for raw in raws:
-                p = sw._resolve(raw, here)
-                if p and _under(p, root) and p not in hits:
-                    hits.append(p)
+        return []
 
 
 __all__ = ["consented", "continues", "drop_exclude", "drop_if_empty",
