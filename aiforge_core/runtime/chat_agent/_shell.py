@@ -353,7 +353,7 @@ def _without_trailing_amp(cmd: str) -> str:
 
 def _start_background(cmd: str, base: str) -> dict:
     """Spawn ``cmd`` and return a handle. Do not kill it on the way out."""
-    from aiforge_core.runtime import bg_work, chat_cancel
+    from aiforge_core.runtime import chat_cancel
     cmd = _without_trailing_amp(cmd)
     spool = Spool()
     try:
@@ -369,7 +369,15 @@ def _start_background(cmd: str, base: str) -> dict:
         sid = chat_cancel.active()
     except Exception:  # noqa: BLE001
         sid = None
-    return bg_work.track_command(sid, base, cmd, proc, spool)
+    from aiforge_core.runtime import cmd_jobs
+    job = cmd_jobs.adopt_spooled(proc, spool, cmd, base, explicit=True,
+                                 session_id=sid)
+    out = dict(getattr(job, "handle", {}) or {})
+    out["id"] = job.key
+    out["note"] = (out.get("note", "") + f" Check on it any time with "
+                   f"command_output(id='{job.key}') or command_wait(id="
+                   f"'{job.key}'); command_kill stops it.").strip()
+    return out
 
 
 def _t_run_command(args: dict, cwd: str) -> dict:
@@ -404,11 +412,35 @@ def _t_run_command(args: dict, cwd: str) -> dict:
             spool.close()
         return {"ok": False, "error": str(exc)}
     spool.pgid = proc.pid             # start_new_session: its own group
+    import time as _time
+    started = _time.monotonic()
+    handed = False
     try:
-        return _run_to_end(proc, timeout, spool, idle_s)
+        res = _run_to_end(proc, timeout, spool, idle_s)
+        if res.get("_handoff"):
+            handed = True
+            return _hand_off(proc, spool, cmd, base, res["_handoff"],
+                             started, timeout, idle_s)
+        return res
     finally:
-        spool.release_children()
-        spool.close()
+        if not handed:
+            spool.release_children()
+            spool.close()
+
+
+def _hand_off(proc, spool, cmd, base, why, started, timeout, idle_s) -> dict:
+    """Still running at the check-in (or it just printed an error / a
+    prompt): do not wait it out. It becomes a job this turn owns, and the
+    model sees what it has printed so far and decides."""
+    from aiforge_core.runtime import chat_cancel, cmd_jobs
+    try:
+        sid = chat_cancel.active()
+    except Exception:  # noqa: BLE001
+        sid = None
+    job = cmd_jobs.adopt_spooled(
+        proc, spool, cmd, base, explicit=False, session_id=sid, idle_s=idle_s,
+        deadline=(started + timeout) if timeout else None)
+    return cmd_jobs.look(job, why)
 
 
 def _run_to_end(proc, timeout: float, spool, idle_s: float = 0.0) -> dict:
@@ -419,7 +451,8 @@ def _run_to_end(proc, timeout: float, spool, idle_s: float = 0.0) -> dict:
             chat_cancel.track_pgid(sid, os.getpgid(proc.pid))
         except Exception:  # noqa: BLE001
             pass
-    stopped = _await_exit(proc, timeout, sid, spool, idle_s)
+    from aiforge_core.runtime.cmd_jobs import checkin_s
+    stopped = _await_exit(proc, timeout, sid, spool, idle_s, checkin_s())
     if stopped is not None:
         return stopped
     out, err = _collect_output(proc, spool)

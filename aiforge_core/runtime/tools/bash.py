@@ -356,7 +356,8 @@ def bash(
             ["tmux", "send-keys", "-t", name, "C-c"],
             capture_output=True,
         )
-        time.sleep(0.5)
+        # No fixed pause after the interrupt: the drain polls every 0.1s and
+        # returns the moment the prompt is back (bounded at 2s).
         partial, _rc2, _t2 = _drain_until_prompt(name, 2)
         partial = _strip_echoed_command(partial, command)
         return _err_result(command, "timeout",

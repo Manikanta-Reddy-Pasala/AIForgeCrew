@@ -75,13 +75,25 @@ CATALOG: dict = {
             ("command", "path")),
     # ── run / build / test ───────────────────────────────────────────────
     "run_command": (
-        "Run a shell command. No time limit: it runs until it exits, and is "
-        "stopped only if it goes silent (no output, no CPU) for 10 minutes; "
-        "pass timeout SECONDS only to cap it on purpose. "
+        "Run a shell command. If it is still running after ~15s (or prints "
+        "an error or a prompt first) you get its output so far and an id — "
+        "then command_wait / command_output / command_kill; it is not killed. "
+        "Pass timeout SECONDS only to cap it on purpose. "
         "background:true, or a trailing &, returns a handle immediately and "
         "leaves the process running. Several may run at once. The outcome "
         "is posted in this chat. Stop kills them.",
         {"cmd": "s", "timeout": "i", "background": "b"}, ("cmd",)),
+    "command_wait": (
+        "Wait on a running command (id from run_command). Returns as soon as "
+        "it exits, prints an error or a prompt, or looks stuck; else after "
+        "max_s (default grows 15→300 while it stays healthy).",
+        {"id": "s", "max_s": "i"}, ("id",)),
+    "command_output": (
+        "Peek at a running command's new output since the last look, "
+        "without waiting.", {"id": "s"}, ("id",)),
+    "command_kill": (
+        "Stop a running command (id from run_command) — then fix it and "
+        "run it again.", {"id": "s"}, ("id",)),
     "watch_until": (
         "Re-run one command until a condition holds — polling, monitoring, "
         "'wait until it's ready/done/green'. In chat this returns at once "
@@ -419,6 +431,7 @@ _CORE_ACT = frozenset({
     "file_read", "read_files", "read_lines", "list_dir", "find", "grep",
     "file_patch", "multi_edit", "file_write", "file_create", "editor",
     "run_command", "run_tests", "watch_until", "schedule_task",
+    "command_wait", "command_output", "command_kill",
     "memory_lookup", "memory_write",
     "git_status", "git_diff", "repo_map",
 })

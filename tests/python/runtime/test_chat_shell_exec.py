@@ -318,7 +318,7 @@ def test_a_timeout_keeps_the_partial_output_and_says_not_to_undo(run, repo,
     """Which tests ran before the hang is the signal the agent needs."""
     import time
     run["proc"] = _Proc(polls=99, out="3 passed", err="")
-    ticks = iter([0.0, 100.0, 100.0])
+    ticks = iter([0.0] * 3 + [100.0] * 50)
     monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
     res = S._t_run_command({"cmd": "pytest", "timeout": 1}, str(repo))
     assert res["timed_out"] is True

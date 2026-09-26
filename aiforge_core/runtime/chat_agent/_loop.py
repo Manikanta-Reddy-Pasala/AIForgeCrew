@@ -209,6 +209,11 @@ def _run_action_path(st, step, n, cwd, session_id):
     # crash. An empty dict lets the tool return its own instructive error.
     args = step["args"] if isinstance(step["args"], dict) else {}
     sig = _call_sig(name, args)
+    # A wait/peek on a running command is keyed on the job's progress too:
+    # waiting on a job that keeps working is not a repeat, one on a job that
+    # did nothing since is.
+    from ._cmd_tools import progress_sig
+    sig += progress_sig(name, args)
     _sig = yield from _gated_action(st, step, name, args, sig, n, cwd, session_id)
     if _sig in ("repeat", "handled"):
         return "continue"
@@ -339,6 +344,8 @@ def run_chat_agent(
     # caller's original None.
     complete_fn = st.complete_fn
     n = 0
+    from aiforge_core.runtime import cmd_jobs
+    _jobs_turn = cmd_jobs.begin_turn()
     yield from _emit_loop_prelude(st)
     try:
         while True:
@@ -373,3 +380,9 @@ def run_chat_agent(
         # However the turn ends (answer, a pause for the user, a closed
         # stream), batched reads still waiting for a worker never run.
         _cancel_early_reads(st)
+        # Commands this turn handed back to the model (still running at a
+        # check-in) end with it; an explicit background command does not.
+        try:
+            cmd_jobs.end_turn(_jobs_turn)
+        except Exception:  # noqa: BLE001
+            pass

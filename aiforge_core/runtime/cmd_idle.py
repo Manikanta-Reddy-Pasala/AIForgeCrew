@@ -98,6 +98,7 @@ class ProgressClock:
         # buys nothing): the group was born with the clock, so its first
         # sample IS the CPU spent since start.
         self._cpu: float | None = None
+        self._cpu_at = float("-inf")
 
     def _safe_size(self) -> int:
         try:
@@ -125,9 +126,13 @@ class ProgressClock:
             return False
         if now - self.last < self.idle_s:
             return False
-        if self._cpu_moved():
-            self.last = now
-            return False
+        # Past the window: CPU is sampled at most every few seconds (a
+        # caller polling 4x a second must not walk the process table 4x).
+        if now - self._cpu_at >= min(5.0, self.idle_s / 4):
+            self._cpu_at = now
+            if self._cpu_moved():
+                self.last = now
+                return False
         return True
 
 

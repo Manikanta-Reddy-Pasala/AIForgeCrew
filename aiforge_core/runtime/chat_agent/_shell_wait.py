@@ -83,15 +83,49 @@ def _progress_clock(spool, idle_s: float):
     return ProgressClock(spool.pgid, spool.size, idle_s)
 
 
+def _early_signal(spool, seen: list) -> str | None:
+    """A failure line or an input prompt in what the command has printed —
+    looked at only when the output grew since the last poll."""
+    from aiforge_core.runtime import cmd_signals as sig
+    size = spool.size()
+    if size == seen[0]:
+        return None
+    seen[0] = size
+    texts = []
+    for fh in (spool.out, spool.err):
+        end = sig.file_size(fh)
+        texts.append(sig.clean(sig.read_range(
+            fh, max(0, end - sig.SCAN_BYTES), end)))
+    return sig.signal_in("\n".join(texts), texts[0][-400:])
+
+
+def _checkin_due(checkin_at, spool, seen) -> str | None:
+    """Why to hand the command back to the model now, if at all."""
+    import time as _time
+    if spool is None or checkin_at is None:
+        return None
+    found = _early_signal(spool, seen)
+    if found:
+        return found
+    if _time.monotonic() >= checkin_at:
+        return "check-in: still running"
+    return None
+
+
 def _await_exit(proc, timeout: float, sid, spool=None,
-                idle_s: float = 0.0) -> dict | None:
+                idle_s: float = 0.0, checkin_s: float = 0.0) -> dict | None:
     """Poll until the process exits; a dict when it was stopped, went idle
-    (hung) or ran past an explicit wall clock (``timeout`` > 0)."""
+    (hung) or ran past an explicit wall clock (``timeout`` > 0) — or, with
+    ``checkin_s``, ``{"_handoff": why}`` when it is still running at the
+    check-in or its output shows an error or a prompt (the caller turns it
+    into a job and hands it back to the model instead of waiting it out)."""
     import time as _time
 
     from aiforge_core.runtime.run_interrupt import (
         attention, steered, process_owned_by_watch)
     deadline = _time.monotonic() + timeout if timeout and timeout > 0 else None
+    checkin_at = (_time.monotonic() + checkin_s) if checkin_s > 0 else None
+    seen = [0]
     clock = _progress_clock(spool, idle_s)
     while proc.poll() is None:
         # Stop still kills immediately. A typed message is read first: the
@@ -112,6 +146,9 @@ def _await_exit(proc, timeout: float, sid, spool=None,
             return _timeout_result(proc, timeout, spool)
         if clock is not None and clock.stalled():
             return _timeout_result(proc, idle_s, spool, hung=True)
+        why_back = _checkin_due(checkin_at, spool, seen)
+        if why_back and proc.poll() is None:
+            return {"_handoff": why_back}
         if spool is not None and spool.too_big():
             spool.kill_group()
             _kill_proc(proc)
