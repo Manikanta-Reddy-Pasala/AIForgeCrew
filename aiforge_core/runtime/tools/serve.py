@@ -52,6 +52,15 @@ def _kill_pgid(pid: int, pgid: int | None) -> None:
     proc_signals.stop_group(pgid, pid=pid)
 
 
+def _reap_zombie(proc) -> None:
+    """Collect a stopped service's exit status (returns the moment it is
+    gone) — the job table still holds its Popen, so nothing else would."""
+    try:
+        proc.wait(timeout=3)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _reap() -> int:
     """Kill services past their TTL or already dead. Returns count reaped."""
     now = time.monotonic()
@@ -64,6 +73,7 @@ def _reap() -> int:
             _SERVICES.pop(pid, None)
         elif expired:
             _kill_pgid(pid, s.get("pgid"))
+            _reap_zombie(s["proc"])
             _SERVICES.pop(pid, None)
             _EXPIRED[pid] = {"pid": pid, "url": s.get("url"), "cmd": s.get("cmd"),
                              "alive": False, "stopped": f"ran past its ttl_s ({int(ttl)}s)"}
@@ -212,7 +222,18 @@ def _await_url(proc, log_path: str, port_hint: str,
             pm = _PORT_RE.search(text)
             if pm:
                 port_hint = pm.group(1)
-        time.sleep(0.4)
+        # A crash line while the process lingers (a port clash, a missing
+        # module) is the answer already: say so now, not after wait_s.
+        from aiforge_core.runtime.cmd_signals import failure_in
+        failed = failure_in(text)
+        if failed:
+            return None, port_hint, {
+                "ok": False, "pid": proc.pid, "running": proc.poll() is None,
+                "error": f"service reported a failure on startup — {failed}",
+                "log_tail": text[-1500:],
+                "hint": f"stop it with stop_service(pid={proc.pid}), fix, "
+                        "and serve again"}
+        time.sleep(0.15)
     return None, port_hint, None
 
 
@@ -268,6 +289,7 @@ def serve(args: dict, cwd: str | None = None) -> dict:
     if proc is None:
         return {"ok": False, "error": err}
     _register_service(proc, cmd, port_hint, log_path, ttl)
+    job_id = _adopt_job(proc, cmd, log_path)
     url, port_hint, early = _await_url(proc, log_path, port_hint, wait_s)
     if early is not None:
         return early
@@ -276,7 +298,22 @@ def serve(args: dict, cwd: str | None = None) -> dict:
     if proc.pid in _SERVICES:
         _SERVICES[proc.pid]["url"] = url
         _SERVICES[proc.pid]["port"] = port_hint or None
-    return _serve_result(proc, cmd, url, port_hint, log_path, ttl)
+    out = _serve_result(proc, cmd, url, port_hint, log_path, ttl)
+    if job_id:
+        out["id"] = job_id
+        out["hint"] += f" · check its output with command_output(id='{job_id}')"
+    return out
+
+
+def _adopt_job(proc, cmd: str, log_path: str) -> str | None:
+    """Make the service a job too, so command_output / command_wait /
+    command_kill work on it like on any running command."""
+    try:
+        from aiforge_core.runtime import cmd_jobs
+        pgid = (_SERVICES.get(proc.pid) or {}).get("pgid")
+        return cmd_jobs.adopt_service(proc, cmd, log_path, pgid=pgid).key
+    except Exception:  # noqa: BLE001 — a service still runs without it
+        return None
 
 
 def _read_log(path: str) -> str:
@@ -296,6 +333,8 @@ def stop_service(args: dict, _cwd: str | None = None) -> dict:
         return {"ok": False, "error": "missing/invalid 'pid'"}
     svc = _SERVICES.get(pid)
     _kill_pgid(pid, (svc or {}).get("pgid"))
+    if svc:
+        _reap_zombie(svc["proc"])
     _SERVICES.pop(pid, None)
     return {"ok": True, "stopped": True, "pid": pid}
 

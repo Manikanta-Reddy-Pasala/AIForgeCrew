@@ -322,6 +322,9 @@ agents:
         - file_patch                # real primary surface — find/replace one
         - list_dir                  # real primary surface — list a directory
         - run_shell                 # real primary surface — repo-root shell
+        - command_wait              # check on a run_shell still running (id)
+        - command_output            # peek at its new output, no waiting
+        - command_kill              # stop it, fix, run again
         - think                     # no-op + :Think trace
         - finish                    # Doer-only termination signal
         - ensure_runtime            # install what the task needs

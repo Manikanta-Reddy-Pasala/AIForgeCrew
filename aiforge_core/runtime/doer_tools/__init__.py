@@ -138,6 +138,9 @@ from ._integrations import (
 from ._tools import (
     bash,
     browse,
+    command_kill,
+    command_output,
+    command_wait,
     commit,
     delegate_to_agent,
     edit,
@@ -193,6 +196,7 @@ __all__ = [
     "memory_lookup", "memory_block", "graphify_lookup", "skill_search", "learn_skill",
     "workflow_search", "learn_workflow", "web_crawl",
     "serve", "stop_service",
+    "command_wait", "command_output", "command_kill",
     "subtask_update",
     "confluence_search", "confluence_read", "confluence_create", "confluence_update",
     "jira_search", "jira_read", "jira_create", "jira_update", "jira_comment",

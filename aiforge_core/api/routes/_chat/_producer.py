@@ -108,6 +108,11 @@ def _events(pc):
     if pctx0["done"]:
         return
     yield from _prelude_notices(pc._resume_brief, pc._cmd_expanded)
+    # The repo map is built in the background from here, overlapping the
+    # capture pass, the classifier and the enhancer; the agent's first prompt
+    # waits for it only briefly (see _repomap._aider_digest_bounded).
+    if not pc.team:
+        _warm_repo_map(pc.cwd)
     # Staleness auto-curation: a session bound to a jira/confluence
     # context folder (cwd = work/<kind>/<key>) re-verifies that context's
     # note when its updated_at crossed AIFORGE_NOTE_STALE_HOURS. The
@@ -242,6 +247,15 @@ def _events(pc):
         yield from _post_run_events(pc.prompt, pc.cwd, "plan", _since, changes_only=True)
         return
     yield from _post_run_events(pc.prompt, pc.cwd, pc.agent_mode, _since)
+
+
+def _warm_repo_map(cwd) -> None:
+    try:
+        from aiforge_core.runtime.chat_agent._context._repomap import (
+            warm_repo_map)
+        warm_repo_map(cwd)
+    except Exception:  # noqa: BLE001 — a warm-up never breaks a turn
+        pass
 
 
 def _turn_was_stopped(session_id) -> bool:

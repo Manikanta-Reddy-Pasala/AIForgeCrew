@@ -449,3 +449,26 @@ def multi_edit(edits: list) -> dict:
         results.append({"i": i, "path": e.get("path"), **r})
         ok_all = ok_all and bool(r.get("ok"))
     return {"ok": ok_all, "results": results}
+
+
+# ─── Checking on a running command (run_shell hands back long ones) ────
+
+
+def command_wait(id: str, max_s: int = 0) -> dict:  # noqa: A002 — the tool's arg name
+    """Wait on a running command (the ``id`` run_shell returned). Returns as
+    soon as it exits, prints an error or a prompt, or looks stuck; else after
+    ``max_s`` (default grows 15→300s while it stays healthy)."""
+    from aiforge_core.runtime.chat_agent._cmd_tools import _t_command_wait
+    return _t_command_wait({"id": id, "max_s": max_s}, "")
+
+
+def command_output(id: str) -> dict:  # noqa: A002
+    """New output of a running command since the last look — no waiting."""
+    from aiforge_core.runtime.chat_agent._cmd_tools import _t_command_output
+    return _t_command_output({"id": id}, "")
+
+
+def command_kill(id: str) -> dict:  # noqa: A002
+    """Stop a running command, then fix it and run it again."""
+    from aiforge_core.runtime.chat_agent._cmd_tools import _t_command_kill
+    return _t_command_kill({"id": id}, "")

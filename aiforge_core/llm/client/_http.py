@@ -269,7 +269,8 @@ def _post_cancellable_once(ep: Endpoint, payload: bytes, timeout_s: int,
         if sent is not None:
             sent[0] = True
         if sink is not None:
-            return _read_sse_response(conn, url, sink)
+            return _read_sse_response(conn, url, sink, payload=payload,
+                                      read_timeout=timeout_s)
         return _read_http_response(conn, url)
     except OSError as exc:
         if cancel.is_set():

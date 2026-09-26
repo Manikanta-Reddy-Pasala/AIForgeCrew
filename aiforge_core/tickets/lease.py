@@ -50,11 +50,51 @@ def hold_claim(ticket_id: int, interval_s: "float | None" = None):
 
     t = threading.Thread(target=_beat, name=f"claim-{ticket_id}", daemon=True)
     t.start()
+    owner = _jobs_owner(ticket_id)
+    _stop_jobs(owner)            # a reclaim: the last attempt's leftovers go
+    tok = _own_jobs(owner)
     try:
         yield
     finally:
         stop.set()
         t.join(timeout=5)
+        _disown_jobs(tok)
+        _stop_jobs(owner)        # this attempt's commands end with its claim
+
+
+def _jobs_owner(ticket_id) -> str:
+    return f"ticket-{ticket_id}"
+
+
+def _own_jobs(owner):
+    """Tag every command this claim's run starts, so the claim can stop them."""
+    try:
+        from aiforge_core.runtime import cmd_jobs
+        return cmd_jobs.set_owner(owner)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _disown_jobs(tok) -> None:
+    if tok is None:
+        return
+    try:
+        from aiforge_core.runtime import cmd_jobs
+        cmd_jobs.reset_owner(tok)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _stop_jobs(owner) -> None:
+    """Stop the commands ``owner`` still has running — in this process (the
+    job table) and from an earlier, crashed one (bg_work's saved rows)."""
+    try:
+        from aiforge_core.runtime import bg_work, cmd_jobs
+        n = cmd_jobs.end_owner(owner) + bg_work.stop_owner(owner)
+        if n:
+            log.info("stopped %d leftover command(s) of %s", n, owner)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("stopping %s commands failed: %s", owner, exc)
 
 
 def _lock_dir() -> str:

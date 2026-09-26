@@ -270,9 +270,12 @@ def list_dir(path: str = "") -> dict:
 def run_shell(cmd: str) -> dict:
     """Run a shell command inside the repo root.
 
-    Timeout AIFORGE_SHELL_TIMEOUT (default 600s); output truncated to 8 KB
-    per stream so a runaway
-    test suite cannot blow up session state.
+    No time limit by default: stopped only when it goes silent (no output,
+    no CPU) for AIFORGE_CMD_IDLE_S (default 600s), or at AIFORGE_SHELL_TIMEOUT
+    when the operator sets one. Still running after AIFORGE_CMD_CHECKIN_S
+    (15s), or printing an error/prompt first, it comes back as a running job
+    (``id``, new output) for command_wait / command_output / command_kill. Output truncated to 8 KB per stream so a
+    runaway test suite cannot blow up session state.
 
     Refuses DANGEROUS commands (rm -rf /, fork bombs, disk wipes, …) even in
     the unattended pipeline — the interactive caution gate only covers chat, so
@@ -292,45 +295,44 @@ def run_shell(cmd: str) -> dict:
         if os.environ.get("AIFORGE_RISK_GATE_FAIL_OPEN", "0") not in ("1", "true", "yes"):
             return {"ok": False, "error": "risk_check_failed",
                     "reason": f"safety classifier error: {exc}", "returncode": -1}
-    # Login shell (bash -lc) so the operator's version managers — sdkman,
-    # nvm, pyenv, rbenv, cargo — are on PATH; a bare `sh -c` sees only the
-    # system defaults (e.g. an old JDK) and builds fail on version mismatch.
-    # Generous, env-tunable timeout: an install (sdk/nvm/pyenv/apt) plus a
-    # full build does not fit in 90s. Override with AIFORGE_SHELL_TIMEOUT.
-    try:
-        _sh_timeout = int(os.environ.get("AIFORGE_SHELL_TIMEOUT", "600") or "600")
-    except ValueError:
-        _sh_timeout = 600
     # Run under bash (not the /bin/sh default) so the doer can `source` a
     # version manager (sdkman/nvm/pyenv) and chain `&&` when it provisions a
     # missing/mismatched toolchain itself. We do NOT auto-activate any manager
     # here — the doer owns toolchain setup via its own commands (see doer prompt).
+    from ..cmd_idle import idle_limit_s, wall_cap_s
+    from ._shell_run import run_to_completion
     _argv = ["bash", "-c", cmd] if shutil.which("bash") else cmd
-    try:
-        proc = subprocess.run(
-            _argv, shell=not isinstance(_argv, list), cwd=root(),
-            capture_output=True, timeout=_sh_timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        _to_out = (exc.stdout or b"").decode("utf-8", "replace")
-        _to_err = (exc.stderr or b"").decode("utf-8", "replace")
+    from ..cmd_jobs import checkin_s
+    ran = run_to_completion(_argv, root(),
+                            wall_cap_s(None, "AIFORGE_SHELL_TIMEOUT"),
+                            idle_limit_s(), checkin_s=checkin_s(), cmd=cmd)
+    if "job" in ran:
+        # Still running at the check-in (or it just printed an error or a
+        # prompt): not killed, not waited out — the Doer decides.
+        return ran["job"]
+    out, err = ran["out"], ran["err"]
+    if ran["why"] is not None:
         _r = {"ok": False, "error": "timeout",
-              "stdout": _to_out[:8000], "stderr": _to_err[:8000]}
-        _d = _compact_digest(_to_out, _to_err, None)
+              "stdout": out[:8000], "stderr": err[:8000]}
+        if ran["why"] == "hung":
+            _r["reason"] = ("no output and no CPU for "
+                            f"{int(idle_limit_s())}s — looks hung (waiting "
+                            "on input or a network call?)")
+        elif ran["why"] == "too_big":
+            _r["error"] = "output_too_large"
+        _d = _compact_digest(out, err, None)
         if _d:
             _r["digest"] = _d
         return _r
-    out = proc.stdout.decode("utf-8", "replace")
-    err = proc.stderr.decode("utf-8", "replace")
     res = {
-        "ok": proc.returncode == 0,
-        "returncode": proc.returncode,
+        "ok": ran["code"] == 0,
+        "returncode": ran["code"],
         "stdout": out[:8000], "stderr": err[:8000],
         "truncated": len(out) > 8000 or len(err) > 8000,
     }
     # Signal-first digest (deterministic, no LLM) so a slow model leads with
     # the error lines instead of scrollback. Additive — never replaces output.
-    digest = _compact_digest(out, err, proc.returncode)
+    digest = _compact_digest(out, err, ran["code"])
     if digest:
         res["digest"] = digest
     return res

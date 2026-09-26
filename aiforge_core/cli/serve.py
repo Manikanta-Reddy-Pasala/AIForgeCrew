@@ -11,7 +11,9 @@ run.sh gives it:
 * **uvicorn** serving ``aiforge_core.api.api:app`` — the foreground process; when
   it exits, everything exits.
 * **the ticket runner** (``aiforge_core.runtime.adk_runner``) — single-shot by
-  design, re-run every ``AIFORGE_RUNNER_POLL_SEC`` (10s).
+  design, re-run every ``AIFORGE_RUNNER_POLL_SEC`` (2s). An idle pass itself
+  keeps polling every 2s for ~30s before exiting, so a new ticket starts
+  within seconds.
 * **the memory sync loop** (``aiforge_core.memory.sync.loop``) — re-run every 30s.
 
 Both loops are respawned rather than kept alive: each is written to do one pass
@@ -35,7 +37,7 @@ DEFAULT_PORT = 8799
 
 # Each loop's module and how long to wait before running it again.
 _LOOPS = (
-    ("aiforge_core.runtime.adk_runner", "AIFORGE_RUNNER_POLL_SEC", 10),
+    ("aiforge_core.runtime.adk_runner", "AIFORGE_RUNNER_POLL_SEC", 2),
     ("aiforge_core.memory.sync.loop", "AIFORGE_SYNC_POLL_SEC", 30),
 )
 

@@ -220,6 +220,31 @@ def stop_session(session_id) -> int:
     return len(rows)
 
 
+def stop_owner(owner) -> int:
+    """Stop every running command tagged with ``owner`` — including ones a
+    crashed earlier process started (the row keeps the process group)."""
+    if not owner:
+        return 0
+    try:
+        rows = [r for r in _running() if r.get("kind") == "command"]
+    except Exception:  # noqa: BLE001
+        return 0
+    n = 0
+    for row in rows:
+        try:
+            payload = json.loads(row.get("payload") or "{}")
+        except (TypeError, ValueError):
+            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        if (payload or {}).get("owner") != owner:
+            continue
+        if _alive(row.get("pid")):
+            _stop_row(row)
+            n += 1
+        else:                          # long gone: just close the row
+            _update(row["id"], status="stopped")
+    return n
+
+
 def _claim_attempt(wid: int, expected: int) -> bool:
     """One process wins this restart of a background row."""
     with _LOCK:
@@ -279,13 +304,24 @@ def start_gitlab(session_id: int, cwd: str, args: dict) -> dict:
                 "hold this turn. The result will appear in this chat."})
 
 
-def track_command(session_id, cwd: str, cmd: str, proc, spool) -> dict:
-    """Keep ``proc`` running after the tool returns. Stop can still kill it."""
+def track_command(session_id, cwd: str, cmd: str, proc, spool, *,
+                  close_spool: bool = True, announce: bool = True,
+                  idle_s: float = 0.0, deadline: float | None = None,
+                  owner: str | None = None) -> dict:
+    """Keep ``proc`` running after the tool returns. Stop can still kill it.
+
+    ``close_spool=False`` leaves the output files to their other owner (the
+    agent's job table, which still reads them). ``announce=False`` skips the
+    end-of-run chat line — for a command the agent itself is watching.
+    ``idle_s`` / ``deadline`` carry a handed-off foreground command's
+    last-resort guards: killed after that long with no output and no CPU, or
+    at that ``time.monotonic()`` deadline."""
     try:
         pgid = os.getpgid(proc.pid)
     except OSError:
         pgid = proc.pid
-    wid = _insert(session_id, "command", cwd, {"cmd": cmd},
+    payload = {"cmd": cmd, **({"owner": owner} if owner else {})}
+    wid = _insert(session_id, "command", cwd, payload,
                   pid=proc.pid, pgid=pgid)
     ev = _bind(wid)
     if session_id is not None:
@@ -294,9 +330,11 @@ def track_command(session_id, cwd: str, cmd: str, proc, spool) -> dict:
             chat_cancel.track_pgid(int(session_id), pgid)
         except Exception:  # noqa: BLE001
             pass
+    opts = {"close_spool": close_spool, "announce": announce,
+            "idle_s": idle_s, "deadline": deadline}
     threading.Thread(
         target=_wait_command, name=f"bg-cmd-{wid}", daemon=True,
-        args=(wid, proc, spool, ev, cmd, session_id, pgid)).start()
+        args=(wid, proc, spool, ev, cmd, session_id, pgid, opts)).start()
     return {"ok": True, "background": True, "pid": proc.pid, "pgid": pgid,
             "handle": f"bg-{wid}",
             "note": "Running in the background. This turn can continue. "
@@ -304,10 +342,22 @@ def track_command(session_id, cwd: str, cmd: str, proc, spool) -> dict:
                     "Stop kills it."}
 
 
-def _wait_command(wid, proc, spool, ev, cmd, session_id, pgid) -> None:
+def _guard_tripped(proc, clock, deadline) -> bool:
+    if deadline is not None and time.monotonic() > deadline:
+        return True
+    return clock is not None and clock.stalled()
+
+
+def _wait_command(wid, proc, spool, ev, cmd, session_id, pgid,
+                  opts: dict | None = None) -> None:
+    opts = opts or {}
+    clock = None
+    if opts.get("idle_s") and spool is not None:
+        from aiforge_core.runtime.cmd_idle import ProgressClock
+        clock = ProgressClock(pgid, spool.size, float(opts["idle_s"]))
     try:
         while proc.poll() is None:
-            if ev.is_set():
+            if ev.is_set() or _guard_tripped(proc, clock, opts.get("deadline")):
                 _kill(pgid)
                 try:
                     proc.wait(timeout=3)
@@ -330,10 +380,11 @@ def _wait_command(wid, proc, spool, ev, cmd, session_id, pgid) -> None:
                 except Exception:  # noqa: BLE001
                     pass
         _update(wid, status="stopped" if ev.is_set() else "done")
-        _post(session_id, text)
+        if opts.get("announce", True):
+            _post(session_id, text)
     finally:
         _unbind(wid)
-        if spool is not None:
+        if spool is not None and opts.get("close_spool", True):
             try:
                 spool.close()
             except Exception:  # noqa: BLE001

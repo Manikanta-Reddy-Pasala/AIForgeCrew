@@ -33,7 +33,8 @@ from ._integrations import (
     resolve_repo,
 )
 from ._tools import (
-    bash, browse, commit, delegate_to_agent, edit, execute_ipython_cell,
+    bash, browse, command_kill, command_output, command_wait, commit,
+    delegate_to_agent, edit, execute_ipython_cell,
     format, git_add_commit, github_pr, glob, grep, http_get, learn_skill,
     learn_workflow, lsp, ls, mcp, multi_edit, patch, read, run, run_tests,
     search, serve, shell, skill_search, stop_service, str_replace,
@@ -103,6 +104,7 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
                         git_commit, memory_lookup, memory_block, graphify_lookup,
                         skill_search, learn_skill,
                         workflow_search, learn_workflow, serve, stop_service,
+                        command_wait, command_output, command_kill,
                         subtask_update,
                         confluence_search, confluence_read, confluence_create,
                         confluence_update, jira_search, jira_read, jira_create,

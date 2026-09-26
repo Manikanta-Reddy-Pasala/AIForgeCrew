@@ -83,7 +83,9 @@ def test_the_team_deadline_defaults_to_the_pipelines(monkeypatch):
     from aiforge_core.runtime import chat_pipeline as cp
     monkeypatch.delenv("AIFORGE_CHAT_TEAM_DEADLINE_S", raising=False)
     monkeypatch.delenv("AIFORGE_PIPELINE_DEADLINE_S", raising=False)
-    assert cp._team_deadline_s() == 5400.0
+    assert cp._team_deadline_s() == 0.0          # off: no wall clock
+    monkeypatch.setenv("AIFORGE_PIPELINE_DEADLINE_S", "5400")
+    assert cp._team_deadline_s() == 5400.0       # the knob still re-enables
 
 
 def test_team_chat_uses_the_context_filter():
