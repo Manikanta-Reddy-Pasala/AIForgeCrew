@@ -46,7 +46,11 @@ _TESTS_WORD = (r"(?:(?:the|any|all|existing|these|those|my|of\s+the)\s+)*"
 # The edit verb must follow the negation directly (an adverb like "ever" at
 # most): "don't forget to update the tests" / "don't just change money.py"
 # are not prohibitions.
-_NEG_ADV = r"(?:(?:ever|even|at\s+all|in\s+any\s+way)\s+)?"
+# ... a small whitelist may sit between them ("never directly edit", "do not
+# try to modify"); idioms (forget / just / only / hesitate) may not.
+_NEG_ADV = (r"(?:(?:ever|even|directly|manually|actually|really|further|"
+            r"yourself|at\s+all|in\s+any\s+way|try\s+to|attempt\s+to|"
+            r"go\s+and|go\s+ahead\s+and)\s+){0,2}")
 _NEG_VERB = re.compile(_NEG + r"\s+" + _NEG_ADV + r"(" + _ANY_V
                        + r"(?:\s*(?:,|or|and|/)\s*" + _ANY_V + r")*)\b\s*", re.I)
 _EDIT_RE = re.compile(r"\b" + _EDIT_V + r"\b", re.I)

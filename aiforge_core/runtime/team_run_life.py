@@ -160,24 +160,19 @@ def sweep_stale(max_age_h: float | None = None) -> list[str]:
 
 def has_pending(wt: str, untracked: bool = True) -> bool:
     """True when the worktree ``wt`` has staged or changed files (and, with
-    ``untracked``, new ones) — the pipeline's own artifacts aside: work that
-    exists nowhere else."""
-    from aiforge_core.runtime.team_workspace import _OWN_ARTIFACTS, _git
+    ``untracked``, new ones) that :func:`team_workspace.seal` would commit —
+    the same pathspecs, so an ignored ``.vscode/`` or ``.env`` edit never
+    counts: work that exists nowhere else."""
+    from aiforge_core.runtime.team_workspace import _git, seal_pathspecs
     if not os.path.isdir(wt):
         return False
     try:
         p = _git(["status", "--porcelain",
-                  "--untracked-files=" + ("all" if untracked else "no")], wt)
+                  "--untracked-files=" + ("all" if untracked else "no"),
+                  "--", *seal_pathspecs()], wt)
     except Exception:  # noqa: BLE001
         return True
-    if p.returncode != 0:
-        return False
-    for ln in (p.stdout or "").splitlines():
-        rel = ln[3:].strip().split(" -> ")[-1].strip('"')
-        if rel and not any(rel == a or rel.startswith(a + "/")
-                           or rel.startswith(a) for a in _OWN_ARTIFACTS):
-            return True
-    return False
+    return p.returncode == 0 and bool((p.stdout or "").strip())
 
 
 def _remove_run_dir(d: str) -> None:
@@ -264,18 +259,34 @@ _YES_RE = re.compile(r"^\s*(?:y(?:es|eah|ep|up)?|ok(?:ay)?|sure|do\s+it|"
                      r"correct|please\s+do)\b", re.I)
 
 
+# A reply that asks for work of its own is a new request, not an answer:
+# it opens with an action verb or a request ("can you …", "please add …").
+_ACTION_VERBS = (r"fix|add|build|create|implement|make|write|refactor|change|"
+                 r"rewrite|remove|delete|update|design|set\s+up|scaffold|run|"
+                 r"deploy|test|debug|migrate|rename|move|install|port|convert|"
+                 r"generate|improve|optimi[sz]e|clean\s+up|split|merge")
+_REQUEST_RE = re.compile(
+    r"^\s*(?:(?:ok(?:ay)?|now|next|also|then|and|so)[\s,]+)*(?:please\s+)?(?:"
+    + _ACTION_VERBS + r")\b|\b(?:can|could|would|will)\s+you\b|"
+    r"\bplease\s+(?:" + _ACTION_VERBS + r")\b|\bI\s+(?:want|need|would\s+"
+    r"like|'d\s+like)\s+(?:you\s+to|to)\b", re.I)
+
+
 def continues(prompt: str, reason: str) -> bool:
     """Does ``prompt`` carry on a run parked for ``reason``? "continue" /
-    "go on" / "yes" always; for a pending question also an ANSWER — a short
-    reply that is not a new request ("actually, build X instead")."""
+    "go on" / "yes" always; for a pending question also a plausible ANSWER —
+    a short reply with no request of its own ("euros, two decimals", "use
+    postgres"). "fix the login bug", "can you add dark mode?" and "yes, but
+    build X instead" are new requests: the parked run is closed."""
     p = str(prompt or "").strip()
     if _CONTINUE_RE.match(p):
         return True
     if not p or _NEW_REQUEST_RE.search(p):
         return False
-    if _YES_RE.match(p):
+    if _YES_RE.match(p) and not _REQUEST_RE.search(_YES_RE.sub("", p, 1)):
         return True
-    return reason == "question" and len(p.split()) <= 40
+    return (reason == "question" and len(p.split()) <= 40
+            and not _REQUEST_RE.search(p))
 
 
 def _close(ws) -> str:
@@ -341,47 +352,59 @@ def fold(path: str) -> str:
     return p.lower() if sys.platform == "darwin" else p
 
 
-def map_shell_to_worktree(cwd, name: str, args: dict) -> bool:
-    """A shell command in a team run that names the user's REAL repo
-    (``cd /Users/me/proj && …``, ``git -C /Users/me/proj commit``, ``sed -i
-    /Users/me/proj/x.py``) is rewritten to the run's worktree — a subtask
-    runner has no one to ask, and the real checkout is not the run's to
-    change. True when the command was rewritten (``args`` is changed in
-    place)."""
-    from aiforge_core.runtime import shell_writes
+def _under(path: str, root_folded: str) -> bool:
+    fp = fold(path)
+    return fp == root_folded or fp.startswith(root_folded.rstrip(os.sep) + os.sep)
+
+
+def repo_writes(cwd, name: str, args: dict) -> list[str]:
+    """The paths under the user's REAL repo that a shell command in a team
+    run would write (``cd <repo> && echo >> x``, ``git -C <repo> commit``,
+    ``sed -i <repo>/x``, a redirect / tee / cp / mv / rm TARGET there). Reads
+    and copies FROM the repo are not writes. Empty outside a team run."""
+    from aiforge_core.runtime import shell_writes as sw
     from aiforge_core.runtime.team_workspace import for_cwd
     ws = for_cwd(cwd) if cwd else None
-    if ws is None or name not in shell_writes.SHELL_TOOLS:
-        return False
-    from aiforge_core.runtime.tools.tool_policy import _CMD_ARG_KEYS
-    key = next((k for k in _CMD_ARG_KEYS if (args or {}).get(k)), None)
-    if key is None:
-        return False
-    cmd = str(args[key])
-    new = rewrite_repo_paths(cmd, ws.repo, ws.cwd)
-    if new == cmd:
-        return False
-    args[key] = new
-    return True
+    if ws is None or name not in sw.SHELL_TOOLS:
+        return []
+    cmd = sw.command_of(args)
+    if not cmd:
+        return []
+    root = fold(ws.repo)
+    hits: list[str] = []
+    try:
+        _walk(cmd, os.path.realpath(ws.cwd), root, hits)
+    except Exception as exc:  # noqa: BLE001 — a matcher bug never blocks
+        log.debug("repo write check skipped: %s", exc)
+    return hits
 
 
-def rewrite_repo_paths(text: str, repo: str, wt: str) -> str:
-    """Every occurrence of ``repo`` (as typed, resolved, or ``~/…``; case-
-    insensitively on macOS) as a whole path prefix in ``text`` → ``wt``."""
-    forms = {repo.rstrip(os.sep), os.path.realpath(repo).rstrip(os.sep)}
-    home = os.path.expanduser("~").rstrip(os.sep)
-    for f in list(forms):
-        if home and (f + os.sep).startswith(home + os.sep):
-            forms.add("~" + f[len(home):])
-    flags = re.I if sys.platform == "darwin" else 0
-    for f in sorted(forms, key=len, reverse=True):
-        text = re.sub(re.escape(f) + r"(?=$|[/\s'\";&|)])",
-                      lambda _m: wt, text, flags=flags)
-    return text
+def _walk(cmd: str, here: str, root: str, hits: list) -> None:
+    from aiforge_core.runtime import shell_writes as sw
+    for line in sw._strip_heredocs(cmd):
+        for seg in sw._segments(sw._tokens(line)):
+            if seg[0] == "cd":
+                here = sw._resolve(seg[1] if len(seg) > 1 else "~", here) or here
+                continue
+            redirs, rest = sw._redirect_targets(seg)
+            rest = sw._strip_prefixes(rest)
+            if rest and os.path.basename(rest[0]) in sw._SHELLS \
+                    and "-c" in rest[1:-1]:
+                _walk(rest[rest.index("-c") + 1], here, root, hits)
+                continue
+            raws = redirs + (sw._command_targets(rest, here) if rest else [])
+            if rest and os.path.basename(rest[0]) == "git" and "-C" not in rest:
+                sub = next((t for t in rest[1:] if not t.startswith("-")), "")
+                if sub and sub not in sw._GIT_READONLY:
+                    raws.append(here)             # `cd <repo> && git commit`
+            for raw in raws:
+                p = sw._resolve(raw, here)
+                if p and _under(p, root) and p not in hits:
+                    hits.append(p)
 
 
 __all__ = ["consented", "continues", "drop_exclude", "drop_if_empty",
            "exclude_acquire", "exclude_release", "fold", "forget_session",
-           "has_pending", "jail_roots", "map_shell_to_worktree", "park",
-           "parked", "remember_consent", "resume", "rewrite_repo_paths",
+           "has_pending", "jail_roots", "park",
+           "parked", "remember_consent", "repo_writes", "resume",
            "sweep_once", "sweep_stale"]

@@ -28,6 +28,8 @@ import threading
 import uuid
 from dataclasses import dataclass, field
 
+from .team_apply import refuses_apply, wants_apply  # noqa: F401  # re-exported
+
 log = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
@@ -40,29 +42,6 @@ _EXCLUDE_LINES = (".aiforge/", ".aiforge-worktrees/", ".aiforge-workspace",
                   "__pycache__/", ".pytest_cache/")
 _OWN_ARTIFACTS = ("SPEC.md", ".aiforge-baseline", ".aiforge-workspace",
                   ".aiforge-contracts", ".aiforge-worktrees", ".aiforge")
-# Only an explicit imperative in the CURRENT message puts the result on the
-# user's checked-out branch: "commit it to my branch", "merge it into main",
-# "apply it to my branch", "fast-forward". A description ("the test fails on
-# my branch, fix it") is not a request, and an old message never counts.
-# The verb must be framed as a request: at the start of a sentence / after a
-# comma, after "and/then/please/also/just/now", or after "can you / could you
-# / would you / I want you to". Never after "error:" or inside quotes.
-_IMPERATIVE_AT = (r"(?:^|[.;!?\n]\s*|,\s*|\b(?:and|then|please|also|just|now)"
-                  r"\s+|\b(?:can|could|would|will)\s+you\s+|\bI\s+(?:want|need|"
-                  r"would\s+like|'d\s+like)\s+you\s+to\s+)(?:please\s+)?")
-_OBJ = r"(?:(?:it|this|them|that|the\s+(?:result|changes?|fix|work|branch))\s+)?"
-_DEST = (r"(?:main|master|develop|trunk|(?:my|the\s+current|this|the\s+checked"
-         r"[- ]out|our)\s+(?:current\s+)?branch)\b")
-_APPLY_RE = re.compile(
-    _IMPERATIVE_AT + r"(?P<v>"
-    r"(?:apply|commit|merge|push|land|put)\s+" + _OBJ
-    + r"(?:directly\s+|straight\s+)?(?:to|on|onto|into|in)\s+" + _DEST
-    + r"|fast[- ]forward\b(?!\s+(?:fails?|failed|failing|is|was|does|did|"
-    r"doesn'?t|didn'?t|isn'?t|error|errors|broke|breaks)\b))", re.I | re.M)
-# Quoted / pasted text is not the user's request.
-_QUOTED = re.compile(r"```.*?```|`[^`\n]*`|\"[^\"\n]*\"|“[^”\n]*”", re.S)
-_APPLY_NEG = re.compile(r"(?:\bdo\s+not|\bdon[’']?t|\bnever|\bnot|\bno)\s+"
-                        r"(?:\w+\s+){0,2}$", re.I)
 _MAX_INIT_FILES = 2000
 
 
@@ -248,16 +227,6 @@ def dirty_files(repo: str) -> list[str]:
     return files
 
 
-def wants_apply(texts) -> bool:
-    """True when the CURRENT message (``texts[0]``, or a plain string) asks
-    for the result on the user's branch — see :data:`_APPLY_RE`."""
-    cur = texts if isinstance(texts, str) else next(iter(texts or ()), "")
-    cur = str(cur or "").split("\n\n---\n[Interpreted request")[0]
-    cur = _QUOTED.sub(" ", cur)
-    return any(not _APPLY_NEG.search(cur[:m.start("v")])
-               for m in _APPLY_RE.finditer(cur))
-
-
 def _slug(text: str) -> str:
     # Paths are where, not what: "In /Users/me/proj fix money.py" → fix-money-py.
     text = re.sub(r"(?<!\S)[~/]\S*", " ", str(text or ""))
@@ -368,6 +337,14 @@ def _branch_prefix(repo: str) -> str:
     return f"aiforge-run-{uuid.uuid4().hex[:4]}"
 
 
+def seal_pathspecs() -> list[str]:
+    """What :func:`seal` commits: everything but the excluded paths and the
+    pipeline's own artifacts (team_run_life.has_pending uses the same)."""
+    from aiforge_core.runtime.git_pr import _EXCLUDE_PATHSPECS
+    return [".", *_EXCLUDE_PATHSPECS,
+            *(f":(exclude){a}" for a in _OWN_ARTIFACTS)]
+
+
 class SealError(RuntimeError):
     """``git commit`` refused the run's leftovers even without hooks and
     signing — the work is still (only) in the worktree."""
@@ -381,13 +358,11 @@ def seal(cwd: str, message: str = "aiforge: remaining edits") -> list[str]:
     Raises :class:`SealError` when nothing could be committed: a caller that
     believed the files were committed would remove the worktree and lose
     them."""
-    from aiforge_core.runtime.git_pr import _EXCLUDE_PATHSPECS
     from aiforge_core.runtime.parallel_subtasks import _protected
     ws = for_cwd(cwd)
     try:
         _protected.revert(cwd, ws.start_sha if ws is not None else "HEAD")
-        _git(["add", "-A", "--", ".", *_EXCLUDE_PATHSPECS,
-              *(f":(exclude){a}" for a in _OWN_ARTIFACTS)], cwd)
+        _git(["add", "-A", "--", *seal_pathspecs()], cwd)
         names = _out(["diff", "--cached", "--name-only"], cwd).splitlines()
     except Exception as exc:  # noqa: BLE001
         log.debug("seal skipped: %s", exc)
@@ -494,4 +469,5 @@ def _fast_forward(ws: TeamWorkspace) -> str:
 
 __all__ = ["SealError", "TeamWorkspace", "close", "close_quiet", "dirty_files",
            "ensure_exclude", "for_cwd", "git_env", "init_repo", "open_run",
-           "seal", "spec_path", "wants_apply", "write_spec"]
+           "refuses_apply", "seal", "seal_pathspecs", "spec_path",
+           "wants_apply", "write_spec"]

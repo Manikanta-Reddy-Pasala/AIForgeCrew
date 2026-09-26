@@ -233,30 +233,75 @@ def _jail(name, args, cwd):
         return stop.value, evs
 
 
-def test_a_subtask_shell_command_naming_the_real_repo_is_rewritten(
-        tmp_path, monkeypatch):
+@pytest.mark.parametrize("tmpl", [
+    "cd {repo} && echo x >> money.py",
+    "git -C {repo} commit -am x",
+    "cd {repo} && git commit -am x",
+    "sed -i '' s/a/b/ {repo}/money.py",
+    "echo x | tee {repo}/notes.txt",
+    "cp {wt}/money.py {repo}/money.py",
+    "rm {repo}/money.py",
+])
+def test_a_team_run_command_writing_the_real_repo_is_refused(
+        tmp_path, monkeypatch, tmpl):
     monkeypatch.delenv("AIFORGE_CHAT_WORKSPACE_JAIL", raising=False)
     repo = _repo(tmp_path / "proj")
     ws = tw.open_run(repo, "fix")
-    for cmd in (f"cd {repo} && echo x >> money.py",
-                f"git -C {repo} commit -am x",
-                f"sed -i '' s/a/b/ {repo}/money.py"):
-        args = {"command": cmd}
-        sig, _evs = _jail("bash", args, ws.cwd)
-        assert sig is None and repo not in args["command"]
-        assert ws.cwd in args["command"]
+    cmd = tmpl.format(repo=repo, wt=ws.cwd)
+    args = {"command": cmd}
+    sig, evs = _jail("bash", args, ws.cwd)
+    assert sig == "continue" and args["command"] == cmd      # not rewritten
+    res = evs[-1]["result"]
+    assert res["error"] == "writes_users_checkout" and ws.cwd in res["hint"]
     list(tw.close(ws))
 
 
-def test_a_shell_write_outside_the_worktree_is_refused_unattended(
-        tmp_path, monkeypatch):
+@pytest.mark.parametrize("tmpl", [
+    "cp {repo}/.env .env",                       # a copy FROM the repo
+    "ln -s {repo}/node_modules node_modules",
+    "cat {repo}/money.py",
+    "git -C {repo} log --oneline",
+    "cat <<'EOF' > notes.md\nsee {repo}/money.py\nEOF",
+    "echo x > /Volumes/bk{repo}/x",              # not on a path boundary
+])
+def test_reads_and_copies_from_the_repo_are_allowed(tmp_path, monkeypatch,
+                                                    tmpl):
     monkeypatch.delenv("AIFORGE_CHAT_WORKSPACE_JAIL", raising=False)
     repo = _repo(tmp_path / "proj")
-    # (temp dirs never count as a shell write target — use one under ~)
-    other = os.path.expanduser("~/aiforge-jail-probe-never-created")
     ws = tw.open_run(repo, "fix")
-    sig, evs = _jail("bash", {"command": f"echo x > {other}/f.txt"}, ws.cwd)
-    assert sig == "continue" and evs[-1]["result"]["error"] == "outside_workspace"
+    cmd = tmpl.format(repo=repo)
+    args = {"command": cmd}
+    sig, _evs = _jail("bash", args, ws.cwd)
+    assert sig is None and args["command"] == cmd
+    list(tw.close(ws))
+
+
+@pytest.mark.parametrize("cmd", [
+    "mkdir -p ~/.cache/aiforge-probe", "curl -o ~/.local/bin/tool https://x",
+    "git clone https://example.com/dep.git ~/src/dep",
+])
+def test_toolchain_installs_are_not_jailed_in_a_team_run(tmp_path,
+                                                         monkeypatch, cmd):
+    monkeypatch.delenv("AIFORGE_CHAT_WORKSPACE_JAIL", raising=False)
+    repo = _repo(tmp_path / "proj")
+    ws = tw.open_run(repo, "fix")
+    sig, _evs = _jail("bash", {"command": cmd}, ws.cwd)
+    assert sig is None
+    list(tw.close(ws))
+
+
+def test_a_repo_the_user_granted_is_not_guarded(tmp_path, monkeypatch):
+    from aiforge_core.runtime import chat_write_grants
+    from aiforge_core.runtime.chat_agent._turn import _action
+    repo = _repo(tmp_path / "proj")
+    ws = tw.open_run(repo, "fix")
+    monkeypatch.setattr(chat_write_grants, "granted", lambda sid: [repo])
+    st = SimpleNamespace(session_id=4, user_roots=[repo], convo=[])
+    gen = _action._team_repo_guard(st, "bash", {"command": f"rm {repo}/x"},
+                                   ws.cwd)
+    with pytest.raises(StopIteration) as stop:
+        next(gen)
+    assert stop.value.value is None
     list(tw.close(ws))
 
 
@@ -267,9 +312,9 @@ def test_repo_paths_match_case_insensitively_on_macos(tmp_path):
     upper = repo[:-4] + "PROJ"
     assert life.fold(upper) == life.fold(repo)
     assert localize_paths(f"fix {upper}/money.py", repo) == "fix money.py"
-    assert life.rewrite_repo_paths(f"cd {upper}", repo, "/wt") == "cd /wt"
     ws = tw.open_run(repo, "fix")
     assert life.jail_roots(ws.cwd, [upper]) == []
+    assert life.repo_writes(ws.cwd, "bash", {"command": f"rm {upper}/money.py"})
     list(tw.close(ws))
 
 
