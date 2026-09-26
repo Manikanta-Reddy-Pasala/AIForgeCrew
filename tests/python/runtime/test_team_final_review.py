@@ -54,6 +54,7 @@ def _env(tmp_path, monkeypatch):
     tw._RUNS.clear()
     life._PARKED.clear()
     life._CONSENT.clear()
+    life._EXCL.clear()
 
 
 @pytest.fixture

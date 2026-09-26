@@ -43,7 +43,11 @@ _DEL_V = r"(?:delet(?:e|ing)|remov(?:e|ing)|renam(?:e|ing))"
 _ANY_V = rf"(?:{_EDIT_V}|{_DEL_V})"
 _TESTS_WORD = (r"(?:(?:the|any|all|existing|these|those|my|of\s+the)\s+)*"
                r"(?:unit\s+)?tests?(?:\s+files?)?\b(?![/\w.])")
-_NEG_VERB = re.compile(_NEG + r"\s+(?:\w+\s+){0,2}?(" + _ANY_V
+# The edit verb must follow the negation directly (an adverb like "ever" at
+# most): "don't forget to update the tests" / "don't just change money.py"
+# are not prohibitions.
+_NEG_ADV = r"(?:(?:ever|even|at\s+all|in\s+any\s+way)\s+)?"
+_NEG_VERB = re.compile(_NEG + r"\s+" + _NEG_ADV + r"(" + _ANY_V
                        + r"(?:\s*(?:,|or|and|/)\s*" + _ANY_V + r")*)\b\s*", re.I)
 _EDIT_RE = re.compile(r"\b" + _EDIT_V + r"\b", re.I)
 _TESTS_OBJ = re.compile(r"(?:any\s+of\s+)?" + _TESTS_WORD, re.I)
@@ -62,7 +66,7 @@ _POS_VERB = re.compile(r"\b(?:add|create|write|edit|update|modify|change|fix|"
                        r"patch|rewrite|implement|extend|touch|adjust)\s+", re.I)
 # ... unless it is negated or hedged: "no update tests needed" asks for nothing.
 _NEG_BEFORE = re.compile(r"(?:\bno|\bnot|n[’']t|\bnever|\bwithout|\bnor)\s+"
-                         r"(?:\w+\s+){0,2}$", re.I)
+                         + _NEG_ADV + r"(?:need\s+to\s+|have\s+to\s+)?$", re.I)
 _POS_TESTS = re.compile(r"\b(?:update|edit|modify|change|fix|rewrite|touch|"
                         r"adjust)\s+" + _TESTS_WORD, re.I)
 _POS_FILLER = re.compile(r"(?:(?:a|an|the|new|one|more|unit|test|tests|file|"

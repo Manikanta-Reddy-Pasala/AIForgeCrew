@@ -44,8 +44,12 @@ _OWN_ARTIFACTS = ("SPEC.md", ".aiforge-baseline", ".aiforge-workspace",
 # user's checked-out branch: "commit it to my branch", "merge it into main",
 # "apply it to my branch", "fast-forward". A description ("the test fails on
 # my branch, fix it") is not a request, and an old message never counts.
-_IMPERATIVE_AT = (r"(?:^|[.;!?,:\n]\s*|\b(?:and|then|please|also|just|now)\s+)"
-                  r"(?:please\s+)?")
+# The verb must be framed as a request: at the start of a sentence / after a
+# comma, after "and/then/please/also/just/now", or after "can you / could you
+# / would you / I want you to". Never after "error:" or inside quotes.
+_IMPERATIVE_AT = (r"(?:^|[.;!?\n]\s*|,\s*|\b(?:and|then|please|also|just|now)"
+                  r"\s+|\b(?:can|could|would|will)\s+you\s+|\bI\s+(?:want|need|"
+                  r"would\s+like|'d\s+like)\s+you\s+to\s+)(?:please\s+)?")
 _OBJ = r"(?:(?:it|this|them|that|the\s+(?:result|changes?|fix|work|branch))\s+)?"
 _DEST = (r"(?:main|master|develop|trunk|(?:my|the\s+current|this|the\s+checked"
          r"[- ]out|our)\s+(?:current\s+)?branch)\b")
@@ -53,7 +57,10 @@ _APPLY_RE = re.compile(
     _IMPERATIVE_AT + r"(?P<v>"
     r"(?:apply|commit|merge|push|land|put)\s+" + _OBJ
     + r"(?:directly\s+|straight\s+)?(?:to|on|onto|into|in)\s+" + _DEST
-    + r"|fast[- ]forward\b)", re.I | re.M)
+    + r"|fast[- ]forward\b(?!\s+(?:fails?|failed|failing|is|was|does|did|"
+    r"doesn'?t|didn'?t|isn'?t|error|errors|broke|breaks)\b))", re.I | re.M)
+# Quoted / pasted text is not the user's request.
+_QUOTED = re.compile(r"```.*?```|`[^`\n]*`|\"[^\"\n]*\"|“[^”\n]*”", re.S)
 _APPLY_NEG = re.compile(r"(?:\bdo\s+not|\bdon[’']?t|\bnever|\bnot|\bno)\s+"
                         r"(?:\w+\s+){0,2}$", re.I)
 _MAX_INIT_FILES = 2000
@@ -76,9 +83,6 @@ class TeamWorkspace:
     # Commit identity for this run's git calls only (a host with none); never
     # written into os.environ or the user's repo config.
     ident: dict = field(default_factory=dict)
-    # The lines this run added to the repo's shared info/exclude — removed
-    # again when the last run on the repo closes.
-    exclude_added: list[str] = field(default_factory=list)
     # Kept alive across turns (Stop / a planner question) — see team_run_life.
     parked: bool = False
     prompt: str = ""
@@ -249,6 +253,7 @@ def wants_apply(texts) -> bool:
     for the result on the user's branch — see :data:`_APPLY_RE`."""
     cur = texts if isinstance(texts, str) else next(iter(texts or ()), "")
     cur = str(cur or "").split("\n\n---\n[Interpreted request")[0]
+    cur = _QUOTED.sub(" ", cur)
     return any(not _APPLY_NEG.search(cur[:m.start("v")])
                for m in _APPLY_RE.finditer(cur))
 
@@ -342,7 +347,7 @@ def open_run(repo: str, prompt: str, *, apply: bool = False,
                        ident=ident, prompt=str(prompt or ""))
     with _LOCK:
         _RUNS[ws.cwd] = ws
-    ws.exclude_added = ensure_exclude(wt)
+    team_run_life.exclude_acquire(ws.repo, wt)
     if os.path.isfile(os.path.join(wt, ".gitmodules")):
         # A fresh worktree has empty submodule folders: build and tests
         # would run against nothing.
@@ -363,10 +368,19 @@ def _branch_prefix(repo: str) -> str:
     return f"aiforge-run-{uuid.uuid4().hex[:4]}"
 
 
+class SealError(RuntimeError):
+    """``git commit`` refused the run's leftovers even without hooks and
+    signing — the work is still (only) in the worktree."""
+
+
 def seal(cwd: str, message: str = "aiforge: remaining edits") -> list[str]:
     """Commit every change a writer left uncommitted in ``cwd`` (the run
     worktree or an AIForge workspace) after putting read-only paths back.
-    Returns the files committed. Never used on a user's own checkout."""
+    Returns the files committed. Never used on a user's own checkout.
+
+    Raises :class:`SealError` when nothing could be committed: a caller that
+    believed the files were committed would remove the worktree and lose
+    them."""
     from aiforge_core.runtime.git_pr import _EXCLUDE_PATHSPECS
     from aiforge_core.runtime.parallel_subtasks import _protected
     ws = for_cwd(cwd)
@@ -375,12 +389,26 @@ def seal(cwd: str, message: str = "aiforge: remaining edits") -> list[str]:
         _git(["add", "-A", "--", ".", *_EXCLUDE_PATHSPECS,
               *(f":(exclude){a}" for a in _OWN_ARTIFACTS)], cwd)
         names = _out(["diff", "--cached", "--name-only"], cwd).splitlines()
-        if names:
-            _git(["commit", "-q", "-m", message], cwd)
-        return [n for n in names if n]
     except Exception as exc:  # noqa: BLE001
         log.debug("seal skipped: %s", exc)
         return []
+    names = [n for n in names if n]
+    if names and not _commit(cwd, message):
+        raise SealError(f"could not commit {len(names)} file(s) in {cwd}")
+    return names
+
+
+def _commit(cwd: str, message: str) -> bool:
+    """``git commit``; when a hook or commit signing refuses it, once more
+    without them — the ``aiforge/*`` branch is the run's own."""
+    p = _git(["commit", "-q", "-m", message], cwd)
+    if p.returncode == 0:
+        return True
+    log.warning("commit in %s refused (%s); retrying without hooks/signing",
+                cwd, (p.stderr or p.stdout or "").strip()[:200])
+    p = _git(["-c", "commit.gpgsign=false", "commit", "-q", "--no-verify",
+              "-m", message], cwd)
+    return p.returncode == 0
 
 
 def close(ws: TeamWorkspace):
@@ -402,13 +430,28 @@ def close_quiet(ws: TeamWorkspace) -> str:
     ws.parked = False
     from aiforge_core.runtime import team_run_life
     from aiforge_core.runtime.parallel_subtasks import _protected
-    back, left = [], []
+    back, left, stuck = [], [], ""
     try:
         back = _protected.revert(ws.cwd, ws.start_sha or "HEAD")
         left = seal(ws.cwd, "aiforge: edits left by the team run")
+    except SealError as exc:
+        stuck = str(exc)
     except Exception as exc:  # noqa: BLE001 — cleanup below must still run
         log.debug("close: seal skipped: %s", exc)
+    if not stuck and team_run_life.has_pending(ws.cwd, untracked=False):
+        stuck = "uncommitted changes remain"
     _protected.clear(ws.cwd)
+    with _LOCK:
+        _RUNS.pop(ws.cwd, None)
+    team_run_life.exclude_release(ws.repo)
+    if stuck:
+        # Never delete work that exists nowhere else: keep the worktree and
+        # the branch and say where they are.
+        log.warning("team run %s kept: %s", ws.cwd, stuck)
+        return (f"Could not commit the team's last edits ({stuck}), so "
+                f"nothing was removed: the work is in `{ws.cwd}` on branch "
+                f"`{ws.branch}` — commit it there (e.g. `git -C {ws.cwd} "
+                f"commit -am wip`) and merge the branch.")
     try:
         _git(["worktree", "remove", "--force", ws.cwd], ws.repo, 120)
         _git(["worktree", "prune"], ws.repo)
@@ -416,11 +459,6 @@ def close_quiet(ws: TeamWorkspace) -> str:
         log.debug("close: worktree remove failed: %s", exc)
     import shutil
     shutil.rmtree(ws.run_dir, ignore_errors=True)   # SPEC.md was mirrored
-    with _LOCK:
-        _RUNS.pop(ws.cwd, None)
-        others = any(o.repo == ws.repo for o in _RUNS.values())
-    if not others:
-        team_run_life.drop_exclude(ws.repo, ws.exclude_added)
     notes = []
     if back:
         notes.append("Put back read-only file(s) the run changed: "
@@ -454,6 +492,6 @@ def _fast_forward(ws: TeamWorkspace) -> str:
             f"`{ws.user_branch or 'HEAD'}` (fast-forward from `{ws.branch}`).")
 
 
-__all__ = ["TeamWorkspace", "close", "close_quiet", "dirty_files",
+__all__ = ["SealError", "TeamWorkspace", "close", "close_quiet", "dirty_files",
            "ensure_exclude", "for_cwd", "git_env", "init_repo", "open_run",
            "seal", "spec_path", "wants_apply", "write_spec"]

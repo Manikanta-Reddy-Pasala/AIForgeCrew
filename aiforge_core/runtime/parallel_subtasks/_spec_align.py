@@ -21,9 +21,13 @@ _SECTION = re.compile(r"^#{2,3}\s*Subtasks\b[^\n]*$", re.I | re.M)
 # slug ``src/user`` + a stray root ``service.ts``.
 _ITEM = re.compile(
     r"^\s*(?:\d{1,3}[.)]|[-*])\s+"
-    r"(?:`([^`\n]{1,160})`|\*\*`?([^*`\n]{1,160}?)`?:?\*\*|"
+    r"(?:`([^`\n]{1,160})`|\*\*`?([^*`\n]{1,160}?)`?\*\*|"
     r"([A-Za-z0-9][\w./-]{0,160}?))"
     r"(?:\s*:\s+|\s*[—–]\s*|\s+-{1,2}\s+)(.+)$")
+# ``**src/app.py:** add login`` / ``` `x.py —` do y ``` — the separator INSIDE
+# the bold/backtick span is moved after it, where _ITEM expects it.
+_SEP_INSIDE = re.compile(r"^(\s*(?:\d{1,3}[.)]|[-*])\s+(?:\*\*|`)[^*`\n]+?)"
+                         r"\s*([:—–]|\s-{1,2})\s*(\*\*|`)(?=\s)")
 _PATH = re.compile(r"`([\w./-]{1,160}\.[A-Za-z0-9]{1,8})`|"
                    r"\b([\w-]{1,80}(?:/[\w.-]{1,80}){0,6}\.[A-Za-z]{1,8})\b")
 _CODE_EXT = (".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".java", ".kt", ".rs",
@@ -43,7 +47,7 @@ def spec_subtasks(spec_md: str) -> list[dict]:
     body = body[:nxt.start()] if nxt else body
     out = []
     for line in body.splitlines():
-        it = _ITEM.match(line)
+        it = _ITEM.match(_SEP_INSIDE.sub(r"\1\3\2", line))
         if not it:
             continue
         slug = (it.group(1) or it.group(2) or it.group(3) or "").strip()

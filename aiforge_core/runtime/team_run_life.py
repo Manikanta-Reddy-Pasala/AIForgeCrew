@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import threading
 import time
 
@@ -30,6 +31,7 @@ _LOCK = threading.Lock()
 _PARKED: dict[str, tuple] = {}          # session → (ws, reason, parked_at)
 _CONSENT: dict[str, set] = {}           # session → {folder realpath}
 _SWEPT = {"done": False}
+_EXCL: dict[str, dict] = {}             # repo → {"added": [...], "runs": n}
 
 _CONTINUE_RE = re.compile(
     r"^\s*(?:ok(?:ay)?[,.!]?\s+|yes[,.!]?\s+|please\s+)*(?:continue|resume|go\s+on|"
@@ -45,6 +47,32 @@ def _stale_hours() -> float:
 
 
 # ── shared info/exclude ────────────────────────────────────────────────────
+
+def exclude_acquire(repo: str, wt: str) -> None:
+    """One more live run on ``repo``: the first adds the exclude lines (see
+    team_workspace.ensure_exclude); later ones only count."""
+    from aiforge_core.runtime.team_workspace import ensure_exclude
+    with _LOCK:
+        cur = _EXCL.get(repo)
+        if cur is not None:
+            cur["runs"] += 1
+            return
+        _EXCL[repo] = cur = {"added": [], "runs": 1}
+    cur["added"] = ensure_exclude(wt)
+
+
+def exclude_release(repo: str) -> None:
+    """One run on ``repo`` ended: the last one takes the lines back out."""
+    with _LOCK:
+        cur = _EXCL.get(repo)
+        if cur is None:
+            return
+        cur["runs"] -= 1
+        if cur["runs"] > 0:
+            return
+        _EXCL.pop(repo, None)
+    drop_exclude(repo, cur["added"])
+
 
 def drop_exclude(repo: str, added) -> None:
     """Remove the ``added`` lines (see team_workspace.ensure_exclude) from
@@ -122,9 +150,34 @@ def sweep_stale(max_age_h: float | None = None) -> list[str]:
                 continue
         except OSError:
             continue
+        if has_pending(os.path.join(d, "work")):
+            log.warning("team run %s holds uncommitted work — kept", d)
+            continue
         _remove_run_dir(d)
         gone.append(d)
     return gone
+
+
+def has_pending(wt: str, untracked: bool = True) -> bool:
+    """True when the worktree ``wt`` has staged or changed files (and, with
+    ``untracked``, new ones) — the pipeline's own artifacts aside: work that
+    exists nowhere else."""
+    from aiforge_core.runtime.team_workspace import _OWN_ARTIFACTS, _git
+    if not os.path.isdir(wt):
+        return False
+    try:
+        p = _git(["status", "--porcelain",
+                  "--untracked-files=" + ("all" if untracked else "no")], wt)
+    except Exception:  # noqa: BLE001
+        return True
+    if p.returncode != 0:
+        return False
+    for ln in (p.stdout or "").splitlines():
+        rel = ln[3:].strip().split(" -> ")[-1].strip('"')
+        if rel and not any(rel == a or rel.startswith(a + "/")
+                           or rel.startswith(a) for a in _OWN_ARTIFACTS):
+            return True
+    return False
 
 
 def _remove_run_dir(d: str) -> None:
@@ -160,8 +213,11 @@ def _remove_run_dir(d: str) -> None:
 def park(session_id, ws, reason: str) -> str:
     """Keep ``ws`` (commit what it left) for the next turn of the chat.
     Returns the note for the chat."""
-    from aiforge_core.runtime.team_workspace import seal
-    seal(ws.cwd, "aiforge: work so far (run paused)")
+    from aiforge_core.runtime.team_workspace import SealError, seal
+    try:
+        seal(ws.cwd, "aiforge: work so far (run paused)")
+    except SealError as exc:        # the worktree is kept either way
+        log.warning("parking %s: %s", ws.cwd, exc)
     ws.parked = True
     with _LOCK:
         old = _PARKED.pop(str(session_id), None)
@@ -188,13 +244,38 @@ def resume(session_id, repo: str, prompt: str):
         return None, ""
     ws, reason, at = v
     fresh = time.time() - at < _stale_hours() * 3600
-    same = os.path.realpath(repo or "") == ws.repo
-    goes_on = reason == "question" or bool(_CONTINUE_RE.match(prompt or "")) \
-        or (prompt or "").strip() == (ws.prompt or "").strip()
-    if fresh and same and goes_on and not ws.closed:
+    same = fold(repo or "") == fold(ws.repo)
+    if fresh and same and not ws.closed and continues(prompt, reason):
         ws.parked = False
         return ws, ""
     return None, _close(ws)
+
+
+# "actually, build X instead" / "new task: …" — a new request, not an answer.
+_NEW_REQUEST_RE = re.compile(
+    r"\b(?:instead|new\s+(?:task|request|feature)|forget\s+(?:it|that|this)|"
+    r"never\s*mind|scratch\s+that|something\s+else|different\s+thing)\b|"
+    r"^\s*(?:actually|now|next|also)\b[\s,]+(?:please\s+)?(?:build|create|"
+    r"implement|add|make|write|refactor|fix|change|rewrite)\b|"
+    r"^\s*(?:please\s+)?(?:build|create|implement|make|write|refactor|"
+    r"rewrite|design|set\s+up|scaffold)\b", re.I)
+_YES_RE = re.compile(r"^\s*(?:y(?:es|eah|ep|up)?|ok(?:ay)?|sure|do\s+it|"
+                     r"sounds\s+good|looks\s+good|lgtm|approved?|right|"
+                     r"correct|please\s+do)\b", re.I)
+
+
+def continues(prompt: str, reason: str) -> bool:
+    """Does ``prompt`` carry on a run parked for ``reason``? "continue" /
+    "go on" / "yes" always; for a pending question also an ANSWER — a short
+    reply that is not a new request ("actually, build X instead")."""
+    p = str(prompt or "").strip()
+    if _CONTINUE_RE.match(p):
+        return True
+    if not p or _NEW_REQUEST_RE.search(p):
+        return False
+    if _YES_RE.match(p):
+        return True
+    return reason == "question" and len(p.split()) <= 40
 
 
 def _close(ws) -> str:
@@ -239,15 +320,68 @@ def jail_roots(cwd, roots) -> list:
     roots = [r for r in (roots or ()) if r]
     if ws is None:
         return roots
-    repo = ws.repo.rstrip(os.sep)
+    repo = fold(ws.repo)
 
     def _overlaps(r: str) -> bool:
-        real = os.path.realpath(r).rstrip(os.sep) or os.sep
+        real = fold(r) or os.sep
         return (real == repo or real.startswith(repo + os.sep)
                 or repo.startswith(real.rstrip(os.sep) + os.sep))
     return [r for r in roots if not _overlaps(r)]
 
 
-__all__ = ["consented", "drop_exclude", "drop_if_empty", "forget_session",
-           "jail_roots", "park", "parked", "remember_consent", "resume",
+def fold(path: str) -> str:
+    """``path`` resolved for comparison: realpath, no trailing ``/`` and, on
+    macOS (case-insensitive by default), lower-cased — ``/Users/Me/Proj``
+    and ``/users/me/proj`` are the same folder there."""
+    try:
+        p = os.path.realpath(os.path.expanduser(str(path)))
+    except Exception:  # noqa: BLE001
+        p = str(path)
+    p = os.path.normcase(p).rstrip(os.sep) or os.sep
+    return p.lower() if sys.platform == "darwin" else p
+
+
+def map_shell_to_worktree(cwd, name: str, args: dict) -> bool:
+    """A shell command in a team run that names the user's REAL repo
+    (``cd /Users/me/proj && …``, ``git -C /Users/me/proj commit``, ``sed -i
+    /Users/me/proj/x.py``) is rewritten to the run's worktree — a subtask
+    runner has no one to ask, and the real checkout is not the run's to
+    change. True when the command was rewritten (``args`` is changed in
+    place)."""
+    from aiforge_core.runtime import shell_writes
+    from aiforge_core.runtime.team_workspace import for_cwd
+    ws = for_cwd(cwd) if cwd else None
+    if ws is None or name not in shell_writes.SHELL_TOOLS:
+        return False
+    from aiforge_core.runtime.tools.tool_policy import _CMD_ARG_KEYS
+    key = next((k for k in _CMD_ARG_KEYS if (args or {}).get(k)), None)
+    if key is None:
+        return False
+    cmd = str(args[key])
+    new = rewrite_repo_paths(cmd, ws.repo, ws.cwd)
+    if new == cmd:
+        return False
+    args[key] = new
+    return True
+
+
+def rewrite_repo_paths(text: str, repo: str, wt: str) -> str:
+    """Every occurrence of ``repo`` (as typed, resolved, or ``~/…``; case-
+    insensitively on macOS) as a whole path prefix in ``text`` → ``wt``."""
+    forms = {repo.rstrip(os.sep), os.path.realpath(repo).rstrip(os.sep)}
+    home = os.path.expanduser("~").rstrip(os.sep)
+    for f in list(forms):
+        if home and (f + os.sep).startswith(home + os.sep):
+            forms.add("~" + f[len(home):])
+    flags = re.I if sys.platform == "darwin" else 0
+    for f in sorted(forms, key=len, reverse=True):
+        text = re.sub(re.escape(f) + r"(?=$|[/\s'\";&|)])",
+                      lambda _m: wt, text, flags=flags)
+    return text
+
+
+__all__ = ["consented", "continues", "drop_exclude", "drop_if_empty",
+           "exclude_acquire", "exclude_release", "fold", "forget_session",
+           "has_pending", "jail_roots", "map_shell_to_worktree", "park",
+           "parked", "remember_consent", "resume", "rewrite_repo_paths",
            "sweep_once", "sweep_stale"]

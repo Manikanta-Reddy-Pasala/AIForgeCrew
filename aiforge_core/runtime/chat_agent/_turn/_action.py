@@ -230,11 +230,26 @@ def _workspace_jail(st, name, args, cwd):
     (one click grants the folder for the rest of this chat). Unattended: refuse
     without writing. Returns "continue"/"return" to skip the call, else None."""
     interactive = getattr(st, "session_id", None) is not None
+    team_run = False
+    try:
+        # A team run (a subtask runner has no session to ask): a shell command
+        # naming the user's real repo is pointed at the run's worktree, and
+        # every shell write is jailed too — `cd /real/repo && …` must not
+        # escape into the user's checkout.
+        from aiforge_core.runtime import team_run_life, team_workspace
+        team_run = team_workspace.for_cwd(cwd) is not None
+        if team_run and team_run_life.map_shell_to_worktree(cwd, name, args):
+            yield {"type": "thought", "role": "system", "text":
+                   "Pointed a command at the run's worktree instead of your "
+                   "checkout."}
+    except Exception:  # noqa: BLE001 — never break dispatch
+        pass
     try:
         from aiforge_core.runtime import scope_guard as _sg_jail
         _roots = list(getattr(st, "user_roots", ()) or ())
         _jailed = _sg_jail.outside_workspace(
-            name, args or {}, cwd, _roots, include_shell=interactive)
+            name, args or {}, cwd, _roots,
+            include_shell=interactive or team_run)
     except Exception:  # noqa: BLE001 — never break dispatch
         _jailed, _roots = [], []
     if not _jailed:

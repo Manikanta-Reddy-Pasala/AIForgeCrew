@@ -367,27 +367,26 @@ def localize_paths(text: str, repo: str) -> str:
     A team run works in its own worktree: an absolute repo path left in the
     prompt or SPEC sends a writer into the user's real checkout."""
     from .scope_guard import _USER_PATH_RE
+    from .team_run_life import fold
     if not text or not repo:
         return text
-    real_repo = os.path.realpath(repo).rstrip(os.sep)
+    frepo = fold(repo)
 
     def _sub(m):
         raw = m.group(1)
         p = raw.rstrip(".:!?*_`'\")]")
         rest = raw[len(p):]
         try:
-            full = os.path.expanduser(p)
-            real = os.path.realpath(full)
+            real = os.path.realpath(os.path.expanduser(p)).rstrip(os.sep)
         except Exception:  # noqa: BLE001
             return raw
-        for cand in (real, full.rstrip(os.sep)):
-            if _inside(cand, real_repo) or _inside(cand, repo.rstrip(os.sep)):
-                base = real_repo if _inside(cand, real_repo) else repo.rstrip(os.sep)
-                rel = os.path.relpath(cand, base)
-                if rel == ".":
-                    return "./" + rest
-                return rel + ("/" if p.endswith("/") else "") + rest
-        return raw
+        freal = fold(real)
+        if freal != frepo and not freal.startswith(frepo + os.sep):
+            return raw        # (case-insensitively on macOS — see fold)
+        rel = real[len(frepo):].lstrip(os.sep)
+        if not rel:
+            return "./" + rest
+        return rel + ("/" if p.endswith("/") else "") + rest
     return _USER_PATH_RE.sub(_sub, str(text))
 
 
