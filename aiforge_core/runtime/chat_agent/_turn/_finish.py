@@ -293,12 +293,14 @@ def _ready_suggestion(handle):
 
 
 def _endpoint_one_slot() -> bool:
-    """A loopback model serves one request at a time. Skip the extra call."""
+    """The prediction would queue behind chat on a one-slot server (see
+    ``llm/slots.py``; unknown is one slot). The extra call is then skipped."""
     try:
-        from aiforge_core.llm.router import is_local_endpoint
-        return bool(is_local_endpoint("chat"))
+        from aiforge_core.llm import slots
+        role = os.environ.get("AIFORGE_PREDICT_ROLE", "enhancer")
+        return not slots.parallel_ok(role, slots.CHAT_ROLE)
     except Exception:  # noqa: BLE001
-        return False
+        return True
 
 
 def _emit_suggestion(message: str, did: str, cwd):
@@ -343,8 +345,7 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
                         asked=bool(getattr(st, "plan_asked", False)))
         except Exception:  # noqa: BLE001
             pass
-    # done goes out before any next-step prediction. A one-slot local
-    # endpoint skips that extra call entirely so it cannot hold the model.
+    # done goes out before any next-step prediction; a one-slot server skips it.
     _sugg = None if _endpoint_one_slot() else _start_suggestion(
         _last_user_message(st), _turn_summary(st), cwd)
     try:

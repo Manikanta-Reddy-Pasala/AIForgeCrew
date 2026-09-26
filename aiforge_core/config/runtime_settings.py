@@ -146,6 +146,13 @@ _SPEC: dict[str, tuple[str, int]] = {
     # from a misconfigured or shared-tenant gateway parks the whole box for an
     # hour.
     "llm_rate_limit_cap_s": ("AIFORGE_LLM_RATE_LIMIT_CAP_S", 60),
+    # Concurrent requests the model server serves. 0 = auto: probe the
+    # server (LM Studio's per-instance parallel, llama.cpp slots, vLLM-like
+    # batching) and fall back to 1. With more than one slot a turn overlaps
+    # its independent model calls (classifier + enhancer, context blocks,
+    # the next-step prediction); with one it keeps them sequential. The env
+    # var also takes "auto". See aiforge_core/llm/slots.py.
+    "llm_parallel": ("AIFORGE_LLM_PARALLEL", 0),
 }
 
 # Sanity bounds — reject obviously-bad values from the API/UI so a typo
@@ -178,6 +185,7 @@ _BOUNDS: dict[str, tuple[int, int]] = {
     # thing an operator can usefully ask for — 0 rpm already says "do not
     # throttle me", and even that keeps obeying the server.
     "llm_rate_limit_cap_s": (1, 3_600),
+    "llm_parallel": (0, 1024),
 }
 
 

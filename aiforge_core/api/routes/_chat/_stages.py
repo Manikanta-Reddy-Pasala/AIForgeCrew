@@ -185,16 +185,20 @@ def _enhance_prompt(_pp, prompt, history, cwd, skip_enhance, session_id=None):
     def _prefetch():
         _recall_prefetch.start(history, cwd, session_id)
 
-    # Chat turns restate; they do not need a 2048-token spec. A cut-off
-    # rewrite is rejected by the degenerate-spec guard and the raw prompt
-    # is used, so a smaller budget only ever saves time.
+    return _pp._enhance(prompt, history=history, cwd=cwd, repo=_crk2(cwd),
+                        on_context=_prefetch, session_id=session_id,
+                        max_tokens=_chat_enhancer_max_tokens())
+
+
+def _chat_enhancer_max_tokens() -> int:
+    """Chat turns restate; they do not need a 2048-token spec. A cut-off
+    rewrite is rejected by the degenerate-spec guard and the raw prompt is
+    used, so a smaller budget only ever saves time."""
     try:
         _cap = int(os.environ.get("AIFORGE_CHAT_ENHANCER_MAX_TOKENS", "512"))
     except (TypeError, ValueError):
         _cap = 512
-    return _pp._enhance(prompt, history=history, cwd=cwd, repo=_crk2(cwd),
-                        on_context=_prefetch, session_id=session_id,
-                        max_tokens=max(64, _cap))
+    return max(64, _cap)
 
 
 def _dispatch_agent_route(_rd, _pp, prompt, cwd, session_id, history,

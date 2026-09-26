@@ -336,14 +336,64 @@ def build_bundle(cwd: str, query: str, *, cave: bool = False,
     from aiforge_core.runtime import workflows as _wf
 
     b = ContextBundle()
-    _fill_priority(b, cwd, query, _ca, want_prefs=want_prefs, want_rules=want_rules)
-    _fill_playbooks(b, cwd, query, ctx_on, _sk, _wf)
-    _fill_repo_context(b, cwd, ctx_on, _ca, cave=cave,
-                       want_summary=want_summary, want_repo_map=want_repo_map)
-    if ctx_on("recall"):
-        b.memory_md = _safe(lambda: _ca._memory_recall(
-            cwd, query, limit=(3 if cave else 6), session_id=session_id))
+
+    def _recall():
+        if ctx_on("recall"):
+            b.memory_md = _safe(lambda: _ca._memory_recall(
+                cwd, query, limit=(3 if cave else 6), session_id=session_id))
+
+    # Each group writes its own fields, so order does not matter.
+    _run_groups([
+        lambda: _fill_priority(b, cwd, query, _ca, want_prefs=want_prefs,
+                               want_rules=want_rules),
+        lambda: _fill_playbooks(b, cwd, query, ctx_on, _sk, _wf),
+        lambda: _fill_repo_context(b, cwd, ctx_on, _ca, cave=cave,
+                                   want_summary=want_summary,
+                                   want_repo_map=want_repo_map),
+        _recall,
+    ])
     return b
+
+
+def _groups_in_parallel() -> bool:
+    """Gather the groups at once only when the model server has a spare slot:
+    the recall hit summary is a model call, and on one slot it would queue
+    behind (or ahead of) the turn's own. ``AIFORGE_CONTEXT_PARALLEL=0`` keeps
+    the sequential order everywhere."""
+    import os
+    if os.environ.get("AIFORGE_CONTEXT_PARALLEL", "1").strip().lower() in (
+            "0", "false", "no", "off"):
+        return False
+    try:
+        from aiforge_core.llm import slots
+        return slots.llm_slots() > 1
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _run_groups(groups: list) -> None:
+    """Run each group; concurrently when :func:`_groups_in_parallel`. A group
+    that raises loses only its own blocks, as :func:`_safe` does inside it."""
+    def _one(fn):
+        try:
+            fn()
+        except Exception:  # noqa: BLE001 — one bad group never breaks the bundle
+            pass
+
+    if len(groups) < 2 or not _groups_in_parallel():
+        for fn in groups:
+            _one(fn)
+        return
+    import contextvars
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=len(groups),
+                            thread_name_prefix="ctx-bundle") as ex:
+        # copy_context per group: the request's repo root and session reach
+        # the leaf helpers exactly as they do inline.
+        futs = [ex.submit(contextvars.copy_context().run, _one, fn)
+                for fn in groups]
+        for f in futs:
+            f.result()
 
 
 __all__ = ["ContextBundle", "build_bundle"]
