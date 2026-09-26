@@ -1310,9 +1310,9 @@ echo "  code context: RepoMap + CodeGraph"
   || echo "  chat fs scope: UNRESTRICTED (set AIFORGE_WORKSPACE_DIR to clamp)"
 echo ""
 
-( while true; do .venv/bin/python -m aiforge_core.runtime.adk_runner || true; sleep "${AIFORGE_RUNNER_POLL_SEC:-10}"; done ) &
+( while true; do .venv/bin/python -m aiforge_core.runtime.adk_runner || true; sleep "${AIFORGE_RUNNER_POLL_SEC:-2}"; done ) &
 RUNNER_PID=$!
-echo "  runner: host pid $RUNNER_PID (polls every ${AIFORGE_RUNNER_POLL_SEC:-10}s)"
+echo "  runner: host pid $RUNNER_PID (polls every ${AIFORGE_POLL_IDLE_S:-2}s)"
 
 # Always on: with no approved peers a cycle touches no network at all.
 ( while true; do .venv/bin/python -m aiforge_core.memory.sync.loop || true; sleep 30; done ) &

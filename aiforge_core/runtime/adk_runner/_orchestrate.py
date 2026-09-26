@@ -390,11 +390,43 @@ def main() -> int:
         log.debug("stale index reaper skipped: %s", exc)
     if _process_one_ticket():
         # Announce the resolved backends only on polls that actually did work,
-        # so an idle queue (a fresh process every ~10s) doesn't spam the log.
+        # so an idle queue (a fresh process every few seconds) doesn't spam
+        # the log.
         backends.boot_log()
     else:
-        time.sleep(int(os.environ.get("AIFORGE_POLL_IDLE_S", "10")))
+        _idle_poll(backends)
     # Always 0: "did work" and "queue was empty" are both successful polls, and
     # the supervising loop (run.sh / docker entrypoint) restarts this process
     # either way. A real failure propagates as an exception, which exits non-0.
     return 0
+
+
+def _env_s(name: str, default: float) -> float:
+    try:
+        return max(0.0, float(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _poll_idle_s() -> float:
+    """Sleep between polls of an empty queue. 2s (was 10s — and then the
+    process exited and the supervisor waited another 10s plus a cold start, so
+    a new ticket sat 20s+ before anything happened). AIFORGE_POLL_IDLE_S."""
+    return _env_s("AIFORGE_POLL_IDLE_S", 2.0)
+
+
+def _idle_poll(backends) -> None:
+    """Empty queue: keep polling every :func:`_poll_idle_s` for a short
+    window (AIFORGE_POLL_IDLE_WINDOW_S, default 30s) before exiting, so a new
+    ticket is picked up within ~2s without paying a process respawn — imports
+    and all — every 2s. Still one ticket per process: the first claim runs and
+    the process exits after it, exactly as a fresh one would."""
+    step = _poll_idle_s()
+    end = time.monotonic() + _env_s("AIFORGE_POLL_IDLE_WINDOW_S", 30.0)
+    while True:
+        time.sleep(step)
+        if step <= 0 or time.monotonic() >= end:
+            return
+        if _process_one_ticket():
+            backends.boot_log()
+            return

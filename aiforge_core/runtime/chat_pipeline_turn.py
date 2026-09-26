@@ -380,10 +380,10 @@ def _team_plugins() -> list:
 
 def _team_deadline_s() -> float:
     """The wall clock for one team turn: ``AIFORGE_CHAT_TEAM_DEADLINE_S``,
-    default the ticket pipeline's own deadline (90 min); 0 disables. Team chat
-    had none — only an LLM-call cap — so a run stalled below the cap held the
-    server-wide team lock indefinitely. (Simple chat's turn deadline defaults
-    to OFF, so it is not reused here.)"""
+    default the ticket pipeline's own deadline — which is OFF (0) by default:
+    a healthy team run is not killed for being long. Faults are caught by the
+    detectors that fire on a real problem (LLM stream stall, loop guards, the
+    LLM-call cap, the shell's output-idle kill). 0 disables."""
     raw = os.environ.get("AIFORGE_CHAT_TEAM_DEADLINE_S", "").strip()
     if raw:
         try:
@@ -394,7 +394,7 @@ def _team_deadline_s() -> float:
         from .adk_runner._verdict import _pipeline_deadline_s
         return float(_pipeline_deadline_s())
     except Exception:  # noqa: BLE001
-        return 5400.0
+        return 0.0
 
 
 _NO_EVENT = object()     # the run ended

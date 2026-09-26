@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 
 from .._shell import _workspace_root
 from .._tools import _SKIP_DIRS
@@ -108,32 +109,78 @@ def _fmt_symbol_rows(_base: str, rows: list, truncated: bool) -> str:
     return body + tail
 
 
+# One background digest per repo base: {base: {"thread", "d"}}. A turn whose
+# wait runs out leaves the build running here, and the NEXT turn picks its
+# result up instead of starting a second parse of the same repo.
+_WARM: dict = {}
+_WARM_LOCK = threading.Lock()
+
+
+def _digest_budget_s() -> float:
+    """How long a turn waits for the ranked map. Short (3s): the first parse
+    of a big repo can take 30s, and the turn is better off starting with the
+    regex map than waiting — the parse keeps going in the background (it was
+    started at session open, see :func:`warm_repo_map`) and serves the next
+    turn. AIFORGE_REPOMAP_BUDGET_S overrides."""
+    try:
+        return max(0.0, float(os.environ.get("AIFORGE_REPOMAP_BUDGET_S", "3")))
+    except ValueError:
+        return 3.0
+
+
+def _start_digest(base: str) -> dict:
+    """The in-flight (or finished) digest job for ``base``, started if none."""
+    with _WARM_LOCK:
+        job = _WARM.get(base)
+        if job is not None:
+            return job
+        job = {"d": None}
+
+        def _work():
+            try:
+                from aiforge_core.memory.code_context import aider_digest
+                job["d"] = aider_digest(base, [])
+            except Exception:  # noqa: BLE001
+                job["d"] = ""
+
+        job["thread"] = threading.Thread(target=_work, daemon=True,
+                                         name="aiforge-repomap-warm")
+        _WARM[base] = job
+        job["thread"].start()
+        return job
+
+
+def warm_repo_map(cwd: str) -> None:
+    """Start building the ranked repo map in the background — call when a
+    session/turn opens, so the parse overlaps everything that runs before the
+    agent's first prompt is assembled. Never raises, never blocks."""
+    try:
+        if os.environ.get("AIFORGE_CHAT_AIDER_MAP", "1") in ("0", "false"):
+            return
+        base = str(_workspace_root() or cwd)
+        if os.path.isdir(base):
+            _start_digest(base)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _aider_digest_bounded(base: str) -> str:
     """The tree-sitter + PageRank Aider digest, TIME-BOUNDED.
 
-    The first parse of a big repo can be slow, so it runs in a thread with a
-    short budget (AIFORGE_REPOMAP_BUDGET_S). If it doesn't finish in time we
-    fall through to the instant dir tree — the cached Aider map then serves
-    later turns. Never blocks the turn.
+    Waits at most :func:`_digest_budget_s` for the (possibly already warming)
+    background build. Not done → "" so the caller falls through to the
+    instant regex map / dir tree; the build keeps going and its result is
+    used by the next turn. A finished result is used ONCE, so the following
+    turn re-reads the (cached, fast) map and sees edits made since.
     """
-    import threading as _th
-    try:
-        budget = float(os.environ.get("AIFORGE_REPOMAP_BUDGET_S", "30"))
-    except ValueError:
-        budget = 6.0
-    out: dict = {}
-
-    def _work():
-        try:
-            from aiforge_core.memory.code_context import aider_digest
-            out["d"] = aider_digest(base, [])
-        except Exception:  # noqa: BLE001
-            out["d"] = ""
-
-    t = _th.Thread(target=_work, daemon=True)
-    t.start()
-    t.join(budget)
-    return out.get("d") or ""
+    job = _start_digest(base)
+    job["thread"].join(_digest_budget_s())
+    if job["thread"].is_alive():
+        return ""
+    with _WARM_LOCK:
+        if _WARM.get(base) is job:
+            del _WARM[base]
+    return job.get("d") or ""
 
 
 def _capped(text: str, note: str) -> str:

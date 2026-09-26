@@ -48,6 +48,13 @@ from ._obs_trim import (  # noqa: F401  # re-exported
     _smart_truncate_obs,
     _trimmed_json,
 )
+from ._shell_wait import (  # noqa: F401  # re-exported
+    _await_exit,
+    _collect_output,
+    _drain,
+    _kill_proc,
+    _timeout_result,
+)
 from ._spool import Spool
 
 # Digits too: a tool name like `s3_get` was cut to `s`. See _prompt._credible_action
@@ -293,7 +300,7 @@ def _run_refusal(cmd: str, args: dict, base: str, *,
       (and the agent's own artifacts) into a commit. We do NOT execute it — the
       soft error makes the agent loop re-issue a targeted `git add <paths>`;
     - a FOREGROUND server-start: it never returns, so run_command would poll it
-      until the (10-min) timeout and wedge the turn — the chat "network error"
+      forever (no wall clock) and wedge the turn — the chat "network error"
       bug. Redirected to `serve`, which backgrounds it and returns the URL;
     - a literal `cd <missing dir>` / `bash <missing script>`, refused with an
       actionable error instead of the shell's cryptic "No such file or
@@ -317,100 +324,6 @@ def _run_refusal(cmd: str, args: dict, base: str, *,
     if missing:
         return {"ok": False, "blocked": "missing_path", "error": missing}
     return None
-
-
-def _drain(proc, timeout: float = 5) -> tuple[str, str] | None:
-    """Whatever the process buffered, or None if it could not be collected."""
-    try:
-        out, err = proc.communicate(timeout=timeout)
-    except Exception:  # noqa: BLE001
-        return None
-    return out or "", err or ""
-
-
-def _timeout_result(proc, timeout: int, spool=None) -> dict:
-    """Capture whatever the command buffered BEFORE we kill it, so the agent
-    sees partial output (e.g. which tests ran/passed before the hang) and can
-    adapt — instead of a blind "timeout" with no signal."""
-    import signal as _sig
-
-    from aiforge_core.runtime import proc_signals
-    proc_signals.kill_group(proc_signals.group_of(proc), _sig.SIGTERM)
-    if spool is not None:
-        try:
-            proc.wait(timeout=5)
-        except Exception:  # noqa: BLE001 — ignored SIGTERM
-            pass
-        # The shell may be gone while a child that ignored SIGTERM is not.
-        spool.kill_group()
-        drained = spool.read()
-    else:
-        drained = _drain(proc)
-    if drained is None:
-        _kill_proc(proc)
-        drained = ("", "")
-    out, err = drained
-    return {"ok": False, "timed_out": True, "code": None,
-            "stdout": out[-_MAX_OBS:], "stderr": err[-_MAX_OBS:],
-            "error": f"timed out after {timeout}s — PARTIAL output "
-            "above. This is not a failure of your change: the command "
-            "just ran longer than the limit. Next: run a NARROWER "
-            "command (one test file or a single test case), or re-issue "
-            "this exact command with a larger \"timeout\" (e.g. 600). Do "
-            "NOT undo your edits over a timeout."}
-
-
-def _await_exit(proc, timeout: int, sid, spool=None) -> dict | None:
-    """Poll until the process exits; a dict when it was stopped or timed out."""
-    import time as _time
-
-    from aiforge_core.runtime.run_interrupt import (
-        attention, steered, process_owned_by_watch)
-    deadline = _time.monotonic() + timeout
-    while proc.poll() is None:
-        # Stop still kills immediately. A typed message is read first: the
-        # command is the task, so it keeps running unless the message asks
-        # to stop or replace it. A watch probe is stricter: only the
-        # six-word stop set (and the Stop button) ends that wait.
-        if process_owned_by_watch():
-            why = attention(sid, only_cut=True)
-        else:
-            why = attention(sid, only_replace=True)
-        if why == "stop":
-            _kill_proc(proc)
-            return {"ok": False, "stopped": True, "error": "stopped by user"}
-        if why == "steer":
-            _kill_proc(proc)
-            return steered()
-        if _time.monotonic() > deadline:
-            return _timeout_result(proc, timeout, spool)
-        if spool is not None and spool.too_big():
-            spool.kill_group()
-            _kill_proc(proc)
-            out, err = spool.read()
-            return {"ok": False, "code": None, "stdout": out[-_MAX_OBS:],
-                    "stderr": err[-_MAX_OBS:], "error": spool.too_big_error()}
-        _time.sleep(0.2)
-    return None
-
-
-def _collect_output(proc, spool=None) -> tuple[str, str]:
-    """Bound communicate(): a daemon grandchild inheriting the stdout pipe
-    (e.g. `npm run dev &`) keeps it open after the process exits, so an
-    un-timed communicate() blocks forever even past the deadline. Spooled
-    output is simply read back."""
-    if spool is not None:
-        return spool.read()
-    try:
-        ct = int(os.environ.get("AIFORGE_COMMUNICATE_TIMEOUT_S", "10"))
-    except (TypeError, ValueError):
-        ct = 10
-    try:
-        out, err = proc.communicate(timeout=ct)
-        return out or "", err or ""
-    except subprocess.TimeoutExpired:
-        _kill_proc(proc)
-        return _drain(proc) or ("", "")
 
 
 def _marked_background(args: dict, cmd: str) -> bool:
@@ -469,10 +382,13 @@ def _t_run_command(args: dict, cwd: str) -> dict:
         return refusal
     if background:
         return _start_background(cmd, base)
-    # Default generous so dependency installs / builds (npm ci, mvn package,
-    # pip install) aren't killed mid-run; agent may override per call.
-    default_to = int(os.environ.get("AIFORGE_CHAT_CMD_TIMEOUT_S", "600"))
-    timeout = int(args.get("timeout", default_to))
+    # No wall clock by default: a build that keeps printing (npm ci, mvn
+    # package) runs until it is done. It is stopped when it goes silent — no
+    # output, no CPU — for AIFORGE_CMD_IDLE_S, or at the wall clock the model
+    # (``timeout``) or the operator (AIFORGE_CHAT_CMD_TIMEOUT_S) asked for.
+    from aiforge_core.runtime.cmd_idle import idle_limit_s, wall_cap_s
+    timeout = wall_cap_s(args.get("timeout"), "AIFORGE_CHAT_CMD_TIMEOUT_S")
+    idle_s = idle_limit_s()
     spool = None
     try:
         spool = Spool()
@@ -489,13 +405,13 @@ def _t_run_command(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
     spool.pgid = proc.pid             # start_new_session: its own group
     try:
-        return _run_to_end(proc, timeout, spool)
+        return _run_to_end(proc, timeout, spool, idle_s)
     finally:
         spool.release_children()
         spool.close()
 
 
-def _run_to_end(proc, timeout: int, spool) -> dict:
+def _run_to_end(proc, timeout: float, spool, idle_s: float = 0.0) -> dict:
     from aiforge_core.runtime import chat_cancel
     sid = chat_cancel.active()
     if sid is not None:
@@ -503,27 +419,9 @@ def _run_to_end(proc, timeout: int, spool) -> dict:
             chat_cancel.track_pgid(sid, os.getpgid(proc.pid))
         except Exception:  # noqa: BLE001
             pass
-    stopped = _await_exit(proc, timeout, sid, spool)
+    stopped = _await_exit(proc, timeout, sid, spool, idle_s)
     if stopped is not None:
         return stopped
     out, err = _collect_output(proc, spool)
     return {"ok": proc.returncode == 0, "code": proc.returncode,
             "stdout": out[-_MAX_OBS:], "stderr": err[-_MAX_OBS:]}
-
-
-def _kill_proc(proc) -> None:
-    from aiforge_core.runtime import proc_signals
-    if not proc_signals.stop_group(proc_signals.group_of(proc),
-                                   pid=getattr(proc, "pid", None),
-                                   pause_s=0.0):
-        try:
-            proc.kill()
-        except Exception:  # noqa: BLE001 — already gone
-            pass
-    # Reap so the killed child's pipe FDs are freed (no zombie leak).
-    try:
-        proc.communicate(timeout=5)
-    except Exception:  # noqa: BLE001
-        pass
-
-

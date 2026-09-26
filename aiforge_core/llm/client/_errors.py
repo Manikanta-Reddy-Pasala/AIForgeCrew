@@ -262,6 +262,12 @@ def _is_transient_exc(exc: Exception) -> tuple[bool, str]:
         return _http_error_transient(exc)
     if isinstance(exc, urllib.error.URLError):
         return True, "url_error"
+    from ._stream_health import LLMStreamStalled
+    if isinstance(exc, LLMStreamStalled):
+        # Checked before the generic OSError/timeout arms: a stalled stream is
+        # retried (the closed connection aborted it), where a shipped read
+        # timeout is not.
+        return True, "stream_stalled"
     if isinstance(exc, TimeoutError):
         return True, "timeout"
     if isinstance(exc, OSError):

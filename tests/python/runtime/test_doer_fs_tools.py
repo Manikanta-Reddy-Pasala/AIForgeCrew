@@ -286,29 +286,29 @@ def test_the_fail_closed_gate_can_be_overridden(repo, monkeypatch):
 
 
 def test_a_timeout_returns_what_was_captured(repo, risk, monkeypatch):
-    def _boom(*_a, **_kw):
-        raise subprocess.TimeoutExpired(cmd="x", timeout=1,
-                                        output=b"partial out",
-                                        stderr=b"Traceback (most recent call last):")
-    monkeypatch.setattr(subprocess, "run", _boom)
-    out = _fs.run_shell("sleep 999")
+    monkeypatch.setenv("AIFORGE_SHELL_TIMEOUT", "1")
+    out = _fs.run_shell("echo 'partial out'; "
+                        "echo 'Traceback (most recent call last):' >&2; "
+                        "while true; do sleep 0.2; done")
     assert out["ok"] is False
     assert out["error"] == "timeout"
-    assert out["stdout"] == "partial out"
+    assert out["stdout"] == "partial out\n"
     assert "Traceback" in out["digest"]
 
 
-def test_a_junk_timeout_value_falls_back(repo, risk, monkeypatch):
+def test_a_junk_timeout_value_means_no_wall_clock(repo, risk, monkeypatch):
+    """No fixed limit any more: a junk value is ignored, not a 600s kill."""
     monkeypatch.setenv("AIFORGE_SHELL_TIMEOUT", "soon")
+    from aiforge_core.runtime.doer_tools import _shell_run
     seen: dict = {}
-    real = subprocess.run
+    real = _shell_run.run_to_completion
 
-    def _run(argv, **kw):
-        seen["timeout"] = kw.get("timeout")
-        return real(argv, **kw)
-    monkeypatch.setattr(subprocess, "run", _run)
-    _fs.run_shell("true")
-    assert seen["timeout"] == 600
+    def _run(argv, cwd, wall_s, idle_s):
+        seen.update(wall=wall_s, idle=idle_s)
+        return real(argv, cwd, wall_s, idle_s)
+    monkeypatch.setattr(_shell_run, "run_to_completion", _run)
+    assert _fs.run_shell("true")["ok"] is True
+    assert seen == {"wall": 0.0, "idle": 600.0}
 
 
 def test_output_is_truncated_per_stream(repo, risk):

@@ -105,6 +105,7 @@ from ._missing import (  # noqa: F401  # re-exported
     _substitute_attempt,
 )
 from ._models import model_missing
+from ._stream_health import LLMStreamStalled
 from ._text import (  # noqa: F401  # tests reach these as client.<name>
     _THINK_CLOSE_ONLY_RE,
     _THINK_LEAD_RE,
@@ -125,6 +126,7 @@ __all__ = [
     "fallback",
     "model_missing",
     "Endpoint",
+    "LLMStreamStalled",
 ]
 
 

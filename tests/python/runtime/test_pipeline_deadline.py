@@ -15,9 +15,11 @@ import pytest
 from aiforge_core.runtime import adk_runner as r
 
 
-def test_deadline_default(monkeypatch):
+def test_deadline_default_is_off(monkeypatch):
+    """No wall clock by default: a healthy long run is not killed. Faults are
+    caught by the stream-stall / loop / cmd-idle detectors instead."""
     monkeypatch.delenv("AIFORGE_PIPELINE_DEADLINE_S", raising=False)
-    assert r._pipeline_deadline_s() == 5400.0
+    assert r._pipeline_deadline_s() == 0.0
 
 
 def test_deadline_env_override(monkeypatch):
@@ -27,7 +29,7 @@ def test_deadline_env_override(monkeypatch):
 
 def test_deadline_bad_value_falls_back(monkeypatch):
     monkeypatch.setenv("AIFORGE_PIPELINE_DEADLINE_S", "not-a-number")
-    assert r._pipeline_deadline_s() == 5400.0
+    assert r._pipeline_deadline_s() == 0.0
 
 
 def test_deadline_zero_disables(monkeypatch):
