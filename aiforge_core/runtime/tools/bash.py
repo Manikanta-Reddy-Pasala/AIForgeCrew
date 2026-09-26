@@ -13,8 +13,9 @@ Lifecycle (tmux path):
   finish callback).
 * ``restart=True`` kills + recreates the session.
 
-Output capped at 8 KB per call; default timeout 90 s; trailing ``&``
-backgrounds the job and returns immediately.
+Output capped at 8 KB per call. A long command is checked on, not waited
+out (:mod:`._tmux_job`); trailing ``&`` backgrounds the job and returns
+immediately.
 """
 from __future__ import annotations
 
@@ -300,13 +301,20 @@ def bash(
     command: str,
     *,
     restart: bool = False,
-    timeout: int = _DEFAULT_TIMEOUT_S,
+    timeout: int = 0,
     _run_id: str | None = None,
 ) -> dict[str, Any]:
     """Run ``command`` in the persistent session for ``_run_id``.
 
     Falls back to stateless subprocess when tmux is unavailable. Soft-
     error contract: failures return ``{ok: False, error, ...}``.
+
+    No time limit by default in the tmux session: a command still running
+    after AIFORGE_CMD_CHECKIN_S (or printing an error / a prompt first) comes
+    back as a running job (``id``, output so far) for command_wait /
+    command_output / command_kill; the pane stays busy until it ends.
+    ``timeout`` (or AIFORGE_SHELL_TIMEOUT) is an explicit wall clock. The
+    sandbox and tmux-less paths keep their 90 s default.
     """
     if not command or not command.strip():
         return _err_result(command or "", "empty_command")
@@ -319,18 +327,27 @@ def bash(
     from aiforge_core.runtime import docker_sandbox
     if docker_sandbox.is_enabled():
         return docker_sandbox.exec_in_container(
-            _effective_run_id(_run_id), command, timeout=timeout,
+            _effective_run_id(_run_id), command,
+            timeout=timeout or _DEFAULT_TIMEOUT_S,
         )
 
     if not _tmux_available():
         emit("BashFallback", {"reason": "tmux_missing"})
-        return _fallback_run(command, timeout)
+        return _fallback_run(command, timeout or _DEFAULT_TIMEOUT_S)
 
     _run_id = _effective_run_id(_run_id)
 
     name = _session_name(_run_id)
     if restart and _session_exists(name):
         destroy_session(_run_id)
+    from . import _tmux_job
+    held = _tmux_job.busy(name)
+    if held is not None:
+        # Never type into a running program: the pane is the session.
+        return _err_result(
+            command, f"the shell is still running `{held.cmd[:120]}` (id "
+            f"{held.key}): command_wait / command_output / command_kill it "
+            "first, or pass restart=True for a fresh shell", busy=held.key)
     _create_session(_run_id)
 
     if command.rstrip().endswith("&"):
@@ -343,33 +360,12 @@ def bash(
             "returncode": 0, "stdout": "", "truncated": False,
         }
 
-    subprocess.run(
-        ["tmux", "send-keys", "-t", name, command, "Enter"],
-        check=True, capture_output=True,
-    )
-    body, rc, timed_out = _drain_until_prompt(name, timeout)
-    if rc == -131:
-        from aiforge_core.runtime.run_interrupt import steered as _steered
-        return _steered(command=command, stdout=(body or "")[:_STDOUT_CAP_BYTES])
-    if timed_out:
-        subprocess.run(
-            ["tmux", "send-keys", "-t", name, "C-c"],
-            capture_output=True,
-        )
-        # No fixed pause after the interrupt: the drain polls every 0.1s and
-        # returns the moment the prompt is back (bounded at 2s).
-        partial, _rc2, _t2 = _drain_until_prompt(name, 2)
-        partial = _strip_echoed_command(partial, command)
-        return _err_result(command, "timeout",
-                           stdout=partial[:_STDOUT_CAP_BYTES], truncated=True)
-    body = _strip_echoed_command(body, command)
-    return {
-        "ok": (rc == 0),
-        "returncode": rc,
-        "command": command,
-        "stdout": body[:_STDOUT_CAP_BYTES],
-        "truncated": len(body) > _STDOUT_CAP_BYTES,
-    }
+    # Checked on, not waited out: still running at the check-in, or printing
+    # an error / a prompt, the command comes back as a job for command_wait /
+    # command_output / command_kill (as run_shell's do).
+    from aiforge_core.runtime.cmd_idle import wall_cap_s
+    return _tmux_job.run(name, command, _run_id,
+                         wall_cap_s(timeout or None, "AIFORGE_SHELL_TIMEOUT"))
 
 
 def destroy_session(run_id: str) -> None:

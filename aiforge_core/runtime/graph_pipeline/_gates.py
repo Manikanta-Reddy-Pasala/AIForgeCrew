@@ -142,6 +142,11 @@ def _same_failure_stop(state) -> bool:
     return False
 
 
+def _test_gaming(state) -> bool:
+    from aiforge_core.runtime.quality_gate import mark_test_gaming
+    return mark_test_gaming(state, _repo_root_for_scope())
+
+
 def _loop_gate(ctx):  # type: ignore[no-untyped-def]
     state = ctx.state
     iters = int(state.get("doer_iters", 0) or 0) + 1
@@ -149,6 +154,12 @@ def _loop_gate(ctx):  # type: ignore[no-untyped-def]
     passed = _feedback_passed(state)
     if not passed:
         _same_failure_stop(state)
+    elif _test_gaming(state):
+        # Green by detecting the test: exit as partial with the evidence
+        # (set on the verdict), never as a pass.
+        ctx.route = ROUTE_EXIT
+        _trace(":TestGaming", {"iters": iters})
+        return
     kill = bool(state.get("loop_budget_kill"))
     wall_kill = _wall_clock_kill(state)
     max_iters = _effective_max_iters(state)
@@ -194,7 +205,9 @@ def _validator_gate(ctx):  # type: ignore[no-untyped-def]
     # partial+PR → in_review and partial+no-PR → blocked. Verifier replans
     # (pre-Doer plan rejection) are unaffected — those DO help.
     fv = str(state.get("feedback_verdict") or "")
-    if "loop_budget_kill" in fv:
+    # A test-gaming exit is not replanned either: the same model on the same
+    # contradictory tests games them again. It goes to review with evidence.
+    if "loop_budget_kill" in fv or state.get("quality_issue") == "test_gaming":
         state["_no_replan_reason"] = "doer_plateau"
         ctx.route = ROUTE_DONE
         _trace(":ValidatorNoReplanPlateau", {"feedback_verdict": fv[:80]})

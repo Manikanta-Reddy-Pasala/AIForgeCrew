@@ -28,7 +28,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
-__all__ = ["evaluate", "gate_verdict", "make_quality_signal_callback"]
+__all__ = ["evaluate", "gate_verdict", "make_quality_signal_callback",
+           "mark_test_gaming"]
 
 # Doer tool name → session-state signal key the gate reads.
 _TOOL_SIGNAL_KEYS = {
@@ -183,3 +184,27 @@ def gate_verdict(model_verdict: str, gate: dict[str, Any]) -> str:
     if gate.get("gate") == "fail" and verdict == "pass":
         return "fail"
     return model_verdict
+
+
+def mark_test_gaming(state, repo_root: str) -> bool:
+    """A Doer pass the Feedback judged ``pass``: do its edits make the tests
+    pass by DETECTING the test (:mod:`aiforge_core.runtime.gaming_check`)?
+    On a hit the verdict becomes ``partial test_gaming: <evidence>`` — shipped
+    for review with the evidence, never as a success — and
+    ``state['quality_issue']`` / ``state['test_gaming_evidence']`` carry it.
+    Returns True on a hit. Best-effort: an error is no hit."""
+    if not repo_root:
+        return False
+    try:
+        from aiforge_core.runtime import gaming_check as test_gaming
+        evidence = test_gaming.check(repo_root)
+    except Exception:  # noqa: BLE001
+        return False
+    if not evidence:
+        return False
+    state["quality_issue"] = "test_gaming"
+    state["test_gaming_evidence"] = evidence
+    state["feedback_verdict"] = (
+        "partial test_gaming: the tests pass because the code detects the "
+        "test, not because the behaviour was fixed — " + "; ".join(evidence))
+    return True

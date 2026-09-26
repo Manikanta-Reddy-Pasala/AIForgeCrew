@@ -123,81 +123,108 @@ def _llm_review(prompt: str) -> dict[str, Any]:
 
     Model + endpoint come from :func:`_reviewer_endpoint`. With no model
     configured the review is SKIPPED (logged) rather than sent to an invented
-    model. Returns parsed JSON or ``{}`` on failure / skip.
+    model. A model that is DOWN is waited for (``model_wait``: probe, back off,
+    re-send once it answers — forever by default, ended by Stop / ticket cancel
+    / shutdown), like every other send. Returns parsed JSON or ``{}`` on
+    failure / skip / cancel.
     """
     ep = _reviewer_endpoint()
     if ep is None:
         log.warning("pr_reviewer: no model configured (set a model in the UI, "
                     "or AIFORGE_REVIEWER_MODEL) — PR review skipped")
         return {}
-    model = ep["model"]
     try:
         import litellm
     except ImportError:
         return {}
-    base = ep["api_base"]
-    api_key = ep["api_key"]
-    # Bound BEFORE the try: the failure handler below reads it, and an import
-    # that raises inside the try would otherwise leave it unbound there.
-    _tok = None
     try:
-        from aiforge_core.llm.user_agent import user_agent
-        # Under the same ceiling as every other transport. This one calls
-        # litellm directly rather than going through llm.client, so it was
-        # spending the gateway's allowance without ever telling the limiter —
-        # the same hole the structured path had, in a path that fires per PR.
-        try:
-            from aiforge_core.llm import rate_limiter as _rl
-            _, _tok = _rl.govern_send(role="pr_reviewer",
-                                      provider="openai_compatible",
-                                      model=model, max_wait_s=60.0)
-        except Exception:  # noqa: BLE001 — a limiter fault must not skip a review
-            pass
-        # The review is posted on the PR for people: the reply language
-        # (Settings) applies here too, like every llm.client call.
-        messages = [{"role": "user", "content": prompt}]
-        try:
-            from aiforge_core.config import response_language
-            messages = response_language.apply("pr_reviewer", messages)
-        except Exception:  # noqa: BLE001 — a language hint never costs a review
-            pass
-        # Same send shape as the pipeline's _build_one: shed params a strict
-        # endpoint rejects, reasoning off where the registry says so, and the
-        # TLS rule for a self-signed internal endpoint.
-        kwargs: dict[str, Any] = {"drop_params": True}
-        try:
-            from aiforge_core.llm import reasoning as _reasoning
-            if _reasoning.reasoning_off(model, base):
-                kwargs["extra_body"] = dict(_reasoning.NO_THINK_KWARGS)
-        except Exception:  # noqa: BLE001 — a reasoning hint never costs a review
-            pass
-        try:
-            from aiforge_core.runtime.escalating_llm._builder import (
-                _maybe_relax_tls,
-            )
-            _maybe_relax_tls(kwargs, ep, base)
-        except Exception:  # noqa: BLE001 — TLS relax is best-effort
-            pass
-        resp = litellm.completion(
-            model=model,
-            api_base=base, api_key=api_key,
-            extra_headers={"User-Agent": user_agent()},
-            messages=messages,
-            temperature=0.1, timeout=120, **kwargs,
-        )
-        text = resp["choices"][0]["message"]["content"]
-    except Exception as exc:  # noqa: BLE001
-        # Settle the meter token. A send counted at the gateway and never
-        # settled reads as a success, so the review that failed would be the
-        # one the operator cannot see.
-        try:
-            from aiforge_core.llm import call_meter as _meter
-            _meter.record_failure(_tok, "transport_" + type(exc).__name__[:24])
-        except Exception:  # noqa: BLE001 — metering never breaks a review
-            pass
+        from aiforge_core.llm import model_wait
+        send = _sender(litellm, ep, _review_messages(prompt))
+        text = model_wait.call_with_wait(
+            send, url=ep["api_base"], api_key=ep["api_key"],
+            model=ep["model"], what="pr_reviewer")
+    except Exception as exc:  # noqa: BLE001 — fail-open: no review, no crash
         log.warning("pr_reviewer LLM failed: %s", exc)
         return {}
     return _extract_review_json(text)
+
+
+def _review_messages(prompt: str) -> list[dict[str, Any]]:
+    # The review is posted on the PR for people: the reply language
+    # (Settings) applies here too, like every llm.client call.
+    messages = [{"role": "user", "content": prompt}]
+    try:
+        from aiforge_core.config import response_language
+        messages = response_language.apply("pr_reviewer", messages)
+    except Exception:  # noqa: BLE001 — a language hint never costs a review
+        pass
+    return messages
+
+
+def _send_kwargs(ep: dict[str, Any]) -> dict[str, Any]:
+    """Same send shape as the pipeline's _build_one: shed params a strict
+    endpoint rejects, reasoning off where the registry says so, and the TLS
+    rule for a self-signed internal endpoint."""
+    model, base = ep["model"], ep["api_base"]
+    kwargs: dict[str, Any] = {"drop_params": True}
+    try:
+        from aiforge_core.llm import reasoning as _reasoning
+        if _reasoning.reasoning_off(model, base):
+            kwargs["extra_body"] = dict(_reasoning.NO_THINK_KWARGS)
+    except Exception:  # noqa: BLE001 — a reasoning hint never costs a review
+        pass
+    try:
+        from aiforge_core.runtime.escalating_llm._builder import (
+            _maybe_relax_tls,
+        )
+        _maybe_relax_tls(kwargs, ep, base)
+    except Exception:  # noqa: BLE001 — TLS relax is best-effort
+        pass
+    return kwargs
+
+
+def _sender(litellm: Any, ep: dict[str, Any], messages: list) -> Any:
+    """One send, as a no-arg callable ``model_wait`` can re-run after an
+    outage. Every attempt is charged to the ceiling and settled on failure —
+    a re-send after the model came back is a real send."""
+    model = ep["model"]
+
+    def _send() -> str:
+        # Bound BEFORE the try: the failure handler below reads it, and an
+        # import that raises inside the try would otherwise leave it unbound.
+        _tok = None
+        try:
+            from aiforge_core.llm.user_agent import user_agent
+            # Under the same ceiling as every other transport. This one calls
+            # litellm directly rather than going through llm.client, so it was
+            # spending the gateway's allowance without telling the limiter.
+            try:
+                from aiforge_core.llm import rate_limiter as _rl
+                _, _tok = _rl.govern_send(role="pr_reviewer",
+                                          provider="openai_compatible",
+                                          model=model, max_wait_s=60.0)
+            except Exception:  # noqa: BLE001 — a limiter fault never skips a review
+                pass
+            resp = litellm.completion(
+                model=model,
+                api_base=ep["api_base"], api_key=ep["api_key"],
+                extra_headers={"User-Agent": user_agent()},
+                messages=messages,
+                temperature=0.1, timeout=120, **_send_kwargs(ep),
+            )
+            return resp["choices"][0]["message"]["content"]
+        except Exception as exc:
+            # Settle the meter token. A send counted at the gateway and never
+            # settled reads as a success, so the review that failed would be
+            # the one the operator cannot see.
+            try:
+                from aiforge_core.llm import call_meter as _meter
+                _meter.record_failure(_tok, "transport_" + type(exc).__name__[:24])
+            except Exception:  # noqa: BLE001 — metering never breaks a review
+                pass
+            raise
+
+    return _send
 
 
 def _extract_review_json(text: str) -> dict[str, Any]:
