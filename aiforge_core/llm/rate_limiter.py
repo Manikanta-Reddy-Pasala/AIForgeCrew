@@ -384,20 +384,28 @@ def govern_send(*, role: "str | None" = None, provider: "str | None" = None,
          small ``compaction_rpm`` bucket, everything else → ``chat_rpm``) both
          have room. Never fails; overruns are still counted.
       2. COUNT — record the request in the toolbar meter (skip with
-         ``meter=False`` for a path that meters at a different point, e.g. the
-         ADK path counts after the response so it can attach token usage).
+         ``meter=False`` for a path that meters at a different point — the
+         chat wire path needs a cancel-check between throttle and count; the
+         ADK path counts just before the generate so it can attach token
+         usage on the same token. Those paths MUST still call
+         ``call_meter.record`` themselves).
 
-    THE SEND PATHS ALL ROUTE THROUGH HERE:
+    THE SEND PATHS ALL ROUTE THROUGH HERE (also pinned by
+    ``test_all_send_paths_route_through_govern_send``):
       * ``llm.client._http`` — the chat / wire path
+        (``govern_send(meter=False)`` + ``_record_request``)
       * ``integrations.instructor_adapter`` — structured extractions (this is
-        the OKF / memory-compaction path, all on the 'learner' role)
+        the OKF / memory-compaction path, all on the 'learner' role;
+        httpx hooks call ``govern_send`` per actual send, including reasks)
       * ``runtime.escalating_llm`` — the ADK team-pipeline path
+        (``govern_send(meter=False)`` + ``_meter_record``)
       * ``runtime.pr_reviewer`` — the per-PR review call, which reaches litellm
         directly rather than through ``llm.client``
-    A NEW path that reaches a model MUST call this too. Skipping it makes that
-    traffic BOTH uncapped and invisible — the exact defect that let memory
-    compaction bypass the ceiling and never show on the meter. One place to add
-    a send path correctly; one place to change the policy.
+    A NEW path that reaches a model MUST call this too, and must be added to
+    that test's ``_SEND_PATHS``. Skipping it makes that traffic BOTH uncapped
+    and invisible — the exact defect that let memory compaction bypass the
+    ceiling and never show on the meter. One place to add a send path
+    correctly; one place to change the policy.
     """
     waited = acquire_global(max_wait_s=max_wait_s, provider=provider, role=role,
                             cancel=cancel)

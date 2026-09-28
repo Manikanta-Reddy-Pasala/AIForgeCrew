@@ -500,16 +500,47 @@ def test_govern_send_is_the_one_gateway_and_categorises_by_role(monkeypatch):
     assert tok is None
 
 
-def test_all_three_send_paths_route_through_govern_send():
-    """Guard against a future path bypassing the ceiling+meter: the three model
-    send paths must each call rate_limiter.govern_send."""
+# Every production send that reaches a model. Keep in lockstep with the
+# "THE SEND PATHS ALL ROUTE THROUGH HERE" list on rate_limiter.govern_send —
+# a new path that is not on BOTH lists is the next invisible/uncapped hole.
+_SEND_PATHS = (
+    "llm/client/_http.py",
+    "integrations/instructor_adapter.py",
+    "runtime/escalating_llm/_wrapper.py",
+    "runtime/pr_reviewer.py",
+)
+# Paths that pass meter=False to govern_send and therefore MUST call
+# call_meter.record themselves (cancel-check / token-usage timing). A path
+# that drops the record call while keeping meter=False is invisible again.
+# Markers are call-shaped so a leftover `def` alone cannot satisfy them.
+_METER_ELSEWHERE = {
+    "llm/client/_http.py": "_tok = _record_request(",
+    "runtime/escalating_llm/_wrapper.py": "= _meter_record(",
+}
+
+
+def test_all_send_paths_route_through_govern_send():
+    """Guard against a future path bypassing the ceiling+meter: every model
+    send path listed on govern_send must actually call it, and any path that
+    defers metering must still call call_meter.record (via its helper)."""
     import pathlib
     root = pathlib.Path(__file__).resolve().parents[3] / "aiforge_core"
-    for rel in ("llm/client/_http.py",
-                "integrations/instructor_adapter.py",
-                "runtime/escalating_llm/_wrapper.py"):
+    for rel in _SEND_PATHS:
         src = (root / rel).read_text()
         assert "govern_send(" in src, f"{rel} does not route through govern_send"
+        marker = _METER_ELSEWHERE.get(rel)
+        if marker is not None:
+            assert "meter=False" in src, (
+                f"{rel} is listed as metering elsewhere but never passes "
+                "meter=False — it would double-count if the helper also runs")
+            assert marker in src, (
+                f"{rel} passes meter=False but never counts the send "
+                f"(missing {marker})")
+        else:
+            # Default-metered paths: the gateway itself records. Disabling
+            # metering here without a helper would make them invisible again.
+            assert "meter=False" not in src, (
+                f"{rel} disables metering but has no listed count helper")
 
 
 def test_compaction_respects_its_ceiling_while_chat_overruns(monkeypatch):
