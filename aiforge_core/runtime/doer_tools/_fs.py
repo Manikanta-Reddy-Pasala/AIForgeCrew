@@ -12,7 +12,7 @@ import subprocess
 import threading
 
 from ..sandbox import resolve_inside_root, root
-from ..syntax_guard import validate_syntax
+from ..syntax_guard import attach_oversize, validate_syntax
 
 
 def _compact_digest(stdout: str, stderr: str, returncode) -> str:
@@ -215,8 +215,10 @@ def file_write(path: str, content: str) -> dict:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
         record_touch(path)
-        return {"ok": True, "path": path,
-                "bytes": len(content.encode("utf-8"))}
+        return attach_oversize(
+            {"ok": True, "path": path,
+             "bytes": len(content.encode("utf-8"))},
+            path, content)
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -240,9 +242,11 @@ def file_patch(path: str, old_text: str, new_text: str) -> dict:
         if count > 1:
             return {"ok": False, "error": "ambiguous_match",
                     "occurrences": count}
-        p.write_text(body.replace(old_text, new_text, 1), encoding="utf-8")
+        new_body = body.replace(old_text, new_text, 1)
+        p.write_text(new_body, encoding="utf-8")
         record_touch(path)
-        return {"ok": True, "path": path, "replaced": True}
+        return attach_oversize(
+            {"ok": True, "path": path, "replaced": True}, path, new_body)
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
 

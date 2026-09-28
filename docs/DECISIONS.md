@@ -31,6 +31,7 @@ each group.
 | Reconcile escalation: only the STUCK residual escalates to `AIFORGE_ESCALATION_MODEL` | A fresh reasoning model resolves what a looping coder can't; escalating every round would waste the big model | `runtime/review_gates.py` | 2026-07 |
 | Reconcile test-audit: a wrong test assertion may be corrected, visibly | Local models write buggy tests too; edits carry a `# test-audit:` marker; off via `AIFORGE_RECONCILE_TEST_AUDIT` | `parallel_subtasks/_reconcile/` | 2026-07 |
 | Simple-mode multi-file BUILD auto-escalates into the pipeline; Plan mode never does | One agent can't hold a multi-file build coherent; plan is read-only by contract | `runtime/chat_router.py` | 2026-07 |
+| KISS / SoC size nudge is ONE helper on EVERY write surface (simple chat + pipeline) | The Doer prompt already taught the ~500-line split, but only `editor` returned the warning — `file_write` / `file_patch` / `multi_edit` (chat) and Doer `file_write` / `file_patch` (pipeline) were silent, so simple chat and the team Doer drifted | `syntax_guard.attach_oversize`; chat `_shell` / `_skills`; `doer_tools/_fs`; `tools/editor` | 2026-09 |
 
 ## Memory & context
 

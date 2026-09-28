@@ -56,6 +56,25 @@ def test_force_writes_it_anyway(repo):
                             "force": True}, str(repo))["ok"] is True
 
 
+def test_an_oversized_code_write_warns_but_still_lands(repo, monkeypatch):
+    """Same KISS / SoC nudge the editor and the pipeline Doer return — a soft
+    warning, never a refused write."""
+    monkeypatch.setenv("AIFORGE_MAX_FILE_LINES", "500")
+    res = S._t_file_write({"path": "big.py", "content": "x = 1\n" * 600},
+                          str(repo))
+    assert res["ok"] is True
+    assert "warning" in res
+    assert "split" in res["warning"].lower()
+    assert (repo / "big.py").read_text().count("\n") == 600
+
+
+def test_a_small_code_write_has_no_size_warning(repo):
+    res = S._t_file_write({"path": "small.py", "content": "x = 1\n" * 40},
+                          str(repo))
+    assert res["ok"] is True
+    assert "warning" not in res
+
+
 def test_an_empty_file_is_not_syntax_checked(repo):
     assert S._syntax_check("a.py", "   ", {}) is None
 

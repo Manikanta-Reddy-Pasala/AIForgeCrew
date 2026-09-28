@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from aiforge_core.runtime.sandbox import resolve_inside_root, root
-from aiforge_core.runtime.syntax_guard import oversize_warning, validate_syntax
+from aiforge_core.runtime.syntax_guard import attach_oversize, validate_syntax
 
 from ._trace import emit
 
@@ -151,11 +151,9 @@ def _create(path: str, file_text: str | None) -> dict[str, Any]:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(file_text, encoding="utf-8")
     _record_touch(path)
-    res = {"ok": True, "path": path, "bytes": len(file_text.encode("utf-8"))}
-    w = oversize_warning(path, file_text)
-    if w:
-        res["warning"] = w
-    return res
+    return attach_oversize(
+        {"ok": True, "path": path, "bytes": len(file_text.encode("utf-8"))},
+        path, file_text)
 
 
 def _str_replace(
@@ -183,11 +181,8 @@ def _str_replace(
     _push_snapshot(p)
     p.write_text(new_body, encoding="utf-8")
     _record_touch(path)
-    res = {"ok": True, "path": path, "replaced": True}
-    w = oversize_warning(path, new_body)
-    if w:
-        res["warning"] = w
-    return res
+    return attach_oversize(
+        {"ok": True, "path": path, "replaced": True}, path, new_body)
 
 
 def _insert(
@@ -215,11 +210,8 @@ def _insert(
     _push_snapshot(p)
     p.write_text(new_body, encoding="utf-8")
     _record_touch(path)
-    res = {"ok": True, "path": path, "inserted_at": insert_line}
-    w = oversize_warning(path, new_body)
-    if w:
-        res["warning"] = w
-    return res
+    return attach_oversize(
+        {"ok": True, "path": path, "inserted_at": insert_line}, path, new_body)
 
 
 def _undo_edit(path: str) -> dict[str, Any]:

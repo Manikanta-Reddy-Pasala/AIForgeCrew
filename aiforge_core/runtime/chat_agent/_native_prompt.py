@@ -32,6 +32,11 @@ the code until it passes. A test you wrote this turn that contradicts \
 behaviour the existing suite accepts is wrong: correct that test, do not \
 delete it.
 
+Write clean code: DRY, KISS, one concern per function or module. Keep each \
+file under ~500 lines; if a write tool returns a 'warning' that the file is \
+over the cap, split it into concern-grouped modules instead of appending. \
+Same rule as the team pipeline Doer.
+
 Run commands without piping them into tail, head or grep: run_command \
 already keeps the end of the output, and a pipe hides errors until the \
 command ends. A command still running after a few seconds comes back as \

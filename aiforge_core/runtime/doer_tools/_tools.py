@@ -432,12 +432,18 @@ def github_pr(title: str, body: str = "", base: str = "main", head: str = "",
 def multi_edit(edits: list) -> dict:
     """Apply a BATCH of edits in ONE call. Each edit = ``{path, old_text,
     new_text}`` (first-match replace, file_patch semantics). Returns a per-edit
-    result list; ``ok`` is True only when every edit applied."""
+    result list; ``ok`` is True only when every edit applied.
+
+    The KISS / SoC oversize nudge is hoisted once onto the batch result (not
+    repeated on every per-edit entry) so N edits on one large file do not
+    spam the same warning N times.
+    """
     if not isinstance(edits, list) or not edits:
         return {"ok": False, "error": "edits must be a non-empty list of "
                 "{path, old_text, new_text}"}
     results = []
     ok_all = True
+    warning = None
     for i, e in enumerate(edits):
         if not isinstance(e, dict):
             results.append({"i": i, "ok": False, "error": "not an object"})
@@ -446,9 +452,15 @@ def multi_edit(edits: list) -> dict:
         r = file_patch(str(e.get("path") or ""),
                        str(e.get("old_text") or e.get("old_str") or ""),
                        str(e.get("new_text") or e.get("new_str") or ""))
+        if warning is None and r.get("warning"):
+            warning = r["warning"]
+        r = {k: v for k, v in r.items() if k != "warning"}
         results.append({"i": i, "path": e.get("path"), **r})
         ok_all = ok_all and bool(r.get("ok"))
-    return {"ok": ok_all, "results": results}
+    out = {"ok": ok_all, "results": results}
+    if warning:
+        out["warning"] = warning
+    return out
 
 
 # ─── Checking on a running command (run_shell hands back long ones) ────

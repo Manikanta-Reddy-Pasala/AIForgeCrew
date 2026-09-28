@@ -117,6 +117,17 @@ def test_a_write_creates_parents_and_records_the_touch(repo):
     assert _fs.touched_paths() == ["app/store.py"]
 
 
+def test_an_oversized_doer_write_warns_but_still_lands(repo, monkeypatch):
+    """Pipeline Doer used to skip the size nudge that chat's editor returned —
+    both surfaces now share syntax_guard.attach_oversize."""
+    monkeypatch.setenv("AIFORGE_MAX_FILE_LINES", "500")
+    out = _fs.file_write("big.py", "x = 1\n" * 600)
+    assert out["ok"] is True
+    assert "warning" in out
+    assert "separation of concerns" in out["warning"].lower()
+    assert (repo / "big.py").read_text().count("\n") == 600
+
+
 def test_a_draft_that_does_not_parse_never_reaches_disk(repo):
     out = _fs.file_write("a.py", "def (:\n")
     assert out["ok"] is False

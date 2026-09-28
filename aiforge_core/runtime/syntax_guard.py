@@ -186,4 +186,21 @@ def oversize_warning(path: str, content: str) -> str:
         return ""
 
 
-__all__ = ["validate_syntax", "oversize_warning"]
+def attach_oversize(result: dict, path: str, content: str) -> dict:
+    """Stamp ``warning`` on a successful write when the file is over the line
+    cap. ONE place every write path (simple-chat file_write/patch/multi_edit,
+    pipeline Doer file_write/patch, and the structured editor) calls — so the
+    KISS / separation-of-concerns nudge cannot drift per surface. No-op on a
+    failed write or when the file is within the cap. Never raises."""
+    try:
+        if not isinstance(result, dict) or not result.get("ok"):
+            return result
+        w = oversize_warning(path, content)
+        if w:
+            result["warning"] = w
+    except Exception:  # noqa: BLE001 — a nudge must never break a write
+        pass
+    return result
+
+
+__all__ = ["validate_syntax", "oversize_warning", "attach_oversize"]

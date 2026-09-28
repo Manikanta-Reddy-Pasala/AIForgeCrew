@@ -233,6 +233,7 @@ def _syntax_check(path: str, content: str, args: dict) -> str | None:
 
 
 def _t_file_write(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.syntax_guard import attach_oversize
     p = _resolve(cwd, args["path"])
     content = args.get("content", "")
     bad = _syntax_check(str(p), content, args)
@@ -241,10 +242,12 @@ def _t_file_write(args: dict, cwd: str) -> dict:
                 "hint": "fix the syntax, or pass force:true to write anyway"}
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
-    return {"ok": True, "path": str(p), "bytes": len(content)}
+    return attach_oversize(
+        {"ok": True, "path": str(p), "bytes": len(content)}, str(p), content)
 
 
 def _t_file_patch(args: dict, cwd: str) -> dict:
+    from aiforge_core.runtime.syntax_guard import attach_oversize
     p = _resolve(cwd, args["path"])
     if not p.is_file():
         return {"ok": False, "error": "not_found"}
@@ -261,7 +264,7 @@ def _t_file_patch(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": "syntax_invalid", "detail": bad,
                 "hint": "the edit would break the file; fix it or pass force:true"}
     p.write_text(new_body, encoding="utf-8")
-    return {"ok": True, "path": str(p)}
+    return attach_oversize({"ok": True, "path": str(p)}, str(p), new_body)
 
 
 def _t_list_dir(args: dict, cwd: str) -> dict:

@@ -195,7 +195,15 @@ def _t_multi_edit(args: dict, cwd: str) -> dict:
     written, err = _write_batch(batch)
     if err:
         return {"ok": False, "error": err}
-    return {"ok": True, "files": written, "edits_applied": len(edits)}
+    from aiforge_core.runtime.syntax_guard import attach_oversize
+    # Same helper every other write surface uses — first oversize file is
+    # enough; the agent splits that one next.
+    out = {"ok": True, "files": written, "edits_applied": len(edits)}
+    for ap, content in batch.pending.items():
+        attach_oversize(out, batch.rel_of.get(ap, ap), content)
+        if out.get("warning"):
+            break
+    return out
 
 
 def _t_typecheck(_args: dict, _cwd: str) -> dict:
