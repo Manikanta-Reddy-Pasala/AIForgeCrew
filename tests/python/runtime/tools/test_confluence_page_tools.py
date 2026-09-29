@@ -438,6 +438,25 @@ def test_a_title_that_exists_nowhere_is_not_an_error(rest):
     rest["replies"]["/rest/api/content"] = {"ok": True, "data": {"results": []}}
     out = confluence.confluence_page_by_title({"space": "ENG", "title": "Ghost"})
     assert out == {"ok": True, "found": False, "space": "ENG", "title": "Ghost"}
+    assert rest["calls"][1]["params"].get("status") == "draft"
+
+
+def test_a_draft_title_is_found_after_current_misses(rest):
+    calls = {"n": 0}
+
+    def _reply(_st):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"ok": True, "data": {"results": []}}
+        return {"ok": True, "data": {"results": [
+            {"id": "9", "title": "Draft Spec", "status": "draft",
+             "version": {"number": 1}}]}}
+
+    rest["replies"]["/rest/api/content"] = _reply
+    out = confluence.confluence_page_by_title({"space": "ENG", "title": "Draft Spec"})
+    assert out["found"] is True
+    assert out["id"] == "9"
+    assert out["status"] == "draft"
 
 
 def test_finding_by_title_needs_both_space_and_title(rest):

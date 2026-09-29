@@ -223,8 +223,8 @@ CATALOG: dict = {
     "jira_remote_links": ("Confluence pages + web links on an issue.",
                           {"key": "s"}, ("key",)),
     "jira_create": ("WRITE: create a NEW Jira issue marked as a draft instruction "
-                    "([DRAFT] summary prefix, draft banner on the description, "
-                    "`draft` label). Only when explicitly asked to create/file/raise one — never to look tickets up. "
+                    "([DRAFT] summary prefix + draft banner on the description). "
+                    "Only when explicitly asked to create/file/raise one — never to look tickets up. "
                     "Default, unless they asked for more or gave you the text: summary is one line; description is one outcome line, a short numbered flow, then one done-when line.",
                     {"project": "s", "summary": "s", "issuetype": "s",
                      "description": "s"}, ("project", "summary")),

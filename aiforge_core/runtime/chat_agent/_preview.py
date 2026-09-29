@@ -190,9 +190,9 @@ def _preview_jira_create(args: dict, cwd: str) -> str:
           + f"\n\n**Summary:** {summary}\n")
     # Preview the ACTUAL text that will be sent (draft banner + wiki), so what
     # you approve is what Jira stores — never the raw model args alone.
-    md += f"\n{_jira_md(description)}\n"
+    md += f"\n{_body_md(description, wiki=True)}\n"
     if args.get("labels"):
-        md += f"\n**Labels:** {_draft_labels(args['labels'])}\n"
+        md += f"\n**Labels:** {', '.join(_draft_labels(args['labels']))}\n"
     return md
 
 

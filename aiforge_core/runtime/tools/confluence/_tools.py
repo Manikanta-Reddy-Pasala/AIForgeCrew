@@ -351,23 +351,34 @@ def confluence_spaces(args: dict, _cwd: str | None = None) -> dict:
 
 def confluence_page_by_title(args: dict, _cwd: str | None = None) -> dict:
     """Find a page by exact ``title`` within a ``space`` (key). Returns id +
-    version — the handle you need to update or comment on it."""
+    version — the handle you need to update or comment on it. Tries published
+    pages first, then drafts (agent creates land unpublished)."""
     space = (args.get("space") or default_space() or "").strip()
     title = (args.get("title") or "").strip()
     if not space or not title:
         return {"ok": False, "error": "space and title are required"}
-    r = _request("GET", _REST_API_CONTENT,
-                 params={"spaceKey": space, "title": title,
-                         "expand": "version", "limit": 5})
+    params = {"spaceKey": space, "title": title,
+              "expand": "version", "limit": 5}
+    r = _request("GET", _REST_API_CONTENT, params=params)
     if not r["ok"]:
         return r
     d = r["data"] if isinstance(r["data"], dict) else {}
     res = d.get("results") or []
+    status = "current"
+    if not res:
+        r = _request("GET", _REST_API_CONTENT,
+                     params={**params, "status": "draft"})
+        if not r["ok"]:
+            return r
+        d = r["data"] if isinstance(r["data"], dict) else {}
+        res = d.get("results") or []
+        status = "draft"
     if not res:
         return {"ok": True, "found": False, "space": space, "title": title}
     p = res[0]
     return {"ok": True, "found": True, "id": p.get("id"),
             "title": p.get("title"),
+            "status": p.get("status") or status,
             "version": ((p.get("version") or {}) or {}).get("number"),
             "url": _page_url(p)}
 

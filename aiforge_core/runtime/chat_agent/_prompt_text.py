@@ -141,7 +141,7 @@ Tool arguments:
 - jira_dashboards {{}}                                                                  (list dashboards)
 - jira_dashboard_read {{"id": 10000}}                                                   (read a dashboard + its gadgets)
 - jira_dashboard_create {{"name": "Team Velocity", "description": "...", "share": "authenticated"}}   (create a dashboard — Cloud only; needs your Approve)
-- jira_create   {{"project": "ENG", "summary": "...", "issuetype": "Task", "description": "..."}}   (new issue marked as a *draft instruction* — ``[DRAFT]`` summary + banner + ``draft`` label; needs your Approve)
+- jira_create   {{"project": "ENG", "summary": "...", "issuetype": "Task", "description": "..."}}   (new issue marked as a *draft instruction* — ``[DRAFT]`` summary + draft banner on the description; needs your Approve)
 - jira_update   {{"key": "ENG-123", "summary": "...", "description": "...", "mode": "append", "labels": ["a","b"], "status": "In Progress"}}   (edit fields; `status` moves the workflow via a transition — needs your Approve. `description` is MERGED like confluence_update: mode append | prepend | replace_section (+section) | replace_text (+find) | replace (the COMPLETE description; refused if it drops content unless allow_loss). Keep the issue's existing Jira wiki markup as it is)
 - jira_transition {{"key": "ENG-123", "transition": "In Progress"}}                     (move status directly; `jira_transitions {{"key":"ENG-123"}}` lists what's available — needs your Approve)
 - jira_comments {{"key": "ENG-123"}}                                                    (READ the comments on an issue — use this for "what are the comments on X")

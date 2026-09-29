@@ -7,8 +7,10 @@ import urllib.parse
 from ..edit_merge import EditError, apply_edit
 
 # Jira has no native draft status, so every create gets visible draft notation:
-# a ``[DRAFT]`` summary prefix, a draft-instruction banner on the description,
-# and a ``draft`` label. Review-first — same intent as Confluence create-as-draft.
+# a ``[DRAFT]`` summary prefix and a draft-instruction banner on the description.
+# A ``draft`` label is added only when the caller already sent labels (many
+# create screens reject the Labels field). Review-first — same intent as
+# Confluence create-as-draft.
 _DRAFT_SUMMARY_PREFIX = "[DRAFT] "
 _DRAFT_LABEL = "draft"
 _DRAFT_DESC_BANNER = (
@@ -59,9 +61,10 @@ def jira_create(args: dict, _cwd: str | None = None) -> dict:
     ``description``, ``priority`` (name), ``labels`` (list), ``assignee``
     (name), ``parent`` (key, for sub-tasks).
 
-    Every new issue gets a ``[DRAFT]`` summary prefix, a draft-instruction
-    banner on the description, and a ``draft`` label. Jira has no draft
-    status — the notation is the review gate."""
+    Every new issue gets a ``[DRAFT]`` summary prefix and a draft-instruction
+    banner on the description. When ``labels`` are already requested, a
+    ``draft`` label is merged in. Jira has no draft status — the notation is
+    the review gate."""
     pkg = _pkg()
     if not args.get("project") and pkg.default_project():
         args = {**args, "project": pkg.default_project()}
