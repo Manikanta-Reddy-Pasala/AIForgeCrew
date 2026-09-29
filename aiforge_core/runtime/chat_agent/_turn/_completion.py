@@ -46,8 +46,9 @@ _RETRY_STOP = object()
 def _retry_plan(exc, _step_calls):
     """Compute the completion-retry plan: the retry count (env default, capped
     by the per-step generation budget, forced to 0 for a shipped read-timeout or
-    an unserved-model config error) plus the per-step budget and a config-error
-    message. Returns ``(retries, budget, cfg_error)``."""
+    an unserved-model config error) plus the per-step budget, a config-error
+    message, and how many generations the failed first call already spent.
+    Returns ``(retries, budget, cfg_error, spent0)``."""
     _cfg_error = ""
     _retries = 8
     try:
@@ -61,12 +62,17 @@ def _retry_plan(exc, _step_calls):
     # to twenty full generations for ONE step — every one of them
     # shipping the whole prompt and generating an answer nobody reads.
     # The meter already counts what this turn has actually sent, so
-    # spend the remaining budget instead of a fixed count.
+    # spend the remaining budget instead of a fixed count — BUT when the
+    # failed first call alone filled the ceiling, keep the configured
+    # chat sweeps. Clamping to 0 here was what surfaced "⚠️ The model
+    # didn't respond" with zero "⟳ retrying" thoughts for a briefly busy
+    # or loading model (exactly the case the message text names).
     _spent = int((_step_calls or {}).get("n") or 0)
     _budget = _max_gen_per_step()
     if _budget > 0:      # 0 = ceiling disabled, not "no retries"
-        _retries = min(_retries, max(0, _budget - _spent))
-
+        left = max(0, _budget - _spent)
+        if left > 0:
+            _retries = min(_retries, left)
 
     # A read timeout means the model RECEIVED this prompt and is
     # still generating it. Re-issuing the identical completion leaves
@@ -93,7 +99,7 @@ def _retry_plan(exc, _step_calls):
             _cfg_error = str(exc).split(" — ", 1)[-1].strip()
     except Exception:  # noqa: BLE001
         pass
-    return _retries, _budget, _cfg_error
+    return _retries, _budget, _cfg_error, _spent
 
 
 def _emit_completion_failure(_cfg_error, _meter, _step_tok, worked=False):
@@ -256,7 +262,10 @@ def _retry_completion(complete_fn, role, convo, session_id, exc,
     # actionable message.
     # AIFORGE_CHAT_LLM_RETRIES tunes the retry count (default 8) — a
     # local model that's loading/busy often needs a few passes.
-    _retries, _budget, _cfg_error = _retry_plan(exc, _step_calls)
+    _retries, _budget, _cfg_error, _spent0 = _retry_plan(exc, _step_calls)
+    # Snapshot BEFORE the outage path zeroes `_retries` — `_over_budget`
+    # needs the planned allowance, not the post-zero value.
+    _retry_allowance = _retries
     def _over_budget() -> bool:
         """Has this STEP spent its generation budget yet?
 
@@ -265,10 +274,17 @@ def _retry_completion(complete_fn, role, convo, session_id, exc,
         transport re-attempts a broken one, so a single sweep can burn
         four or twelve. Extrapolating the whole step from the first
         sample let a declared ceiling of 6 spend 12 — the very
-        multiplication this exists to stop."""
+        multiplication this exists to stop.
+
+        When the failed first call alone already filled the ceiling,
+        allow the planned chat sweeps on top of that sunk spend — otherwise
+        a busy/loading model surfaces "didn't respond" with no retry."""
         if _budget <= 0 or _step_calls is None:
             return False
-        return int(_step_calls.get("n") or 0) >= _budget
+        spent = int(_step_calls.get("n") or 0)
+        if _spent0 < _budget:
+            return spent >= _budget
+        return spent >= _spent0 + _retry_allowance
     out = None
     _last = exc
     # A model OUTAGE is not a bad answer: skip the sweep (its sends would only

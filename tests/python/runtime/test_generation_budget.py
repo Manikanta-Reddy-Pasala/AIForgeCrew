@@ -85,6 +85,33 @@ def test_the_ceiling_bounds_the_PRODUCT_not_the_sweep_count(monkeypatch):
     assert gens["n"] <= 8, f"{gens['n']} generations against a ceiling of 6"
 
 
+def test_a_budget_burning_first_call_still_gets_chat_retries(monkeypatch):
+    """The client layers (empty re-posts × transport retries) can spend the
+    whole per-step ceiling on the FIRST complete() that then raises. Clamping
+    chat sweeps to ``budget - spent`` then planned ZERO retries and the user
+    saw "⚠️ The model didn't respond" with no "⟳ retrying" — for a model that
+    was briefly busy. Chat sweeps must still run."""
+    monkeypatch.setenv("AIFORGE_CHAT_LLM_RETRIES", "3")
+    monkeypatch.setenv("AIFORGE_CHAT_MAX_GENERATIONS_PER_STEP", "6")
+    sid = 94
+    calls = {"n": 0}
+
+    def _complete(*_a, **_k):
+        calls["n"] += 1
+        # First complete alone fills the ceiling (what empty×transport costs).
+        for _ in range(6 if calls["n"] == 1 else 1):
+            call_meter.record("chat", session_id=sid)
+        raise RuntimeError("llm.exhausted role=chat")
+
+    out = list(_loop.run_chat_agent(
+        [{"role": "user", "content": "hi"}], session_id=sid, cwd=".",
+        complete_fn=_complete))
+    retries = [e for e in out if e.get("type") == "thought"
+               and "retrying" in e.get("text", "")]
+    assert retries, "expected chat-level ⟳ retrying thoughts, got none"
+    assert calls["n"] > 1, "chat never re-called the model after the first fail"
+
+
 def _run_unattended(gens_per_call=3, **_kw):
     """The same failing step, with NO session — jobs, text_doer, the analysis
     fan-out and parallel subtasks all call the loop this way."""
