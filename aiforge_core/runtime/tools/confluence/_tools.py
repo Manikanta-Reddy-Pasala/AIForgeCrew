@@ -116,8 +116,13 @@ def confluence_read(args: dict, _cwd: str | None = None) -> dict:
 
 
 def confluence_create(args: dict, cwd: str | None = None) -> dict:
-    """Create a page. Required: ``title``, ``space`` (key), ``body`` (storage
-    XHTML). Optional: ``parent_id``, ``representation`` (storage|wiki)."""
+    """Create a page as a *draft* (unpublished). Required: ``title``, ``space``
+    (key), ``body`` (storage XHTML). Optional: ``parent_id``,
+    ``representation`` (storage|wiki).
+
+    Every new page lands with Confluence ``status=draft`` so it is not live in
+    the space until someone publishes it in the UI (or a later update promotes
+    it). There is no opt-out — agent-created pages are review-first."""
     if not args.get("space") and default_space():
         args = {**args, "space": default_space()}
     for k in ("title", "space", "body"):
@@ -127,7 +132,9 @@ def confluence_create(args: dict, cwd: str | None = None) -> dict:
     # uploaded as attachments after the page exists (id needed).
     xhtml, img_refs = _storagify_media(md_to_storage(str(args["body"])))
     payload: dict = {
-        "type": "page", "title": args["title"],
+        "type": "page",
+        "status": "draft",
+        "title": args["title"],
         "space": {"key": args["space"]},
         "body": {"storage": {"value": xhtml,
                              "representation": args.get("representation", "storage")}},
@@ -139,6 +146,7 @@ def confluence_create(args: dict, cwd: str | None = None) -> dict:
         return r
     d = r["data"] if isinstance(r["data"], dict) else {}
     out = {"ok": True, "id": d.get("id"), "title": d.get("title"),
+           "status": d.get("status") or "draft",
            "url": _page_url(d),
            "written": {"title": d.get("title") or args["title"],
                        "body": xhtml[:2000]}}

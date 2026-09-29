@@ -1,7 +1,8 @@
 """Confluence (Server / Data Center) tool — search / read / create / update pages.
 
 Lets the chat agent pull a page in, analyse it, draft a new page, or edit an
-existing one. Server/DC REST API v1 (``/rest/api/content``).
+existing one. Server/DC REST API v1 (``/rest/api/content``). New pages are
+always created with ``status=draft`` (unpublished) until a human publishes.
 
 Config (env):
   CONFLUENCE_BASE_URL   e.g. https://confluence.internal  (no trailing /wiki)

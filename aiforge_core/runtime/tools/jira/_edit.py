@@ -6,6 +6,18 @@ import urllib.parse
 
 from ..edit_merge import EditError, apply_edit
 
+# Jira has no native draft status, so every create gets visible draft notation:
+# a ``[DRAFT]`` summary prefix, a draft-instruction banner on the description,
+# and a ``draft`` label. Review-first — same intent as Confluence create-as-draft.
+_DRAFT_SUMMARY_PREFIX = "[DRAFT] "
+_DRAFT_LABEL = "draft"
+_DRAFT_DESC_BANNER = (
+    "h3. DRAFT — for review only\n"
+    "This issue was filed as a *draft instruction*. "
+    "Review and edit before treating it as final work.\n"
+    "----\n\n"
+)
+
 
 def _pkg():
     """``jira``, the module this code was split from, looked up on each call.
@@ -16,32 +28,63 @@ def _pkg():
     return package
 
 
+def _draft_summary(summary: str) -> str:
+    text = str(summary or "").strip()
+    if text.upper().startswith("[DRAFT]"):
+        return text
+    return f"{_DRAFT_SUMMARY_PREFIX}{text}"
+
+
+def _draft_description(wiki_body: str) -> str:
+    body = str(wiki_body or "")
+    if "DRAFT — for review only" in body:
+        return body
+    return _DRAFT_DESC_BANNER + body
+
+
+def _draft_labels(labels) -> list:
+    if isinstance(labels, str):
+        labels = [s.strip() for s in labels.split(",") if s.strip()]
+    elif not isinstance(labels, list):
+        labels = []
+    out = [str(x) for x in labels if str(x).strip()]
+    if _DRAFT_LABEL not in {x.lower() for x in out}:
+        out.append(_DRAFT_LABEL)
+    return out
+
+
 def jira_create(args: dict, _cwd: str | None = None) -> dict:
-    """Create an issue. Required: ``project`` (key), ``summary``. Optional:
-    ``issuetype`` (name, default 'Task'), ``description``, ``priority`` (name),
-    ``labels`` (list), ``assignee`` (name), ``parent`` (key, for sub-tasks)."""
+    """Create an issue marked as a *draft instruction*. Required: ``project``
+    (key), ``summary``. Optional: ``issuetype`` (name, default 'Task'),
+    ``description``, ``priority`` (name), ``labels`` (list), ``assignee``
+    (name), ``parent`` (key, for sub-tasks).
+
+    Every new issue gets a ``[DRAFT]`` summary prefix, a draft-instruction
+    banner on the description, and a ``draft`` label. Jira has no draft
+    status — the notation is the review gate."""
     pkg = _pkg()
     if not args.get("project") and pkg.default_project():
         args = {**args, "project": pkg.default_project()}
     for k in ("project", "summary"):
         if not args.get(k):
             return {"ok": False, "error": f"missing '{k}'"}
+    summary = _draft_summary(args["summary"])
+    wiki = ""
+    if args.get("description"):
+        wiki = pkg.to_jira_wiki(str(args["description"]))
+    description = _draft_description(wiki)
+    labels = _draft_labels(args.get("labels"))
     fields: dict = {
         "project": {"key": args["project"]},
-        "summary": args["summary"],
+        "summary": summary,
         "issuetype": {"name": args.get("issuetype") or "Task"},
+        "description": description,
+        "labels": labels,
     }
-    if args.get("description"):
-        fields["description"] = pkg.to_jira_wiki(str(args["description"]))
     if args.get("priority"):
         fields["priority"] = {"name": args["priority"]}
     if args.get("assignee"):
         fields["assignee"] = {"name": args["assignee"]}
-    if args.get("labels"):
-        labels = args["labels"]
-        if isinstance(labels, str):
-            labels = [s.strip() for s in labels.split(",") if s.strip()]
-        fields["labels"] = labels
     if args.get("parent"):
         fields["parent"] = {"key": str(args["parent"])}
     r = pkg._request("POST", "/rest/api/2/issue", body={"fields": fields})
@@ -50,8 +93,9 @@ def jira_create(args: dict, _cwd: str | None = None) -> dict:
     d = r["data"] if isinstance(r["data"], dict) else {}
     key = d.get("key", "")
     return {"ok": True, "key": key, "url": pkg._issue_url(key),
-            "written": {"summary": args.get("summary"),
-                        "description": args.get("description")}}
+            "draft": True,
+            "written": {"summary": summary, "description": description,
+                        "labels": labels}}
 
 
 def _wanted_status(args: dict, raw_fields: dict) -> str:

@@ -167,12 +167,14 @@ def writer(monkeypatch):
 
 def test_a_page_is_created(rest, writer):
     rest["replies"]["/rest/api/content"] = {"ok": True, "data": {
-        "id": "9", "title": "Spec"}}
+        "id": "9", "title": "Spec", "status": "draft"}}
     out = confluence.confluence_create({"title": "Spec", "space": "ENG",
                                         "body": "hello"})
     assert out["id"] == "9"
+    assert out["status"] == "draft"
     assert out["written"]["title"] == "Spec"
     body = rest["calls"][0]["body"]
+    assert body["status"] == "draft"
     assert body["space"] == {"key": "ENG"}
     assert body["body"]["storage"]["value"] == "<p>hello</p>"
 

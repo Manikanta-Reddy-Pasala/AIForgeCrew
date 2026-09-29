@@ -286,16 +286,40 @@ def test_the_default_project_fills_a_missing_one(rest, monkeypatch):
 def test_every_optional_field_reaches_the_payload(rest, monkeypatch):
     monkeypatch.setattr(jira, "to_jira_wiki", lambda s: f"wiki:{s}")
     rest["replies"]["/issue"] = {"ok": True, "data": {"key": "ENG-7"}}
-    jira.jira_create({"project": "ENG", "summary": "s", "description": "d",
-                      "priority": "High", "assignee": "ada",
-                      "labels": "a, b", "parent": "ENG-1",
-                      "issuetype": "Bug"})
+    out = jira.jira_create({"project": "ENG", "summary": "s", "description": "d",
+                            "priority": "High", "assignee": "ada",
+                            "labels": "a, b", "parent": "ENG-1",
+                            "issuetype": "Bug"})
     fields = rest["calls"][0]["body"]["fields"]
     assert fields["issuetype"] == {"name": "Bug"}
-    assert fields["description"] == "wiki:d"
-    assert fields["labels"] == ["a", "b"]              # comma string split
+    assert fields["summary"] == "[DRAFT] s"
+    assert fields["description"].startswith("h3. DRAFT — for review only")
+    assert fields["description"].endswith("wiki:d")
+    assert fields["labels"] == ["a", "b", "draft"]     # comma string split + draft
     assert fields["parent"] == {"key": "ENG-1"}
     assert fields["assignee"] == {"name": "ada"}
+    assert out["draft"] is True
+
+
+def test_a_create_is_marked_as_a_draft_instruction(rest, monkeypatch):
+    monkeypatch.setattr(jira, "to_jira_wiki", lambda s: s)
+    rest["replies"]["/issue"] = {"ok": True, "data": {"key": "ENG-8"}}
+    jira.jira_create({"project": "ENG", "summary": "Ship it",
+                      "description": "do the thing"})
+    fields = rest["calls"][0]["body"]["fields"]
+    assert fields["summary"] == "[DRAFT] Ship it"
+    assert "draft instruction" in fields["description"]
+    assert fields["labels"] == ["draft"]
+
+
+def test_an_already_draft_summary_is_not_double_prefixed(rest, monkeypatch):
+    monkeypatch.setattr(jira, "to_jira_wiki", lambda s: s)
+    rest["replies"]["/issue"] = {"ok": True, "data": {"key": "ENG-9"}}
+    jira.jira_create({"project": "ENG", "summary": "[DRAFT] already",
+                      "labels": ["draft", "ops"]})
+    fields = rest["calls"][0]["body"]["fields"]
+    assert fields["summary"] == "[DRAFT] already"
+    assert fields["labels"] == ["draft", "ops"]
 
 
 def test_a_create_failure_is_returned(rest):

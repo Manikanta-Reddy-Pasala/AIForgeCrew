@@ -142,10 +142,13 @@ def test_create(cfg, monkeypatch):
                           "labels": "x, y", "parent": "ENG-1"})
     assert out["ok"]
     assert out["key"] == "ENG-99"
+    assert out["draft"] is True
     assert seen["method"] == "POST"
     assert seen["body"]["fields"]["project"]["key"] == "ENG"
     assert seen["body"]["fields"]["issuetype"]["name"] == "Bug"
-    assert seen["body"]["fields"]["labels"] == ["x", "y"]
+    assert seen["body"]["fields"]["summary"] == "[DRAFT] New"
+    assert "draft instruction" in seen["body"]["fields"]["description"]
+    assert seen["body"]["fields"]["labels"] == ["x", "y", "draft"]
     assert seen["body"]["fields"]["parent"]["key"] == "ENG-1"
     assert out["url"].endswith("/browse/ENG-99")
 

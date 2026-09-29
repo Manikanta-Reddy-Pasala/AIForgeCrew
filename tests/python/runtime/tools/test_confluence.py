@@ -78,13 +78,15 @@ def test_create_requires_fields(cfg):
 
 
 def test_create(cfg, monkeypatch):
-    seen = _capture(monkeypatch, {"id": "99", "title": "New",
+    seen = _capture(monkeypatch, {"id": "99", "title": "New", "status": "draft",
                                   "_links": {"webui": "/display/ENG/New"}})
     out = cf.confluence_create({"title": "New", "space": "ENG",
                                 "body": "<p>x</p>", "parent_id": "5"})
     assert out["ok"]
     assert out["id"] == "99"
+    assert out["status"] == "draft"
     assert seen["method"] == "POST"
+    assert seen["body"]["status"] == "draft"
     assert seen["body"]["space"]["key"] == "ENG"
     assert seen["body"]["ancestors"] == [{"id": "5"}]
     assert out["url"].endswith("/display/ENG/New")
