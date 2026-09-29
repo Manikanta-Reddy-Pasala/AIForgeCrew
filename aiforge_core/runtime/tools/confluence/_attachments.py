@@ -26,6 +26,10 @@ def _attachment_rows(pid: str) -> list:
     r = request("GET", f"/rest/api/content/{pid}/child/attachment",
                 params={"limit": 50})
     if not r.get("ok"):
+        # Draft pages need status=draft on the child listing too.
+        r = request("GET", f"/rest/api/content/{pid}/child/attachment",
+                    params={"limit": 50, "status": "draft"})
+    if not r.get("ok"):
         return []
     data = r["data"] if isinstance(r["data"], dict) else {}
     return data.get("results") or []

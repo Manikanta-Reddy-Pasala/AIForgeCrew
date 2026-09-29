@@ -109,9 +109,13 @@ def _storagify_media(body: str) -> tuple[str, list[dict]]:
 
 
 def _upload_attachment(pid: str, filename: str, data: bytes,
-                       content_type: str = "application/octet-stream") -> dict:
+                       content_type: str = "application/octet-stream",
+                       status: str | None = None) -> dict:
     """Upload (or replace) one attachment on a page via multipart. Idempotent:
-    an existing same-name attachment reports ok. Never raises."""
+    an existing same-name attachment reports ok. Never raises.
+
+    ``status="draft"`` targets an unpublished page (Server/DC defaults the
+    attachment container to ``current``, which 404s on agent-created drafts)."""
     if not _configured():
         return {"ok": False, "error": "confluence_not_configured"}
     # An attachment is FILE CONTENT leaving the box, which is a bigger step
@@ -137,6 +141,8 @@ def _upload_attachment(pid: str, filename: str, data: bytes,
     else:
         headers["Authorization"] = "Bearer " + c["token"]
     url = _base() + f"/rest/api/content/{pid}/child/attachment"
+    if status and status != "current":
+        url += "?status=" + urllib.parse.quote(status)
     req = urllib.request.Request(url, data=payload, headers=headers,
                                  method="POST")
     try:
@@ -205,9 +211,10 @@ def _resolve_image_bytes(src: str, cwd: str | None) -> tuple[bytes, str] | None:
     return _download_image(src, ct)
 
 
-def _upload_page_images(pid: str, refs: list[dict], cwd: str | None) -> list[dict]:
+def _upload_page_images(pid: str, refs: list[dict], cwd: str | None,
+                        status: str | None = None) -> list[dict]:
     """Upload every image the body referenced (local read / http download).
-    Returns per-image results."""
+    Returns per-image results. ``status`` is forwarded for draft pages."""
     results = []
     for ref in refs:
         got = _resolve_image_bytes(ref["src"], cwd)
@@ -216,5 +223,6 @@ def _upload_page_images(pid: str, refs: list[dict], cwd: str | None) -> list[dic
                             "error": f"unresolved: {ref['src']}"})
             continue
         data, ct = got
-        results.append(_upload_attachment(pid, ref["filename"], data, ct))
+        results.append(_upload_attachment(pid, ref["filename"], data, ct,
+                                          status=status))
     return results

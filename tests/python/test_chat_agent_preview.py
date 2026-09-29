@@ -9,11 +9,13 @@ def test_diff_preview_is_markdown_not_json_string():
     p = ca._diff_preview("jira_create",
                          {"project": "ENG", "summary": "Fix", "description": "## D"},
                          "/tmp")
-    assert p.startswith("### Create Jira issue")
+    assert p.startswith("### Create Jira issue (draft instruction)")
     # the body is previewed as what Jira will RENDER: converted to wiki the way
     # it is sent, then read back as Markdown ('## D' → 'h2. D' → a heading) —
     # never raw wiki markup the operator has to decode
     assert "**Project:**" in p
+    assert "**Summary:** [DRAFT] Fix" in p
+    assert "draft instruction" in p.lower() or "for review only" in p.lower()
     assert "## D" in p and "h2. D" not in p
     assert not p.lstrip().startswith("{")        # NOT a raw json dump
     # command / diff → fenced code so the renderer shows monospace; an unknown
@@ -42,6 +44,7 @@ def test_confluence_create_preview_is_readable_not_xml_fence():
     p = ca._diff_preview("confluence_create",
                          {"space": "ENG", "title": "Doc", "body": "<h2>H</h2><p>t</p>"},
                          "/tmp")
+    assert "draft — unpublished" in p
     assert "## H" in p
     assert "```xml" not in p
 

@@ -137,7 +137,7 @@ def _preview_command(args: dict, cwd: str) -> str:
 
 
 def _preview_confluence_create(args: dict, cwd: str) -> str:
-    return (f"### Create Confluence page\n\n"
+    return (f"### Create Confluence page (draft — unpublished)\n\n"
             f"**Space:** `{args.get('space', '?')}` · "
             f"**Title:** {args.get('title', '?')}\n\n"
             f"**Body:**\n\n"
@@ -177,19 +177,22 @@ def _preview_confluence_update(args: dict, cwd: str) -> str:
 
 
 def _preview_jira_create(args: dict, cwd: str) -> str:
+    from aiforge_core.runtime.tools.jira._edit import (
+        _draft_description, _draft_labels, _draft_summary)
     from aiforge_core.runtime.tools.jira_format import to_jira_wiki
-    md = (f"### Create Jira issue\n\n"
+    summary = _draft_summary(str(args.get("summary") or "?"))
+    wiki = to_jira_wiki(str(args["description"])) if args.get("description") else ""
+    description = _draft_description(wiki)
+    md = (f"### Create Jira issue (draft instruction)\n\n"
           f"**Project:** `{args.get('project', '?')}` · "
           f"**Type:** {args.get('issuetype', 'Task')}"
           + (f" · **Priority:** {args['priority']}" if args.get('priority') else "")
-          + f"\n\n**Summary:** {args.get('summary', '?')}\n")
-    if args.get("description"):
-        # Preview the ACTUAL Jira wiki markup that will be sent (single-*
-        # bold etc.), not the model's raw markdown — so what you approve
-        # is what Jira renders.
-        md += f"\n{_jira_md(args['description'])}\n"
+          + f"\n\n**Summary:** {summary}\n")
+    # Preview the ACTUAL text that will be sent (draft banner + wiki), so what
+    # you approve is what Jira stores — never the raw model args alone.
+    md += f"\n{_jira_md(description)}\n"
     if args.get("labels"):
-        md += f"\n**Labels:** {args['labels']}\n"
+        md += f"\n**Labels:** {_draft_labels(args['labels'])}\n"
     return md
 
 

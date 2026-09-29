@@ -309,7 +309,15 @@ def test_a_create_is_marked_as_a_draft_instruction(rest, monkeypatch):
     fields = rest["calls"][0]["body"]["fields"]
     assert fields["summary"] == "[DRAFT] Ship it"
     assert "draft instruction" in fields["description"]
-    assert fields["labels"] == ["draft"]
+    assert "labels" not in fields          # Labels field omitted when unused
+
+
+def test_a_create_without_description_still_gets_the_draft_banner(rest):
+    rest["replies"]["/issue"] = {"ok": True, "data": {"key": "ENG-8b"}}
+    jira.jira_create({"project": "ENG", "summary": "Bare"})
+    fields = rest["calls"][0]["body"]["fields"]
+    assert fields["summary"] == "[DRAFT] Bare"
+    assert fields["description"].startswith("h3. DRAFT — for review only")
 
 
 def test_an_already_draft_summary_is_not_double_prefixed(rest, monkeypatch):

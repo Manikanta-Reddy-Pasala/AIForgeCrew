@@ -73,14 +73,16 @@ def jira_create(args: dict, _cwd: str | None = None) -> dict:
     if args.get("description"):
         wiki = pkg.to_jira_wiki(str(args["description"]))
     description = _draft_description(wiki)
-    labels = _draft_labels(args.get("labels"))
     fields: dict = {
         "project": {"key": args["project"]},
         "summary": summary,
         "issuetype": {"name": args.get("issuetype") or "Task"},
         "description": description,
-        "labels": labels,
     }
+    # Only send labels when the caller already asked for some — many create
+    # screens reject the Labels field, and summary+banner is the draft gate.
+    if args.get("labels"):
+        fields["labels"] = _draft_labels(args.get("labels"))
     if args.get("priority"):
         fields["priority"] = {"name": args["priority"]}
     if args.get("assignee"):
@@ -92,10 +94,11 @@ def jira_create(args: dict, _cwd: str | None = None) -> dict:
         return r
     d = r["data"] if isinstance(r["data"], dict) else {}
     key = d.get("key", "")
+    written = {"summary": summary, "description": description}
+    if "labels" in fields:
+        written["labels"] = fields["labels"]
     return {"ok": True, "key": key, "url": pkg._issue_url(key),
-            "draft": True,
-            "written": {"summary": summary, "description": description,
-                        "labels": labels}}
+            "draft": True, "written": written}
 
 
 def _wanted_status(args: dict, raw_fields: dict) -> str:

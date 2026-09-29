@@ -160,8 +160,9 @@ def writer(monkeypatch):
                         lambda xhtml: (xhtml, ["img1.png"] if "img" in xhtml else []))
     uploads: list = []
     monkeypatch.setattr(ct, "_upload_page_images",
-                        lambda pid, refs, cwd: uploads.append((pid, refs, cwd))
-                        or [{"filename": "img1.png"}])
+                        lambda pid, refs, cwd, status=None: (
+                            uploads.append((pid, refs, cwd, status))
+                            or [{"filename": "img1.png"}]))
     return uploads
 
 
@@ -206,12 +207,43 @@ def test_inline_images_are_uploaded_after_the_page_exists(rest, writer):
                                         "body": "see img"})
     assert out["attachments"] == [{"filename": "img1.png"}]
     assert writer[0][0] == "9"                # uploaded against the new page id
+    assert writer[0][3] == "draft"            # draft container for the upload
 
 
 def test_a_failed_create_is_returned(rest, writer):
     rest["replies"]["/rest/api/content"] = {"ok": False, "error": "http 403"}
     assert confluence.confluence_create({"title": "t", "space": "E",
                                          "body": "b"})["ok"] is False
+
+
+def test_a_draft_page_is_found_when_current_404s(rest, monkeypatch):
+    monkeypatch.setattr(sys.modules["aiforge_core.runtime.tools.confluence"],
+                        "_fetch_attachments", lambda pid: [])
+    calls = {"n": 0}
+
+    def _reply(_st):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"ok": False, "error": "http 404"}
+        return {"ok": True, "data": {
+            "id": "9", "title": "Draft", "status": "draft",
+            "version": {"number": 1},
+            "body": {"storage": {"value": "<p>d</p>"}}}}
+
+    rest["replies"]["/rest/api/content/9"] = _reply
+    out = confluence.confluence_read({"id": "9"})
+    assert out["ok"] and out["status"] == "draft"
+    assert rest["calls"][1]["params"].get("status") == "draft"
+
+
+def test_updating_a_draft_keeps_it_unpublished(rest, writer):
+    rest["replies"]["/rest/api/content/9"] = {"ok": True, "data": {
+        "id": "9", "title": "Draft", "status": "draft",
+        "version": {"number": 1},
+        "body": {"storage": {"value": "<p>old</p>"}}}}
+    out = confluence.confluence_update({"id": "9", "body": "new"})
+    assert out["ok"] and out["status"] == "draft"
+    assert rest["calls"][-1]["body"]["status"] == "draft"
 
 
 # ─── updating ──────────────────────────────────────────────────────────
@@ -276,22 +308,38 @@ def test_a_file_is_uploaded_as_an_attachment(rest, monkeypatch):
     monkeypatch.setattr(ct, "_safe_filename", lambda src: "shot.png")
     seen: dict = {}
     monkeypatch.setattr(ct, "_upload_attachment",
-                        lambda pid, name, data, ct_: seen.update(
-                            pid=pid, name=name, ct=ct_) or {"ok": True})
+                        lambda pid, name, data, ct_, status=None: seen.update(
+                            pid=pid, name=name, ct=ct_, status=status)
+                        or {"ok": True})
     assert confluence.confluence_attach({"id": "1",
                                          "path": "/tmp/a.png"})["ok"] is True
-    assert seen == {"pid": "1", "name": "shot.png", "ct": "image/png"}
+    assert seen == {"pid": "1", "name": "shot.png", "ct": "image/png",
+                    "status": None}
 
 
 def test_an_explicit_filename_overrides_the_derived_one(rest, monkeypatch):
     monkeypatch.setattr(ct, "_resolve_image_bytes", lambda src, cwd: (b"d", "image/png"))
     seen: dict = {}
     monkeypatch.setattr(ct, "_upload_attachment",
-                        lambda pid, name, data, ct_: seen.setdefault("name", name)
-                        and {"ok": True} or {"ok": True})
+                        lambda pid, name, data, ct_, status=None: (
+                            seen.setdefault("name", name) and {"ok": True})
+                        or {"ok": True})
     confluence.confluence_attach({"id": "1", "url": "https://x/a.png",
                                   "filename": "diagram.png"})
     assert seen["name"] == "diagram.png"
+
+
+def test_attach_on_a_draft_passes_status_draft(rest, monkeypatch):
+    rest["replies"]["/rest/api/content/1"] = {"ok": True, "data": {
+        "id": "1", "status": "draft"}}
+    monkeypatch.setattr(ct, "_resolve_image_bytes",
+                        lambda src, cwd: (b"d", "image/png"))
+    seen: dict = {}
+    monkeypatch.setattr(ct, "_upload_attachment",
+                        lambda pid, name, data, ct_, status=None: seen.update(
+                            status=status) or {"ok": True})
+    confluence.confluence_attach({"id": "1", "path": "/tmp/a.png"})
+    assert seen["status"] == "draft"
 
 
 def test_attaching_needs_a_page_and_a_source():

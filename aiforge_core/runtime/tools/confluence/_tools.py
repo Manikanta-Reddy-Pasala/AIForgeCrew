@@ -25,6 +25,21 @@ def _request(method, path, **kw):
     return sys.modules[__package__]._request(method, path, **kw)
 
 
+def _get_content(pid: str, expand: str) -> dict:
+    """GET ``/content/{id}``, trying published then draft.
+
+    Agent-created pages land as ``status=draft``. Server/DC defaults GETs to
+    ``current``, so a bare id lookup 404s on a page we just created — fall
+    through to ``status=draft`` before giving up."""
+    params = {"expand": expand}
+    r = _request("GET", f"/rest/api/content/{pid}", params=params)
+    if r.get("ok"):
+        return r
+    r2 = _request("GET", f"/rest/api/content/{pid}",
+                  params={**params, "status": "draft"})
+    return r2 if r2.get("ok") else r
+
+
 # ─────────────────────────── tools ──────────────────────────────────
 
 def confluence_search(args: dict, _cwd: str | None = None) -> dict:
@@ -58,7 +73,8 @@ def confluence_search(args: dict, _cwd: str | None = None) -> dict:
 
 def _resolve_page_id(args: dict) -> "dict | str":
     """Resolve a page id from ``id`` or a ``title`` (+ optional ``space``)
-    lookup. Returns the id string, or an error dict when it can't be resolved."""
+    lookup. Returns the id string, or an error dict when it can't be resolved.
+    Title lookup tries published pages first, then drafts."""
     pid = args.get("id")
     if not pid and args.get("title"):
         params = {"title": args["title"], "expand": "version", "limit": 1}
@@ -69,6 +85,13 @@ def _resolve_page_id(args: dict) -> "dict | str":
         if not rr["ok"]:
             return rr
         res = (rr["data"].get("results") if isinstance(rr["data"], dict) else None) or []
+        if not res:
+            rr = _request("GET", _REST_API_CONTENT,
+                          params={**params, "status": "draft"})
+            if not rr["ok"]:
+                return rr
+            res = ((rr["data"].get("results") if isinstance(rr["data"], dict)
+                    else None) or [])
         if not res:
             return {"ok": False, "error": "page_not_found"}
         pid = res[0].get("id")
@@ -89,12 +112,11 @@ def _read_attachments(args: dict, doc_id) -> list:
 
 def confluence_read(args: dict, _cwd: str | None = None) -> dict:
     """Read a page (storage XHTML body). By ``id``, or ``title`` (+ optional
-    ``space`` key)."""
+    ``space`` key). Unpublished drafts are found automatically."""
     pid = _resolve_page_id(args)
     if isinstance(pid, dict):
         return pid                       # error dict from the lookup
-    r = _request("GET", f"/rest/api/content/{pid}",
-                 params={"expand": "body.storage,version,space"})
+    r = _get_content(str(pid), "body.storage,version,space")
     if not r["ok"]:
         return r
     if not isinstance(r["data"], dict):
@@ -103,6 +125,7 @@ def confluence_read(args: dict, _cwd: str | None = None) -> dict:
     body = (((d.get("body") or {}).get("storage") or {}).get("value") or "")
     out = {"ok": True, "id": d.get("id"), "title": d.get("title"),
            "space": (d.get("space") or {}).get("key"),
+           "status": d.get("status") or "current",
            "version": (d.get("version") or {}).get("number"),
            "body": body[:_BODY_CAP], "url": _page_url(d)}
     if len(body) > _BODY_CAP:
@@ -121,8 +144,9 @@ def confluence_create(args: dict, cwd: str | None = None) -> dict:
     ``representation`` (storage|wiki).
 
     Every new page lands with Confluence ``status=draft`` so it is not live in
-    the space until someone publishes it in the UI (or a later update promotes
-    it). There is no opt-out — agent-created pages are review-first."""
+    the space until someone publishes it in the UI. There is no opt-out —
+    agent-created pages are review-first. ``confluence_read`` /
+    ``confluence_update`` / attach find drafts by id automatically."""
     if not args.get("space") and default_space():
         args = {**args, "space": default_space()}
     for k in ("title", "space", "body"):
@@ -151,7 +175,8 @@ def confluence_create(args: dict, cwd: str | None = None) -> dict:
            "written": {"title": d.get("title") or args["title"],
                        "body": xhtml[:2000]}}
     if img_refs and d.get("id"):
-        out["attachments"] = _upload_page_images(str(d["id"]), img_refs, cwd)
+        out["attachments"] = _upload_page_images(
+            str(d["id"]), img_refs, cwd, status="draft")
     return out
 
 
@@ -196,8 +221,7 @@ def confluence_update(args: dict, cwd: str | None = None) -> dict:
     if not args.get("body") and not (
             args.get("body") == "" and mode in ("replace_section", "replace_text")):
         return {"ok": False, "error": "missing 'body'"}
-    cur = _request("GET", f"/rest/api/content/{pid}",
-                   params={"expand": "version,body.storage"})
+    cur = _get_content(str(pid), "version,body.storage")
     if not cur["ok"]:
         return cur
     if not isinstance(cur["data"], dict):
@@ -206,6 +230,7 @@ def confluence_update(args: dict, cwd: str | None = None) -> dict:
         return {"ok": False, "error": "could not read the current page (response "
                 "too large or unreadable) — not editing it"}
     d = cur["data"]
+    page_status = d.get("status") or "current"
     next_ver = ((d.get("version") or {}).get("number") or 0) + 1
     title = args.get("title") or d.get("title")
     current = (((d.get("body") or {}).get("storage") or {}).get("value") or "")
@@ -215,18 +240,25 @@ def confluence_update(args: dict, cwd: str | None = None) -> dict:
         return {"ok": False, "error": str(exc), "page_chars": len(current)}
     # Upload attachments FIRST (page id already exists) so the <ri:attachment>
     # references in the new body resolve as soon as the version is published.
-    attachments = _upload_page_images(str(pid), img_refs, cwd) if img_refs else []
+    att_status = "draft" if page_status == "draft" else None
+    attachments = (_upload_page_images(str(pid), img_refs, cwd, status=att_status)
+                   if img_refs else [])
     payload = {
         "type": "page", "title": title,
         "version": {"number": next_ver},
         # Always storage: the merged body IS the page's storage XHTML.
         "body": {"storage": {"value": xhtml, "representation": "storage"}},
     }
+    # Keep an unpublished draft unpublished — a bare PUT defaults to current
+    # and would silently publish it.
+    if page_status == "draft":
+        payload["status"] = "draft"
     r = _request("PUT", f"/rest/api/content/{pid}", body=payload)
     if not r["ok"]:
         return r
     rd = r["data"] if isinstance(r["data"], dict) else {}
     out = {"ok": True, "id": pid, "version": next_ver, "title": title,
+           "status": page_status,
            "mode": (args.get("mode") or "replace"),
            "url": _page_url(rd),
            # What THIS edit wrote: the whole page for a replace, else the part
@@ -244,7 +276,8 @@ def confluence_attach(args: dict, cwd: str | None = None) -> dict:
     to override the stored name. Reference it in the page body with
     ``<ac:image><ri:attachment ri:filename="NAME"/></ac:image>`` (images) or the
     view-file macro (docs). create/update do this automatically for images in
-    the body — use this for a standalone upload."""
+    the body — use this for a standalone upload. Draft pages get
+    ``?status=draft`` on the upload."""
     pid = args.get("id")
     if not pid:
         return {"ok": False, "error": _MISSING_ID}
@@ -256,7 +289,12 @@ def confluence_attach(args: dict, cwd: str | None = None) -> dict:
         return {"ok": False, "error": f"could not read {src}"}
     data, ct = got
     filename = str(args.get("filename") or _safe_filename(src))
-    return _upload_attachment(str(pid), filename, data, ct)
+    page = _get_content(str(pid), "version")
+    status = None
+    if page.get("ok") and isinstance(page.get("data"), dict):
+        if page["data"].get("status") == "draft":
+            status = "draft"
+    return _upload_attachment(str(pid), filename, data, ct, status=status)
 
 
 def confluence_children(args: dict, _cwd: str | None = None) -> dict:
