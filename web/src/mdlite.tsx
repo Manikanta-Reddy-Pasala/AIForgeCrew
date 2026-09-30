@@ -1,17 +1,19 @@
 /* mdlite — a compact, zero-dependency markdown renderer for chat answers
  * and action previews.
  *
- * Block level:  # headings, fenced ```code``` (with language label), GFM
+ * Block level:  # headings, fenced ```code``` (with language label), ```mermaid
+ *   (source beside a drawn preview), GFM
  *   tables, > blockquotes, --- horizontal rules, ordered (1.) and unordered
  *   (-, *, +) lists nested by indentation, blank-line paragraphs.
  * Inline level: **bold**, *italic* / _italic_, `code`, [text](url), and bare
  *   http(s) URLs (auto-linked). Formatting nests (bold inside a list item,
  *   code inside bold, …) except inside `code` and links, which stay literal.
  *
- * Kept dependency-free on purpose (deploy-anywhere clone-and-run) — no
- * react-markdown / remark transitive tree.
+ * No react-markdown / remark tree. The one extra library is mermaid, loaded
+ * only when a closed ```mermaid fence is on screen.
  */
 import React from 'react';
+import { MermaidPreview } from './mermaidPreview';
 import { legacyCopy } from './util';
 
 // Allow only safe link schemes — reject javascript:/data:/vbscript: etc. so a
@@ -197,16 +199,42 @@ function fenceBlock(lines: string[], i: number, k: number): Block {
   if (!/^\s*```/.test(line)) return null;
   const lang = line.replace(/^\s*```/, '').trim();
   const end = lines.findIndex((l, j) => j > i && /^\s*```/.test(l));
-  const stop = end === -1 ? lines.length : end;
+  const closed = end !== -1;
+  const stop = closed ? end : lines.length;
   const body = lines.slice(i + 1, stop).join('\n');
-  const node = lang === 'diff' ? renderDiffFence(body, k) : (
-    <CodeFence key={`p-${k}`} body={body}>
-    <pre data-lang={lang || undefined}>
-      <code>{body}</code>
-    </pre>
-    </CodeFence>
-  );
+  // An open fence is still streaming. Drawing it would re-parse every token
+  // and leave mermaid's error nodes on document.body.
+  const node = lang === 'diff'
+    ? renderDiffFence(body, k)
+    : closed && lang.toLowerCase() === 'mermaid'
+      ? renderMermaidFence(body, k)
+      : (
+        <CodeFence key={`p-${k}`} body={body}>
+        <pre data-lang={lang || undefined}>
+          <code>{body}</code>
+        </pre>
+        </CodeFence>
+      );
   return { node, next: stop + 1, k: k + 1 };
+}
+
+// Source on one side, the drawn diagram on the other, so a chat reply can be
+// reviewed and revised before anyone asks to commit the page.
+function renderMermaidFence(body: string, k: number): React.ReactNode {
+  return (
+    <div key={`p-${k}`} className="mermaid-pair">
+      <div className="mermaid-pane">
+        <div className="mermaid-pane-label">Mermaid</div>
+        <CodeFence body={body}>
+          <pre data-lang="mermaid"><code>{body}</code></pre>
+        </CodeFence>
+      </div>
+      <div className="mermaid-pane">
+        <div className="mermaid-pane-label">Preview</div>
+        <MermaidPreview source={body} />
+      </div>
+    </div>
+  );
 }
 
 // heading (# … ######)

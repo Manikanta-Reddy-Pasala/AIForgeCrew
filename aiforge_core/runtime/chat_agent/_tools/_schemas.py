@@ -266,7 +266,7 @@ CATALOG: dict = {
     "confluence_read": ("READ one Confluence page (id, or title+space).",
                         {"id": "s", "title": "s", "space": "s"}, ()),
     "confluence_create": ("WRITE: create a NEW Confluence page as an unpublished "
-                          "draft (status=draft). Only when explicitly asked to create one — never to look pages up. "
+                          "draft (status=draft). For a page with a mermaid diagram, the fence is shown in chat first; call this when a later message asks to commit or publish (or the same message already says commit/publish). Do not ASK permission — the Approve gate covers the call. Never use this to look pages up. "
                           "Default, unless they asked for more or gave you the text: a process page opens with a short numbered flow and a mermaid flowchart, then a few bullets or one small table. Do not invent a flowchart for notes or a reference table.",
                           {"title": "s", "space": "s", "body": "s",
                            "parent_id": "s"}, ("title", "space", "body")),

@@ -813,6 +813,27 @@ button.icon:hover:not(:disabled) { color: var(--fg-0); background: var(--bg-3); 
   border: 1px solid var(--border-0); padding: 4px 10px; text-align: left;
 }
 .md-table th { background: var(--bg-2); font-weight: 600; }
+/* Mermaid in chat: source beside the drawn diagram. Panes wrap when the
+   bubble is narrow, so the preview sits under the source instead of crushing it. */
+.mermaid-pair {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start;
+  margin: 8px 0;
+}
+.mermaid-pane { flex: 1 1 280px; min-width: 0; }
+.mermaid-pane-label {
+  font-size: var(--fs-xs); font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--fg-2); margin: 0 0 4px;
+}
+.mermaid-preview {
+  /* Always a light canvas: mermaid's neutral theme draws dark ink, and a
+     dark chat bubble would hide the labels. */
+  background: #fff; color: #1d2332; border: 1px solid var(--border-0);
+  border-radius: var(--r-md); padding: 8px; min-height: 72px; overflow: auto;
+}
+.mermaid-preview-svg svg { max-width: 100%; height: auto; display: block; }
+.mermaid-preview-status { font-size: var(--fs-sm); color: var(--fg-2); padding: 8px; }
+.mermaid-preview-error { color: var(--err); }
+
 .md-body { white-space: normal; }
 .md-body p { margin: 0 0 8px; }
 .md-body ul, .md-body ol { margin: 6px 0; padding-left: 22px; }

@@ -292,9 +292,14 @@ crisp by default and show the flow instead of an essay. A new ticket summary \
 is one line. A new description is one outcome line, the flow as a short \
 numbered list, then one done-when line. A new Confluence page about a process \
 opens with that same numbered flow, and a ```mermaid flowchart of it, then a \
-few bullets or one small table. A page that is not a process (notes, a \
-glossary, a reference table) is those bullets or that table — do not invent a \
-flowchart. A new comment is one or two sentences. When EDITING an existing \
+few bullets or one small table. A page with a ```mermaid diagram is reviewed \
+in chat first: put the fence in the reply (the chat draws the diagram beside \
+the source) and stop with FINAL. Revise that fence when they ask for changes, \
+and stop again. On a later message that asks to commit or publish, call \
+confluence_create — do not ASK permission; the Approve gate covers that call. \
+If that same message already says commit or publish, call the tool in that \
+turn. A page that is not a process (notes, a glossary, a reference table) is \
+those bullets or that table — do not invent a flowchart. A new comment is one or two sentences. When EDITING an existing \
 ticket or page, keep its structure and change only what was asked. If the \
 user gave you the text, post it as given. Write the long version when they \
 asked for detail or a full write-up. The message you send afterwards is the \

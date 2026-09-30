@@ -128,6 +128,9 @@ def test_jira_and_confluence_default_to_a_crisp_flow():
     assert "write crisp by default" in _SYSTEM
     assert "When EDITING an existing" in _SYSTEM
     assert "post it as given" in _SYSTEM
+    assert "draws the diagram beside the source" in _SYSTEM
+    assert "asks to commit or publish" in _SYSTEM
+    assert "do not ASK permission" in _SYSTEM
     out, _ = gate_catalog(_SYSTEM, set())
     assert "write crisp by default" in out
     by_name = {name: desc for name, (desc, _props, _req) in CATALOG.items()}
