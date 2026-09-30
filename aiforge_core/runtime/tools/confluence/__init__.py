@@ -49,6 +49,7 @@ from ._media import (
     _diagram_mode,
     _mermaid_macro,
     _mermaid_macro_name,
+    repair_mermaid,
     _resolve_image_bytes,
     _safe_filename,
     _storagify_media,

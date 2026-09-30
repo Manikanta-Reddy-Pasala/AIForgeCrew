@@ -73,6 +73,71 @@ def _safe_filename(src: str) -> str:
     return fn or "image.png"
 
 
+_FLOW_SQUARE = re.compile(
+    r"(?<![(\[])([A-Za-z_][\w]*)\[(?![(\[\\/])([^\]\n]*)\]")
+_FLOW_DIAMOND = re.compile(
+    r"(?<!\{)([A-Za-z_][\w]*)\{(?![{])([^}\n]*)\}")
+
+
+_QUOTED_SPAN = re.compile(r'"[^"\n]*"')
+_EDGE_LABEL = re.compile(r"--(?!>)([^>\n]*?)(?=-->)")
+
+
+def _is_flowchart(source: str) -> bool:
+    for line in source.splitlines():
+        text = line.strip()
+        if not text or text.startswith("%%"):
+            continue
+        return bool(re.match(r"(?i)^(flowchart|graph)\b", text))
+    return False
+
+
+def _quoted_label(text: str) -> str:
+    return '"' + text.replace("\\n", "<br/>").replace('"', "#quot;") + '"'
+
+
+def _hold(text: str, held: list, pattern: re.Pattern) -> str:
+    """Replace each match with a placeholder so a later pass cannot see it."""
+    def _sub(m: re.Match) -> str:
+        held.append(m.group(0))
+        return f"\x00Q{len(held) - 1}\x00"
+    return pattern.sub(_sub, text)
+
+
+def _restore(text: str, held: list) -> str:
+    for i in range(len(held) - 1, -1, -1):
+        text = text.replace(f"\x00Q{i}\x00", held[i])
+    return text
+
+
+def _quote_risky(source: str, pattern: re.Pattern, wrap) -> str:
+    def _sub(m: re.Match) -> str:
+        text = m.group(2)
+        if "(" not in text and ")" not in text:
+            return m.group(0)
+        return wrap(m.group(1), _quoted_label(text))
+    return pattern.sub(_sub, source)
+
+
+def repair_mermaid(source: str) -> str:
+    """Quote flowchart node labels that contain raw parentheses.
+
+    ``A[step (detail)]`` and ``B{check (detail)}`` are parse errors: Mermaid
+    reads the ``(`` as a new shape. Quoted labels are legal. Text that is
+    already quoted, an unquoted ``-- label -->`` edge, cylinders
+    ``id[(text)]``, stadiums ``id([text])``, and slash shapes ``id[/text/]``
+    stay as written. Other diagram types are unchanged."""
+    if not _is_flowchart(source):
+        return source
+    out = re.sub(r"\\+:::", ":::", source)
+    held: list = []
+    out = _hold(out, held, _QUOTED_SPAN)
+    out = _hold(out, held, _EDGE_LABEL)
+    out = _quote_risky(out, _FLOW_SQUARE, lambda i, t: f"{i}[{t}]")
+    out = _quote_risky(out, _FLOW_DIAMOND, lambda i, t: f"{i}{{{t}}}")
+    return _restore(out, held)
+
+
 def _storagify_media(body: str) -> tuple[str, list[dict]]:
     """Rewrite mermaid/code fences + markdown/HTML images into storage macros.
 
@@ -85,7 +150,7 @@ def _storagify_media(body: str) -> tuple[str, list[dict]]:
     mode = _diagram_mode()
 
     def _mermaid(m):
-        code = m.group(1).rstrip()
+        code = repair_mermaid(m.group(1).rstrip())
         if mode == "mermaid":
             return _mermaid_macro(code)
         # 'code' (default): a code macro with the mermaid source, in place —

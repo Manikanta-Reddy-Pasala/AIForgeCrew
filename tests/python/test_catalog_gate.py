@@ -129,6 +129,7 @@ def test_jira_and_confluence_default_to_a_crisp_flow():
     assert "When EDITING an existing" in _SYSTEM
     assert "post it as given" in _SYSTEM
     assert "draws the diagram beside the source" in _SYSTEM
+    assert "unquoted square or curly label is a parse error" in _SYSTEM
     assert "asks to commit or publish" in _SYSTEM
     assert "do not ASK permission" in _SYSTEM
     out, _ = gate_catalog(_SYSTEM, set())

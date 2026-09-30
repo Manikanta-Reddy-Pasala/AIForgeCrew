@@ -14,6 +14,7 @@
  */
 import React from 'react';
 import { MermaidPreview } from './mermaidPreview';
+import { repairMermaid } from './repairMermaid';
 import { legacyCopy } from './util';
 
 // Allow only safe link schemes — reject javascript:/data:/vbscript: etc. so a
@@ -221,17 +222,20 @@ function fenceBlock(lines: string[], i: number, k: number): Block {
 // Source on one side, the drawn diagram on the other, so a chat reply can be
 // reviewed and revised before anyone asks to commit the page.
 function renderMermaidFence(body: string, k: number): React.ReactNode {
+  // The source pane shows the same text the preview draws, so a label that
+  // had to be quoted is what gets copied and later committed.
+  const source = repairMermaid(body);
   return (
     <div key={`p-${k}`} className="mermaid-pair">
       <div className="mermaid-pane">
         <div className="mermaid-pane-label">Mermaid</div>
-        <CodeFence body={body}>
-          <pre data-lang="mermaid"><code>{body}</code></pre>
+        <CodeFence body={source}>
+          <pre data-lang="mermaid"><code>{source}</code></pre>
         </CodeFence>
       </div>
       <div className="mermaid-pane">
         <div className="mermaid-pane-label">Preview</div>
-        <MermaidPreview source={body} />
+        <MermaidPreview source={source} />
       </div>
     </div>
   );

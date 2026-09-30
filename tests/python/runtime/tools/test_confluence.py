@@ -218,6 +218,37 @@ def test_storagify_mermaid_code_and_image(monkeypatch):
     assert "![chart]" not in out
 
 
+def test_parentheses_inside_flowchart_labels_are_quoted():
+    src = ("flowchart TD\n"
+           "  A[step (detail)] --> B{check (detail)}\n"
+           "  C([Start]) --> D[(cylinder)]\n"
+           "  E[\"already (quoted)\"]")
+    out = cf.repair_mermaid(src)
+    assert 'A["step (detail)"]' in out
+    assert 'B{"check (detail)"}' in out
+    assert "C([Start])" in out
+    assert "D[(cylinder)]" in out
+    # A label that is already quoted is not wrapped again.
+    assert 'E["already (quoted)"]' in out
+    edge = "flowchart TD\n  E -- see note[fig (a)] --> F\n"
+    assert cf.repair_mermaid(edge) == edge
+    quoted = ('flowchart TD\n  A["retry{n (max)}"]\n'
+              '  B{"see A[step (detail)]"}\n')
+    assert cf.repair_mermaid(quoted) == quoted
+    slash = "flowchart TD\n  A[/Read config (yaml)/]\n"
+    assert cf.repair_mermaid(slash) == slash
+    assert cf.repair_mermaid("sequenceDiagram\n  A->>B: hi (x)").startswith(
+        "sequenceDiagram")
+
+
+def test_a_saved_page_gets_the_quoted_mermaid(monkeypatch):
+    monkeypatch.delenv("AIFORGE_CONFLUENCE_DIAGRAM", raising=False)
+    out, refs = cf._storagify_media(
+        "```mermaid\nflowchart TD\n  A[step (detail)]\n```")
+    assert 'A["step (detail)"]' in out
+    assert refs == []
+
+
 def test_storagify_mermaid_macro_env_override(monkeypatch):
     monkeypatch.setenv("AIFORGE_CONFLUENCE_DIAGRAM", "mermaid")
     monkeypatch.setenv("AIFORGE_CONFLUENCE_MERMAID_MACRO", "mermaid-cloud")

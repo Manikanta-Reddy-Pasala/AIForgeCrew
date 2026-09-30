@@ -292,7 +292,11 @@ crisp by default and show the flow instead of an essay. A new ticket summary \
 is one line. A new description is one outcome line, the flow as a short \
 numbered list, then one done-when line. A new Confluence page about a process \
 opens with that same numbered flow, and a ```mermaid flowchart of it, then a \
-few bullets or one small table. A page with a ```mermaid diagram is reviewed \
+few bullets or one small table. A node label that contains parentheses must \
+be quoted — A["step (detail)<br/>next"] and B{{"check (detail)"}} — because a \
+raw parenthesis inside an unquoted square or curly label is a parse error \
+and the diagram will not draw. A page \
+with a ```mermaid diagram is reviewed \
 in chat first: put the fence in the reply (the chat draws the diagram beside \
 the source) and stop with FINAL. Revise that fence when they ask for changes, \
 and stop again. On a later message that asks to commit or publish, call \
