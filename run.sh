@@ -1158,8 +1158,11 @@ _lock_changed() {                        # $1 = dir
 }
 if [[ $SKIP_WEB -eq 0 ]]; then
   _web_stale() {
+    # vite.config.ts is in the set because it copies the on-device speech
+    # runtime into dist/speech/. A src-only check would skip that rebuild.
     [[ ! -f web/dist/index.html ]] || [[ -n "$(find web/src web/index.html \
-      web/package.json web/package-lock.json -newer web/dist/index.html 2>/dev/null | head -1)" ]]
+      web/vite.config.ts web/package.json web/package-lock.json \
+      -newer web/dist/index.html 2>/dev/null | head -1)" ]]
   }
   if ! command -v npm >/dev/null 2>&1; then
     echo "!! No npm — the web UI cannot be built. Node normally comes with the" >&2
