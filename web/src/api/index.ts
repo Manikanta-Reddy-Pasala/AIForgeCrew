@@ -12,3 +12,4 @@ export * from './chat';
 export * from './mcp';
 export * from './integrations';
 export * from './rules';
+export * from './projects';

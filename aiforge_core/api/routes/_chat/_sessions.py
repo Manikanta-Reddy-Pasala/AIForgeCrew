@@ -28,6 +28,10 @@ class _RenameBody(BaseModel):
     title: str = Field(..., min_length=1)
 
 
+class _LearnBody(BaseModel):
+    learn: bool = Field(..., description="false = write no memory from this chat")
+
+
 def _chat_workspace_root() -> str:
     return os.environ.get(
         "AIFORGE_CHAT_WORKSPACE_ROOT",
@@ -116,13 +120,38 @@ def chat_session_create(body: _NewSessionBody) -> dict:
             warm_repo_map(s.get("cwd") or body.cwd)
         except Exception:  # noqa: BLE001
             pass
+        # A chat opened on a project folder: mirror its memory brief into the
+        # repo's .aiforge folder and read its instruction files once.
+        try:
+            from aiforge_core.memory import projects as _projects
+            if _projects.project_of(body.cwd):
+                _projects.open_project(body.cwd)
+        except Exception:  # noqa: BLE001 — never blocks opening a chat
+            pass
     return s
 
 
+def _same_folder(cwd: str | None, want: str) -> bool:
+    """Whether a session's cwd IS ``want`` or sits inside it."""
+    if not cwd:
+        return False
+    try:
+        a = os.path.realpath(str(cwd))
+        b = os.path.realpath(want)
+    except Exception:  # noqa: BLE001
+        return False
+    return a == b or a.startswith(b + os.sep)
+
+
 @router.get("/api/chat/sessions")
-def chat_session_list() -> list[dict]:
+def chat_session_list(cwd: str | None = None) -> list[dict]:
+    """Every chat, newest first. ``cwd`` keeps only the chats opened on that
+    folder — a project's own list."""
     from aiforge_core.runtime import chat_store
-    return chat_store.list_sessions()
+    rows = chat_store.list_sessions()
+    if cwd:
+        rows = [r for r in rows if _same_folder(r.get("cwd"), cwd)]
+    return rows
 
 
 def _sweep_orphan_session_dirs() -> int:
@@ -234,6 +263,17 @@ def chat_session_spec(session_id: int) -> dict:
 def chat_session_rename(session_id: int, body: _RenameBody) -> dict:
     from aiforge_core.runtime import chat_store
     s = chat_store.rename_session(session_id, body.title)
+    if not s:
+        raise HTTPException(404, f"session {session_id} not found")
+    return s
+
+
+@router.patch("/api/chat/sessions/{session_id}/learn", responses={404: {"description": "Not found"}})
+def chat_session_set_learn(session_id: int, body: _LearnBody) -> dict:
+    """Switch memory writes on or off for ONE chat. Off = nothing this chat
+    says is learned, folded or captured; reading memory is unaffected."""
+    from aiforge_core.runtime import chat_store
+    s = chat_store.set_session_learn(session_id, body.learn)
     if not s:
         raise HTTPException(404, f"session {session_id} not found")
     return s

@@ -209,7 +209,15 @@ def _project_brief(cwd: str) -> str:
     """Chat-side wrapper: resolve the repo from ``cwd`` then assemble the brief
     (project ∪ linked ∪ global) via :func:`project_brief_text`."""
     from aiforge_core.runtime import repo_ident
-    return project_brief_text(repo_ident.repo_name(cwd, sentinel=""))
+    repo = repo_ident.repo_name(cwd, sentinel="")
+    # Pick up a MEMORY.md the user edited (or pulled) in the repo before
+    # reading the brief it mirrors.
+    try:
+        from aiforge_core.memory import projects as _projects
+        _projects.sync_for_repo(repo)
+    except Exception:  # noqa: BLE001 — the mirror never breaks a turn
+        pass
+    return project_brief_text(repo)
 
 
 def _repo_notes(cwd: str) -> str:

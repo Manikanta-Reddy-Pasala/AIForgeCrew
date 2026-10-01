@@ -39,6 +39,28 @@ def git_toplevel(cwd: "str | None") -> "str | None":
     return top
 
 
+def chat_scratch_root() -> str:
+    """Where chats that were not opened on a project get their own folder."""
+    from aiforge_core.config.paths import config_dir
+    return os.environ.get(
+        "AIFORGE_CHAT_WORKSPACE_ROOT",
+        os.path.join(os.path.expanduser(str(config_dir())), "chat-workspaces"))
+
+
+def is_chat_scratch(cwd: "str | None") -> bool:
+    """True when ``cwd`` is a chat's auto-created scratch folder
+    (``chat-workspaces/session-<id>``) rather than a real project."""
+    if not cwd or not str(cwd).strip():
+        return False
+    try:
+        root = os.path.realpath(chat_scratch_root())
+        target = os.path.realpath(str(cwd))
+    except Exception:  # noqa: BLE001
+        return False
+    return (target != root and target.startswith(root + os.sep)
+            and os.path.basename(target).startswith("session-"))
+
+
 def repo_name(cwd: "str | None", *, sentinel: str = "repo") -> str:
     """Canonical repo key: git-toplevel basename → cwd basename →
     ``AIFORGE_AFM_REPO`` → ``sentinel``."""
@@ -68,4 +90,5 @@ def normalize_repo(name: "str | None") -> str:
     return n
 
 
-__all__ = ["git_toplevel", "repo_name", "normalize_repo"]
+__all__ = ["git_toplevel", "repo_name", "normalize_repo",
+           "chat_scratch_root", "is_chat_scratch"]

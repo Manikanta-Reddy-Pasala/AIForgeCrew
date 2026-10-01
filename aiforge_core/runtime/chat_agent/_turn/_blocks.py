@@ -17,6 +17,12 @@ from .._tools import (
 )
 
 
+def _brief_every_turn() -> bool:
+    """Whether the memory brief is repeated on every turn rather than sent
+    once with the first message (``AIFORGE_CHAT_BRIEF``: ``first`` | ``every``)."""
+    return os.environ.get("AIFORGE_CHAT_BRIEF", "first").strip().lower() == "every"
+
+
 def _append_session_blocks(add, cwd, messages, session_id, role):
     """Append per-session context: attached-image descriptions (and return this
     turn's vision image parts), the execution ledger, and the optional OKR-DAG
@@ -94,11 +100,18 @@ def _append_learning_recall(add, bundle, last_user, session_id, proactive,
             add("recall", _bundle.memory_md)
         # Tell the model it HAS memory + the tools to reach it, so it pulls
         # only what THIS turn needs.
-        add("memory-tools",
-            "MEMORY: the project brief and anything already recalled for this "
-            "turn are above. That context is already gathered. Do not call "
-            "memory_lookup for it. Look something up only when it is not "
-            "already in this prompt.")
+        if _is_init or _brief_every_turn():
+            add("memory-tools",
+                "MEMORY: the project brief and anything already recalled for "
+                "this turn are above. That context is already gathered. Do not "
+                "call memory_lookup for it. Look something up only when it is "
+                "not already in this prompt.")
+        else:
+            add("memory-tools",
+                "MEMORY: the project brief was given with the first message of "
+                "this chat and is not repeated. If this turn needs a project "
+                "fact, decision or convention that is not in the conversation, "
+                "call memory_lookup for it.")
 
 def _append_recall_blocks(add, bundle, cwd, last_user, messages, session_id,
                           role, proactive, is_init):
@@ -199,9 +212,13 @@ def _append_context_blocks(add, cwd, last_user, messages, session_id, role, cave
         cwd, last_user, cave=cave, ctx_on=_ctx, session_id=session_id,
         want_rules=False, want_prefs=False,
         want_repo_map=not _plain, want_summary=not _plain)
-    # Project memory (compacted per-repo brief) — small + high-value; the
-    # "you already know this repo" anchor. Always injected.
-    add("project-memory", _bundle.project_brief_md)
+    # Project memory (compacted per-repo brief, then the global brief) — the
+    # "you already know this repo" anchor. Sent with the FIRST message of a
+    # chat only: repeating it on every turn spent its whole budget again each
+    # time. Later turns reach memory through the memory tools.
+    # AIFORGE_CHAT_BRIEF=every restores the per-turn behaviour.
+    if _is_init or _brief_every_turn():
+        add("project-memory", _bundle.project_brief_md)
     # Seed memory / concept index — a compact TOC of EVERY brief so the agent
     # knows what memory exists to recall (the "amnesia" fix: a model never queries
     # memory it doesn't know is there). Gated by AIFORGE_SEED_TOC; embedded only.

@@ -149,6 +149,9 @@ def _chat_learn_writeback(cwd, prompt, final_text, steps, session_id,
     so chat work never reached long-term memory. Distils + persists durable
     facts. Best-effort — a failure here must never affect the turn."""
     try:
+        from aiforge_core.runtime import chat_store as _cs
+        if not _cs.session_learns(session_id):
+            return                  # the user switched learning off for this chat
         from aiforge_core.runtime import chat_learner, preference_capture
         from aiforge_core.runtime.chat_agent import _chat_repo_key
         # Same key resolution as RECALL (_chat_repo_key, git-toplevel basename) —
@@ -210,6 +213,8 @@ def _chat_summarize_session(cwd, session_id) -> None:
                 "AIFORGE_CHAT_SUMMARY_EVERY", "4")))
         except (TypeError, ValueError):
             every = 4
+        if not chat_store.session_learns(session_id):
+            return
         n = len(chat_store.get_messages(session_id))
         if n <= 0 or n % every != 0:
             return

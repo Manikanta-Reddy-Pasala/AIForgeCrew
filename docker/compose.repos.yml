@@ -5,5 +5,8 @@ services:
   aiforge:
     environment:
       AIFORGE_REPO_ROOT: ${AIFORGE_REPOS_DIR}
+      # The Projects page lists this folder's children. REPO_ROOT is rebound
+      # to one repo per ticket run, so the projects root has its own name.
+      AIFORGE_PROJECTS_ROOT: ${AIFORGE_REPOS_DIR}
     volumes:
       - ${AIFORGE_REPOS_DIR}:${AIFORGE_REPOS_DIR}

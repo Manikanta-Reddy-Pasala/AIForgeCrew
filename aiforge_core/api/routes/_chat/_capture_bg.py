@@ -210,7 +210,10 @@ def begin(pc) -> None:
     yet: see :func:`kick`."""
     pc._bg_capture = None
     try:
+        from aiforge_core.runtime import chat_store as _cs
         from aiforge_core.runtime import rule_capture as _rc
+        if not _cs.session_learns(pc.session_id):
+            return
         if not _rc.should_classify(pc.prompt):
             return
         pc._bg_capture = BgCapture(pc.prompt, pc.cwd, pc.session_id,

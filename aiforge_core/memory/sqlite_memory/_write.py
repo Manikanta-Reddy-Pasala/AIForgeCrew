@@ -160,6 +160,27 @@ def delete_by_source(source: str) -> int:
         return cur.rowcount or 0
 
 
+def delete_by_repo(repo: str) -> int:
+    """Delete every unit filed under ``repo`` — "forget this project". Repo is
+    required and matched exactly, so global (NULL/shared) rows are untouched.
+    Returns the count removed."""
+    repo = (repo or "").strip()
+    if not repo or repo == "shared":
+        return 0
+    with _LOCK, _conn() as c:
+        cur = c.execute("DELETE FROM memory_units WHERE repo = ?", (repo,))
+        return cur.rowcount or 0
+
+
+def repo_counts() -> dict:
+    """``{repo: rows}`` for every repo-scoped unit (global rows excluded)."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT repo, COUNT(*) AS n FROM memory_units "
+            "WHERE repo IS NOT NULL GROUP BY repo").fetchall()
+    return {r["repo"]: int(r["n"]) for r in rows}
+
+
 def delete_by_text_contains(fragment: str, *, repo: str,
                             exclude_kind: str | None = None) -> int:
     """Delete units under ``repo`` whose stored text CONTAINS ``fragment``.

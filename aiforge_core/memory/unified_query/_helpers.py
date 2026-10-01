@@ -32,6 +32,7 @@ _DEFAULT_WEIGHTS = {
     "chat":       0.6,   # prior chat-session message content (chat_store)
     "keyword":    0.9,   # BM25 keyword/exact-id recall (FTS5), fused with vector
     "recent":     0.7,   # hot cache: most-recently-written units (fresh facts)
+    "cross":      0.6,   # another project's memory, offered to a chat recall
 }
 
 

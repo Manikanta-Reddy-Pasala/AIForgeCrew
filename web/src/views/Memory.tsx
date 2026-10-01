@@ -5,6 +5,7 @@ import { NotesPanel } from './Memory.NotesPanel';
 import { OkrPanel } from './Memory.OkrPanel';
 import { OverviewPanel } from './Memory.OverviewPanel';
 import { SourcesPanel } from './Memory.SourcesPanel';
+import { ProjectsPanel } from './Memory.ProjectsPanel';
 
 // ─── Main Memory page ─────────────────────────────────────────────────────────
 
@@ -26,6 +27,9 @@ export default function Memory() {
 
       {/* Hybrid search — same engine the agents use */}
       <SearchPanel />
+
+      {/* One project's memory: read, edit, compact, stale facts, forget */}
+      <ProjectsPanel />
 
       {/* Markdown briefs (the memory: auto-written + compacted after chat runs) */}
       <NotesPanel />

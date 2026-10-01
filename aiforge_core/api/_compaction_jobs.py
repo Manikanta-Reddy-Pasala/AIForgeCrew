@@ -222,6 +222,17 @@ def _dedupe_memory() -> None:
         _pkg()._af_log.warning("memory dedup failed: %s", exc)
 
 
+def _maintain_project_memory() -> None:
+    """Daily upkeep of each chat project's memory: move facts about files that
+    no longer exist to the stale list, and fold a brief that outgrew its cap."""
+    try:
+        from aiforge_core.memory import projects
+        _pkg()._af_log.info("project memory upkeep: %s",
+                            projects.compact_over_cap())
+    except Exception as exc:  # noqa: BLE001
+        _pkg()._af_log.warning("project memory upkeep failed: %s", exc)
+
+
 def _recompact_all() -> bool:
     """Daily FULL RECOMPACT — the hourly chat-compact only folds briefs with NEW
     live captures; a fact-only brief whose topic saw no new note keeps raw Facts
@@ -319,6 +330,8 @@ def _register_hourly_jobs(_pd, hour: int) -> None:
     _pd.register("reindex", _r_memory._spawn_reindex_all, every_s=every_h * 3600)
     _pd.register("memory-dedup", _dedupe_memory,
                  at_hour=max(0, min(23, hour + 3)))
+    _pd.register("project-memory", _maintain_project_memory,
+                 at_hour=max(0, min(23, hour + 4)))
 
 
 def _register_legacy_compaction(_pd) -> None:

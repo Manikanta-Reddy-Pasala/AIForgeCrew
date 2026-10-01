@@ -14,7 +14,7 @@ class _RecallCtx:
     / ``raw_hits`` are the accumulators each source appends to."""
 
     def __init__(self, *, text, ticket, role, limit, repo, exclude_session,
-                 boost_tags, weights, pkg):
+                 boost_tags, weights, pkg, cross_project=False):
         self.text = text
         self.ticket = ticket
         self.role = role
@@ -24,6 +24,10 @@ class _RecallCtx:
         self.boost_tags = boost_tags
         self.weights = weights
         self.pkg = pkg
+        # A CHAT recall ranks its own project first and may also be offered
+        # memory from outside it. Off for tickets and the pipeline, where a
+        # scoped task must not see another task's memory.
+        self.cross_project = bool(cross_project)
         self.used: list[str] = []
         self.errors: list[str] = []
         self.raw_hits: list[dict] = []
@@ -262,6 +266,101 @@ def _src_global_vector(ctx: "_RecallCtx") -> None:
         ctx.errors.append(f"vector: {exc}")
 
 
+_GLOBAL_REPOS = ("", "shared")
+# Buckets that are not a project and are kept out of scoped recall on purpose:
+# hand-dropped notes and per-session summaries ("notes"), and the rule books
+# ("rules"). Prior chats are already reached by the chat source.
+_NOT_A_PROJECT = ("notes", "rules")
+
+
+def _float_env(key: str, default: float) -> float:
+    try:
+        return float(os.environ.get(key, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _general_key() -> str:
+    from aiforge_core.memory.projects import GENERAL
+    return GENERAL
+
+
+def _cross_project_on(ctx: "_RecallCtx") -> bool:
+    return (ctx.cross_project and bool(ctx._repo_or_env())
+            and os.environ.get("AIFORGE_UMEM_CROSS_PROJECT", "1") == "1")
+
+
+def _src_cross_project(ctx: "_RecallCtx") -> None:
+    """1d) Memory from OUTSIDE the chat's own scope — other projects, and the
+    general bucket chats without a project write to.
+
+    The scoped sources above only see this project plus global. This one looks
+    at everything else, and is deliberately hard to get through: a row must
+    clear a relevance floor (``AIFORGE_UMEM_CROSS_MIN_SCORE``) and at most
+    ``AIFORGE_UMEM_CROSS_MAX`` are offered, at a lower weight, so an unrelated
+    project can never crowd out the chat's own memory. A row from another
+    project carries the ``project`` it came from so the prompt can say so."""
+    if not _cross_project_on(ctx):
+        return
+    try:
+        from aiforge_core.memory import backend_select as _bsel
+        if not _bsel.embedded():
+            return
+        from aiforge_core.memory import sqlite_memory as _sqlmem
+        own = ctx._repo_or_env()
+        floor = _float_env("AIFORGE_UMEM_CROSS_MIN_SCORE", 0.45)
+        cap = max(0, int(_float_env("AIFORGE_UMEM_CROSS_MAX", 2)))
+        if cap <= 0:
+            return
+        rows = _sqlmem.recall(ctx.text, limit=max(ctx.limit * 3, 12), repo=None,
+                              boost_tags=ctx.boost_tags)
+        keep = []
+        for r in rows:
+            rp = (r.get("repo") or "").strip()
+            if rp in _GLOBAL_REPOS or rp == own or rp in _NOT_A_PROJECT:
+                continue
+            if float(r.get("score") or 0.0) < floor:
+                continue
+            # The shared no-project bucket is "outside" but is not a project
+            # to name in the prompt.
+            keep.append({**r, **({} if rp == _general_key() else {"project": rp})})
+            if len(keep) >= cap:
+                break
+        if keep:
+            ctx.used.append("cross")
+            ctx.raw_hits.extend(ctx.pkg._tag(keep, source="cross",
+                                             weight=ctx.weights["cross"]))
+    except Exception as exc:  # noqa: BLE001
+        ctx.errors.append(f"cross: {exc}")
+
+
+def _same_project_first(ctx: "_RecallCtx", rows: list) -> list:
+    """Prior-chat hits reordered so sessions of THIS project come first. The
+    rows keep their rank-descending scores, reassigned in the new order."""
+    if not (_cross_project_on(ctx) and rows):
+        return rows
+    try:
+        from aiforge_core.runtime import chat_store
+        from aiforge_core.runtime.chat_agent import _chat_repo_key
+        own = ctx._repo_or_env()
+        cache: dict = {}
+
+        def _mine(r: dict) -> bool:
+            sid = str(r.get("group") or "").partition(":")[2]
+            if sid not in cache:
+                sess = chat_store.get_session(int(sid)) if sid.isdigit() else None
+                cwd = (sess or {}).get("cwd")
+                cache[sid] = bool(cwd) and _chat_repo_key(cwd) == own
+            return cache[sid]
+
+        ordered = [r for r in rows if _mine(r)] + [r for r in rows if not _mine(r)]
+        n = len(ordered)
+        return [{**r, "score": 1.0 - (i / max(1, n))}
+                for i, r in enumerate(ordered)]
+    except Exception:  # noqa: BLE001 — ordering is a nicety, never a failure
+        return rows
+
+
 def _src_chat(ctx: "_RecallCtx") -> None:
     """9) Prior chat-session content (gap F3). Chat messages live in their own
     chat_store silo the pipeline never read. Surface as a low-weight source so it
@@ -274,6 +373,7 @@ def _src_chat(ctx: "_RecallCtx") -> None:
     try:
         rows = ctx.pkg._chat_sessions(ctx.text, limit=ctx.limit,
                                       exclude_session=ctx.exclude_session)
+        rows = _same_project_first(ctx, rows or [])
         if rows:
             ctx.used.append("chat")
             ctx.raw_hits.extend(ctx.pkg._tag(rows, source="chat",

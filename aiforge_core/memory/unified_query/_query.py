@@ -31,6 +31,7 @@ from ._query_sources import (  # noqa: F401  # re-exported
     _recent_min_overlap,
     _relevant_recent,
     _src_chat,
+    _src_cross_project,
     _src_doc,
     _src_external,
     _src_global_vector,
@@ -58,10 +59,40 @@ from ._sources import (
 )
 
 _RECALL_SOURCES = (
-    _src_sqlite_recall, _src_keyword, _src_recent, _src_ticket, _src_related,
+    _src_sqlite_recall, _src_keyword, _src_recent, _src_cross_project,
+    _src_ticket, _src_related,
     _src_symbol, _src_graphify, _src_doc, _src_external,
     _src_global_vector, _src_chat,
 )
+
+
+def _own_project_boost() -> float:
+    """How much a hit from the chat's OWN project is lifted over a global hit
+    of the same relevance (``AIFORGE_UMEM_OWN_PROJECT_BOOST``, default 0.15;
+    0 = ranked together as before)."""
+    try:
+        return max(0.0, float(
+            os.environ.get("AIFORGE_UMEM_OWN_PROJECT_BOOST", "0.15")))
+    except (TypeError, ValueError):
+        return 0.15
+
+
+def _boost_own_project(ctx: "_RecallCtx", hits: list) -> None:
+    """Project first, global second: lift this project's own rows in place.
+    Chat recalls only (``cross_project``) — ticket and pipeline ranking is
+    unchanged."""
+    if not getattr(ctx, "cross_project", False):
+        return
+    own = ctx._repo_or_env()
+    boost = _own_project_boost()
+    if not own or boost <= 0.0:
+        return
+    for h in hits:
+        if (h.get("repo") or "") == own:
+            try:
+                h["score"] = float(h.get("score") or 0.0) * (1.0 + boost)
+            except (TypeError, ValueError):
+                continue
 
 
 def _fuse_and_rank(ctx: "_RecallCtx") -> "tuple[list[dict], list[dict]]":
@@ -78,6 +109,7 @@ def _fuse_and_rank(ctx: "_RecallCtx") -> "tuple[list[dict], list[dict]]":
         hits = pkg._normalize_scores(hits)
     except Exception as exc:  # noqa: BLE001 — ranking must never break query
         errors.append(f"normalize: {exc}")
+    _boost_own_project(ctx, hits)
     hits.sort(key=lambda h: -float(h.get("score") or 0))
     # Snapshot the ranked hits BEFORE cross-channel dedup so the API can show
     # each channel's OWN results (the flat list collapses a brief that matched
@@ -223,8 +255,13 @@ def query(
     exclude_session: int | None = None,
     session_id: int | None = None,
     boost_tags: list[str] | None = None,
+    cross_project: bool = False,
 ) -> dict:
     """Unified retrieval. Returns ``{hits, used_sources, errors}``.
+
+    ``cross_project`` (chat recalls) — rank ``repo``'s own memory first and
+    also offer the few most relevant rows from outside it (other projects, the
+    general chat bucket), each labelled with its ``project``.
 
     ``repo`` (optional) — repository scope for the recall sources that take
     one. Falls back to the ``AIFORGE_AFM_REPO`` env var when omitted. (The
@@ -247,7 +284,7 @@ def query(
         return {"hits": [], "used_sources": [], "errors": []}
 
     _ck = (text.strip().lower(), repo or "", role or "", int(limit),
-           exclude_session, tuple(sorted(boost_tags or ())))
+           exclude_session, tuple(sorted(boost_tags or ())), bool(cross_project))
     _ttl = _pkg._qcache_ttl()
     if _ttl > 0:
         _hit = _QCACHE.get(_ck)
@@ -256,7 +293,8 @@ def query(
 
     ctx = _RecallCtx(text=text, ticket=ticket, role=role, limit=limit, repo=repo,
                      exclude_session=exclude_session, boost_tags=boost_tags,
-                     weights=_pkg._resolve_weights(), pkg=_pkg)
+                     weights=_pkg._resolve_weights(), pkg=_pkg,
+                     cross_project=cross_project)
     for source in _RECALL_SOURCES:
         source(ctx)
 

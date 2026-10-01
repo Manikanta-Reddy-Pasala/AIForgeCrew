@@ -34,7 +34,9 @@ from ._api import (
     search_messages,
     set_media_description,
     set_message_checkpoint,
+    session_learns,
     set_session_cwd,
+    set_session_learn,
     set_session_role,
 )
 from ._helpers import (

@@ -58,7 +58,10 @@ def fold_sync(session_id: int) -> dict:
     ≤30 minutes the old idle daemon left.
     """
     try:
-        from aiforge_core.runtime import chat_okr
+        from aiforge_core.runtime import chat_okr, chat_store
+        if not chat_store.session_learns(session_id):
+            return {"ok": True, "skipped": "learning off for this chat",
+                    "captured": 0}
         repo = _repo_for(session_id)
         out: dict = {}
         captured = 0

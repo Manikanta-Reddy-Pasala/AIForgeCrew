@@ -102,6 +102,13 @@ def capture(kind: str, text: str, *, repo: str | None = None,
         _brief_upsert(repo or "shared", text, topic=topic)
     except Exception:  # noqa: BLE001  # brief upkeep never breaks a write
         pass
+    # A project's brief is mirrored into <repo>/.aiforge/memory/MEMORY.md.
+    if repo:
+        try:
+            from aiforge_core.memory import projects as _projects
+            _projects.sync_for_repo(repo)
+        except Exception:  # noqa: BLE001  # the mirror never breaks a write
+            pass
     return res
 
 

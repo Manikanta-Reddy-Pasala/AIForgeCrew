@@ -116,7 +116,7 @@ def _group_key(h: dict) -> str:
 # low number there means "last of several real matches", not "irrelevant", so
 # a floor would cut good hits. Those channels are bounded at their source
 # instead (the recent channel gates on query overlap, graphify on repo scope).
-_COSINE_CHANNELS = frozenset({"memory", "vector"})
+_COSINE_CHANNELS = frozenset({"memory", "vector", "cross"})
 
 
 def _min_relevance() -> float:

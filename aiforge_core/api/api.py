@@ -114,6 +114,7 @@ from aiforge_core.api.routes import library as _r_library  # noqa: E402
 from aiforge_core.api.routes import mcp as _r_mcp  # noqa: E402
 from aiforge_core.api.routes import memory as _r_memory  # noqa: E402
 from aiforge_core.api.routes import observability as _r_observability  # noqa: E402
+from aiforge_core.api.routes import projects as _r_projects  # noqa: E402
 from aiforge_core.api.routes import repos as _r_repos  # noqa: E402
 from aiforge_core.api.routes import rules as _r_rules  # noqa: E402
 from aiforge_core.api.routes import runtime as _r_runtime  # noqa: E402
@@ -122,6 +123,7 @@ from aiforge_core.api.routes import tickets as _r_tickets  # noqa: E402
 
 app.include_router(_r_jobs.router)
 app.include_router(_r_repos.router)
+app.include_router(_r_projects.router)
 app.include_router(_r_library.router)
 app.include_router(_r_rules.router)
 app.include_router(_r_mcp.router)

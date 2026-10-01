@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { NavLink, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { api, chatApi, chatSessionMessageURL, chatSessionAttachURL, chatSessionStop, chatSessionSteer, chatKillAll, chatMediaUpload, chatMediaList, chatMediaDescribe, chatMediaDelete, ChatMedia, chatSessionSpec, rules as fetchRules, ruleFlags, CapturedRule, GateFlags, ChatSession, ChatMsg, ChatModelEntry } from '../api';
 import { Icon } from '../icons';
@@ -510,14 +510,20 @@ function copyText(t: string) {
                      () => toast.error('Copy failed'));
 }
 
-export default function Chat() {
+/** A chat opened from the Projects page: its sessions are the ones on this
+ *  folder, and a new chat starts there. */
+export interface ChatProject { name: string; path: string }
+
+export default function Chat({ project }: { project?: ChatProject } = {}) {
+  // Each project remembers its own last-open chat.
+  const lsSessionKey = project ? `${LS_SESSION_KEY}:${project.name}` : LS_SESSION_KEY;
   // Sessions list
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(true);
   // Active session
   const [activeId, setActiveId] = useState<number | null>(() => {
     try {
-      const v = localStorage.getItem(LS_SESSION_KEY);
+      const v = localStorage.getItem(lsSessionKey);
       return v ? Number(v) : null;
     } catch { return null; }
   });
@@ -942,7 +948,7 @@ export default function Chat() {
   async function loadSessions(silent = false) {
     if (!silent) setSessionsLoading(true);
     try {
-      const list = await chatApi.sessions();
+      const list = await chatApi.sessions(project?.path);
       setSessions(list);
       // Defensive prune: drop builder mappings whose session no longer exists,
       // so an orphaned entry can't later collide with a recycled id and open a
@@ -1000,7 +1006,7 @@ export default function Chat() {
       toast.error(`Failed to load session: ${e.message}`);
       // Session may have been deleted; clear active
       setActiveId(null);
-      try { localStorage.removeItem(LS_SESSION_KEY); } catch { /* ignore */ }
+      try { localStorage.removeItem(lsSessionKey); } catch { /* ignore */ }
     } finally {
       setMsgsLoading(false);
     }
@@ -1057,9 +1063,9 @@ export default function Chat() {
   useEffect(() => {
     try {
       if (activeId !== null) {
-        localStorage.setItem(LS_SESSION_KEY, String(activeId));
+        localStorage.setItem(lsSessionKey, String(activeId));
       } else {
-        localStorage.removeItem(LS_SESSION_KEY);
+        localStorage.removeItem(lsSessionKey);
       }
     } catch { /* ignore */ }
   }, [activeId]);
@@ -1119,7 +1125,8 @@ export default function Chat() {
 
   async function createSession(cwd?: string): Promise<number | null> {
     try {
-      const session = await chatApi.sessionCreate(cwd ? { cwd } : undefined);
+      const where = cwd ?? project?.path;
+      const session = await chatApi.sessionCreate(where ? { cwd: where } : undefined);
       setSessions(prev => [session, ...prev]);
       abortRef.current?.abort();   // drop any stream still tied to the old session
       abortRef.current = null;
@@ -1134,6 +1141,15 @@ export default function Chat() {
     } catch (e: any) {
       toast.error(`Failed to create session: ${e.message}`);
       return null;
+    }
+  }
+
+  async function toggleLearn(sess: ChatSession) {
+    try {
+      const updated = await chatApi.sessionLearn(sess.id, sess.learn === false);
+      setSessions(prev => prev.map(x => x.id === sess.id ? { ...x, learn: updated.learn } : x));
+    } catch (e: any) {
+      toast.error(`Could not change learning: ${e.message}`);
     }
   }
 
@@ -1718,7 +1734,7 @@ export default function Chat() {
           <button type="button" onClick={handleNewChat} disabled={busy} style={{ flex: 1 }}>
             <Icon.Plus size={13} /> New chat
           </button>
-          {sessions.length > 0 && (
+          {sessions.length > 0 && !project && (
             <button type="button"
               className="danger"
               title="Delete every chat session. Memory, skills, workflows and rules are NOT touched."
@@ -1729,7 +1745,7 @@ export default function Chat() {
                   const r = await api.resetChats();
                   toast.success(`Deleted ${r.deleted} chats`);
                   setMessages([]); setLiveTurn(null); setActiveId(null);
-                  localStorage.removeItem(LS_SESSION_KEY);
+                  localStorage.removeItem(lsSessionKey);
                   // Reset RECYCLES session ids, so every stale builder mapping
                   // would now collide with a brand-new normal chat (id 1, 2, …)
                   // and wrongly open it as a job/rule/workflow builder. Wipe them.
@@ -1832,6 +1848,26 @@ export default function Chat() {
                     style={{ fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 <Icon.Folder size={12} style={{ verticalAlign: '-2px', marginRight: 4 }} />
                 {cwdLabel(activeSession.cwd)}
+              </span>
+            )}
+            {(project || activeSession) && (
+              <span className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 2 }}>
+                {project && (
+                  <NavLink to={`/memory?project=${encodeURIComponent(project.name)}`}
+                           className="chip" title="Open this project's memory"
+                           style={{ textDecoration: 'none' }}>
+                    <Icon.Memory size={11} /> {project.name} memory
+                  </NavLink>
+                )}
+                {activeSession && (
+                  <button type="button" className="ghost sm" disabled={busy}
+                          title={activeSession.learn === false
+                            ? 'Nothing from this chat is saved to memory. Click to turn learning on.'
+                            : 'Facts from this chat are saved to memory. Click to stop learning from this chat.'}
+                          onClick={() => toggleLearn(activeSession)}>
+                    {activeSession.learn === false ? 'Learning off' : 'Learning on'}
+                  </button>
+                )}
               </span>
             )}
             {activeBuilder && (

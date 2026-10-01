@@ -114,6 +114,9 @@ class _SqliteChatStore:
             # Per-turn wall-clock seconds — so every turn (simple/plan/team)
             # shows its time-taken even after reload (client timer is live-only).
             _add_column_if_missing(c, "chat_messages", "duration_s", "REAL")
+            # Per-chat "don't learn from this chat" switch (1 = learn).
+            _add_column_if_missing(c, "chat_sessions", "learn",
+                                   "INTEGER NOT NULL DEFAULT 1")
             yield c
             c.commit()
         finally:
@@ -133,6 +136,14 @@ class _SqliteChatStore:
         with self._conn() as c:
             c.execute(f"UPDATE chat_sessions SET cwd=?, updated_at={_NOW} WHERE id=?",
                       (cwd, session_id))
+            r = c.execute(_SELECT_FROM_CHAT_SESSIONS_WH,
+                          (session_id,)).fetchone()
+        return _session_out(dict(r)) if r else None
+
+    def set_session_learn(self, session_id, learn):
+        with self._conn() as c:
+            c.execute("UPDATE chat_sessions SET learn=? WHERE id=?",
+                      (1 if learn else 0, session_id))
             r = c.execute(_SELECT_FROM_CHAT_SESSIONS_WH,
                           (session_id,)).fetchone()
         return _session_out(dict(r)) if r else None

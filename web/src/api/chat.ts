@@ -12,6 +12,7 @@ export interface ChatSession {
   updated_at: string;
   message_count?: number;
   last_mode?: 'simple' | 'plan' | 'team';   // mode the latest user turn ran in
+  learn?: boolean;        // false = this chat writes no memory
 }
 
 export interface ChatModelEntry {
@@ -64,7 +65,16 @@ export interface ChatTraceTurn {
 // ── Chat session API methods ──────────────────────────────────────
 
 export const chatApi = {
-  sessions: () => j<ChatSession[]>('/chat/sessions'),
+  // `cwd` keeps only the chats opened on that folder (a project's own list).
+  sessions: (cwd?: string) => j<ChatSession[]>(
+    cwd ? `/chat/sessions?cwd=${encodeURIComponent(cwd)}` : '/chat/sessions'),
+
+  sessionLearn: (id: number, learn: boolean) =>
+    j<ChatSession>(`/chat/sessions/${id}/learn`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ learn }),
+    }),
 
   // ── Model registry — Settings page calls these via chatApi (the methods
   // live on `api`; delegate so `chatApi.addModel`/`syncModels`/etc. resolve

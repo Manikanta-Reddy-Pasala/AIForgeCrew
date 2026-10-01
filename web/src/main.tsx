@@ -19,6 +19,8 @@ const Agents       = lazy(() => import('./views/Agents'));
 const Logs         = lazy(() => import('./views/Logs'));
 const Memory       = lazy(() => import('./views/Memory'));
 const Chat         = lazy(() => import('./views/Chat'));
+const Projects     = lazy(() => import('./views/Projects'));
+const ProjectChat  = lazy(() => import('./views/Projects').then(m => ({ default: m.ProjectChat })));
 const Library      = lazy(() => import('./views/Library'));
 const Tools        = lazy(() => import('./views/Tools'));
 const Trace        = lazy(() => import('./views/Trace'));
@@ -58,6 +60,7 @@ const NAV: { group: string; items: NavItem[] }[] = [
     items: [
       { to: '/tickets',   label: 'Tickets',    icon: 'Tickets' },
       { to: '/jobs',      label: 'Jobs',       icon: 'Refresh' },
+      { to: '/projects',  label: 'Projects',   icon: 'Folder' },
       { to: '/chat',      label: 'Chat',       icon: 'Chat' },
       { to: '/',          label: 'Settings',   icon: 'Settings', end: true },
     ],
@@ -87,6 +90,7 @@ const TITLE_MAP: Record<string, string> = {
   '/':           'Home',
   '/tickets':    'Tickets',
   '/jobs':       'Scheduled Jobs',
+  '/projects':   'Projects',
   '/chat':       'Chat',
   '/tools':      'MCP Tools',
   '/memory':     'Memory',
@@ -101,6 +105,7 @@ const TITLE_MAP: Record<string, string> = {
 
 function useTitle(pathname: string): string {
   if (matchPath('/tickets/:id', pathname)) return 'Ticket';
+  if (matchPath('/projects/:name', pathname)) return 'Project chat';
   if (matchPath('/logs/:role', pathname)) return 'Live logs';
   return TITLE_MAP[pathname] || 'AIForge';
 }
@@ -211,7 +216,7 @@ function Shell() {
     <div className={`shell${collapsed ? ' collapsed' : ''}`}>
       <Sidebar />
       <TopBar onToggleSidebar={toggle} collapsed={collapsed} />
-      <main className={`page${location.pathname.startsWith('/chat') ? ' page-wide' : ''}`}>
+      <main className={`page${location.pathname.startsWith('/chat') || matchPath('/projects/:name', location.pathname) ? ' page-wide' : ''}`}>
         {/* key on the first path SEGMENT so switching views resets the boundary,
             but a param change within a view (/tickets/1→/tickets/2) doesn't
             needlessly remount the view and drop its transient state. */}
@@ -225,6 +230,8 @@ function Shell() {
             <Route path="/tickets" element={<Tickets />} />
             <Route path="/tickets/:id" element={<TicketDetail />} />
             <Route path="/jobs" element={<Jobs />} />
+            <Route path="/projects" element={<Projects />} />
+            <Route path="/projects/:name" element={<ProjectChat />} />
             <Route path="/chat" element={<Chat />} />
             <Route path="/skills" element={<Library kind="skills" />} />
             <Route path="/workflows" element={<Library kind="workflows" />} />

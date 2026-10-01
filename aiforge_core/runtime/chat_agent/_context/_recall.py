@@ -202,7 +202,7 @@ def _run_recall(args: tuple) -> dict:
     from aiforge_core.memory import unified_query as _uq
     q, limit, repo, session_id, tags = args
     return _uq.query(q, limit=limit, repo=repo, exclude_session=session_id,
-                     boost_tags=list(tags))
+                     boost_tags=list(tags), cross_project=True)
 
 
 def _recall_hits(cwd: str, q: str, limit: int, session_id) -> list:
@@ -246,6 +246,9 @@ def _ranked_lines(hits: list, limit: int) -> str:
         if not txt:
             continue
         src = h.get("source") or ""
+        # Memory from another project says so — it may not hold here.
+        if h.get("project"):
+            src = f"from project {h['project']}" + (f", {src}" if src else "")
         lines.append(f"- {txt[:240]}" + (f"  ({src})" if src else ""))
         if len(lines) >= limit:
             break

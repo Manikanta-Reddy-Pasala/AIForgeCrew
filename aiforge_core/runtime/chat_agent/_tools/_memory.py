@@ -24,9 +24,10 @@ def _t_memory_lookup(args: dict, cwd: str) -> dict:
         # (git-toplevel basename), so chat's own facts aren't filtered out.
         _repo = _chat_repo_key(cwd)
         res = _uq.query(args["query"], limit=int(args.get("limit", 6)),
-                        repo=_repo)
+                        repo=_repo, cross_project=True)
         return {"ok": True, "hits": [
-            {"text": (h.get("text") or "")[:400], "source": h.get("source")}
+            {"text": (h.get("text") or "")[:400], "source": h.get("source"),
+             **({"project": h["project"]} if h.get("project") else {})}
             for h in res.get("hits", [])
         ]}
     except Exception as exc:  # noqa: BLE001

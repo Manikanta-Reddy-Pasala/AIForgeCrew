@@ -49,6 +49,23 @@ def set_session_role(session_id: int, role: str) -> "dict | None":
     return _backend().set_session_role(session_id, role)
 
 
+def set_session_learn(session_id: int, learn: bool) -> "dict | None":
+    return _backend().set_session_learn(session_id, learn)
+
+
+def session_learns(session_id) -> bool:
+    """Whether memory may be written from this chat. True unless the user
+    switched it off; a missing session or a lookup error also learns, so the
+    switch can only ever turn learning OFF."""
+    if session_id is None:
+        return True
+    try:
+        s = _backend().get_session(int(session_id))
+    except Exception:  # noqa: BLE001
+        return True
+    return True if not s else bool(s.get("learn", True))
+
+
 def list_sessions() -> list[dict]:
     return _backend().list_sessions()
 

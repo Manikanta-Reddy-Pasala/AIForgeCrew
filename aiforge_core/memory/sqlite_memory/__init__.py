@@ -33,11 +33,13 @@ from ._schema import (
 )
 from ._write import (
     clear,
+    delete_by_repo,
     delete_by_source,
     delete_by_tag,
     delete_by_text_contains,
     delete_stale_compacted_notes,
     prune_missing_file_rows,
+    repo_counts,
     source_text_unchanged,
     upsert_by_tag,
     write_unit,
@@ -70,6 +72,8 @@ from ._maintenance import (
 
 __all__ = [
     "write_unit",
+    "delete_by_repo",
+    "repo_counts",
     "keyword_search",
     "delete_by_tag",
     "upsert_by_tag",
