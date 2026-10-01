@@ -44,12 +44,20 @@ def test_recall_is_scoped_to_the_repo_the_write_path_uses(monkeypatch):
     seen: dict = {}
     monkeypatch.setattr(M, "_chat_repo_key", lambda cwd: "AIForgeCrew")
     monkeypatch.setattr(unified_query, "query",
-                        lambda q, limit=None, repo=None:
-                        seen.update(q=q, limit=limit, repo=repo)
-                        or {"hits": [{"text": "a fact", "source": "chat"}]})
+                        lambda q, limit=None, repo=None, cross_project=False:
+                        seen.update(q=q, limit=limit, repo=repo,
+                                    cross_project=cross_project)
+                        or {"hits": [{"text": "a fact", "source": "chat"},
+                                     {"text": "theirs", "source": "doer",
+                                      "project": "billing"}]})
     out = M._t_memory_lookup({"query": "deploy", "limit": 3}, "/repo/sub")
-    assert out["hits"] == [{"text": "a fact", "source": "chat"}]
-    assert seen == {"q": "deploy", "limit": 3, "repo": "AIForgeCrew"}
+    # a hit from another project says which one
+    assert out["hits"] == [{"text": "a fact", "source": "chat"},
+                           {"text": "theirs", "source": "doer",
+                            "project": "billing"}]
+    # the chat's own repo, and allowed to look outside it
+    assert seen == {"q": "deploy", "limit": 3, "repo": "AIForgeCrew",
+                    "cross_project": True}
 
 
 def test_a_long_hit_is_trimmed(monkeypatch):
