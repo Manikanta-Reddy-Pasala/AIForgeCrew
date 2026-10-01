@@ -137,6 +137,27 @@ async function blobTo16k(blob: Blob): Promise<Float32Array> {
   }
 }
 
+// One WASM session. The empty-chat button can still be inside asr() after it
+// unmounts, and the session button must not start a second call on it.
+let transcribeGate: Promise<void> = Promise.resolve();
+
+async function transcribePcmNow(samples: Float32Array): Promise<string> {
+  const transcriber = await loadTranscriber();
+  const seconds = samples.length / TARGET_RATE;
+  // Whisper's window is 30s. Shorter clips are one pass; longer ones overlap.
+  const options = seconds > 28 ? { chunk_length_s: 30, stride_length_s: 5 } : undefined;
+  const result = await transcriber(samples, options);
+  const text = Array.isArray(result) ? result.map(part => part.text).join(' ') : result.text;
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function transcribePcm(samples: Float32Array): Promise<string> {
+  if (samples.length < TARGET_RATE * MIN_SECONDS || rms(samples) < SILENCE_RMS) return Promise.resolve('');
+  const run = transcribeGate.then(() => transcribePcmNow(samples));
+  transcribeGate = run.then(() => undefined, () => undefined);
+  return run;
+}
+
 /** Returns '' when the clip is too short, silent, or not decodable. */
 export async function transcribeBlob(blob: Blob): Promise<string> {
   if (blob.size < 500) return '';
@@ -149,12 +170,106 @@ export async function transcribeBlob(blob: Blob): Promise<string> {
     if (blob.size < 8_000) return '';
     throw err;
   }
-  if (samples.length < TARGET_RATE * MIN_SECONDS || rms(samples) < SILENCE_RMS) return '';
-  const transcriber = await loadTranscriber();
-  const seconds = samples.length / TARGET_RATE;
-  // Whisper's window is 30s. Shorter clips are one pass; longer ones overlap.
-  const options = seconds > 28 ? { chunk_length_s: 30, stride_length_s: 5 } : undefined;
-  const result = await transcriber(samples, options);
-  const text = Array.isArray(result) ? result.map(part => part.text).join(' ') : result.text;
-  return text.replace(/\s+/g, ' ').trim();
+  return transcribePcm(samples);
+}
+
+/** `samples` are mono PCM at `sampleRate`. Resampled to 16 kHz for Whisper. */
+export async function transcribeSamples(samples: Float32Array, sampleRate: number): Promise<string> {
+  const audio = resampleLinear(samples, sampleRate, TARGET_RATE);
+  const max = TARGET_RATE * MAX_SECONDS;
+  return transcribePcm(audio.length > max ? audio.subarray(0, max) : audio);
+}
+
+/** A frame this loud counts as speech. Quiet rooms sit well under it. */
+export const SPEECH_RMS = 0.01;
+const PAUSE_MS = 700;
+const PREROLL_MS = 280;
+const TAIL_MS = 160;
+const MAX_UTTERANCE_MS = 12_000;
+
+export type UtteranceSegmenter = {
+  /** Samples to transcribe when a phrase just ended, otherwise null. */
+  push(frame: Float32Array): Float32Array | null;
+  /** Any phrase still open when listening stops. */
+  flush(): Float32Array | null;
+};
+
+function joinFrames(frames: Float32Array[], length: number): Float32Array {
+  const out = new Float32Array(length);
+  let offset = 0;
+  for (const frame of frames) {
+    out.set(frame, offset);
+    offset += frame.length;
+  }
+  return out;
+}
+
+/**
+ * Splits a live mic into phrases. A short pause ends the phrase so it can be
+ * transcribed while the next one is still being captured. A little audio from
+ * before the voice starts is kept, so the first consonant is not clipped.
+ */
+export function createUtteranceSegmenter(sampleRate: number): UtteranceSegmenter {
+  if (sampleRate <= 0) throw new Error('Sample rate must be positive.');
+  const prerollMax = Math.round(sampleRate * PREROLL_MS / 1000);
+  const tail = Math.round(sampleRate * TAIL_MS / 1000);
+  const pauseSamples = Math.round(sampleRate * PAUSE_MS / 1000);
+  const maxSamples = Math.round(sampleRate * MAX_UTTERANCE_MS / 1000);
+
+  let preroll: Float32Array[] = [];
+  let prerollLen = 0;
+  let speech: Float32Array[] = [];
+  let speechLen = 0;
+  let silenceRun = 0;
+  let speaking = false;
+
+  function emit(): Float32Array | null {
+    if (!speaking || speechLen === 0) {
+      speaking = false;
+      speech = [];
+      speechLen = 0;
+      silenceRun = 0;
+      return null;
+    }
+    const drop = Math.max(0, silenceRun - tail);
+    const full = joinFrames(speech, speechLen);
+    const samples = drop > 0 && drop < full.length ? full.subarray(0, full.length - drop) : full;
+    speaking = false;
+    speech = [];
+    speechLen = 0;
+    silenceRun = 0;
+    preroll = [];
+    prerollLen = 0;
+    return samples.length > 0 ? samples : null;
+  }
+
+  return {
+    push(frame) {
+      const voiced = rms(frame) >= SPEECH_RMS;
+      if (!speaking) {
+        if (!voiced) {
+          preroll.push(frame);
+          prerollLen += frame.length;
+          while (preroll.length > 1 && prerollLen - preroll[0].length >= prerollMax) {
+            prerollLen -= preroll.shift()!.length;
+          }
+          return null;
+        }
+        speech = preroll;
+        speechLen = prerollLen;
+        preroll = [];
+        prerollLen = 0;
+        speaking = true;
+        silenceRun = 0;
+      }
+      speech.push(frame);
+      speechLen += frame.length;
+      silenceRun = voiced ? 0 : silenceRun + frame.length;
+      if (silenceRun >= pauseSamples || speechLen >= maxSamples) return emit();
+      return null;
+    },
+    flush() {
+      return emit();
+    },
+  };
 }

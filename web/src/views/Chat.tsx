@@ -17,6 +17,7 @@ import { AutoApprovalsPanel } from './Chat.AutoApprovalsPanel';
 import { MediaStrip } from './Chat.MediaStrip';
 import { AssistantBubble } from './Chat.AssistantBubble';
 import { VoiceButton } from './Chat.VoiceButton';
+import { applySpokenCorrection, planSpokenInsert, type SpokenAnchor } from '../voicePhrase';
 import { reduceTurn } from './Chat.reduce';
 import { clickable, backdrop } from '../a11y';
 
@@ -1474,7 +1475,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
     abortRef.current = null;
     // A fresh run supersedes any pending plan-approval (Gap B).
     setPlanReady(null);
-    if (overrideContent === undefined) setInput('');
+    if (overrideContent === undefined) putComposer('');
     const runMode: ChatMode = overrideMode ?? chatMode;
     setActiveRunMode(runMode);   // remember it so canSteer can disable for team
     // Edit-and-resend: consume the pending "editing from" marker for this send.
@@ -1641,7 +1642,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
     // FE6: ignore re-entry while a steer POST is already in flight.
     if (!q || !busy || activeId === null || pendingApproval || steering) return;
     setSteering(true);
-    setInput('');
+    putComposer('');
     try {
       let r: any;
       try {
@@ -1669,10 +1670,10 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
         }] } : prev);
         toast('Steer queued — applies at the next step');
       } else if (r.unsupported) {
-        setInput(q);   // restore — nothing was queued
+        putComposer(q);   // restore — nothing was queued
         toast('Steering not available for this run');
       } else {
-        setInput(q);   // restore so the user can retry or Stop
+        putComposer(q);   // restore so the user can retry or Stop
         toast('Could not steer (the run may have ended)');
       }
     } finally {
@@ -1724,7 +1725,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   // workspace to that turn's checkpoint) before re-running.
   function editUserMessage(msg: ChatMsg) {
     if (busy || !msg?.content || msg.role !== 'user') return;
-    setInput(msg.content);
+    putComposer(msg.content);
     setEditingFrom(msg.id > 0 ? msg.id : null);
     setTimeout(() => textareaRef.current?.focus(), 30);
   }
@@ -1783,17 +1784,48 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   }, [activeId, dockSubtasks?.length, busy]);
 
   const chatMounted = useRef(true);
+  const draftEpoch = useRef(0);
+  const inputMirror = useRef(input);
+  const spokenAnchors = useRef<SpokenAnchor[]>([]);
   useEffect(() => {
     chatMounted.current = true;
     return () => { chatMounted.current = false; };
   }, []);
 
-  function appendSpoken(spoken: string) {
-    if (!chatMounted.current) return;
-    const next = spoken.trim();
-    if (!next) return;
-    setInput(prev => (prev.trim() ? `${prev.trimEnd()} ${next}` : next));
+  function putComposer(value: string) {
+    // A late tidy from the previous draft must not rewrite this one.
+    draftEpoch.current += 1;
+    spokenAnchors.current = [];
+    inputMirror.current = value;
+    setInput(value);
+  }
+
+  function onComposerChange(value: string) {
+    inputMirror.current = value;
+    setInput(value);
+  }
+
+  function appendSpoken(spoken: string): SpokenAnchor {
+    const raw = spoken.trim().replace(/\s+/g, ' ');
+    const anchor: SpokenAnchor = { start: -1, raw, epoch: draftEpoch.current };
+    if (!chatMounted.current || !raw) return anchor;
+    const planned = planSpokenInsert(inputMirror.current, raw);
+    anchor.start = planned.start;
+    spokenAnchors.current = [...spokenAnchors.current, anchor];
+    inputMirror.current = planned.text;
+    setInput(planned.text);
     textareaRef.current?.focus();
+    return anchor;
+  }
+
+  function replaceSpoken(anchor: SpokenAnchor, corrected: string) {
+    if (!chatMounted.current) return;
+    const next = applySpokenCorrection(
+      inputMirror.current, spokenAnchors.current, anchor, corrected, draftEpoch.current);
+    spokenAnchors.current = spokenAnchors.current.filter(item => item !== anchor);
+    if (next === inputMirror.current) return;
+    inputMirror.current = next;
+    setInput(next);
   }
 
   function onKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -2340,7 +2372,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                 }}>
                   <span>✎ Editing an earlier message — sending replaces it and every later turn, and restores the workspace to that turn.</span>
                   <button type="button" className="ghost xs" style={{ cursor: 'pointer' }}
-                          onClick={() => { setEditingFrom(null); setInput(''); }}>cancel</button>
+                          onClick={() => { setEditingFrom(null); putComposer(''); }}>cancel</button>
                 </div>
               )}
               <div style={{ display: 'flex', gap: 6 }}>
@@ -2360,11 +2392,11 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                     return "Ask the agent to read/write files, run commands, implement a feature…  (Enter to send, Shift+Enter for newline)";
                   })()}
                   value={input}
-                  onChange={e => setInput(e.target.value)}
+                  onChange={e => onComposerChange(e.target.value)}
                   onKeyDown={onKey}
                   style={{ flex: 1, resize: 'vertical', minHeight: busy ? 34 : 64 }}
                 />
-                <VoiceButton onText={appendSpoken} />
+                <VoiceButton onText={appendSpoken} onCorrect={replaceSpoken} />
                 <button type="button" onClick={() => mediaInputRef.current?.click()} disabled={uploadingMedia}
                         title={uploadingMedia ? 'Uploading & analyzing…' : 'Attach a file — image, PDF, Word, Excel, text — queryable all session'}
                         style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center' }}>
@@ -2461,13 +2493,13 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                 rows={4}
                 placeholder="Type a message to start a new conversation…  (Enter to send, paste or attach an image too)"
                 value={input}
-                onChange={e => setInput(e.target.value)}
+                onChange={e => onComposerChange(e.target.value)}
                 onKeyDown={onKey}
                 disabled={busy}
                 style={{ flex: 1, minHeight: 96, resize: 'vertical',
                          fontSize: 14, lineHeight: 1.5, padding: 10 }}
               />
-              <VoiceButton onText={appendSpoken} />
+              <VoiceButton onText={appendSpoken} onCorrect={replaceSpoken} />
               <button type="button" onClick={() => mediaInputRef.current?.click()} disabled={uploadingMedia}
                       title="Attach a file — image, PDF, Word, Excel, text — starts a chat, queryable all session"
                       style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center' }}>
