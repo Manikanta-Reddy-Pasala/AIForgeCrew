@@ -602,6 +602,19 @@ button.icon {
 }
 button.icon:hover:not(:disabled) { color: var(--fg-0); background: var(--bg-3); }
 
+button.voice-btn.recording,
+button.voice-btn.recording:hover:not(:disabled) {
+  background: var(--err);
+  color: #fff;
+  border-color: transparent;
+}
+@media (prefers-reduced-motion: no-preference) {
+  button.voice-btn.recording { animation: voice-pulse 1.2s ease-in-out infinite; }
+}
+@keyframes voice-pulse {
+  50% { box-shadow: 0 0 0 4px var(--err-soft); }
+}
+
 .input-search {
   display: flex; align-items: center; gap: 8px;
   background: var(--bg-1);

@@ -11,6 +11,11 @@ export default defineConfig({
   // as unactionable as the bare message it was added to replace. Vite 8
   // bundles and minifies with rolldown/oxc, so the old `esbuild.keepNames`
   // was silently ignored; rolldown's own output.keepNames is the switch.
+  // The speech model is imported only when the mic is clicked. Pre-bundling
+  // it breaks its WASM URL resolution.
+  optimizeDeps: {
+    exclude: ['@huggingface/transformers'],
+  },
   server: {
     proxy: {
       '/api': {

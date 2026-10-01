@@ -10,6 +10,7 @@
     "preview": "vite preview --host 127.0.0.1 --port 5173"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.3.0",
     "@tanstack/react-query": "^5.59.20",
     "mermaid": "^11.17.2",
     "react": "^18.3.1",

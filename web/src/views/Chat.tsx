@@ -15,6 +15,7 @@ import { CtxReload } from './Chat.CtxReload';
 import { AutoApprovalsPanel } from './Chat.AutoApprovalsPanel';
 import { MediaStrip } from './Chat.MediaStrip';
 import { AssistantBubble } from './Chat.AssistantBubble';
+import { VoiceButton } from './Chat.VoiceButton';
 import { reduceTurn } from './Chat.reduce';
 import { clickable, backdrop } from '../a11y';
 
@@ -1681,6 +1682,20 @@ export default function Chat() {
     return () => { live = false; };
   }, [activeId, dockSubtasks?.length, busy]);
 
+  const chatMounted = useRef(true);
+  useEffect(() => {
+    chatMounted.current = true;
+    return () => { chatMounted.current = false; };
+  }, []);
+
+  function appendSpoken(spoken: string) {
+    if (!chatMounted.current) return;
+    const next = spoken.trim();
+    if (!next) return;
+    setInput(prev => (prev.trim() ? `${prev.trimEnd()} ${next}` : next));
+    textareaRef.current?.focus();
+  }
+
   function onKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -1864,14 +1879,13 @@ export default function Chat() {
               <Icon.Plus size={14} /> New chat
             </button>
           </div>
-        ) : (() => {
-          if (msgsLoading) return (
-          <div className="chat-log" style={{ justifyContent: 'center', alignItems: 'center' }}>
-            <div className="typing"><span /><span /><span /></div>
-          </div>
-          );
-          return (
+        ) : (
           <>
+            {msgsLoading ? (
+            <div className="chat-log" style={{ justifyContent: 'center', alignItems: 'center' }}>
+              <div className="typing"><span /><span /><span /></div>
+            </div>
+            ) : (
             <div className="chat-log" ref={logRef}>
               {/* Captured auto-approve flags are IGNORED while this mode requires
                   approval, so don't advertise them then — only surface the panel
@@ -2127,6 +2141,7 @@ export default function Chat() {
                                 }} />
               )}
             </div>
+            )}
 
             {/* Pinned subtask dock — the Planner decomposition stays stuck to
                 the bottom (above the composer, OUTSIDE the scroll region) and
@@ -2221,6 +2236,7 @@ export default function Chat() {
                   onKeyDown={onKey}
                   style={{ flex: 1, resize: 'vertical', minHeight: busy ? 34 : 64 }}
                 />
+                <VoiceButton onText={appendSpoken} />
                 <button type="button" onClick={() => mediaInputRef.current?.click()} disabled={uploadingMedia}
                         title={uploadingMedia ? 'Uploading & analyzing…' : 'Attach a file — image, PDF, Word, Excel, text — queryable all session'}
                         style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center' }}>
@@ -2297,8 +2313,7 @@ export default function Chat() {
               )}
             </div>
           </>
-          );
-        })()}
+        )}
 
         {/* Composer shown even when no session: send will create one */}
         {activeId === null && (
@@ -2316,6 +2331,7 @@ export default function Chat() {
                 style={{ flex: 1, minHeight: 96, resize: 'vertical',
                          fontSize: 14, lineHeight: 1.5, padding: 10 }}
               />
+              <VoiceButton onText={appendSpoken} />
               <button type="button" onClick={() => mediaInputRef.current?.click()} disabled={uploadingMedia}
                       title="Attach a file — image, PDF, Word, Excel, text — starts a chat, queryable all session"
                       style={{ whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center' }}>
