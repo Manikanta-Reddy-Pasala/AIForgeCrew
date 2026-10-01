@@ -35,13 +35,29 @@ type AsrFn = (
 
 let pending: Promise<AsrFn> | null = null;
 
+function speechRuntimeUrl(file: string): string {
+  const base = import.meta.env.BASE_URL || '/';
+  return `${base}speech/${file}`;
+}
+
 async function createTranscriber(): Promise<AsrFn> {
   const { pipeline, env } = await import('@huggingface/transformers');
   env.allowLocalModels = false;
   env.useBrowserCache = true;
-  // One WASM thread. Threaded WASM needs cross-origin isolation, which this
+  // The library would fetch the WASM runtime from
+  // cdn.jsdelivr.net/npm/onnxruntime-web@<dev-version>/, which fails with
+  // ERR_CONNECTION_CLOSED on networks that cannot reach that host. The same
+  // files are served by this app under /ui/speech/.
+  // One WASM thread: threaded WASM needs cross-origin isolation, which this
   // page does not set, and tiny English is fast enough on a single thread.
-  if (env.backends.onnx.wasm) env.backends.onnx.wasm.numThreads = 1;
+  const wasm = env.backends.onnx.wasm;
+  if (wasm) {
+    wasm.numThreads = 1;
+    wasm.wasmPaths = {
+      mjs: speechRuntimeUrl('ort-wasm-simd-threaded.asyncify.mjs'),
+      wasm: speechRuntimeUrl('ort-wasm-simd-threaded.asyncify.wasm'),
+    };
+  }
   const asr = await pipeline('automatic-speech-recognition', SPEECH_MODEL, {
     dtype: 'q8',
     device: 'wasm',

@@ -1,10 +1,54 @@
-import { defineConfig } from 'vite';
+import fs from 'node:fs';
+import path from 'node:path';
+import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
+
+// The speech runtime's own loader asks jsDelivr for a dev build of
+// onnxruntime-web. That host is closed from a lot of networks (the console
+// shows ERR_CONNECTION_CLOSED). These two files already sit in node_modules;
+// serve them from this app instead.
+const SPEECH_RUNTIME_FILES = [
+  'ort-wasm-simd-threaded.asyncify.wasm',
+  'ort-wasm-simd-threaded.asyncify.mjs',
+];
+
+function speechRuntime(): Plugin {
+  const srcDir = path.resolve('node_modules/onnxruntime-web/dist');
+  const typeFor = (name: string) => (
+    name.endsWith('.wasm') ? 'application/wasm' : 'text/javascript'
+  );
+  return {
+    name: 'speech-runtime',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const url = req.url?.split('?')[0] ?? '';
+        const name = SPEECH_RUNTIME_FILES.find(file => url.endsWith(`/speech/${file}`));
+        if (!name) {
+          next();
+          return;
+        }
+        const file = path.join(srcDir, name);
+        res.setHeader('Content-Type', typeFor(name));
+        res.setHeader('Content-Length', fs.statSync(file).size);
+        fs.createReadStream(file).pipe(res);
+      });
+    },
+    generateBundle() {
+      for (const name of SPEECH_RUNTIME_FILES) {
+        this.emitFile({
+          type: 'asset',
+          fileName: `speech/${name}`,
+          source: fs.readFileSync(path.join(srcDir, name)),
+        });
+      }
+    },
+  };
+}
 
 // https://vitejs.dev/config/
 export default defineConfig({
   base: '/ui/',
-  plugins: [react()],
+  plugins: [react(), speechRuntime()],
   // React builds a component stack from Function.name, and the minifier
   // mangles every function name in a production build — so the
   // ErrorBoundary's "in: …" block would read "at Bs / at As", which is exactly

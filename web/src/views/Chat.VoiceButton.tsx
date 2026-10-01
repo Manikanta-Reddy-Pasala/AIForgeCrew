@@ -19,6 +19,9 @@ function voiceError(err: unknown): string {
   if (name === 'NotAllowedError' || name === 'PermissionDeniedError') return 'Microphone permission was denied.';
   if (name === 'NotFoundError') return 'No microphone was found.';
   if (name === 'NotReadableError') return 'The microphone is in use by another app.';
+  if (/jsdelivr|onnxruntime|\.wasm/i.test(message)) {
+    return "Couldn't load the speech runtime from this app. Reload and try the mic again.";
+  }
   if (/failed to fetch|network|huggingface|offline/i.test(message)) {
     return "Couldn't download the speech model. This browser needs to reach huggingface.co the first time.";
   }
