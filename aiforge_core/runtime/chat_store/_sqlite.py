@@ -117,6 +117,10 @@ class _SqliteChatStore:
             # Per-chat "don't learn from this chat" switch (1 = learn).
             _add_column_if_missing(c, "chat_sessions", "learn",
                                    "INTEGER NOT NULL DEFAULT 1")
+            # Side tasks: a child chat spun off a running one. ``parent_id`` is
+            # the chat it belongs to; ``task`` is its JSON state.
+            _add_column_if_missing(c, "chat_sessions", "parent_id", "INTEGER")
+            _add_column_if_missing(c, "chat_sessions", "task", "TEXT")
             yield c
             c.commit()
         finally:
@@ -139,6 +143,22 @@ class _SqliteChatStore:
             r = c.execute(_SELECT_FROM_CHAT_SESSIONS_WH,
                           (session_id,)).fetchone()
         return _session_out(dict(r)) if r else None
+
+    def set_session_task(self, session_id, parent_id, task):
+        with self._conn() as c:
+            c.execute("UPDATE chat_sessions SET parent_id=?, task=? WHERE id=?",
+                      (parent_id, json.dumps(task) if task is not None else None,
+                       session_id))
+            r = c.execute(_SELECT_FROM_CHAT_SESSIONS_WH,
+                          (session_id,)).fetchone()
+        return _session_out(dict(r)) if r else None
+
+    def child_sessions(self, parent_id) -> list[dict]:
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM chat_sessions WHERE parent_id=? ORDER BY id",
+                (parent_id,)).fetchall()
+        return [_session_out(dict(r)) for r in rows]
 
     def set_session_learn(self, session_id, learn):
         with self._conn() as c:

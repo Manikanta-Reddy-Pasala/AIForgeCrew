@@ -1,0 +1,349 @@
+"""Side tasks: a second (third, …) agent run alongside the one a chat is on.
+
+A chat session holds exactly one run — its Stop, steer, approvals and live
+stream are all keyed by the session. So a message that arrives while a run is
+in flight, and is an independent task rather than a correction, does not get
+squeezed into that session. It becomes a CHILD chat: its own session, its own
+run, the same folder. Everything per-session keeps working per task.
+
+What this module decides:
+
+* steer or task — a correction steers the running turn as before; a new
+  request, a question, or "run another agent …" becomes a side task;
+* now or queued — a task that only reads starts at once (within the model
+  server's parallel slots). A task that edits files waits while another run in
+  the same chat is editing, and starts by itself when that run ends;
+* reporting back — when a side task finishes, its answer is appended to the
+  parent chat, labelled, once the parent is not mid-turn.
+"""
+from __future__ import annotations
+
+import logging
+import os
+import re
+import threading
+import time
+
+from fastapi import HTTPException
+from pydantic import BaseModel, Field
+
+from ._core import router
+
+_log = logging.getLogger("aiforge.chat.side_tasks")
+_LOCK = threading.RLock()
+
+QUEUED, RUNNING, DONE, STOPPED = "queued", "running", "done", "stopped"
+
+# The user asking, in so many words, for a second run.
+_SIDE_CUE_RE = re.compile(
+    r"\b(?:another|a\s+separate|a\s+second|a\s+new|one\s+more)\s+"
+    r"(?:agent|task|chat|run)\b"
+    r"|\bin\s+parallel\b|\bmeanwhile\b|\bin\s+the\s+meantime\b"
+    r"|\bside\s+task\b|\bat\s+the\s+same\s+time\b|\bspin\s+(?:off|up)\b",
+    re.IGNORECASE)
+_CONTEXT_TURNS = 6
+_CONTEXT_CHARS = 400
+
+
+class _SideBody(BaseModel):
+    content: str = Field(..., min_length=1)
+    mode: str = Field("simple", description="simple | plan | team — for a task")
+    as_: str = Field("auto", alias="as",
+                     description="auto | task | steer — auto lets the server decide")
+
+    model_config = {"populate_by_name": True}
+
+
+# ── deciding ─────────────────────────────────────────────────────────────────
+
+def classify(text: str) -> str:
+    """``"steer"`` or ``"task"`` for a message typed while a run is going.
+
+    Stopping or replacing the run, and anything that reads as an adjustment to
+    it, steers. An explicit ask for another agent, a question, or a new
+    request is its own task."""
+    t = (text or "").strip()
+    if not t:
+        return "steer"
+    try:
+        from aiforge_core.runtime.run_interrupt import (
+            text_cuts_running_work,
+            text_replaces_work,
+        )
+        if text_cuts_running_work(t) or text_replaces_work(t):
+            return "steer"
+    except Exception:  # noqa: BLE001
+        pass
+    if _SIDE_CUE_RE.search(t):
+        return "task"
+    from ._sched_fold import _is_new_request
+    return "task" if _is_new_request(t) else "steer"
+
+
+def edits_files(text: str, mode: str) -> bool:
+    """Whether a task is expected to change files. Team runs always are; a plan
+    never is; otherwise the wording decides."""
+    if mode == "team":
+        return True
+    if mode == "plan":
+        return False
+    from ._overlap import has_edit_intent
+    return has_edit_intent(text)
+
+
+def parallel_limit(role: str = "chat") -> int:
+    """Runs one chat family may have going at once (the parent included):
+    ``AIFORGE_CHAT_SIDE_TASKS_MAX``, else what the model server serves in
+    parallel. 1 means a side task waits for the running turn."""
+    raw = os.environ.get("AIFORGE_CHAT_SIDE_TASKS_MAX", "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    try:
+        from aiforge_core.llm import slots
+        return max(1, int(slots.llm_slots(role)))
+    except Exception:  # noqa: BLE001
+        return 1
+
+
+# ── state helpers ────────────────────────────────────────────────────────────
+
+def _is_running(session_id: int) -> bool:
+    from aiforge_core.runtime import chat_runs
+    return chat_runs.is_running(session_id)
+
+
+def _last(rows: list, role: str) -> "dict | None":
+    return next((m for m in reversed(rows) if m.get("role") == role), None)
+
+
+def _parent_edits(parent: dict) -> bool:
+    """Whether the parent's running turn is one that changes files."""
+    from aiforge_core.runtime import chat_store
+    last_user = _last(chat_store.get_messages(parent["id"]) or [], "user") or {}
+    return edits_files(last_user.get("content") or "",
+                       last_user.get("mode") or "simple")
+
+
+def _set_task(child: dict, **fields) -> dict:
+    from aiforge_core.runtime import chat_store
+    task = {**(child.get("task") or {}), **fields}
+    chat_store.set_session_task(child["id"], child.get("parent_id"), task)
+    child["task"] = task
+    return child
+
+
+def _settle_finished(child: dict) -> dict:
+    """A task marked running whose run is gone has ended: done when it left an
+    answer, stopped when it did not (Stop, a crash, or an API restart)."""
+    task = child.get("task") or {}
+    if task.get("state") != RUNNING or _is_running(child["id"]):
+        return child
+    from aiforge_core.runtime import chat_store
+    rows = chat_store.get_messages(child["id"]) or []
+    answered = bool(rows) and rows[-1].get("role") == "assistant" \
+        and bool((rows[-1].get("content") or "").strip())
+    return _set_task(child, state=DONE if answered else STOPPED,
+                     ended=time.time())
+
+
+def _children(parent_id: int) -> list[dict]:
+    from aiforge_core.runtime import chat_store
+    return [_settle_finished(c) for c in chat_store.child_sessions(parent_id)]
+
+
+# ── starting ─────────────────────────────────────────────────────────────────
+
+def _context_preamble(parent: dict) -> str:
+    """A short view of the parent conversation, so the side agent knows what
+    "that file" or "the bug" refers to."""
+    from aiforge_core.runtime import chat_store
+    rows = [m for m in chat_store.get_messages(parent["id"]) or []
+            if m.get("role") in ("user", "assistant")
+            and (m.get("content") or "").strip()][-_CONTEXT_TURNS:]
+    if not rows:
+        return ""
+    lines = [f"{m['role']}: {' '.join((m.get('content') or '').split())[:_CONTEXT_CHARS]}"
+             for m in rows]
+    return ("This is a SIDE TASK started from another chat that is still "
+            "working on its own request. Do only what is asked below; do not "
+            "continue that chat's work. Its recent messages, for reference "
+            "only:\n" + "\n".join(lines) + "\n\nThe side task:\n")
+
+
+def _start(child: dict, parent: dict) -> None:
+    """Start the child's run on its own producer thread."""
+    from ._message import _SessionMsgBody, chat_session_message
+    task = child.get("task") or {}
+    _set_task(child, state=RUNNING, started=time.time())
+    try:
+        # The response is a lazy stream nobody reads here: the run lives on its
+        # own thread and the UI attaches to it like any other chat.
+        chat_session_message(child["id"], _SessionMsgBody(
+            content=_context_preamble(parent) + (task.get("prompt") or ""),
+            mode=task.get("mode") or "simple"))
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("side task %s failed to start: %s", child["id"], exc)
+        _set_task(child, state=STOPPED, ended=time.time(), error=str(exc)[:300])
+
+
+def pump(parent_id: int) -> None:
+    """Start every queued task that may run now."""
+    from aiforge_core.runtime import chat_store
+    with _LOCK:
+        parent = chat_store.get_session(parent_id)
+        if not parent:
+            return
+        kids = _children(parent_id)
+        parent_running = _is_running(parent_id)
+        running = [c for c in kids if (c.get("task") or {}).get("state") == RUNNING]
+        count = len(running) + (1 if parent_running else 0)
+        editing = (parent_running and _parent_edits(parent)) or any(
+            (c.get("task") or {}).get("edits") for c in running)
+        limit = parallel_limit(parent.get("role") or "chat")
+        for c in kids:
+            task = c.get("task") or {}
+            if task.get("state") != QUEUED:
+                continue
+            if count >= limit or (task.get("edits") and editing):
+                continue
+            _start(c, parent)
+            count += 1
+            editing = editing or bool(task.get("edits"))
+
+
+def create(parent_id: int, content: str, mode: str = "simple") -> dict:
+    """Make a side task under ``parent_id`` and start it if it may run now."""
+    from aiforge_core.runtime import chat_store
+    parent = chat_store.get_session(parent_id)
+    if not parent:
+        raise HTTPException(404, f"session {parent_id} not found")
+    if parent.get("parent_id"):
+        # A side task's own side tasks belong to the same family.
+        parent = chat_store.get_session(parent["parent_id"]) or parent
+    mode = mode if mode in ("simple", "plan", "team") else "simple"
+    text = content.strip()
+    title = " ".join(text.split())[:60] or "Side task"
+    with _LOCK:
+        child = chat_store.create_session(title, parent.get("cwd"),
+                                          role=parent.get("role") or "chat")
+        chat_store.set_session_task(child["id"], parent["id"], {
+            "state": QUEUED, "prompt": text, "mode": mode,
+            "edits": edits_files(text, mode), "posted": False,
+            "created": time.time()})
+    pump(parent["id"])
+    return _view(chat_store.get_session(child["id"]) or child)
+
+
+# ── reporting back ───────────────────────────────────────────────────────────
+
+def _post_results(parent_id: int) -> int:
+    """Append each finished, unposted side task's answer to the parent chat.
+    Waits (returns 0) while the parent is mid-turn so its own turn's rows stay
+    together."""
+    from aiforge_core.runtime import chat_store
+    with _LOCK:
+        if _is_running(parent_id) or not chat_store.get_session(parent_id):
+            return 0
+        posted = 0
+        for c in _children(parent_id):
+            task = c.get("task") or {}
+            if task.get("posted") or task.get("state") not in (DONE, STOPPED):
+                continue
+            if task.get("state") == DONE:
+                answer = _last(chat_store.get_messages(c["id"]) or [],
+                               "assistant") or {}
+                prompt = " ".join((task.get("prompt") or "").split())[:200]
+                chat_store.add_message(
+                    parent_id, "assistant",
+                    f"**Side task:** {prompt}\n\n{(answer.get('content') or '').strip()}",
+                    [{"type": "side_task", "session_id": c["id"],
+                      "title": c.get("title")}],
+                    mode=task.get("mode") or "simple")
+                posted += 1
+            _set_task(c, posted=True)
+        return posted
+
+
+def on_run_finished(session_id: int) -> None:
+    """A chat run ended: settle it if it was a side task, post finished side
+    tasks back, and start whatever was waiting on it."""
+    from aiforge_core.runtime import chat_store
+    sess = chat_store.get_session(session_id)
+    if not sess:
+        return
+    parent_id = sess.get("parent_id") or session_id
+    if not sess.get("parent_id") and not chat_store.child_sessions(session_id):
+        return                           # an ordinary chat with no side tasks
+    _post_results(parent_id)
+    pump(parent_id)
+
+
+def install() -> None:
+    from aiforge_core.runtime import chat_runs
+    chat_runs.on_finish(on_run_finished)
+
+
+install()
+
+
+# ── API ──────────────────────────────────────────────────────────────────────
+
+def _view(child: dict) -> dict:
+    from aiforge_core.runtime import chat_store
+    task = child.get("task") or {}
+    state = task.get("state") or QUEUED
+    preview = ""
+    if state == DONE:
+        answer = _last(chat_store.get_messages(child["id"]) or [], "assistant") or {}
+        preview = " ".join((answer.get("content") or "").split())[:240]
+    return {"id": child["id"], "title": child.get("title"), "state": state,
+            "prompt": task.get("prompt") or "", "mode": task.get("mode") or "simple",
+            "edits": bool(task.get("edits")), "posted": bool(task.get("posted")),
+            "created": task.get("created"), "started": task.get("started"),
+            "ended": task.get("ended"), "error": task.get("error"),
+            "preview": preview}
+
+
+@router.get("/api/chat/sessions/{session_id}/tasks",
+            responses={404: {"description": "Not found"}})
+def chat_side_tasks(session_id: int) -> dict:
+    """The side tasks of a chat, oldest first, with their state."""
+    from aiforge_core.runtime import chat_store
+    sess = chat_store.get_session(session_id)
+    if not sess:
+        raise HTTPException(404, f"session {session_id} not found")
+    # Also the catch-up after an API restart: nothing else would notice that a
+    # task finished, or start one that was queued.
+    _post_results(session_id)
+    pump(session_id)
+    return {"tasks": [_view(c) for c in _children(session_id)],
+            "limit": parallel_limit(sess.get("role") or "chat"),
+            "running": _is_running(session_id)}
+
+
+@router.post("/api/chat/sessions/{session_id}/side",
+             responses={404: {"description": "Not found"}})
+def chat_side_message(session_id: int, body: _SideBody) -> dict:
+    """A message typed while this chat is busy. Returns what was done with it:
+    ``{"action": "steer", …}`` folded into the running turn,
+    ``{"action": "task", "task": …}`` started (or queued) as a side task, or
+    ``{"action": "send"}`` when nothing is running and it is an ordinary turn."""
+    from aiforge_core.runtime import chat_store
+    if not chat_store.get_session(session_id):
+        raise HTTPException(404, f"session {session_id} not found")
+    want = body.as_ if body.as_ in ("task", "steer") else "auto"
+    if want != "task" and not _is_running(session_id):
+        return {"action": "send"}
+    if want == "auto":
+        want = classify(body.content)
+    if want == "steer":
+        from ._message import _SteerBody, chat_session_steer
+        res = chat_session_steer(session_id, _SteerBody(content=body.content))
+        if res.get("queued") or not res.get("unsupported"):
+            return {"action": "steer", **res}
+        # This run cannot be steered (best-of-N): the message still deserves
+        # an answer, so it runs beside it.
+    return {"action": "task", "task": create(session_id, body.content, body.mode)}

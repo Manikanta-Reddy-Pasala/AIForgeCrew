@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
 import { NavLink, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { api, chatApi, chatSessionMessageURL, chatSessionAttachURL, chatSessionStop, chatSessionSteer, chatKillAll, chatMediaUpload, chatMediaList, chatMediaDescribe, chatMediaDelete, ChatMedia, chatSessionSpec, rules as fetchRules, ruleFlags, CapturedRule, GateFlags, ChatSession, ChatMsg, ChatModelEntry } from '../api';
+import { api, chatApi, chatSessionMessageURL, chatSessionAttachURL, chatSessionStop, chatSideMessage, chatSideTasks, SideTask, chatKillAll, chatMediaUpload, chatMediaList, chatMediaDescribe, chatMediaDelete, ChatMedia, chatSessionSpec, rules as fetchRules, ruleFlags, CapturedRule, GateFlags, ChatSession, ChatMsg, ChatModelEntry } from '../api';
 import { Icon } from '../icons';
 import { MdLite, copyText as mdCopyText } from '../mdlite';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { AgentStep, SubtaskItem, RuleState, RuleStateCtx, LiveTurn, ChatMode, BuilderKind, PendingApproval } from './Chat.types';
 import { menuBtn, menuItem, LS_SESSION_KEY, LS_MODEL_KEY, LS_MODE_KEY, BUILDER_KINDS, BUILDER_LABELS, LS_BUILDER_KEY, relTime, dateTimeLabel, toAgentStep, msgAwaiting, getDismissedPlans, addDismissedPlan, isStoppedTurn, fmtTokens } from './Chat.helpers';
 import { SubtaskList } from './Chat.SubtaskList';
+import { SideTasks } from './Chat.SideTasks';
 import SuggestionChip from './Chat.SuggestionChip';
 import type { Suggestion } from '../api/chat';
 import { ModeBadge } from './Chat.ModeBadge';
@@ -1144,6 +1145,72 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
     }
   }
 
+  // ── Side tasks: other agent runs beside this chat ─────────────────────────
+  const [sideTasks, setSideTasks] = useState<SideTask[]>([]);
+  const [sideLimit, setSideLimit] = useState(1);
+  const postedRef = useRef<Set<number>>(new Set());
+  // The chat a family of tasks hangs off: the parent when a task is open.
+  const familyId = (() => {
+    if (activeId === null) return null;
+    const cur = sessions.find(s => s.id === activeId);
+    return cur?.parent_id ?? activeId;
+  })();
+  const familyIdRef = useRef<number | null>(familyId);
+  useEffect(() => { familyIdRef.current = familyId; }, [familyId]);
+
+  async function loadSideTasks() {
+    const fid = familyIdRef.current;
+    if (fid === null) { setSideTasks([]); return; }
+    try {
+      const r = await chatSideTasks(fid);
+      if (familyIdRef.current !== fid) return;
+      setSideTasks(r.tasks);
+      setSideLimit(r.limit);
+      // A task's answer was just added to the main chat: show it.
+      const newlyPosted = r.tasks.filter(t => t.posted && t.state === 'done'
+        && !postedRef.current.has(t.id));
+      r.tasks.forEach(t => { if (t.posted) postedRef.current.add(t.id); });
+      if (newlyPosted.length && activeIdRef.current === fid && !busyRef.current) {
+        loadSession(fid);
+      }
+    } catch { /* the strip is a view; a failed poll just keeps the last one */ }
+  }
+
+  useEffect(() => {
+    postedRef.current = new Set();
+    setSideTasks([]);
+    if (familyId === null) return;
+    // Seed "already posted" so opening a chat does not reload for old results.
+    chatSideTasks(familyId).then(r => {
+      r.tasks.forEach(t => { if (t.posted) postedRef.current.add(t.id); });
+      if (familyIdRef.current === familyId) { setSideTasks(r.tasks); setSideLimit(r.limit); }
+    }).catch(() => { /* ignore */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [familyId]);
+
+  const sideActive = sideTasks.some(t => t.state === 'queued' || t.state === 'running'
+    || (t.state === 'done' && !t.posted));
+  useEffect(() => {
+    if (!sideActive) return;
+    const h = setInterval(loadSideTasks, 3000);
+    return () => clearInterval(h);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sideActive, familyId]);
+  // A turn just ended: queued tasks may have started, results may have landed.
+  useEffect(() => {
+    if (!busy && sideTasks.length) loadSideTasks();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy]);
+
+  async function removeSideTask(id: number) {
+    try {
+      await chatApi.sessionDelete(id);
+      if (activeIdRef.current === id && familyIdRef.current !== null) selectSession(familyIdRef.current);
+      setSessions(prev => prev.filter(x => x.id !== id));
+      loadSideTasks();
+    } catch (e: any) { toast.error(`Could not remove the task: ${e.message}`); }
+  }
+
   async function toggleLearn(sess: ChatSession) {
     try {
       const updated = await chatApi.sessionLearn(sess.id, sess.learn === false);
@@ -1565,7 +1632,10 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   // While a run is streaming, the Enter/Send action injects guidance into the
   // LIVE run (queued + folded in at the agent's next step) instead of opening
   // a new turn. The server echoes a role:'steer' thought when it's applied.
-  async function steer() {
+  // A message typed while the run is going is either a correction of it (a
+  // steer) or a task of its own. `auto` lets the server tell which; the
+  // "Side task" button forces a second agent run beside this one.
+  async function steer(as: 'auto' | 'task' | 'steer' = 'auto') {
     const q = input.trim();
     // FE2: never steer a gated run (resolve the approval first).
     // FE6: ignore re-entry while a steer POST is already in flight.
@@ -1573,8 +1643,22 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
     setSteering(true);
     setInput('');
     try {
-      const r = await chatSessionSteer(activeId, q);
-      if (r.queued) {
+      let r: any;
+      try {
+        r = await chatSideMessage(activeId, q, chatMode, as);
+      } catch {
+        r = { action: 'steer', queued: false };
+      }
+      if (r.action === 'task') {
+        toast(r.task.state === 'running'
+          ? 'Started as a side task — this run keeps going'
+          : 'Queued as a side task — starts when it will not disturb the running one');
+        loadSessions(true);
+        loadSideTasks();
+      } else if (r.action === 'send') {
+        setInput(q);   // the run ended in the meantime — send it normally
+        toast('The run has finished — press Run to send this');
+      } else if (r.queued) {
         // Show the steer text IMMEDIATELY as a step in the live stream so it
         // doesn't just vanish from the composer until the agent drains it. It
         // commits with the turn (no orphan): the later server role:'steer' echo
@@ -1718,7 +1802,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
       if (awaitingReply) { send(); return; }   // FE1: reply, not steer
       if (busy) {
         if (pendingApproval) return;            // FE2: resolve the gate first
-        if (canSteer) steer();                  // team runs aren't steerable
+        if (canSteer) steer('auto');            // steers, or starts a side task
       } else {
         send();
       }
@@ -1768,12 +1852,14 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
               ))}
             </div>
             );
-            if (sessions.length === 0) return (
+            // Side tasks are reached from their chat's task strip, not listed here.
+            const topLevel = sessions.filter(s => !s.parent_id);
+            if (topLevel.length === 0) return (
             <div style={{ padding: '16px 10px', textAlign: 'center', color: 'var(--fg-3)', fontSize: 'var(--fs-xs)' }}>
               No conversations yet
             </div>
             );
-            return sessions.map(s => (
+            return topLevel.map(s => (
             <div
               key={s.id}
               className={`chat-session-item ${s.id === activeId ? 'active' : ''}`}
@@ -2239,6 +2325,12 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                           catch (e: any) { toast.error(`Delete failed: ${e.message}`); }
                         }} />
 
+            {familyId !== null && (
+              <SideTasks tasks={sideTasks} viewingId={activeId} parentId={familyId} limit={sideLimit}
+                         onOpen={id => selectSession(id)}
+                         onStop={id => { chatSessionStop(id).then(() => loadSideTasks()); }}
+                         onRemove={removeSideTask} />
+            )}
             <div className="chat-composer">
               {editingFrom != null && (
                 <div className="xs" style={{
@@ -2289,11 +2381,19 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                 )}
                 {(() => {
                   if (canSteer) return (
-                  <button type="button" onClick={steer} disabled={!input.trim() || steering}
+                  <>
+                  <button type="button" onClick={() => steer('steer')} disabled={!input.trim() || steering}
                           title="Inject this guidance into the running agent without stopping it"
                           style={{ whiteSpace: 'nowrap' }}>
                     ↳ Steer
                   </button>
+                  <button type="button" className="ghost" onClick={() => steer('task')}
+                          disabled={!input.trim() || steering}
+                          title="Run this as a separate task beside the running one. Enter decides by itself: a correction steers, a new request becomes a side task."
+                          style={{ whiteSpace: 'nowrap' }}>
+                    ＋ Side task
+                  </button>
+                  </>
                   );
                   if (busy && !awaitingReply) return (
                   // canSteer is false here only because pendingApproval is set

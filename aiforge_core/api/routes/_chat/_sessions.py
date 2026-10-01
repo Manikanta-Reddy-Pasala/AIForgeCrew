@@ -288,6 +288,13 @@ def chat_session_delete(session_id: int) -> None:
         chat_runs,
         chat_store,
     )
+    # A chat's side tasks go with it. Each is a session of its own, so the same
+    # delete (stop its run, fold, drop its workspace) applies.
+    for _child in chat_store.child_sessions(session_id):
+        try:
+            chat_session_delete(_child["id"])
+        except HTTPException:
+            pass
     # Stop any in-flight run first so its background producer doesn't keep
     # running + persisting against a session that no longer exists.
     chat_cancel.cancel(session_id)
@@ -312,7 +319,9 @@ def chat_session_delete(session_id: int) -> None:
         chat_okr.forget_session(session_id)
     except Exception:  # noqa: BLE001
         pass
-    _delete_chat_workspace((_sess or {}).get("cwd"))
+    # A side task shares its parent's folder — never remove that with it.
+    if not (_sess or {}).get("parent_id"):
+        _delete_chat_workspace((_sess or {}).get("cwd"))
 
 
 @router.post("/api/chat/sessions/{session_id}/media", status_code=201, responses={400: {"description": "Bad request"}, 404: {"description": "Not found"}})

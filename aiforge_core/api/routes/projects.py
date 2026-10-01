@@ -29,8 +29,8 @@ def _chat_stats() -> dict:
     out: dict = {}
     for s in chat_store.list_sessions() or []:
         name = projects.project_of(s.get("cwd"))
-        if not name:
-            continue
+        if not name or s.get("parent_id"):
+            continue                     # side tasks are not chats of their own
         row = out.setdefault(name, {"chats": 0, "last_activity": ""})
         row["chats"] += 1
         row["last_activity"] = max(row["last_activity"],

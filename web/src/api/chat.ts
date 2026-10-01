@@ -13,7 +13,26 @@ export interface ChatSession {
   message_count?: number;
   last_mode?: 'simple' | 'plan' | 'team';   // mode the latest user turn ran in
   learn?: boolean;        // false = this chat writes no memory
+  parent_id?: number | null;   // set on a side task: the chat it was spun off
 }
+
+/** Another agent run going on beside a chat (a child chat of it). */
+export interface SideTask {
+  id: number;
+  title: string;
+  state: 'queued' | 'running' | 'done' | 'stopped';
+  prompt: string;
+  mode: 'simple' | 'plan' | 'team';
+  edits: boolean;
+  posted: boolean;
+  preview: string;
+  error?: string | null;
+}
+
+export type SideAction =
+  | { action: 'send' }
+  | { action: 'steer'; queued: boolean; unsupported?: boolean; reason?: string }
+  | { action: 'task'; task: SideTask };
 
 export interface ChatModelEntry {
   id: string;
@@ -242,6 +261,21 @@ export function chatKillAll(): Promise<{ killed: number[]; count: number; team_l
 
 // Steer the IN-FLIGHT run without stopping it (Gap A — mid-run steering).
 // The message is queued and folded into the agent's context at its next step.
+/** A message typed while the chat is busy. The server steers the running turn
+ *  or starts a side task; `as` forces one. */
+export function chatSideMessage(id: number, content: string, mode: string,
+                                as: 'auto' | 'task' | 'steer' = 'auto'): Promise<SideAction> {
+  return j<SideAction>(`/chat/sessions/${id}/side`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, mode, as }),
+  });
+}
+
+export function chatSideTasks(id: number): Promise<{ tasks: SideTask[]; limit: number; running: boolean }> {
+  return j(`/chat/sessions/${id}/tasks`);
+}
+
 export function chatSessionSteer(id: number, content: string): Promise<{ queued: boolean; unsupported?: boolean; reason?: string }> {
   return apiFetch(`/chat/sessions/${id}/steer`, {
     method: 'POST',

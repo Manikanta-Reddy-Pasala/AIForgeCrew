@@ -25,6 +25,7 @@ from ._chat import (
     _producer,  # noqa: F401
     _routing,  # noqa: F401
     _sessions,  # noqa: F401
+    _side_tasks,  # noqa: F401
     _stages,  # noqa: F401
     _turn_events,  # noqa: F401
 )

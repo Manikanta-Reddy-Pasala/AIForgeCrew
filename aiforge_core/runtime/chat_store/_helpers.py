@@ -120,8 +120,20 @@ def _iso(v):
 
 # ── shared row normalizers (operate on plain dicts) ───────────────────────────
 
+def _task_of(raw) -> "dict | None":
+    if not raw:
+        return None
+    try:
+        t = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return t if isinstance(t, dict) else None
+
+
 def _session_out(d: dict) -> dict:
     return {"id": d["id"], "title": d["title"], "cwd": d["cwd"],
+            # Set on a side task: the chat it was spun off, and its state.
+            "parent_id": d.get("parent_id"), "task": _task_of(d.get("task")),
             "role": (d.get("role") or "doer"),
             # 0 only when the user switched learning off for this chat.
             "learn": d.get("learn") != 0,

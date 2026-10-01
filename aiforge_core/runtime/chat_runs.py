@@ -105,11 +105,14 @@ class _Run:
 
     def finish(self) -> None:
         with self.lock:
+            first = not self.done
             self.done = True
             self.finished.set()
             for q in self.subscribers:
                 q.put(_SENTINEL)
         _touch()
+        if first:
+            _run_finish_hooks(self.session_id)
 
     # -- consumer side -------------------------------------------------------
 
@@ -132,6 +135,29 @@ class _Run:
     def unsubscribe(self, q: queue.Queue) -> None:
         with self.lock:
             self.subscribers.discard(q)
+
+
+# Called (each on its own daemon thread) with the session id when a run ends —
+# after the turn is persisted. How side tasks learn that a run finished without
+# polling. A hook that raises is ignored.
+_FINISH_HOOKS: list = []
+
+
+def on_finish(fn) -> None:
+    """Register ``fn(session_id)`` to run whenever a chat run finishes."""
+    if fn not in _FINISH_HOOKS:
+        _FINISH_HOOKS.append(fn)
+
+
+def _run_finish_hooks(session_id: int) -> None:
+    for fn in list(_FINISH_HOOKS):
+        def _call(fn=fn):
+            try:
+                fn(session_id)
+            except Exception:  # noqa: BLE001 — a hook never affects a run
+                pass
+        threading.Thread(target=_call, name="chat-run-finished",
+                         daemon=True).start()
 
 
 _LOCK = threading.Lock()
