@@ -10,8 +10,10 @@ import {
   subscribeModelProgress,
   transcribeSamples,
 } from '../voiceTranscribe';
+import { correctSpoken } from '../voiceCorrect';
+import type { SpokenAnchor } from '../voicePhrase';
 
-const IDLE_HINT = `Click and talk. A short pause writes the words into the box (${SPEECH_MODEL_LABEL}, on this device). Click again when you are done — nothing is sent until you press Run. First use downloads about 40 MB.`;
+const IDLE_HINT = `Click and talk. A short pause writes the words into the box, then the chat model tidies the sentence (${SPEECH_MODEL_LABEL}, on this device). Click again when you are done — nothing is sent until you press Run. First use downloads about 40 MB.`;
 const LISTENING_HINT = 'Listening. A short pause writes the words. Click to finish.';
 const QUIET_AFTER_SPEECH_MS = 8_000;
 const QUIET_IF_SILENT_MS = 20_000;
@@ -163,7 +165,10 @@ async function attachCapture(
   return connectScriptProcessor(ctx, source, node);
 }
 
-export function VoiceButton({ onText }: { onText: (spoken: string) => void }) {
+export function VoiceButton({ onText, onCorrect }: {
+  onText: (spoken: string) => SpokenAnchor;
+  onCorrect?: (anchor: SpokenAnchor, corrected: string) => void;
+}) {
   const [phase, setPhase] = useState<Phase>('idle');
   const [percent, setPercent] = useState<number | null>(null);
   const [hint, setHint] = useState(IDLE_HINT);
@@ -186,7 +191,9 @@ export function VoiceButton({ onText }: { onText: (spoken: string) => void }) {
   const startedAtRef = useRef(0);
   const watchRef = useRef<number | null>(null);
   const onTextRef = useRef(onText);
+  const onCorrectRef = useRef(onCorrect);
   onTextRef.current = onText;
+  onCorrectRef.current = onCorrect;
 
   function setPhaseBoth(next: Phase) {
     phaseRef.current = next;
@@ -246,14 +253,22 @@ export function VoiceButton({ onText }: { onText: (spoken: string) => void }) {
     };
   }, []);
 
+  async function tidy(anchor: SpokenAnchor) {
+    if (anchor.start < 0) return;
+    const fixed = await correctSpoken(anchor.raw);
+    if (!fixed || fixed === anchor.raw) return;
+    onCorrectRef.current?.(anchor, fixed);
+  }
+
   function enqueue(samples: Float32Array, sampleRate: number, epoch: number) {
     queueRef.current = queueRef.current.then(async () => {
       const text = await transcribeSamples(samples, sampleRate);
       if (!text) return;
       wroteRef.current = true;
       // The empty-chat mic unmounts once a session exists. Chat is still
-      // mounted, so the words still belong in the box.
-      onTextRef.current(text);
+      // mounted, so the words still belong in the box. The tidy runs beside
+      // the next phrase so a model call does not hold up the following sentence.
+      void tidy(onTextRef.current(text));
     }).catch((err: unknown) => {
       if (alive.current && epoch === session.current) toast.error(voiceError(err));
     });

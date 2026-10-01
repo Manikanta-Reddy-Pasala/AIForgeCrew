@@ -18,6 +18,7 @@ from aiforge_core.tickets import store as tickets_mod  # noqa: F401
 from ._chat import (
     _control,  # noqa: F401
     _core,  # noqa: F401
+    _speech,  # noqa: F401
     _history,  # noqa: F401
     _message,  # noqa: F401
     _models,  # noqa: F401
