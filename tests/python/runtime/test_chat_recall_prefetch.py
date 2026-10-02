@@ -39,6 +39,9 @@ def _fake_query(calls, delay=0.0, fail=False):
     return q
 
 
+# NOTE: every ask below names a "bug"/"kafka" thing on purpose. A short remark
+# with no repo/work cue ("ask one") is plain chat and skips recall entirely
+# (chat_router.plain_chat), so it would start no prefetch at all.
 def _msgs(text):
     return [{"role": "user", "content": text}]
 
@@ -72,10 +75,10 @@ def test_mismatch_waits_for_prefetch_then_queries_itself(monkeypatch, tmp_path):
     calls: list = []
     monkeypatch.setattr("aiforge_core.memory.unified_query.query",
                         _fake_query(calls, delay=0.2))
-    _recall_prefetch.start(_msgs("first wording of the ask"), cwd, 3)
-    chat_agent._memory_recall(cwd, "a different ask", limit=6, session_id=3)
-    assert [c["text"] for c in calls] == ["first wording of the ask",
-                                          "a different ask"]
+    _recall_prefetch.start(_msgs("first wording of the kafka bug ask"), cwd, 3)
+    chat_agent._memory_recall(cwd, "a different kafka bug ask", limit=6, session_id=3)
+    assert [c["text"] for c in calls] == ["first wording of the kafka bug ask",
+                                          "a different kafka bug ask"]
     assert calls[1]["t0"] >= calls[0]["t1"]          # serialized, no overlap
 
 
@@ -108,10 +111,10 @@ def test_leftover_from_an_old_turn_is_not_reused(monkeypatch, tmp_path):
     cwd = str(tmp_path)
     calls: list = []
     monkeypatch.setattr("aiforge_core.memory.unified_query.query", _fake_query(calls))
-    _recall_prefetch.start(_msgs("same words"), cwd, 6)
+    _recall_prefetch.start(_msgs("same words about the kafka bug"), cwd, 6)
     args, fut, _t = _recall_prefetch._PENDING[6]
     _recall_prefetch._PENDING[6] = (args, fut, time.monotonic() - 10_000)
-    chat_agent._memory_recall(cwd, "same words", limit=6, session_id=6)
+    chat_agent._memory_recall(cwd, "same words about the kafka bug", limit=6, session_id=6)
     assert len(calls) == 2
 
 
@@ -164,13 +167,13 @@ def test_concurrent_sessions_do_not_cross(monkeypatch, tmp_path):
     calls: list = []
     monkeypatch.setattr("aiforge_core.memory.unified_query.query",
                         _fake_query(calls, delay=0.05))
-    _recall_prefetch.start(_msgs("ask one"), str(tmp_path), 11)
-    _recall_prefetch.start(_msgs("ask two"), str(tmp_path), 12)
+    _recall_prefetch.start(_msgs("kafka bug one"), str(tmp_path), 11)
+    _recall_prefetch.start(_msgs("kafka bug two"), str(tmp_path), 12)
     out: dict = {}
     ts = [threading.Thread(target=lambda s=s, q=q: out.__setitem__(
         s, chat_agent._memory_recall(str(tmp_path), q, limit=6, session_id=s)))
-        for s, q in ((11, "ask one"), (12, "ask two"))]
+        for s, q in ((11, "kafka bug one"), (12, "kafka bug two"))]
     [t.start() for t in ts]
     [t.join() for t in ts]
-    assert sorted(c["text"] for c in calls) == ["ask one", "ask two"]
+    assert sorted(c["text"] for c in calls) == ["kafka bug one", "kafka bug two"]
     assert out[11] == out[12] != ""

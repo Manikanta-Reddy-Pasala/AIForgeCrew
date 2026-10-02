@@ -9,6 +9,20 @@ from aiforge_core.runtime import doer_tools as dt
 from aiforge_core.runtime.doer_tools import _web
 
 
+@pytest.fixture(autouse=True)
+def _web_and_integrations_on(monkeypatch):
+    """Role scoping is the subject here, not the install's switches. The tool
+    list is gated on web fetch (default OFF) and on configured integrations, so
+    pin both on; otherwise the result depends on the box the suite runs on."""
+    from aiforge_core.runtime.chat_agent import _catalog_gate
+    monkeypatch.setenv("AIFORGE_ALLOW_WEB_FETCH", "1")
+    monkeypatch.delenv("AIFORGE_WEB_FETCH_DISABLE", raising=False)
+    monkeypatch.delenv("AIFORGE_WEB_SEARCH_DISABLE", raising=False)
+    monkeypatch.delenv("AIFORGE_EGRESS_OFF", raising=False)
+    monkeypatch.setattr(_catalog_gate, "configured_integrations",
+                        lambda: {"jira", "confluence", "gitlab", "email"})
+
+
 def _names(role):
     return {getattr(t, "name", None) or t.func.__name__
             for t in dt.adk_function_tools(role=role)}

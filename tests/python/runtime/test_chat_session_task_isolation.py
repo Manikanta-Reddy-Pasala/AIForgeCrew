@@ -63,6 +63,9 @@ def test_other_project_session_is_not_carried(monkeypatch):
     assert seen["cwd"] == "/repo/session-73"
 
 
+# The asks below carry a work cue (bug/login/slow). A short remark without one
+# is plain chat and skips the recall helper entirely (chat_router.plain_chat),
+# so the helper would never see ``prev_session_on`` at all.
 def test_same_project_session_is_carried_and_deduped(monkeypatch):
     blocks, seen = _capture(monkeypatch)
     monkeypatch.setattr(
@@ -70,7 +73,7 @@ def test_same_project_session_is_carried_and_deduped(monkeypatch):
         lambda session_id, *, cwd=None, **k: "PREVIOUS SESSION 8 — REFERENCE ONLY")
     _loop._append_recall_blocks(
         lambda tag, text: blocks.append((tag, text)), _bundle(),
-        "/repo", "carry on", [], 9, "chat", "lite", True)
+        "/repo", "carry on with the login bug", [], 9, "chat", "lite", True)
 
     assert ("prev-session", "PREVIOUS SESSION 8 — REFERENCE ONLY") in blocks
     assert seen["prev_session_on"] is True
@@ -87,7 +90,7 @@ def test_disabled_by_env(monkeypatch):
         "aiforge_core.runtime.chat_okr.previous_session_brief", _never)
     _loop._append_recall_blocks(
         lambda tag, text: blocks.append((tag, text)), _bundle(),
-        "/repo", "hi", [], 9, "chat", "lite", True)
+        "/repo", "why is login slow", [], 9, "chat", "lite", True)
     assert not any(tag == "prev-session" for tag, _ in blocks)
     assert seen["prev_session_on"] is False
 

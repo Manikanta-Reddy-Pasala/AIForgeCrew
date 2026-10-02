@@ -368,8 +368,13 @@ def _named(name):
 
 
 def test_the_researcher_reads_pages_in_a_thread(monkeypatch):
+    from aiforge_core.runtime.chat_agent import _catalog_gate
     from aiforge_core.runtime.doer_tools import adk_function_tools
     monkeypatch.delenv("AIFORGE_TOOL_ENFORCE", raising=False)
+    # The role's list is gated on configured integrations; pin Jira on so the
+    # result does not depend on the box's credentials.
+    monkeypatch.setattr(_catalog_gate, "configured_integrations",
+                        lambda: {"jira", "confluence", "gitlab", "email"})
     tools = {t.name: t for t in adk_function_tools(role="researcher")}
     assert isinstance(tools["web_read"], ThreadedReadTool)
     assert isinstance(tools["jira_read"], ThreadedReadTool)

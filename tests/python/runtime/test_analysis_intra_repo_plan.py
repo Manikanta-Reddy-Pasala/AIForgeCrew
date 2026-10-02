@@ -7,10 +7,14 @@ from aiforge_core.runtime import analysis_pipeline as ap
 
 
 def _mkfiles(root, names):
+    # Planning only splits when the files together exceed one read's budget
+    # (80 KB); a handful of tiny files stay with one agent. Pad each file so
+    # six of them are over that line.
+    pad = "// " + "x" * 17_000 + "\n"
     for n in names:
         p = root / n
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(f"class {p.stem} {{}}")
+        p.write_text(f"class {p.stem} {{}}\n{pad}")
 
 
 def test_discover_keeps_only_real_files_dropping_typos(tmp_path):

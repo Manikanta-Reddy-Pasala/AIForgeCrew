@@ -132,7 +132,9 @@ def test_cave_mode_keeps_quality_blocks_and_shrinks_budget(tmp_path, monkeypatch
     assert ca._ctx_budget_chars() == normal
 
     fn = _scripted(["FINAL: done"])
-    list(ca.run_chat_agent([{"role": "user", "content": "hi"}],
+    # A work ask, not "hi": a short remark with no repo/work cue is plain chat
+    # and skips the skill match on purpose (chat_router.plain_chat).
+    list(ca.run_chat_agent([{"role": "user", "content": "fix the login bug"}],
                            cwd=str(tmp_path), complete_fn=fn))
     # Cave keeps the QUALITY blocks — nothing dropped to save tokens.
     assert seen["skills"] >= 1
