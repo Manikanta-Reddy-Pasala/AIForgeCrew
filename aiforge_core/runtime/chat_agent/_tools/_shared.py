@@ -28,6 +28,12 @@ def _git_toplevel(cwd: str | None) -> str | None:
             top = out.stdout.strip() or None
     except Exception:  # noqa: BLE001 — recall must never break on git
         top = None
+    if top:
+        try:    # a chat worktree is the project it was made from (see repo_ident)
+            from aiforge_core.runtime import chat_worktree
+            top = chat_worktree.main_repo_of(top) or top
+        except Exception:  # noqa: BLE001
+            pass
     _GIT_TOPLEVEL_CACHE[key] = top
     return top
 

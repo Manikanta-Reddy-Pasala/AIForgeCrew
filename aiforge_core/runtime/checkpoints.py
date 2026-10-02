@@ -25,6 +25,11 @@ import tempfile
 from pathlib import Path
 
 
+import threading as _threading
+
+_REF_LOCK = _threading.Lock()
+
+
 def _git_timeout_s() -> float:
     """Longest one checkpoint git command may take (``AIFORGE_CHECKPOINT_GIT_S``).
     It had none: a stuck git (a lock, a hung mount) held the turn before its
@@ -204,8 +209,12 @@ def snapshot(cwd: str, label: str = "", when: str = "") -> dict:
         sha, err = _commit_snapshot_tree(cwd, tree_sha, label)
         if sha is None:
             return err
-        ref = _next_checkpoint_ref(cwd)
-        _git(cwd, "update-ref", ref, sha)
+        # Every worktree of a repo shares refs/aiforge-ckpt/: two chats taking a
+        # snapshot at once must not pick the same number and overwrite each
+        # other's checkpoint.
+        with _REF_LOCK:
+            ref = _next_checkpoint_ref(cwd)
+            _git(cwd, "update-ref", ref, sha)
         row = {"sha": sha, "ref": ref, "label": label or "snapshot", "when": when}
         rows = _load(cwd)
         rows.append(row)

@@ -49,6 +49,10 @@ def set_session_role(session_id: int, role: str) -> "dict | None":
     return _backend().set_session_role(session_id, role)
 
 
+def set_session_workdir(session_id: int, workdir: "str | None") -> "dict | None":
+    return _backend().set_session_workdir(session_id, workdir)
+
+
 def set_session_task(session_id: int, parent_id: "int | None",
                      task: "dict | None") -> "dict | None":
     return _backend().set_session_task(session_id, parent_id, task)

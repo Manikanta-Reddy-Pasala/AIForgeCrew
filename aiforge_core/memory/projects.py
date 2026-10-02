@@ -262,6 +262,11 @@ def project_path_of(cwd: "str | None",
     if not cwd:
         return None
     target = os.path.normpath(str(cwd))
+    try:                      # a chat's worktree belongs to the repo it came from
+        from aiforge_core.runtime import chat_worktree
+        target = chat_worktree.main_repo_of(target) or target
+    except Exception:  # noqa: BLE001
+        pass
     for p in (known_paths() if paths is None else paths):
         if _under(target, os.path.normpath(p)):
             return p
