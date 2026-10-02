@@ -363,6 +363,23 @@ def _drain_run(q, session_id, subs: list, cwd: str, cancelled):
             return
 
 
+def _with_usage(events, session_id):
+    """Interleave context-meter ``usage`` events (same shape as simple chat)
+    into a parallel run's stream: at the start, throttled while it runs, and
+    forced after every subtask settles."""
+    from aiforge_core.runtime.chat_pipeline_usage import PipelineUsage
+    meter = PipelineUsage(session_id)
+    first = meter.tick("doer")
+    if first is not None:
+        yield first
+    for item in events:
+        yield item
+        settled = isinstance(item, dict) and item.get("type") == "subtask_update"
+        u = meter.tick("doer", force=settled)
+        if u is not None:
+            yield u
+
+
 def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = None,
                          enhanced: bool = False, session_id: int | None = None):
     """Chat 'parallel team' mode: run the (pre-decomposed) subtasks CONCURRENTLY
@@ -427,7 +444,8 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
         target=_make_runner(cwd, base, subs, _spec_runner(cwd, spec_md),
                             on_status, cancelled, spec_md, q, result),
         name="parallel-chat", daemon=True).start()
-    yield from _drain_run(q, session_id, subs, cwd, cancelled)
+    yield from _with_usage(_drain_run(q, session_id, subs, cwd, cancelled),
+                           session_id)
 
     agg = result.get("agg") or {}
     if cancelled():

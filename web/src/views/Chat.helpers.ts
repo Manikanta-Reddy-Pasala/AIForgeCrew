@@ -1,4 +1,22 @@
-import { AgentStep, BuilderKind } from './Chat.types';
+import { AgentStep, BuilderKind, SubtaskItem } from './Chat.types';
+
+// ── Which subtasks the pinned dock shows ──────────────────────────────────────
+// Tasks belong to the TURN that produced them. The live run's list wins; else
+// only the LATEST assistant turn's persisted `subtasks` step, and only when it
+// answers the newest user request. A newer request with no decomposition of its
+// own shows no dock at all — scanning older turns left a previous request's
+// "Tasks 2/2" pinned forever (e.g. after switching Simple → Team in one chat).
+// A new decomposition replaces the old list; lists are never merged.
+export function pickDockSubtasks(
+  live: SubtaskItem[] | undefined,
+  messages: ReadonlyArray<{ role: string; steps?: any[] }>,
+): SubtaskItem[] | undefined {
+  if (live?.length) return live;
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== 'assistant') return undefined;
+  const st = (last.steps || []).find((s: any) => s?.type === 'subtasks');
+  return st?.items?.length ? (st.items as SubtaskItem[]) : undefined;
+}
 
 // Header overflow-menu item styles.
 export const menuBtn: React.CSSProperties = {

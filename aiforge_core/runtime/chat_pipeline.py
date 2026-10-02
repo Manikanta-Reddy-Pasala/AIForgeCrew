@@ -41,6 +41,7 @@ from .chat_pipeline_prompt import (  # noqa: F401  # re-exported
     _build_team_prompt,
     _history_preamble,
 )
+from .chat_pipeline_usage import PipelineUsage, emit_for_adk_event
 from .chat_pipeline_turn import (  # noqa: F401  # re-exported
     _HANDED_OFF,
     _NO_EVENT,
@@ -202,6 +203,10 @@ async def _drive_run_events(agen, runner, q, session_id, chat_interject,
     acc = {"emitted_subtasks": False, "sub_items": None}
     enhancer_blocked = None
     answered = False
+    meter = PipelineUsage(session_id)
+    _first = meter.tick("team")           # the bar shows from the first moment
+    if _first is not None:
+        q.put(_first)
     it, deadline = agen.__aiter__(), None
     while (event := await _next_event(it, deadline)) is not _NO_EVENT:
         if event is _TIMED_OUT:
@@ -232,6 +237,7 @@ async def _drive_run_events(agen, runner, q, session_id, chat_interject,
             continue
         enhancer_blocked = _fold_team_event(event, q, steps, by_role, acc) \
             or enhancer_blocked
+        emit_for_adk_event(q, meter, event)
         if enhancer_blocked:
             await _close_team_run(agen, runner)
             break
