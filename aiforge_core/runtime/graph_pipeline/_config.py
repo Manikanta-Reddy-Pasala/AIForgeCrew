@@ -69,6 +69,10 @@ _NUMBERED_LINE_RE = re.compile(r"^\s*\d+[.)]\s+\S", re.MULTILINE)
 DOER_MAX_WALL_S = _int_env("AIFORGE_LOOP_MAX_WALL_S", 0)
 # Replan cap (was GraphPipeline.max_replans=1).
 MAX_REPLANS = 1
+# A Doer loop that stalls (same failure, no progress, plateau) is re-planned with
+# a different approach this many times before partial work ships for review.
+# Finishing the task comes first; 0 restores ship-the-partial at the first stall.
+PLATEAU_REPLANS = _int_env("AIFORGE_PLATEAU_REPLANS", 2)
 # Verifier-reject → re-plan cap (bounded inner loop).
 MAX_VERIFY_REPLANS = 1
 # Research-gap → re-search cap (bounded research-completeness loop).

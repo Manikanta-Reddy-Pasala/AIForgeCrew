@@ -38,6 +38,15 @@ os.environ.setdefault("AIFORGE_LLM_MAX_RPM", "0")
 # would hang. A bound shorter than the first probe gap means "do not wait";
 # the wait's own tests set it explicitly.
 os.environ.setdefault("AIFORGE_LLM_WAIT_MAX_S", "0.01")
+# A chat step that keeps failing now retries (smaller prompt, capped backoff)
+# until the user presses Stop. Tests of the old stop-and-report path keep it.
+os.environ.setdefault("AIFORGE_CHAT_PERSIST_S", "-1")
+# Stuck guards now change approach and carry on; the tests of the old
+# pause-and-ask path keep it.
+os.environ.setdefault("AIFORGE_CHAT_PAUSE_ON_STUCK", "1")
+# A stalled Doer loop is re-planned with a different approach before partial
+# work ships; the older gate tests expect ship-the-partial at the first stall.
+os.environ.setdefault("AIFORGE_PLATEAU_REPLANS", "0")
 # ...and the same when a test clears every AIFORGE_* variable.
 from aiforge_core.llm import model_wait as _model_wait  # noqa: E402
 

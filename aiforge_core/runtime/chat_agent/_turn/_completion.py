@@ -243,6 +243,93 @@ def _wait_out_outage(complete_fn, role, convo, session_id, exc, wait_s):
     return None, last  # pragma: no cover — delays() never ends
 
 
+def _persist_s() -> float:
+    """How long a failing step keeps retrying with a smaller prompt after the
+    normal retries are spent: 0 = until the user presses Stop (the default —
+    finishing the task comes first), >0 = a bound in seconds, <0 = stop at once
+    (the old behaviour). ``AIFORGE_CHAT_PERSIST_S``."""
+    try:
+        return float(os.environ.get("AIFORGE_CHAT_PERSIST_S", "0"))
+    except ValueError:
+        return 0.0
+
+
+_PERSIST_GAPS = (5.0, 10.0, 20.0, 30.0)     # then 30 s until it answers
+_CONFIG_ROUNDS = 5                          # a request the server rejects outright
+
+
+def _persist_gaps():
+    for g in _PERSIST_GAPS:
+        yield g
+    while True:
+        yield _PERSIST_GAPS[-1]
+
+
+def _shrink_for_retry(convo, role, complete_fn, session_id) -> bool:
+    """Condense the history in place so the next send is a SMALLER request.
+    Returns True when the prompt got shorter. A model that cannot start
+    answering a big prompt, or a gateway that times it out, is often fixed by
+    this alone; the saved text stays reachable through memory_lookup."""
+    try:
+        from .._context import _compact_convo
+        before = sum(len(str(m.get("content") or "")) for m in convo)
+        new = _compact_convo(convo, role=role, complete_fn=complete_fn,
+                             session_id=session_id, force=True, keep_recent=6)
+        after = sum(len(str(m.get("content") or "")) for m in new)
+        if new is not convo and after < before:
+            convo[:] = new
+            return True
+    except Exception:  # noqa: BLE001 — a failed shrink just retries as is
+        pass
+    return False
+
+
+def _persist_until_answer(complete_fn, role, convo, session_id, last,
+                          limit_s: float):
+    """The model keeps failing this step (the normal retries are spent, or the
+    server says this request itself fails). The task still has to finish: wait,
+    shrink the prompt, send again — until it answers, the user presses Stop or
+    types, or the bound (``limit_s`` > 0) runs out. Yields status lines; returns
+    ``(completion, last_error)`` where the completion is None when it gave up."""
+    from aiforge_core.llm import model_outage
+    from aiforge_core.runtime import chat_cancel
+    from aiforge_core.runtime.run_interrupt import pause
+    import time as _t
+    t0 = _t.monotonic()
+    rounds = 0
+    for gap in _persist_gaps():
+        rounds += 1
+        if limit_s > 0 and _t.monotonic() - t0 + gap > limit_s:
+            return None, last
+        if session_id is not None and chat_cancel.is_cancelled(session_id):
+            return _CANCELLED, None
+        try:
+            verdict = model_outage.classify(last)
+        except Exception:  # noqa: BLE001
+            verdict = None
+        if verdict == model_outage.CONFIG and rounds > _CONFIG_ROUNDS:
+            return None, last
+        shrunk = _shrink_for_retry(convo, role, complete_fn, session_id)
+        yield {"type": "thought", "role": "system",
+               "text": f"⏸ the model isn't answering this step — "
+                       f"{'condensed the history and ' if shrunk else ''}"
+                       f"trying again in {int(gap)}s (attempt {rounds}; Stop ends it)"}
+        why = pause(gap, session_id, slice_s=_CANCEL_POLL_S)
+        if why == "stop":
+            return _CANCELLED, None
+        if why == "steer":
+            return _STEERED, None
+        try:
+            out = _complete_cancellable(complete_fn, role, convo, session_id)
+            if out is not _CANCELLED:
+                yield {"type": "thought", "role": "system",
+                       "text": "▶ the model answered — continuing"}
+            return out, None
+        except Exception as exc2:  # noqa: BLE001
+            last = exc2
+    return None, last  # pragma: no cover — the gap iterator never ends
+
+
 def _retry_completion(complete_fn, role, convo, session_id, exc,
                       _step_calls, _meter, _step_tok, wait_s=None, worked=False):
     """Recover a failed model completion: retry (bounded by the per-step
@@ -254,6 +341,16 @@ def _retry_completion(complete_fn, role, convo, session_id, exc,
     from aiforge_core.runtime import chat_cancel
     _issue = _llm_issue(exc)
     if _issue is not None:
+        if _persist_s() >= 0:
+            out, _last = yield from _persist_until_answer(
+                complete_fn, role, convo, session_id, exc, _persist_s())
+            if out is _STEERED or out is _CANCELLED or _last is None:
+                return out
+            _issue = _llm_issue(_last)
+            if _issue is None:
+                yield from _emit_completion_failure("", _meter, _step_tok,
+                                                    worked=worked)
+                return _RETRY_STOP
         yield from _emit_llm_issue(_issue, _meter, _step_tok)
         return _RETRY_STOP
     # RESILIENCE: a local model can transiently drop a request (mid-load,
@@ -316,6 +413,12 @@ def _retry_completion(complete_fn, role, convo, session_id, exc,
     if out is _STEERED or out is _CANCELLED:
         return out
     _issue = _llm_issue(_last)
+    if _issue is not None and not _cfg_error and _persist_s() >= 0:
+        out, _last = yield from _persist_until_answer(
+            complete_fn, role, convo, session_id, _last, _persist_s())
+        if out is _STEERED or out is _CANCELLED or _last is None:
+            return out
+        _issue = _llm_issue(_last)
     if _issue is not None:
         yield from _emit_llm_issue(_issue, _meter, _step_tok)
         return _RETRY_STOP
@@ -327,6 +430,11 @@ def _retry_completion(complete_fn, role, convo, session_id, exc,
         if _llm_issue(_last) is not None:
             yield from _emit_llm_issue(_llm_issue(_last), _meter, _step_tok)
             return _RETRY_STOP
+    if _last is not None and not _cfg_error and _persist_s() >= 0:
+        out, _last = yield from _persist_until_answer(
+            complete_fn, role, convo, session_id, _last, _persist_s())
+        if out is _STEERED or out is _CANCELLED:
+            return out
     if _last is not None:
         yield from _emit_completion_failure(_cfg_error, _meter, _step_tok,
                                             worked=worked and not _cfg_error)

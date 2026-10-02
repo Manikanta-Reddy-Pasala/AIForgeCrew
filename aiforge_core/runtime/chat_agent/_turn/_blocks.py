@@ -63,6 +63,14 @@ def _append_session_blocks(add, cwd, messages, session_id, role):
     return _img_blocks
 
 
+def _followup_recall() -> bool:
+    """A follow-up message also gets the memory recall for ITS OWN request (a few
+    precise hits, deduped against what is already in the turn) instead of only a
+    pointer to the memory tools. ``AIFORGE_CHAT_FOLLOWUP_RECALL=0`` turns it off."""
+    return os.environ.get("AIFORGE_CHAT_FOLLOWUP_RECALL", "1").strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
 def _append_learning_recall(add, bundle, last_user, session_id, proactive,
                             is_init, prev_session_on, cwd=None):
     """Append self-learning recall: in FULL mode dump memory recall + prior-chat
@@ -96,7 +104,7 @@ def _append_learning_recall(add, bundle, last_user, session_id, proactive,
     elif _ctx_on("recall"):
         # LITE (default): don't pre-dump on follow-ups — but the SESSION-START
         # turn still gets the one-time recall keyed to the opening request.
-        if _is_init:
+        if _is_init or _followup_recall():
             add("recall", _bundle.memory_md)
         # Tell the model it HAS memory + the tools to reach it, so it pulls
         # only what THIS turn needs.
@@ -206,7 +214,8 @@ def _append_context_blocks(add, cwd, last_user, messages, session_id, role, cave
     _is_init = not any(m.get("role") == "assistant" for m in messages)
     # In lite mode a FOLLOW-UP turn doesn't inject recall at all — skip the
     # unified_query work too instead of building a block that gets dropped.
-    _recall_wanted = (not _plain) and (_proactive == "full" or _is_init)
+    _recall_wanted = (not _plain) and (
+        _proactive == "full" or _is_init or _followup_recall())
 
     def _ctx(block: str) -> bool:
         if _plain and block in ("recall", "skills", "repomap", "summary"):
@@ -229,7 +238,10 @@ def _append_context_blocks(add, cwd, last_user, messages, session_id, role, cave
     # memory it doesn't know is there). Gated by AIFORGE_SEED_TOC; embedded only.
     try:
         from aiforge_core.memory import backend_select as _bsel2
-        if _bsel2.embedded():
+        # The TOC lists every brief whether or not this turn needs it. Once it
+        # has been seen the per-turn recall below (keyed to the message) and the
+        # memory tools reach what matters, so a follow-up does not pay for it.
+        if _bsel2.embedded() and (_is_init or _brief_every_turn()):
             from aiforge_core.memory import md_store as _mds2
             add("memory-index", _mds2.seed_memory_block())
     except Exception:  # noqa: BLE001 — seed TOC must never break a turn

@@ -19,6 +19,7 @@ from .._shell import _MAX_OBS, _MAX_OBS_READ, _READ_OBS_TOOLS
 from ._approval import (
     _handle_rejection,
 )
+from ._escalate import escalate, give_up_message, pause_on_stuck
 from ._idle_steps import note_step
 from ._outcomes import _note_green_tests, note_failure
 from ._progress import (
@@ -95,6 +96,15 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
             st.convo.append({"role": "user", "content": _loop_nudge(
                 name, looping, _recap)})
             return "continue"
+        if not pause_on_stuck():
+            _r = yield from escalate(
+                st, f"You keep repeating `{name}` without progress.")
+            if _r == "continue":
+                forgive(st, sig)
+                return "continue"
+            yield {"type": "message", "text": give_up_message(st)}
+            yield {"type": "done"}
+            return "return"
         yield {"type": "message", "awaiting_input": True,
                "text": f"I keep trying the same step (`{name}`) without "
                        "progress. I've paused — could you clarify or tell "
@@ -465,6 +475,14 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     seen = seen or idle
     if seen and seen[0] == "stop":
         st.convo.append({"role": "user", "content": f"OBSERVATION: {obs}"})
+        if not pause_on_stuck():
+            _r = yield from escalate(
+                st, "No progress after the warning: " + str(seen[1])[:300])
+            if _r == "continue":
+                return None
+            yield {"type": "message", "text": give_up_message(st)}
+            yield {"type": "done"}
+            return "return"
         yield {"type": "thought", "role": "system",
                "text": "⛔ no progress after the warning — pausing"}
         yield {"type": "message", "awaiting_input": True, "text": seen[1]}

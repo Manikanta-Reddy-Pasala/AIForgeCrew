@@ -18,6 +18,16 @@ from ._shared import _chat_repo_key, _coerce_int, _elaborate_body
 
 
 def _t_memory_lookup(args: dict, cwd: str) -> dict:
+    # An id restores text a condense saved (see runtime.context_offload).
+    oid = str(args.get("id") or "").strip()
+    if oid:
+        from aiforge_core.runtime import context_offload
+        page = context_offload.load(oid, _coerce_int(args.get("offset"), 0))
+        if page is None:
+            return {"ok": False, "error": f"nothing saved under {oid}"}
+        return {"ok": True, **page}
+    if not args.get("query"):
+        return {"ok": False, "error": "memory_lookup needs a query or an id"}
     try:
         from aiforge_core.memory import unified_query as _uq
         # F2/M3: scope recall to the SAME repo the chat WRITE path files under

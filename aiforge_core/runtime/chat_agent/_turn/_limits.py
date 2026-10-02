@@ -24,6 +24,7 @@ from ._batch import (
 from ._convo import (
     _append_directive,
 )
+from ._escalate import escalate, give_up_message, pause_on_stuck
 from ._progress import may_recover
 from ._shared import (
     _THE_FINALIZE_TOOL,
@@ -293,6 +294,15 @@ def _stuck_output_guard(st, out):
                 "done (e.g. the next unread file), or output `FINAL: <answer>` "
                 "if the task is fully complete. Do NOT repeat a previous action."})
             return "continue"
+        if not pause_on_stuck():
+            st.recent_outputs.clear()
+            st.convo.append({"role": "assistant", "content": out})
+            _r = yield from escalate(st, "You keep sending the same reply.")
+            if _r == "continue":
+                return "continue"
+            yield {"type": "message", "text": give_up_message(st)}
+            yield {"type": "done"}
+            return "return"
         yield {"type": "message", "awaiting_input": True,
                "text": "I seem to be going in circles on this. Could you "
                        "clarify what you'd like me to do, or give a bit "
@@ -329,6 +339,13 @@ def _idle_reply_guard(st):
             "`FINAL: <answer>` — or, if you need something from the user, "
             "ask ONE clear question."})
         return "continue"
+    if not pause_on_stuck():
+        _r = yield from escalate(st, "You keep replying without acting.")
+        if _r == "continue":
+            return "continue"
+        yield {"type": "message", "text": give_up_message(st)}
+        yield {"type": "done"}
+        return "return"
     yield {"type": "message", "awaiting_input": True,
            "text": "I keep replying without making progress. I've paused — "
                    "could you tell me what you'd like me to do next?"}

@@ -97,6 +97,7 @@ Tool arguments:
 - remember_rule {{"text": "always use yarn", "description": "when to apply it", "triggers": ["yarn","install"], "scope": "repo"}}
                  (persist a user rule for every session; same frontmatter as skills/workflows — name/description/triggers/scope; scope global|repo)
 - memory_lookup{{"query": "..."}}                        (recall from knowledge memory)
+- memory_lookup{{"id": "off:...", "offset": 0}}          (restore the saved full text of messages a context note says it condensed; offset pages)
 - search_chat_sessions {{"query": "...", "limit": 6}}     (find things you discussed with the user in PAST chat sessions)
 - memory_write {{"text": "the durable fact", "kind": "note|gotcha|decision", "decision": false, "tags": ["tool:jira"], "scope": "global"}}
                 (scope defaults to THIS ticket/page/repo; scope:"global" = a lesson recalled across ALL tickets/repos — use for general knowledge, keep ticket-specifics unscoped)

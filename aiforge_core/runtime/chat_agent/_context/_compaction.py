@@ -361,7 +361,7 @@ def _summary_tail(user_asks: list, finals: list,
 
 
 def _breadcrumb(middle: list, used: str, summary: str, llm_summary: str,
-               gen: int = 1) -> str:
+               gen: int = 1, saved: "str | None" = None) -> str:
     """The condense note, wrapped in a unique sentinel so the NEXT condense can
     strip exactly THIS block (not a look-alike phrase a rule/skill contains).
 
@@ -372,10 +372,15 @@ def _breadcrumb(middle: list, used: str, summary: str, llm_summary: str,
     """
     llm = (f"\n{_SUM_OPEN}{_clean_summary(llm_summary)}{_SUM_CLOSE}"
            if llm_summary else "")
+    if saved:
+        more = ("The full text of those messages is saved: call memory_lookup "
+                f'{{"id": "{saved}"}} to read it (a page at a time), or re-read '
+                "a file.")
+    else:
+        more = "Re-read a file or ask the user if you need detail from before this point."
     body = ("[earlier conversation auto-condensed to fit the context window "
             f"(condense #{gen}) — {len(middle)} messages omitted. Work done so "
-            f"far: {used}.{llm}{summary}\nRe-read a file or ask the user if you "
-            "need detail from before this point.]")
+            f"far: {used}.{llm}{summary}\n{more}]")
     return f"{_CONDENSE_OPEN}\n{body}\n{_CONDENSE_CLOSE}"
 
 
@@ -475,8 +480,10 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
     ed1, rd1, er1 = _middle_facts(middle)
     facts = (list(dict.fromkeys(ed0 + ed1)), list(dict.fromkeys(rd0 + rd1)),
              list(dict.fromkeys(er0 + er1)))
+    from aiforge_core.runtime import context_offload
+    saved = context_offload.save(context_offload.render(middle))
     note = _breadcrumb(middle, used, _summary_tail(user_asks, finals, facts),
-                       carried, gen)
+                       carried, gen, saved)
     # Fold the breadcrumb INTO the system message rather than inserting a
     # separate 'user' turn — that avoids two consecutive same-role messages.
     sys_text = _pin_goal(_stripped_system(convo), convo, pin)

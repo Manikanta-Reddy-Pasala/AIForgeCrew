@@ -152,8 +152,9 @@ CATALOG: dict = {
     "github_pr": ("Open a GitHub PR from the current branch.",
                   {"title": "s", "body": "s", "base": "s", "draft": "b"}, ()),
     # ── memory / knowledge / skills ──────────────────────────────────────
-    "memory_lookup": ("Recall learnings/decisions from memory.", {"query": "s"},
-                      ("query",)),
+    "memory_lookup": ("Recall learnings/decisions from memory, or restore text "
+                      "a condense saved (id=off:..., offset pages).",
+                      {"query": "s", "id": "s", "offset": "i"}, ()),
     "memory_write": ("Persist a durable fact/decision.",
                      {"text": "s", "kind": "s", "scope": "s", "tags": "arrs"},
                      ("text",)),

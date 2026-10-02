@@ -16,6 +16,7 @@ from ._config import (
     MAX_GAP_PASSES,
     MAX_REPLANS,
     MAX_VERIFY_REPLANS,
+    PLATEAU_REPLANS,
     ROUTE_DONE,
     ROUTE_EXIT,
     ROUTE_FULL,
@@ -192,6 +193,31 @@ def _loop_gate(ctx):  # type: ignore[no-untyped-def]
                          "kill": kill, "wall_kill": wall_kill})
 
 
+def _reset_for_replan(state) -> None:
+    """Reset ALL loop-scoped state so a re-planned attempt starts clean.
+    Resetting only doer_iters left a stale feedback_verdict / loop_budget_kill
+    from the prior pass: loop_gate then read the old "pass" (or kill flag) and
+    EXITED the Doer loop at zero real iterations, silently wasting the replan."""
+    state["doer_iters"] = 0
+    _clear_state(state, (
+        "feedback_verdict", "loop_budget_kill", "loop_budget_reason",
+        "doer_loop_started_at",
+        # Both are run-scoped and both make a pass unreachable; a
+        # replanned attempt that inherits them is spent before it starts.
+        "doer_incomplete", "_repeat_counts",
+        "loc_history", "loc_first_seen", "doer_outcome",
+        "verifier_verdict", "verify_correctness", "verify_scope",
+        "verify_risk", "verify_replan_count",
+        # quality-gate signals: a stale tests_ok=False from the failed
+        # pass would force Feedback's gate to fail the replanned pass
+        # unless the new Doer happens to re-run run_tests.
+        "tests_ok", "typecheck_ok", "lint_ok",
+        # plan-derived scope: cleared so plan_promote re-derives from
+        # the NEW plan (+ operator seeds) instead of monotonically
+        # widening with the rejected plan's globs.
+        "scope_allowlist_globs"))
+
+
 def _validator_gate(ctx):  # type: ignore[no-untyped-def]
     state = ctx.state
     replans = int(state.get("replan_count", 0) or 0)
@@ -207,6 +233,23 @@ def _validator_gate(ctx):  # type: ignore[no-untyped-def]
     fv = str(state.get("feedback_verdict") or "")
     # A test-gaming exit is not replanned either: the same model on the same
     # contradictory tests games them again. It goes to review with evidence.
+    stalled = "loop_budget_kill" in fv and state.get("quality_issue") != "test_gaming"
+    plateau_replans = int(state.get("plateau_replan_count", 0) or 0)
+    if stalled and plateau_replans < PLATEAU_REPLANS:
+        # The Doer stalled. Finishing the task comes first, so try a DIFFERENT
+        # approach before shipping partial work: a fresh plan, a clean loop,
+        # and a note that the last approach did not work. Bounded (default 2).
+        state["plateau_replan_count"] = plateau_replans + 1
+        why = str(state.get("loop_budget_reason") or fv)[:200]
+        _reset_for_replan(state)
+        state["replan_note"] = (
+            f"The previous approach stalled ({why}). Re-plan a DIFFERENT "
+            "approach: do not repeat the steps that did not work, split the "
+            "task into smaller independent steps, and start with the one most "
+            "likely to succeed.")
+        ctx.route = ROUTE_REPLAN
+        _trace(":PlateauReplan", {"replan": plateau_replans + 1, "why": why[:80]})
+        return
     if "loop_budget_kill" in fv or state.get("quality_issue") == "test_gaming":
         state["_no_replan_reason"] = "doer_plateau"
         ctx.route = ROUTE_DONE
@@ -219,24 +262,7 @@ def _validator_gate(ctx):  # type: ignore[no-untyped-def]
         # / loop_budget_kill from the prior pass — loop_gate would read
         # the old "pass" (or kill flag) and EXIT the Doer loop at zero
         # real iterations, silently wasting the replan.
-        state["doer_iters"] = 0
-        _clear_state(state, (
-            "feedback_verdict", "loop_budget_kill", "loop_budget_reason",
-            "doer_loop_started_at",
-            # Both are run-scoped and both make a pass unreachable; a
-            # replanned attempt that inherits them is spent before it starts.
-            "doer_incomplete", "_repeat_counts",
-            "loc_history", "loc_first_seen", "doer_outcome",
-            "verifier_verdict", "verify_correctness", "verify_scope",
-            "verify_risk", "verify_replan_count",
-            # quality-gate signals: a stale tests_ok=False from the failed
-            # pass would force Feedback's gate to fail the replanned pass
-            # unless the new Doer happens to re-run run_tests.
-            "tests_ok", "typecheck_ok", "lint_ok",
-            # plan-derived scope: cleared so plan_promote re-derives from
-            # the NEW plan (+ operator seeds) instead of monotonically
-            # widening with the rejected plan's globs.
-            "scope_allowlist_globs"))
+        _reset_for_replan(state)
         state["replan_note"] = (
             f"Validator requested changes (replan {replans + 1}). The prior "
             "plan did not land cleanly — re-plan SMALLER: split the failing "
