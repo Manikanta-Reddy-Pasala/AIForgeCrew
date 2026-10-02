@@ -4,6 +4,7 @@ directives appended mid-turn."""
 from __future__ import annotations
 
 import os
+import re
 
 from .._context import (
     _WEB_LOOKUP_DIRECTIVE,
@@ -16,7 +17,7 @@ from .._context import (
     _text_of,
 )
 from .._native import _batch_cap
-from .._prompt_text import _SYSTEM, BATCH_READS_RULE, LONG_RUN_RULE
+from .._prompt_text import _SYSTEM, BATCH_READS_RULE, GOAL_LOOP_RULE, LONG_RUN_RULE
 from .._tools import (
     _preferences_context,
     _rules_context,
@@ -215,6 +216,8 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
         _add_sys_block("long-run", LONG_RUN_RULE)
     if native and _batch_cap() > 1:
         _add_sys_block("batch-reads", BATCH_READS_RULE)
+    if last_user and not readonly_mode and not builder and wants_goal_loop(last_user):
+        _add_sys_block("goal-loop", GOAL_LOOP_RULE)
 
     _bundle, _img_blocks = _append_context_blocks(
         _add_sys_block, cwd, last_user, messages, session_id, role, cave,
@@ -232,6 +235,23 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
     sys_msg = _compress_prompt(sys_msg)   # trim whitespace bloat (caveman-style)
     convo = _history_to_convo(sys_msg, messages, _img_blocks)
     return convo, _bundle, _asks, _dropped_playbooks
+
+
+_GOAL_LOOP_RE = re.compile(
+    r"\b(?:loop(?:ing)?\s+(?:until|till|on|it)|in\s+a\s+loop|iterate|keep\s+(?:going|trying|at\s+it|working)"
+    r"|(?:until|till)\s+(?:it|they|we|you|the)\b|do\s+not\s+stop|don'?t\s+stop"
+    r"|target\s+is|must\s+(?:be\s+)?(?:under|within|below|less\s+than)"
+    r"|should\s+(?:be\s+)?(?:under|within|below|less\s+than)"
+    r"|within\s+\d+\s*(?:ms|milliseconds?|seconds?|s)\b)", re.I)
+
+
+def wants_goal_loop(text: str) -> bool:
+    """The message gives a target and asks to keep going until it is met.
+    ``AIFORGE_CHAT_GOAL_LOOP=0`` turns the rule off."""
+    if os.environ.get("AIFORGE_CHAT_GOAL_LOOP", "1").strip().lower() in (
+            "0", "false", "no", "off"):
+        return False
+    return bool(_GOAL_LOOP_RE.search(text or ""))
 
 
 #: A system-prompt budget this large holds every block, so none is dropped by

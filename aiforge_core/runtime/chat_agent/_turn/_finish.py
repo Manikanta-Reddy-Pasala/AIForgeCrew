@@ -75,6 +75,24 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
     """Pre-accept FINAL nudges: builder-not-finalized reminder, implicit-final
     doer nudge (strict_finish), and the one-time multi-ask completeness gate.
     Returns continue to loop again, or None to proceed."""
+    # A reply that is only the system's `[did: …]` action log is not an answer:
+    # strip it and make the model do the work (bounded; then say so plainly).
+    from ._echo import NUDGE as _ECHO_NUDGE, strip_action_log
+    _clean, _echo_only = strip_action_log(step.get("text") or "")
+    if _clean != (step.get("text") or ""):
+        step["text"] = _clean
+        if _echo_only:
+            st.echo_nudges = getattr(st, "echo_nudges", 0) + 1
+            if st.echo_nudges <= 3:
+                yield {"type": "thought", "role": "system",
+                       "text": "↺ the reply was only an action log — asking for "
+                               "the actual result"}
+                st.convo.append({"role": "user", "content": _ECHO_NUDGE})
+                return "continue"
+            step["text"] = ("(I could not produce a result for this: I kept "
+                            "listing actions instead of finishing. Say "
+                            "\"continue\" and I will pick it up, or tell me what "
+                            "to change.)")
     # In a builder session, a "final" BEFORE the finalize tool succeeded
     # means the model narrated/stalled ("let me test what's happening…")
     # instead of building the artifact — don't end the interview with

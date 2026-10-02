@@ -480,6 +480,19 @@ LONG_RUN_RULE = (
     "guessing.")
 
 
+#: Added when the message asks to iterate until a goal is met ("loop", "keep
+#: going until", "target is 500 ms", "must be under…").
+GOAL_LOOP_RULE = (
+    "GOAL LOOP: the user gave a target and wants you to keep working until it "
+    "is MET. Work in rounds: (1) state the target as a check you can run (a "
+    "command, a test, a measurement); (2) run it and record the number; (3) if "
+    "it is not met, change the code and run the same check again; repeat. Do "
+    "not mark a task done and do not write FINAL until the check passes, or you "
+    "have tried several different approaches and can report the measured "
+    "numbers and exactly what blocks you. Reading files is not progress; every "
+    "round must change something or measure something.")
+
+
 #: Added to the system prompt only when the model is driven through the
 #: tool-calling API, where one reply can carry several calls.
 BATCH_READS_RULE = (
