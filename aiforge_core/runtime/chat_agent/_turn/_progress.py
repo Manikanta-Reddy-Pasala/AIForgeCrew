@@ -132,12 +132,25 @@ def note_write(st, name, args, result, cwd) -> bool:
     if known:
         for full in files:
             _remember(st.file_hashes, full, _digest(full))
+        _note_repo_focus(st, files, cwd, 2.0)
     else:
         # A tool that does not say which files it touched, or names a folder
         # (a rename across the tree): nothing to compare, so a new state.
         st.unknown_edits += 1
     _enter_state(st, _state_of(st), known=known)
     return True
+
+
+def _note_repo_focus(st, files, cwd, weight) -> None:
+    """Tell the ranked repo map which files the run touched (personalisation)."""
+    try:
+        from aiforge_core.runtime.chat_agent._context import _repomap_rank as rr
+        from aiforge_core.runtime.chat_agent._shell import _workspace_root
+        base = str(_workspace_root() or cwd or "")
+        if base:
+            rr.note_focus(getattr(st, "session_id", None), base, files, weight)
+    except Exception:  # noqa: BLE001 — personalisation is best effort
+        pass
 
 
 def _state_of(st) -> str:
@@ -262,10 +275,12 @@ def note_read(st, args, result, cwd=None) -> None:
     """Record the files a landed read covered."""
     if isinstance(result, dict) and result.get("ok") is False:
         return
-    for p in (_full(x, cwd) for x in _named_paths(args, None)):
+    paths = [_full(x, cwd) for x in _named_paths(args, None)]
+    for p in paths:
         if p not in st.paths_read:
             st.new_files += 1
         _remember(st.paths_read, p)
+    _note_repo_focus(st, paths, cwd, 1.0)
 
 
 def count_key(name: str, sig: str) -> str:

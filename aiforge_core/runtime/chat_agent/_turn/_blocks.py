@@ -67,6 +67,14 @@ def _append_session_blocks(add, cwd, messages, session_id, role):
 _FILE_TOKEN = re.compile(r"[\w./-]+\.[A-Za-z]{1,5}\b|/[\w.-]+/")
 
 
+def _history_chars(messages) -> int:
+    """Chars of conversation so far — what the repo map must leave room for."""
+    try:
+        return sum(len(str(m.get("content") or "")) for m in messages or ())
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def _needs_repo_map(last_user) -> bool:
     """A follow-up gets the repo map only when it looks like code work: it asks
     to change code, or names a file or path. The map is large and the first
@@ -253,7 +261,8 @@ def _append_context_blocks(add, cwd, last_user, messages, session_id, role, cave
 
     _bundle = _cb.build_bundle(
         cwd, last_user, cave=cave, ctx_on=_ctx, session_id=session_id,
-        want_rules=False, want_prefs=False,
+        want_rules=False, want_prefs=False, role=role,
+        history_chars=_history_chars(messages),
         want_repo_map=not _plain, want_summary=not _plain)
     # Project memory (compacted per-repo brief, then the global brief) — the
     # "you already know this repo" anchor. Sent with the FIRST message of a

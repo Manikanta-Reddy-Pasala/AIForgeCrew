@@ -313,7 +313,8 @@ def _fill_playbooks(b, cwd, query, ctx_on, _sk, _wf) -> None:
 
 
 def _fill_repo_context(b, cwd, ctx_on, _ca, *, cave: bool,
-                       want_summary: bool, want_repo_map: bool) -> None:
+                       want_summary: bool, want_repo_map: bool,
+                       focus: dict | None = None) -> None:
     """Repo summary, the structural REPO_NOTES map, and the repo map itself —
     all of it cheaper and smaller in cave mode."""
     if want_summary and ctx_on("summary"):
@@ -325,13 +326,15 @@ def _fill_repo_context(b, cwd, ctx_on, _ca, *, cave: bool,
             b.repo_notes_md = _safe(lambda: _repo_notes(cwd))
     if want_repo_map and ctx_on("repomap"):
         b.repo_map_md = _safe(lambda: _ca._build_repo_map(
-            cwd, max_entries=(60 if cave else 160), max_depth=(2 if cave else 3)))
+            cwd, max_entries=(60 if cave else 160), max_depth=(2 if cave else 3),
+            focus=focus))
 
 
 def build_bundle(cwd: str, query: str, *, cave: bool = False,
                  ctx_on=None, session_id=None, want_repo_map: bool = True,
                  want_summary: bool = True, want_rules: bool = True,
-                 want_prefs: bool = True) -> ContextBundle:
+                 want_prefs: bool = True, role=None,
+                 history_chars: int = 0) -> ContextBundle:
     """Gather the full context bundle for ``query`` in ``cwd``. Reuses the
     existing chat_agent / skills / workflows helpers (lazy-imported to avoid a
     circular import). ``ctx_on(block)`` toggles optional blocks (defaults on).
@@ -357,7 +360,10 @@ def build_bundle(cwd: str, query: str, *, cave: bool = False,
         lambda: _fill_playbooks(b, cwd, query, ctx_on, _sk, _wf),
         lambda: _fill_repo_context(b, cwd, ctx_on, _ca, cave=cave,
                                    want_summary=want_summary,
-                                   want_repo_map=want_repo_map),
+                                   want_repo_map=want_repo_map,
+                                   focus={"user_text": query, "role": role,
+                                          "session_id": session_id,
+                                          "history_chars": history_chars}),
         _recall,
     ])
     return b

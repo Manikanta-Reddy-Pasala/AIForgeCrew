@@ -159,7 +159,11 @@ def warm_repo_map(cwd: str) -> None:
             return
         base = str(_workspace_root() or cwd)
         if os.path.isdir(base):
-            _start_digest(base)
+            from . import _repomap_rank as rr
+            if rr.rank_enabled():
+                rr.warm_scan(base)      # the scan feeds the ranked map
+            else:
+                _start_digest(base)
     except Exception:  # noqa: BLE001
         pass
 
@@ -262,7 +266,32 @@ def _tree_map(base: str, max_entries: int, max_depth: int) -> str:
             f"{tree}")
 
 
-def _build_repo_map(cwd: str, max_entries: int = 160, max_depth: int = 3) -> str:
+def _pagerank_map(base: str, focus: dict | None) -> str:
+    """Section 0: personalised-PageRank map, budgeted to the free window.
+    "" (off / not ready within the short bound / any failure) falls through to
+    the older strategies."""
+    try:
+        from . import _repomap_rank as rr
+        if not rr.rank_enabled():
+            return ""
+        f = focus or {}
+        budget = rr.map_budget_chars(f.get("role"), f.get("history_chars", 0))
+        body = rr.ranked_map_bounded(
+            base, user_text=f.get("user_text", ""),
+            session_id=f.get("session_id"), budget=budget,
+            wait_s=_digest_budget_s())
+    except Exception:  # noqa: BLE001 — never break the prompt
+        return ""
+    if not body.strip():
+        return ""
+    return ("REPO MAP (files ranked by how central they are to the code and to "
+            "the current work; top files list their symbols, the rest are names "
+            "only — navigate by these, don't blind-`find`):\n"
+            f"WORKING DIRECTORY: {base}\n{body}")
+
+
+def _build_repo_map(cwd: str, max_entries: int = 160, max_depth: int = 3,
+                    focus: dict | None = None) -> str:
     """Repo map for the system prompt so the agent navigates by SYMBOLS, not blind
     `find`. Prefers the tree-sitter + PageRank Aider RepoMap (ranked functions/
     classes per file) — critical on big repos where a bare file tree is useless;
@@ -271,8 +300,8 @@ def _build_repo_map(cwd: str, max_entries: int = 160, max_depth: int = 3) -> str
     base = str(_workspace_root() or cwd)
     if not os.path.isdir(base):
         return f"WORKING DIRECTORY: {base} (not a directory)"
-    return (_ranked_symbol_map(base) or _regex_symbol_map(base)
-            or _tree_map(base, max_entries, max_depth))
+    return (_pagerank_map(base, focus) or _ranked_symbol_map(base)
+            or _regex_symbol_map(base) or _tree_map(base, max_entries, max_depth))
 
 
 def _repo_name(cwd: str) -> str:
