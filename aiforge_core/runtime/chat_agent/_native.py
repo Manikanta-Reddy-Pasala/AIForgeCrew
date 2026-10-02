@@ -301,6 +301,37 @@ BATCHABLE_READS = CONCURRENT_READS | {
 }
 #: Bookkeeping the loop handles itself; safe to run inside a batch of reads.
 _BATCHABLE = BATCHABLE_READS | {"plan_progress"}
+#: File writes that need no earlier result. A reply made only of these, each to
+#: a different path, is one decision: the loop runs them in order without a
+#: model call between them (``AIFORGE_CHAT_BATCH_WRITES=0`` turns this off).
+ORDERED_FILE_CALLS = frozenset({"file_write", "file_create", "file_patch"})
+
+
+def _ordered_batch_on() -> bool:
+    return os.environ.get("AIFORGE_CHAT_BATCH_WRITES", "1").strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
+def _independent_writes(calls: list) -> "list[str] | None":
+    """The action text of each call when the whole reply is writes to distinct
+    paths, else None (a read, a command or a repeated path keeps the old rule:
+    later writes wait for the model's next turn)."""
+    if len(calls) < 2 or not _ordered_batch_on():
+        return None
+    steps: list[str] = []
+    paths: set[str] = set()
+    for c in calls:
+        fn = (c or {}).get("function") or {}
+        name = fn.get("name") or ""
+        args = _resolve_call_args(fn.get("arguments"))
+        if name not in ORDERED_FILE_CALLS or not isinstance(args, dict):
+            return None
+        path = str(args.get("path") or args.get("file_path") or "")
+        if not path or path in paths:
+            return None
+        paths.add(path)
+        steps.append(_action_text(name, args))
+    return steps
 
 
 def _queued_steps(msg: dict) -> "tuple[list[str], int]":
@@ -317,6 +348,10 @@ def _queued_steps(msg: dict) -> "tuple[list[str], int]":
     calls = msg.get("tool_calls") or []
     if len(calls) < 2:
         return [], 0
+    writes = _independent_writes(calls)
+    if writes is not None:
+        keep = writes[1:max(0, _batch_cap())]
+        return keep, len(writes) - 1 - len(keep)
     first = _synth_step({**msg, "content": None})   # the call, not its narration
     broken = 0
     held = 0

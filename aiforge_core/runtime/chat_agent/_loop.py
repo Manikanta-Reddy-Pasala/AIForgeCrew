@@ -11,6 +11,7 @@ import os
 import time  # noqa: F401  # tests patch time.sleep through this module
 from collections.abc import Callable, Iterator
 
+from ._native import ORDERED_FILE_CALLS as _ORDERED_FILE_CALLS
 from ._prompt import _parse
 from ._registry import TOOLS  # noqa: F401  # re-exported
 from ._shell import _READ_OBS_TOOLS
@@ -268,6 +269,11 @@ def _gated_action(st, step, name, args, sig, n, cwd, session_id):
     if _note:
         yield {"type": "message", "role": "system", "supplementary": True,
                "text": _note}
+    if (st.pending_steps and name in _ORDERED_FILE_CALLS
+            and isinstance(result, dict)
+            and (result.get("ok") is False or result.get("error"))):
+        # A batched write failed: the model must see why before the rest run.
+        _drop_batch(st, "an earlier write failed")
     if isinstance(result, dict) and result.get("error") == "changed_users_checkout":
         # The run pauses for the user (the team route asks); this agent
         # stops here instead of carrying on.

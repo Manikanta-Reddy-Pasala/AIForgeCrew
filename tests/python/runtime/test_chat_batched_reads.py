@@ -801,3 +801,26 @@ def test_has_matching_follows_the_hook_files(tmp_path, monkeypatch):
     assert not hooks.has_matching("PreToolUse", "confluence_read", str(tmp_path))
     monkeypatch.setenv("AIFORGE_HOOKS_DISABLE", "1")
     assert not hooks.has_matching("PreToolUse", "jira_read", str(tmp_path))
+
+
+def test_writes_to_different_files_in_one_reply_all_run():
+    msg = _reply(_call("file_write", path="a.py", content="1"),
+                 _call("file_write", path="b.py", content="2"),
+                 _call("file_patch", path="c.py", old_text="x", new_text="y"))
+    steps, skipped = _native._queued_steps(msg)
+    assert [s.split("\n")[0] for s in steps] == [
+        "ACTION: file_write", "ACTION: file_patch"]
+    assert skipped == 0
+
+
+def test_two_writes_to_one_path_stay_held():
+    msg = _reply(_call("file_patch", path="a.py", old_text="a", new_text="b"),
+                 _call("file_patch", path="a.py", old_text="b", new_text="c"))
+    assert _native._queued_steps(msg) == ([], 1)
+
+
+def test_write_batching_can_be_turned_off(monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_BATCH_WRITES", "0")
+    msg = _reply(_call("file_write", path="a.py", content="1"),
+                 _call("file_write", path="b.py", content="2"))
+    assert _native._queued_steps(msg) == ([], 1)

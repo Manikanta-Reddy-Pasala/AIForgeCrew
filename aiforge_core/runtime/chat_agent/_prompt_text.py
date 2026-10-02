@@ -487,4 +487,8 @@ BATCH_READS_RULE = (
     "in the reply runs this turn: if the first call is file_patch, "
     "it runs now. A write, edit or command later in that reply is held until "
     "your next turn, so you see the reads before you change anything. "
-    "Request that later write then, on its own.")
+    "Request that later write then, on its own. Exception: when a reply holds "
+    "ONLY file_write/file_patch calls to DIFFERENT files (no reads, no "
+    "commands), send them all together in that one reply — they run in order "
+    "without another model turn. Do this whenever the files do not depend on "
+    "each other's output.")

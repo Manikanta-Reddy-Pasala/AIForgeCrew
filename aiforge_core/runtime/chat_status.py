@@ -57,7 +57,7 @@ def is_status_request(text: str) -> bool:
 _CD_PREFIX = re.compile(r"^\s*(?:cd\s+\S+\s*(?:&&|;)\s*)+")
 _READ_TOOLS = ("read_file", "file_read", "grep", "find", "list_dir", "list_files",
                "glob", "repo_map", "search", "web_read", "web_search")
-_WRITE_TOOLS = ("write_file", "file_write", "edit_file", "apply_patch", "patch",
+_CHANGE_TOOLS = ("write_file", "file_write", "edit_file", "apply_patch", "patch",
                 "str_replace", "delete_file", "move_file")
 
 
@@ -86,7 +86,7 @@ def describe_activity(name: str, args: str = "") -> str:
         return f"running `{cmd}`" if cmd else "running a command"
     if n in ("command_wait", "command_output"):
         return "waiting for a command to finish"
-    if n in _WRITE_TOOLS:
+    if n in _CHANGE_TOOLS:
         return "writing files"
     if n in _READ_TOOLS:
         return "reading the project"
