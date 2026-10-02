@@ -486,6 +486,13 @@ def _retry_completion(complete_fn, role, convo, session_id, exc,
         return _RETRY_STOP
     return out
 
+def _unboost(reasoning, token) -> None:
+    try:
+        reasoning._BOOST.reset(token)
+    except (ValueError, RuntimeError):      # resumed in another context: nothing to undo
+        pass
+
+
 def _run_completion(st, role, complete_fn, session_id, _meter):
     """Run one model completion: bind the per-step meter, call the model (with the
     bounded retry recovery), reset the meter, and normalise the result. Yields
@@ -504,6 +511,11 @@ def _run_completion(st, role, complete_fn, session_id, _meter):
             _step_tok = _meter.step_bind(_step_calls)
         except Exception:  # noqa: BLE001
             _step_calls, _step_tok = None, None
+    from aiforge_core.llm import reasoning as _reasoning
+    _boosted = getattr(st, "reason_boost", 0) > 0
+    if _boosted:
+        st.reason_boost -= 1
+    _btok = _reasoning._BOOST.set(_boosted)
     try:
         out = yield from _complete_live(complete_fn, role, st.convo, session_id)
     except Exception as exc:  # noqa: BLE001
@@ -518,10 +530,12 @@ def _run_completion(st, role, complete_fn, session_id, _meter):
             _step_calls, _meter, _step_tok, wait_s=_wait, worked=_worked,
             st=st)
         if out is _RETRY_STOP:
+            _unboost(_reasoning, _btok)
             return _RETRY_STOP
     # The step's sends are counted; unbind before the next one binds its
     # own (a step that leaves its counter bound would have the NEXT step's
     # calls spend a budget that is already exhausted).
+    _unboost(_reasoning, _btok)
     if _meter is not None:
         _meter.step_reset(_step_tok)
         _step_tok = None

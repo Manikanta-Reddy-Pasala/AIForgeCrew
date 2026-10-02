@@ -13,6 +13,8 @@ LiteLlm builder (the kwarg) and ``EscalatingLlm._stamp_request`` (/no_think).
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import os
 
 NO_THINK_KWARGS = {"chat_template_kwargs": {"enable_thinking": False}}
@@ -36,10 +38,43 @@ def reasoning_roles() -> "tuple[str, ...]":
     return tuple(r.strip().lower() for r in raw.split(",") if r.strip())
 
 
+_BOOST: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
+    "aiforge_reasoning_boost", default=False)
+
+
+@contextlib.contextmanager
+def boost(active: bool = True):
+    """Let the calls made inside this block reason, whatever their role.
+
+    Reasoning is off for most roles because most steps do not need it and it
+    costs minutes. A step that is STUCK does: the loop guards and the retries
+    after a stall turn it on for the next few calls (the task's difficulty
+    decides, not the model's name)."""
+    token = _BOOST.set(bool(active))
+    try:
+        yield
+    finally:
+        _BOOST.reset(token)
+
+
+def boosted() -> bool:
+    return _BOOST.get()
+
+
+def boost_steps() -> int:
+    """How many model calls a stall turns reasoning on for
+    (``AIFORGE_STUCK_REASON_STEPS``, default 6; 0 never boosts)."""
+    try:
+        return max(0, int(os.environ.get("AIFORGE_STUCK_REASON_STEPS", "6")))
+    except ValueError:
+        return 6
+
+
 def role_reasons(role: str = "") -> bool:
-    """True when ``role`` may reason. An unnamed role is left as configured."""
+    """True when ``role`` may reason: a reasoning role, an unnamed role, or any
+    role inside a :func:`boost` block."""
     role = (role or "").strip().lower()
-    return not role or role in reasoning_roles()
+    return not role or role in reasoning_roles() or _BOOST.get()
 
 
 def reasoning_off(model: str, base_url: str = "", role: str = "") -> bool:
@@ -106,4 +141,5 @@ def no_think_request(llm_request):
 
 
 __all__ = ["reasoning_off", "no_think_request", "NO_THINK_KWARGS", "EFFORT_FIELD",
-           "effort_for", "effort_extras", "role_reasons", "reasoning_roles"]
+           "effort_for", "effort_extras", "role_reasons", "reasoning_roles",
+           "boost", "boosted", "boost_steps"]

@@ -15,6 +15,13 @@ from __future__ import annotations
 import os
 
 
+def arm_reasoning(st) -> None:
+    """A stuck step is the one that needs thinking: turn reasoning on for the
+    next few model calls (see llm.reasoning.boost)."""
+    from aiforge_core.llm import reasoning
+    st.reason_boost = max(getattr(st, "reason_boost", 0), reasoning.boost_steps())
+
+
 def pause_on_stuck() -> bool:
     return os.environ.get("AIFORGE_CHAT_PAUSE_ON_STUCK", "").strip().lower() \
         in ("1", "true", "yes", "on")
@@ -50,6 +57,7 @@ def escalate(st, why: str):
     summarise (the caller then ends the turn if it still does not)."""
     n = getattr(st, "stuck_escalations", 0) + 1
     st.stuck_escalations = n
+    arm_reasoning(st)
     limit = _limit()
     wrapping = bool(limit) and n > limit
     _remember_failure(st, why)

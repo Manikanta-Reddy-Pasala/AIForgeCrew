@@ -164,3 +164,42 @@ def test_the_team_pipeline_model_carries_it_too(registry):
     assert doer._additional_args["extra_body"]["reasoning_effort"] == "none"
     planner = _builder._build_one(cfg, "planner")
     assert "extra_body" not in planner._additional_args
+
+
+# ── a stuck step thinks ─────────────────────────────────────────────────
+
+def test_boost_lets_any_role_reason_inside_the_block_only(registry, monkeypatch):
+    monkeypatch.delenv("AIFORGE_REASONING_ROLES", raising=False)
+    monkeypatch.delenv("AIFORGE_REASONING_EFFORT", raising=False)
+    assert _body(role="doer")["reasoning_effort"] == "none"
+    with reasoning.boost():
+        assert reasoning.boosted()
+        assert "reasoning_effort" not in _body(role="doer")
+    assert not reasoning.boosted()
+    assert _body(role="doer")["reasoning_effort"] == "none"
+
+
+def test_the_global_off_switch_still_wins_over_a_boost(registry, monkeypatch):
+    monkeypatch.setenv("AIFORGE_NO_REASONING", "1")
+    with reasoning.boost():
+        assert _body(role="doer")["reasoning_effort"] == "none"
+
+
+def test_escalation_arms_the_boost_for_the_next_calls(monkeypatch):
+    from aiforge_core.runtime.chat_agent._turn import _escalate as E
+
+    class St:
+        convo = [{"role": "system", "content": "s"}, {"role": "user", "content": "x"}]
+        role = "doer"
+    monkeypatch.setattr(E, "_condense", lambda st: None)
+    monkeypatch.setenv("AIFORGE_STUCK_REASON_STEPS", "4")
+    st = St()
+    gen = E.escalate(st, "stuck.")
+    for _ in gen:
+        pass
+    assert st.reason_boost == 4
+    monkeypatch.setenv("AIFORGE_STUCK_REASON_STEPS", "0")
+    st2 = St()
+    for _ in E.escalate(st2, "stuck."):
+        pass
+    assert st2.reason_boost == 0
