@@ -1145,6 +1145,16 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
     }
   }
 
+  // A message typed just as the run ended: sent when the chat is idle again.
+  const queuedSendRef = useRef<string>('');
+  useEffect(() => {
+    if (busy || !queuedSendRef.current) return;
+    const q = queuedSendRef.current;
+    queuedSendRef.current = '';
+    send(q);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy]);
+
   // ── Lost-signal check ─────────────────────────────────────────────────────
   // The server sends a heartbeat every 10 s even when the run is silent. If
   // NOTHING arrives for LOST_SIGNAL_S the stream itself is dead (proxy drop,
@@ -1707,8 +1717,18 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
         loadSessions(true);
         loadSideTasks();
       } else if (r.action === 'send') {
-        setInput(q);   // the run ended in the meantime — send it normally
-        toast('The run has finished — press Run to send this');
+        // The run ended in the meantime. Send the message as a normal turn the
+        // moment the screen has caught up, instead of leaving it in the box for
+        // the user to resend. If the screen never catches up, give it back.
+        queuedSendRef.current = q;
+        toast('That run just finished — sending your message');
+        setTimeout(() => {
+          if (queuedSendRef.current === q) {
+            queuedSendRef.current = '';
+            setInput(q);
+            toast('Press Run to send your message');
+          }
+        }, 4000);
       } else if (r.queued) {
         // Show the steer text IMMEDIATELY as a step in the live stream so it
         // doesn't just vanish from the composer until the agent drains it. It
@@ -1724,7 +1744,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
         toast('Steering not available for this run');
       } else {
         putComposer(q);   // restore so the user can retry or Stop
-        toast('Could not steer (the run may have ended)');
+        toast('Could not reach the run. Your message is back in the box; press Run to send it.');
       }
     } finally {
       setSteering(false);
