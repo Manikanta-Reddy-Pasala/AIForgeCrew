@@ -510,10 +510,10 @@ class EscalatingLlm(_RescueMixin, _StreamMixin, BaseLlm):
         if limit < 0:
             return None
         try:
-            cap = max(1, int(_os.environ.get("AIFORGE_PIPELINE_PERSIST_OTHER_ROUNDS", "20")))
+            other_s = max(1.0, float(_os.environ.get("AIFORGE_PIPELINE_PERSIST_OTHER_S", "1800")))
         except ValueError:
-            cap = 20
-        if rounds >= cap:
+            other_s = 1800.0
+        if _time.monotonic() - t0 > other_s:
             return None                  # an error that never turns into an answer
         try:
             from aiforge_core.llm import model_wait as _mw

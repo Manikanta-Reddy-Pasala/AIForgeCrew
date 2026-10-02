@@ -73,16 +73,16 @@ def test_an_aged_read_may_be_read_again():
 
 # 4. persist rounds are bounded by failure kind and honour a worker stop -----------
 
-def test_round_caps_by_failure_kind(monkeypatch):
+def test_caps_by_failure_kind(monkeypatch):
     from aiforge_core.llm import model_outage as mo
     monkeypatch.setattr(mo, "issue", lambda e: None)
-    assert C._round_cap(mo.OUTAGE, None, mo) > 10 ** 6          # an outage waits
-    assert C._round_cap(mo.CONFIG, None, mo) == C._CONFIG_ROUNDS
-    assert C._round_cap(mo.SHIPPED, None, mo) == 2              # may still be generating
-    monkeypatch.setenv("AIFORGE_CHAT_PERSIST_OTHER_ROUNDS", "7")
-    assert C._round_cap(mo.OTHER, None, mo) == 7
+    assert C._persist_caps(mo.OUTAGE, None, mo) == (10 ** 9, 0.0)       # an outage waits
+    assert C._persist_caps(mo.CONFIG, None, mo) == (C._CONFIG_ROUNDS, 0.0)
+    assert C._persist_caps(mo.SHIPPED, None, mo) == (2, 0.0)            # may still be generating
+    monkeypatch.setenv("AIFORGE_CHAT_PERSIST_OTHER_S", "77")
+    assert C._persist_caps(mo.OTHER, None, mo) == (10 ** 9, 77.0)       # time-bounded
     monkeypatch.setattr(mo, "issue", lambda e: object())
-    assert C._round_cap(mo.OTHER, None, mo) == 6
+    assert C._persist_caps(mo.OTHER, None, mo) == (6, 0.0)
 
 
 def test_a_worker_stop_ends_the_persist_loop(monkeypatch):

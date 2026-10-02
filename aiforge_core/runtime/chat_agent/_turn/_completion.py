@@ -284,24 +284,28 @@ def _shrink_for_retry(convo, role, complete_fn, session_id) -> bool:
     return False
 
 
-def _round_cap(verdict, exc, model_outage) -> int:
-    """How many persist rounds a failure of this kind earns. An OUTAGE waits until
-    the model is back (no cap). The rest can be a request that will never work, so
-    each has a limit: a rejected request few, a call the model may still be
-    generating (a shipped timeout) fewer, anything else ~10 minutes of tries
-    (``AIFORGE_CHAT_PERSIST_OTHER_ROUNDS``, default 20)."""
+def _persist_caps(verdict, exc, model_outage) -> "tuple[int, float]":
+    """``(max_rounds, max_seconds)`` a failure of this kind earns. An OUTAGE waits
+    until the model is back (no cap). The rest can be a request that will never
+    work, so each has a limit: a rejected request few rounds, a call the model may
+    still be generating (a shipped timeout) fewer, anything else about half an
+    hour of tries (``AIFORGE_CHAT_PERSIST_OTHER_S``, default 1800) — long enough
+    that a flapping or overloaded server recovers, short enough that a request
+    that can never succeed does not hammer the endpoint for ever."""
+    big = 10 ** 9
     if verdict == model_outage.OUTAGE:
-        return 10 ** 9
+        return big, 0.0
     if verdict == model_outage.CONFIG:
-        return _CONFIG_ROUNDS
+        return _CONFIG_ROUNDS, 0.0
     if verdict == model_outage.SHIPPED:
-        return 2
+        return 2, 0.0
     if model_outage.issue(exc) is not None:
-        return 6
+        return 6, 0.0
     try:
-        return max(1, int(os.environ.get("AIFORGE_CHAT_PERSIST_OTHER_ROUNDS", "20")))
+        other_s = max(1.0, float(os.environ.get("AIFORGE_CHAT_PERSIST_OTHER_S", "1800")))
     except ValueError:
-        return 20
+        other_s = 1800.0
+    return big, other_s
 
 
 def _persist_until_answer(complete_fn, role, convo, session_id, last,
@@ -327,7 +331,8 @@ def _persist_until_answer(complete_fn, role, convo, session_id, last,
             verdict = model_outage.classify(last)
         except Exception:  # noqa: BLE001
             verdict = None
-        if rounds > _round_cap(verdict, last, model_outage):
+        max_rounds, max_s = _persist_caps(verdict, last, model_outage)
+        if rounds > max_rounds or (max_s and _t.monotonic() - t0 > max_s):
             return None, last
         try:
             from aiforge_core.llm import model_wait as _mw
