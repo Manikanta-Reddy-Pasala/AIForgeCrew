@@ -9,6 +9,7 @@ from aiforge_core.runtime.chat_agent._context import _aging as A
 def _home(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("AIFORGE_CHAT_AGE_OBS", raising=False)
+    monkeypatch.setenv("AIFORGE_CHAT_AGE_BURST", "1")
 
 
 def _pair(tool, body):
@@ -36,10 +37,28 @@ def test_an_old_large_read_is_saved_and_shrunk_in_place():
 
 def test_recent_commands_and_small_output_are_left_alone():
     assert A.age_observations(_convo(tail=4)) == 0                  # too recent
-    assert A.age_observations(_convo(tool="run_command")) == 0      # not a read
+    assert A.age_observations(_convo(tool="file_write")) == 0       # an edit result stays
     assert A.age_observations(_convo(body="y" * 500)) == 0          # small
 
 
 def test_it_can_be_turned_off(monkeypatch):
     monkeypatch.setenv("AIFORGE_CHAT_AGE_OBS", "0")
     assert A.age_observations(_convo()) == 0
+
+
+def test_command_output_ages_but_keeps_its_error_lines():
+    body = "ok line\n" * 600 + "FAILED tests/test_a.py::t\nE   AssertionError: 1 != 2\n" + "tail\n" * 50
+    convo = _convo(tool="run_command", body=body)
+    assert A.age_observations(convo) == 1
+    text = convo[2]["content"]
+    assert "FAILED tests/test_a.py::t" in text and "AssertionError: 1 != 2" in text
+    assert len(text) < 2500
+
+
+def test_aging_waits_for_a_burst(monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_AGE_BURST", "3")
+    convo = _convo()                       # one old read only
+    assert A.age_observations(convo) == 0 and "[aged:" not in convo[2]["content"]
+    for _ in range(2):
+        convo[1:1] = _pair("file_read", "y" * 6000)
+    assert A.age_observations(convo) == 3

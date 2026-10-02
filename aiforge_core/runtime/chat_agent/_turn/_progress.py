@@ -378,6 +378,10 @@ def note_identical(st, sig, result) -> None:
     every other budget; ``sudo rm -f`` of a path that is already gone, run
     forty times, changes nothing and says the same thing each time."""
     key, rh = _short(sig), _result_hash(result)
+    recent = getattr(st, "recent_calls", None)
+    if recent is None:
+        recent = st.recent_calls = collections.deque(maxlen=6)
+    recent.append((key, rh))
     prev = getattr(st, "identical_run", None)
     n = prev[2] + 1 if prev and prev[0] == key and prev[1] == rh else 1
     st.identical_run = (key, rh, n)
@@ -395,3 +399,14 @@ def bump_identical(st, sig) -> None:
     prev = getattr(st, "identical_run", None)
     if prev and prev[0] == _short(sig):
         st.identical_run = (prev[0], prev[1], prev[2] + 1)
+
+
+def ping_pong(st) -> bool:
+    """A, B, A, B, A, B with the same results each time: two calls handing the
+    run back and forth. Neither one repeats back to back, so the identical-run
+    count never sees it."""
+    r = list(getattr(st, "recent_calls", None) or [])
+    if len(r) < 6:
+        return False
+    a, b = r[0], r[1]
+    return (a[0] != b[0] and r[2] == a and r[4] == a and r[3] == b and r[5] == b)

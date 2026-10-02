@@ -52,10 +52,15 @@ def escalate(st, why: str):
     st.stuck_escalations = n
     limit = _limit()
     wrapping = bool(limit) and n > limit
-    if n % 2 == 1:
+    _remember_failure(st, why)
+    restarted = False
+    if n % 2 == 0 and _restart_enabled():
+        restarted = restart_with_handoff(st)
+    elif n % 2 == 1:
         _condense(st)
     text = (_WRAP_UP if wrapping else _TIERS[min(n, len(_TIERS)) - 1])
-    note = f"[loop guard — not the user] {why} {text}"
+    note = (f"[loop guard — not the user] {why} {text}" if not restarted
+            else text)
     last = st.convo[-1] if st.convo else None
     if (isinstance(last, dict) and last.get("role") == "user"
             and isinstance(last.get("content"), str)):
@@ -67,6 +72,57 @@ def escalate(st, why: str):
            "text": f"↺ {why.rstrip('.')} — changing approach (try {n}), "
                    "the task continues"}
     return "wrap_up" if wrapping and n > limit + 1 else "continue"
+
+
+def _restart_enabled() -> bool:
+    return os.environ.get("AIFORGE_CHAT_STUCK_RESTART", "1").strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
+def _remember_failure(st, why: str) -> None:
+    """Write down the approach that just failed, so the next attempt (and the
+    handoff after a restart) can say what not to repeat."""
+    from aiforge_core.runtime import handoff
+    if not hasattr(st, "failed_approaches"):
+        st.failed_approaches = []
+    attempt = handoff.last_attempt(getattr(st, "convo", []))
+    handoff.note_failed(st.failed_approaches,
+                        f"{attempt}" if attempt else why.rstrip("."))
+
+
+def restart_with_handoff(st) -> bool:
+    """Start the run over from a fresh context: the system prompt with the goal
+    and the task board pinned, and ONE message holding the handoff. The failed
+    transcript is saved (``memory_lookup {id}`` restores any detail), not kept.
+    Returns True when the context was replaced."""
+    try:
+        from aiforge_core.runtime import context_offload, handoff
+        from .._context import _compaction as C
+        from ._tasks import pin_board
+        old = list(st.convo)
+        if len(old) < 3 or old[0].get("role") != "system":
+            return False
+        oid = context_offload.save(context_offload.render(old[1:]))
+        h = handoff.build_chat(st)
+        if not h["goal"]:
+            h["goal"] = next((C._text_of(m).strip()[:1200] for m in old[1:]
+                              if m.get("role") == "user"
+                              and not C._text_of(m).strip().startswith("OBSERVATION:")
+                              and not C._is_harness_note(C._text_of(m).strip())), "")
+        sys_text = C._pin_goal(C._stripped_system(old), old)
+        st.convo[:] = [{**old[0], "content": sys_text},
+                       {"role": "user", "content": handoff.render(h, oid)}]
+        if getattr(st, "board", None):
+            pin_board(st.convo, st.board)
+        for name in ("read_sigs_seen", "recent_outputs"):
+            seen = getattr(st, name, None)
+            if hasattr(seen, "clear"):
+                seen.clear()
+        st.identical_run = None
+        st.restarts = getattr(st, "restarts", 0) + 1
+        return True
+    except Exception:  # noqa: BLE001 — a failed restart falls back to the nudge
+        return False
 
 
 def _condense(st) -> None:

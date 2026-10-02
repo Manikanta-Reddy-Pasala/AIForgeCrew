@@ -113,6 +113,17 @@ _PER_ITER_KEYS = (
 )
 
 
+def _note_failed_approach(state, text: str) -> None:
+    """Keep what failed across iterations and re-plans: the next Doer starts
+    from a fresh prompt, so without this it repeats the attempt that just failed
+    (Reflexion's lesson). Rendered into the Doer seed as failed_approaches_md."""
+    from aiforge_core.runtime import handoff
+    items = list(state.get("failed_approaches") or [])
+    handoff.note_failed(items, text)
+    state["failed_approaches"] = items
+    state["failed_approaches_md"] = handoff.render_failed(items)
+
+
 def _same_failure_stop(state) -> bool:
     """The same test failure after yet another Doer pass. Each pass is a
     different fix; the failure surviving ``AIFORGE_SAME_FAILURE_LIMIT`` of
@@ -132,6 +143,8 @@ def _same_failure_stop(state) -> bool:
     attempt = f"{state.get('replan_count', 0) or 0}:{state.get('doer_iters', 0) or 0}"
     verdict = same_failure.observe(track, fail, attempt)
     state["_same_failure"] = track          # reassigned: a state delta
+    _note_failed_approach(state, f"pass {attempt}: the tests failed — "
+                                 f"{fail.headline[:140]}")
     if verdict == same_failure.NUDGE:
         state["replan_note"] = same_failure.nudge_text(fail)
         _trace(":SameFailureNudge", {"failure": fail.headline[:120]})
@@ -153,6 +166,9 @@ def _no_edit_stop(state) -> None:
         return
     idle = int(state.get("_idle_iters", 0) or 0) + 1 if not edits else 0
     state["_idle_iters"] = idle
+    if not edits:
+        _note_failed_approach(state, "a pass that changed no file (it only read "
+                                     "or talked) — make an edit this time")
     if idle >= NO_EDIT_ITERS and not state.get("loop_budget_kill"):
         state["loop_budget_kill"] = True
         state["loop_budget_reason"] = "no_edits"
@@ -258,6 +274,7 @@ def _validator_gate(ctx):  # type: ignore[no-untyped-def]
         # and a note that the last approach did not work. Bounded (default 2).
         state["plateau_replan_count"] = plateau_replans + 1
         why = str(state.get("loop_budget_reason") or fv)[:200]
+        _note_failed_approach(state, f"the previous plan stalled ({why[:100]})")
         _reset_for_replan(state)
         state["replan_note"] = (
             f"The previous approach stalled ({why}). Re-plan a DIFFERENT "

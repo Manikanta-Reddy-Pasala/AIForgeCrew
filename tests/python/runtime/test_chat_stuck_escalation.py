@@ -133,3 +133,20 @@ def test_identical_run_counting():
     assert P.identical_repeats(st, "run_command|a") == 1       # a new result resets it
     P.note_identical(st, "run_command|b", {"ok": True, "stdout": "changed"})
     assert P.identical_repeats(st, "run_command|a") == 0       # another call resets it
+
+
+def test_a_ping_pong_of_two_calls_is_seen():
+    from aiforge_core.runtime.chat_agent._turn import _progress as P
+
+    class S:
+        pass
+    st = S()
+    for i in range(6):
+        P.note_identical(st, "run_command|a" if i % 2 == 0 else "grep|b",
+                         {"ok": True, "stdout": "same"})
+    assert P.ping_pong(st)
+    st2 = S()
+    for i in range(6):
+        P.note_identical(st2, "run_command|a" if i % 2 == 0 else "grep|b",
+                         {"ok": True, "stdout": f"changes {i}"})
+    assert not P.ping_pong(st2)

@@ -19,6 +19,8 @@ _SEED_VARS: tuple[tuple[str, str], ...] = (
     ("feedback_verdict", "FEEDBACK ON YOUR PRIOR ATTEMPT (a loop re-run — fix "
                          "what this rejected; don't repeat it)"),
     ("replan_note", "REPLAN NOTE (set only on a re-plan — go smaller)"),
+    ("failed_approaches_md", "APPROACHES THAT ALREADY FAILED (do not repeat "
+                             "them — choose something different)"),
 )
 
 _SEED_HEADER = (
@@ -75,7 +77,8 @@ def _stringify(val: Any) -> str:
 _SEED_LABELS = dict(_SEED_VARS)
 # Keep these fullest (planning + corrective signal), in priority order.
 _SEED_HIGH: tuple[str, ...] = (
-    "plan_md", "replan_note", "feedback_verdict", "verifier_verdict",
+    "plan_md", "replan_note", "failed_approaches_md", "feedback_verdict",
+    "verifier_verdict",
     "toolchain_md", "user_prefs_md", "rules_md",
 )
 # Bulky, truncate-FIRST context — share whatever budget the high tier left.

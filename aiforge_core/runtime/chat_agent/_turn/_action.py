@@ -31,6 +31,7 @@ from ._progress import (
     identical_repeats,
     note_command,
     note_identical,
+    ping_pong,
     note_read,
     note_write,
     strike,
@@ -74,7 +75,7 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
                  and sig in st.read_sigs_seen)
     looping = strike(st, sig, per_state=not duplicate)
     _ident = identical_repeats(st, sig)
-    if not looping and not duplicate and _ident >= identical_limit():
+    if not looping and not duplicate and (_ident >= identical_limit() or ping_pong(st)):
         looping = "same"
     if duplicate and not looping:
         _recap = _progress_recap(st.convo)
