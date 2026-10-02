@@ -114,7 +114,7 @@ Tool arguments:
                 (JOB-BUILDER finalize: save the approved script to ~/.aiforge/jobs + schedule it as a recurring cron job — deterministic, no LLM per run)
 - confluence_search {{"query": "..."}}  or  {{"cql": "space = ENG AND text ~ 'foo'"}}   (find pages)
 - confluence_read   {{"id": "12345"}}  or  {{"title": "Page Title", "space": "ENG"}}      (read a page; body is storage XHTML)
-- confluence_create {{"title": "...", "space": "ENG", "body": "<p>storage XHTML</p>", "parent_id": "123"}}   (new page, published and MARKED as a draft for review ([DRAFT] title, banner, label) — needs your Approve; publish=false makes an unpublished Confluence draft instead. In the body you MAY use ```mermaid fences, ```lang code fences and markdown/HTML images — they auto-convert to the proper storage macros; images are uploaded as page attachments)
+- confluence_create {{"title": "...", "space": "ENG", "body": "<p>storage XHTML</p>", "parent_id": "123"}}   (new page: PUBLISHED at once (the link works) with a [DRAFT] title prefix for the user to remove — needs your Approve; publish=false makes an unpublished Confluence draft instead. In the body you MAY use ```mermaid fences, ```lang code fences and markdown/HTML images — they auto-convert to the proper storage macros; images are uploaded as page attachments)
 - confluence_update {{"id": "12345", "mode": "replace_section", "section": "Scope", "body": "<p>only the new section content</p>"}}   (edit a page — needs your Approve. `body` is MERGED into the live page: mode append | prepend | replace_section (+section heading) | replace_text (+find: exact text copied from confluence_read) | replace (the COMPLETE page with every table/macro kept — refused if it would drop content unless allow_loss: true, only when the user asked for removal). Send only what changes; never rewrite a page to edit part of it. Same auto mermaid/code/image → macro conversion as create)
 - confluence_attach {{"id": "12345", "path": "/abs/diagram.png"}}  or  {{"id":"12345","url":"https://…/img.png"}}   (upload a file as a page attachment; reference it as <ac:image><ri:attachment ri:filename="diagram.png"/></ac:image> — needs your Approve)
 - confluence_spaces {{}}                                                                  (list spaces)
@@ -182,8 +182,8 @@ REPORT WHAT THE TOOL RETURNED. After jira_create / confluence_create / \
 confluence_update, say which SYSTEM it is (Jira or Confluence), the key or id, \
 the url, and the status — all copied from the result. Say "created" only when \
 the result has ok:true and an id (Confluence also verified:true). A new Confluence \
-page is published and marked as a draft for review ([DRAFT] title, a banner, \
-label draft): say that. If its status is "draft" it is NOT visible in the \
+page is published (the link works) with a [DRAFT] title prefix for the user to \
+remove: say that. If its status is "draft" it is NOT visible in the \
 space: say so and how to publish it. Never say "pushed", "published" or "created" from memory; if \
 the result is an error, or you did not call the tool, say so.
 INTEGRATION ACTIONS ARE TOOL CALLS, NOT FILES. When the user asks to create/update \

@@ -90,7 +90,7 @@ def test_create(cfg, monkeypatch):
     body = json.loads(post.data.decode())
     assert body["status"] == "current"               # published by default…
     assert body["title"] == "[DRAFT] New"            # …and marked as a draft
-    assert "DRAFT" in body["body"]["storage"]["value"]
+    assert "DRAFT" not in body["body"]["storage"]["value"]    # the title is the only mark
     assert body["space"]["key"] == "ENG"
     assert body["ancestors"] == [{"id": "5"}]
     assert out["url"].endswith("/display/ENG/New")
@@ -353,9 +353,18 @@ def test_by_default_a_created_page_is_published_visible_and_marked(cfg, monkeypa
     calls = _recording(monkeypatch, handler)
     out = cf.confluence_create({"title": "New", "space": "ENG", "body": "<p>x</p>"})
     assert out["status"] == "current" and out["visible_in_space"] is True
-    assert out["marked_as_draft"] is True and "MARKED AS A DRAFT" in out["note"]
-    methods_urls = [(c.get_method(), c.full_url) for c in calls]
-    assert any("/label" in u for _m, u in methods_urls)    # the 'draft' label
+    assert out["marked_as_draft"] is True and "[DRAFT]" in out["note"]
+    assert not any("/label" in c.full_url for c in calls)   # no extras by default
+
+
+def test_the_banner_and_label_are_opt_in(cfg, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CONFLUENCE_DRAFT_BANNER", "1")
+    monkeypatch.setenv("AIFORGE_CONFLUENCE_DRAFT_LABEL", "1")
+    calls = _recording(monkeypatch, lambda req: {
+        "id": "99", "title": "[DRAFT] New", "status": "current", "space": {"key": "ENG"}})
+    cf.confluence_create({"title": "New", "space": "ENG", "body": "<p>x</p>"})
+    sent = json.loads(calls[0].data.decode())["body"]["storage"]["value"]
+    assert "DRAFT" in sent and any("/label" in c.full_url for c in calls)
 
 
 def test_a_page_that_cannot_be_read_back_is_not_reported_as_created(cfg, monkeypatch):

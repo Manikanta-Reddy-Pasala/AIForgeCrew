@@ -190,11 +190,10 @@ def test_a_page_is_published_and_marked_as_a_draft_by_default(rest, writer):
     body = rest["calls"][0]["body"]
     assert body["status"] == "current"                         # visible in the space
     assert body["title"] == "[DRAFT] Spec"                     # marked for review
-    assert "DRAFT" in body["body"]["storage"]["value"]         # banner on the page
+    assert "DRAFT" not in body["body"]["storage"]["value"]     # no banner to clean up
     assert out["visible_in_space"] is True and out["marked_as_draft"] is True
-    assert "MARKED AS A DRAFT" in out["note"]
-    label = [c for c in rest["calls"] if "label" in str(c.get("path", c))]
-    assert label, "the draft label is added"
+    assert "[DRAFT]" in out["note"]
+    assert not [c for c in rest["calls"] if "label" in str(c.get("path", c))]
     confluence.confluence_create({"title": "[DRAFT] Spec", "space": "ENG", "body": "hello"})
     titled = [c["body"]["title"] for c in rest["calls"]
               if isinstance(c.get("body"), dict) and c["body"].get("title")]

@@ -160,11 +160,20 @@ def publish_by_default() -> bool:
 
 
 def mark_as_draft() -> bool:
-    """An agent-created page is MARKED as a draft for review: a ``[DRAFT]`` title
-    prefix, an info banner and a ``draft`` label (``AIFORGE_CONFLUENCE_DRAFT_MARK=0``
-    turns the marking off)."""
+    """An agent-created page is MARKED as a draft for review by a ``[DRAFT]``
+    title prefix — the one thing the reviewer removes by hand
+    (``AIFORGE_CONFLUENCE_DRAFT_MARK=0`` turns the marking off)."""
     import os
     return _flag(os.environ.get("AIFORGE_CONFLUENCE_DRAFT_MARK"), True)
+
+
+def _extra_marks() -> "tuple[bool, bool]":
+    """(banner, label): optional extras on top of the title prefix, OFF by
+    default so the only cleanup is the title (``AIFORGE_CONFLUENCE_DRAFT_BANNER=1``,
+    ``AIFORGE_CONFLUENCE_DRAFT_LABEL=1``)."""
+    import os
+    return (_flag(os.environ.get("AIFORGE_CONFLUENCE_DRAFT_BANNER"), False),
+            _flag(os.environ.get("AIFORGE_CONFLUENCE_DRAFT_LABEL"), False))
 
 
 def confluence_create(args: dict, cwd: str | None = None) -> dict:
@@ -172,9 +181,9 @@ def confluence_create(args: dict, cwd: str | None = None) -> dict:
     (key), ``body`` (storage XHTML). Optional: ``parent_id``,
     ``representation`` (storage|wiki).
 
-    A new page is PUBLISHED (visible in the space) by default and MARKED AS A
-    DRAFT for review: a ``[DRAFT]`` title prefix, an info banner and a ``draft``
-    label. ``publish: false`` (or AIFORGE_CONFLUENCE_PUBLISH_DEFAULT=0) creates
+    A new page is PUBLISHED (visible in the space, its link works at once) by
+    default and MARKED AS A DRAFT for review by a ``[DRAFT]`` title prefix — the
+    reviewer removes the prefix by hand. ``publish: false`` (or AIFORGE_CONFLUENCE_PUBLISH_DEFAULT=0) creates
     an unpublished Confluence draft instead. The page is read back by id before
     the tool says it was created; the result names the system, id, url and
     status. ``confluence_read`` /
@@ -192,7 +201,8 @@ def confluence_create(args: dict, cwd: str | None = None) -> dict:
     title = str(args["title"])
     if marked and not title.upper().startswith("[DRAFT]"):
         title = _DRAFT_TITLE + title
-    if marked:
+    banner, label = _extra_marks()
+    if marked and banner:
         xhtml = _DRAFT_BANNER + xhtml
     payload: dict = {
         "type": "page",
@@ -223,15 +233,15 @@ def confluence_create(args: dict, cwd: str | None = None) -> dict:
                 "url": _page_url(d)}
     status = bd.get("status") or status
     label_result = None
-    if marked and d.get("id"):
+    if marked and label and d.get("id"):
         label_result = confluence_add_label({"id": str(d["id"]), "labels": ["draft"]})
     if status == "draft":
         note = ("UNPUBLISHED DRAFT: not visible in the space tree until it is "
                 "published (open the url, or call confluence_update with "
                 "publish=true)")
     elif marked:
-        note = ("PUBLISHED and visible in the space, MARKED AS A DRAFT for review "
-                "([DRAFT] title prefix, a banner on the page, label 'draft')")
+        note = ("PUBLISHED and visible in the space; the title starts with "
+                "[DRAFT] so the reviewer can find it and remove that prefix")
     else:
         note = "published and visible in the space"
     out = {"ok": True, "system": "confluence", "verified": True,
