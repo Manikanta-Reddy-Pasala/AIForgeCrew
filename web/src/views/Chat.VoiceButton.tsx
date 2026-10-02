@@ -13,7 +13,7 @@ import {
 import { correctSpoken } from '../voiceCorrect';
 import type { SpokenAnchor } from '../voicePhrase';
 
-const IDLE_HINT = `Click and talk. A short pause writes the words into the box, then the chat model tidies the sentence (${SPEECH_MODEL_LABEL}, on this device). Click again when you are done — nothing is sent until you press Run. First use downloads about 40 MB.`;
+const IDLE_HINT = `Click and talk. A short pause writes the words into the box, then a fast model tidies the punctuation (${SPEECH_MODEL_LABEL}, on this device). Click again when you are done — nothing is sent until you press Run. First use downloads about 40 MB.`;
 const LISTENING_HINT = 'Listening. A short pause writes the words. Click to finish.';
 const QUIET_AFTER_SPEECH_MS = 8_000;
 const QUIET_IF_SILENT_MS = 20_000;

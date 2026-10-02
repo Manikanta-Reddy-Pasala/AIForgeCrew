@@ -84,12 +84,31 @@ export function preloadTranscriber(): void {
   void loadTranscriber().catch(() => { /* transcribeBlob reports this */ });
 }
 
-/** Linear resample. `fromRate === toRate` returns the same array. */
+/**
+ * Resample. `fromRate === toRate` returns the same array.
+ *
+ * Going DOWN (a 48 kHz mic to Whisper's 16 kHz) each output sample is the mean
+ * of the input samples it covers. Picking points between two neighbours, as
+ * the upsampling branch does, keeps everything above 8 kHz and folds it back
+ * into the speech band as noise — and sibilants ("s", "sh", "f") are exactly
+ * what a small model then mishears.
+ */
 export function resampleLinear(input: Float32Array, fromRate: number, toRate: number): Float32Array {
   if (input.length === 0 || fromRate === toRate) return input;
   if (fromRate <= 0 || toRate <= 0) throw new Error('Sample rate must be positive.');
   const outLen = Math.max(1, Math.round(input.length * toRate / fromRate));
   const out = new Float32Array(outLen);
+  if (fromRate > toRate) {
+    const step = input.length / outLen;
+    for (let i = 0; i < outLen; i++) {
+      const from = Math.floor(i * step);
+      const to = Math.max(from + 1, Math.min(input.length, Math.floor((i + 1) * step)));
+      let sum = 0;
+      for (let k = from; k < to; k++) sum += input[k];
+      out[i] = sum / (to - from);
+    }
+    return out;
+  }
   const scale = (input.length - 1) / Math.max(outLen - 1, 1);
   for (let i = 0; i < outLen; i++) {
     const pos = i * scale;
@@ -148,7 +167,17 @@ async function transcribePcmNow(samples: Float32Array): Promise<string> {
   const options = seconds > 28 ? { chunk_length_s: 30, stride_length_s: 5 } : undefined;
   const result = await transcriber(samples, options);
   const text = Array.isArray(result) ? result.map(part => part.text).join(' ') : result.text;
-  return text.replace(/\s+/g, ' ').trim();
+  return cleanTranscript(text);
+}
+
+// Whisper labels what it hears that is not speech: "[BLANK_AUDIO]", "(music)",
+// "[ Silence ]", "*coughs*". A breath or a key click after a sentence came out
+// as one of these, typed into the composer.
+const NON_SPEECH = /\[[^\]]{0,40}\]|\([^)]{0,40}\)|\*[^*]{0,40}\*|♪+/g;
+
+/** The words only: non-speech labels removed, whitespace collapsed. */
+export function cleanTranscript(text: string): string {
+  return (text || '').replace(NON_SPEECH, ' ').replace(/\s+/g, ' ').trim();
 }
 
 function transcribePcm(samples: Float32Array): Promise<string> {

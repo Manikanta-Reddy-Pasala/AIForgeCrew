@@ -79,3 +79,93 @@ def test_the_route_returns_the_tidied_line(monkeypatch):
     res = TestClient(app).post("/api/chat/speech-correct", json={"text": "save it"})
     assert res.status_code == 200
     assert res.json() == {"text": "SAVE IT"}
+
+
+def test_a_changed_number_is_rejected():
+    assert sc.polish_model_text("open port 8090", "Open port 8080.") == "open port 8090"
+    assert sc.polish_model_text("cut it by 15 percent", "Cut it by 50 percent.") == (
+        "cut it by 15 percent")
+    # punctuation around the same number is still a tidy
+    assert sc.polish_model_text("open port 8090 now", "Open port 8090 now.") == (
+        "Open port 8090 now.")
+
+
+def test_the_reply_has_room_for_the_whole_line():
+    long_line = "word " * 380          # ~1900 chars; the old cap was 400 tokens
+    assert sc._max_tokens(long_line) > len(long_line) // 3
+    assert sc._max_tokens("hi") == 64
+
+
+def test_a_busy_single_slot_model_is_not_asked(monkeypatch):
+    from aiforge_core.llm import slots
+    from aiforge_core.runtime import chat_runs
+    monkeypatch.setattr(sc, "_ask", lambda text: (_ for _ in ()).throw(
+        AssertionError("the model is busy with a chat turn")))
+    monkeypatch.setattr(chat_runs, "any_active", lambda: True)
+    monkeypatch.setattr(slots, "llm_slots", lambda role="chat": 1)
+    assert sc.correct_transcript("save the file") == "save the file"
+    # spare slots: the tidy runs beside the turn
+    monkeypatch.setattr(slots, "llm_slots", lambda role="chat": 4)
+    monkeypatch.setattr(sc, "_ask", lambda text: "Save the file.")
+    assert sc.correct_transcript("save the file") == "Save the file."
+
+
+def test_a_pile_up_keeps_the_raw_line_instead_of_queueing(monkeypatch):
+    import threading
+    gate = threading.Event()
+    started = threading.Semaphore(0)
+
+    def _slow(text):
+        started.release()
+        gate.wait(5)
+        return "Save the file."
+
+    monkeypatch.setattr(sc, "_ask", _slow)
+    monkeypatch.setattr(sc, "_BUDGET_S", 0.05)
+    assert sc.correct_transcript("save the file") == "save the file"   # timed out
+    assert sc.correct_transcript("save the file") == "save the file"
+    started.acquire(timeout=2)
+    started.acquire(timeout=2)
+    # both slots are still held by the slow calls: a third is not even sent
+    monkeypatch.setattr(sc, "_ask", lambda text: (_ for _ in ()).throw(
+        AssertionError("should not queue a third call")))
+    assert sc.correct_transcript("save the file") == "save the file"
+    gate.set()
+
+
+def test_running_out_of_time_cancels_the_request(monkeypatch):
+    import threading
+    seen = {}
+    release = threading.Event()
+
+    def _bind(cancel):
+        seen["cancel"] = cancel
+
+    def _slow(text):
+        release.wait(5)
+        return "Save the file."
+
+    monkeypatch.setattr(sc, "_bind_cancel", _bind)
+    monkeypatch.setattr(sc, "_ask", _slow)
+    monkeypatch.setattr(sc, "_BUDGET_S", 0.05)
+    assert sc.correct_transcript("save the file") == "save the file"
+    assert seen["cancel"].is_set()
+    release.set()
+
+
+def test_the_line_is_framed_so_a_client_suffix_is_not_part_of_it(monkeypatch):
+    """The client adds "/no_think" to the last user message for fast roles."""
+    from aiforge_core.llm import client
+    sent = {}
+
+    def _complete(role, messages, **kw):
+        sent["role"], sent["messages"], sent["kw"] = role, messages, kw
+        return "<line>Save the file.</line>"
+
+    monkeypatch.setattr(client, "complete", _complete)
+    out = sc._ask("save the file")
+    assert sent["messages"][-1]["content"] == "<line>save the file</line>"
+    assert "inside <line> tags" in sent["messages"][0]["content"]
+    assert sent["role"] == "enhancer" and sent["kw"]["timeout_s"] == sc._BUDGET_S
+    # an echoed tag is not kept
+    assert sc.polish_model_text("save the file", out) == "Save the file."
