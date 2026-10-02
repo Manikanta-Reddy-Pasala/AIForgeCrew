@@ -99,7 +99,8 @@ def _run_test_first(cwd, base, subs, run_one, on_status, cancelled, spec_md,
                  f"then {len(impl_subs)} module(s) built to pass them…"})
     agg_tests = run_parallel(cwd, base, None, test_subs, run_one,
                              validate_one=None, integration_test=None,
-                             on_status=on_status, should_cancel=cancelled)
+                             on_status=on_status, should_cancel=cancelled,
+                             in_place=not fan_out_enabled())
     if cancelled():
         return agg_tests
     _review_written_tests(cwd, spec_md, put)
@@ -108,7 +109,8 @@ def _run_test_first(cwd, base, subs, run_one, on_status, cancelled, spec_md,
     agg_impl = run_parallel(cwd, base, None, impl_subs, run_one,
                             validate_one=default_validate_one,
                             integration_test=default_integration_test,
-                            on_status=on_status, should_cancel=cancelled)
+                            on_status=on_status, should_cancel=cancelled,
+                            in_place=not fan_out_enabled())
     return _merge_aggs(agg_tests, agg_impl)
 
 
@@ -140,7 +142,8 @@ def _make_runner(cwd, base, subs, run_one, on_status, cancelled, spec_md, q,
                     cwd, base, None, subs, run_one,
                     validate_one=default_validate_one,
                     integration_test=default_integration_test,
-                    on_status=on_status, should_cancel=cancelled)
+                    on_status=on_status, should_cancel=cancelled,
+                    in_place=not fan_out_enabled())
         except Exception as exc:  # noqa: BLE001
             result["err"] = str(exc)
         finally:
@@ -458,6 +461,7 @@ from ._worktree import (  # noqa: F401  # read via _pkg() or by tests
     _max_workers,
     default_integration_test,
     default_validate_one,
+    fan_out_enabled,
     log,
 )
 

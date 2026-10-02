@@ -262,8 +262,21 @@ def test_a_scaffold_failure_is_not_fatal(monkeypatch, tmp_path):
 # ─── execution announcement ────────────────────────────────────────────
 
 
+def test_the_default_execution_is_one_at_a_time_in_the_chats_worktree(monkeypatch):
+    # Owner rule: one chat = one worktree = one writer unless fan-out is opted in.
+    monkeypatch.delenv("AIFORGE_SEQUENTIAL", raising=False)
+    monkeypatch.delenv("AIFORGE_PARALLEL_SUBTASKS", raising=False)
+    monkeypatch.delenv("AIFORGE_PARALLEL_SUBTASKS_MAX", raising=False)
+    monkeypatch.setattr(st.review_gates, "pick_reviewer_model", lambda: "big-model")
+    text = list(st._announce_execution(_subs()))[0]["text"]
+    assert "one at a time" in text and "at once" not in text
+
+
 def test_the_execution_config_is_announced(monkeypatch):
     monkeypatch.delenv("AIFORGE_SEQUENTIAL", raising=False)
+    # the explicit fan-out opt-in (owner rule: off by default)
+    monkeypatch.setenv("AIFORGE_PARALLEL_SUBTASKS", "1")
+    monkeypatch.setenv("AIFORGE_PARALLEL_SUBTASKS_MAX", "4")
     monkeypatch.setattr(st, "_max_workers", lambda: 4)
     monkeypatch.setattr(st.review_gates, "pick_reviewer_model", lambda: "big-model")
     text = list(st._announce_execution(_subs()))[0]["text"]

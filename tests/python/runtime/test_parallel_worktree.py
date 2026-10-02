@@ -59,19 +59,19 @@ def test_parallel_subtasks_are_on_by_default(monkeypatch):
 
 
 @pytest.mark.parametrize("raw,expected", [("1", 1), ("8", 8), ("99", 8),
-                                          ("0", 1), ("junk", 4)])
+                                          ("0", 1), ("junk", 1)])
 def test_the_worker_count_is_clamped(monkeypatch, raw, expected):
     monkeypatch.setenv("AIFORGE_PARALLEL_SUBTASKS_MAX", raw)
     assert wt._max_workers() == expected
 
 
-def test_four_workers_by_default(monkeypatch):
+def test_one_worker_by_default(monkeypatch):
+    # Owner rule: one chat = one worktree = one writer. Several workers are an
+    # explicit opt-in (AIFORGE_PARALLEL_SUBTASKS_MAX), on any endpoint.
     monkeypatch.delenv("AIFORGE_PARALLEL_SUBTASKS_MAX", raising=False)
-    # A local endpoint defaults to ONE worker; pin a remote one so the result
-    # does not depend on where the suite runs.
     monkeypatch.setattr("aiforge_core.llm.router.is_local_endpoint",
                         lambda role="doer": False)
-    assert wt._max_workers() == 4
+    assert wt._max_workers() == 1
 
 
 @pytest.mark.parametrize("raw,expected", [("0", 0), ("6", 6), ("9", 6), ("junk", 2)])
@@ -642,3 +642,18 @@ def test_a_crash_during_resolution_still_aborts_cleanly(git, monkeypatch):
     monkeypatch.setattr(wt, "_spec_goal", lambda repo: "goal")
     assert wt._merge_branch("/repo", "main", "sub-a")[0] is False
     assert ["merge", "--abort"] in git.calls
+
+
+def test_in_place_retries_never_reset_the_worktree(monkeypatch):
+    """In place the 'worktree' is the chat's own: a retry patches the file,
+    it must never hard-reset to the base branch (even with several workers)."""
+    monkeypatch.setenv("AIFORGE_SUBTASK_RETRIES", "2")
+    monkeypatch.setenv("AIFORGE_PARALLEL_SUBTASKS_MAX", "4")
+    monkeypatch.setattr(wt, "_emit", lambda *a: None)
+    monkeypatch.setattr(wt, "_reset_worktree",
+                        lambda *a: pytest.fail("reset inside the chat's worktree"))
+    seen: list = []
+    monkeypatch.setattr(wt, "_attempt",
+                        lambda sub, *a: seen.append(dict(sub)) or {"ok": False, "error": "boom"})
+    wt._run_with_retries({"slug": "s"}, "/wt", "s", "main", None, None, None, in_place=True)
+    assert [s.get("_patch_retry") for s in seen[1:]] == [True, True]

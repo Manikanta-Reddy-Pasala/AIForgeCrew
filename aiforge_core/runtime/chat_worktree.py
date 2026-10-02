@@ -15,9 +15,16 @@ from the project's current HEAD the first time it speaks:
 * deleting the chat removes the worktree and KEEPS the branch, so nothing it
   committed is lost.
 
-Team-mode runs already do this per run (:mod:`team_workspace`); this is the same
-idea for the simple and plan chats. Side tasks share their parent's worktree.
-Set ``AIFORGE_CHAT_WORKTREES=0`` to turn it off.
+ONE worktree per chat, ONE writer (owner rule). This worktree is the chat's only
+one in its project, from the first message to the last, in EVERY mode: simple,
+plan and team all run in it, so switching mode never makes another. A team /
+pipeline turn uses it as its cwd (its commits, merges and repairs land on the
+chat's branch; :func:`seal` commits what a writer left) instead of opening a
+second per-run worktree (:mod:`team_workspace` only opens one for a DIFFERENT
+repo the user names). Subtasks of a turn run one after another in place, never
+in worktrees of their own (see ``parallel_subtasks.fan_out_enabled``). Side
+tasks share their parent's worktree. Set ``AIFORGE_CHAT_WORKTREES=0`` to turn
+it off.
 """
 from __future__ import annotations
 
@@ -143,13 +150,26 @@ def workdir_of(session: "dict | None") -> "str | None":
     return wd if wd and os.path.isdir(wd) and is_worktree(wd) else None
 
 
+def covers(cwd: "str | None", folder: "str | None") -> bool:
+    """Does the chat worktree at ``cwd`` stand for ``folder``? True when
+    ``folder`` is the worktree's main repo or anything inside it (so a path the
+    user pasted from their own checkout needs no second worktree)."""
+    repo = main_repo_of(cwd)
+    if not repo or not folder:
+        return False
+    from .team_run_life import fold
+    f, r = fold(folder), fold(repo)
+    return f == r or f.startswith(r + os.sep)
+
+
 def eligible(session: "dict | None", mode: str = "simple") -> "str | None":
     """The repo root this chat should get a worktree of, or None.
 
     Only a FRESH chat opened on a project folder that is a git repo with a
-    commit. Not team mode (it makes a worktree per run), not a side task (it shares its
-    parent's), not a scratch chat, and not when the feature is off."""
-    if not enabled() or not session or mode == "team":
+    commit; any mode (``mode`` is kept for callers, it no longer matters). Not a
+    side task (it shares its parent's), not a scratch chat, and not when the
+    feature is off."""
+    if not enabled() or not session:
         return None
     if session.get("parent_id") or workdir_of(session):
         return None
@@ -469,5 +489,5 @@ def prompt_note(cwd: "str | None") -> str:
             "after each turn and the user merges them when ready.")
 
 
-__all__ = ["enabled", "main_repo_of", "is_worktree", "workdir_of", "eligible", "ensure",
+__all__ = ["enabled", "covers", "main_repo_of", "is_worktree", "workdir_of", "eligible", "ensure",
            "info", "seal", "seal_for_session", "merge", "remove", "prompt_note"]

@@ -42,25 +42,30 @@ def enabled() -> bool:
 
 
 def _max_workers() -> int:
-    """Concurrent subtask workers. Default 4 on a remote endpoint, 1 on a
-    local one (a local server answers one request at a time, so extra workers
-    only queue; a retry then patches in place). AIFORGE_PARALLEL_SUBTASKS_MAX
-    overrides both ways: LM Studio / llama.cpp slots and vLLM/TGI do serve
-    concurrently and win from 4."""
+    """Concurrent subtask workers. Default 1: ONE writer at a time, in place.
+
+    A chat owns exactly one git worktree and one writer (owner rule), so more
+    than one worker is an explicit operator choice: AIFORGE_PARALLEL_SUBTASKS_MAX
+    (1..8). It only takes effect for a chat turn together with an explicit
+    AIFORGE_PARALLEL_SUBTASKS=1 (see :func:`fan_out_enabled`)."""
     raw = os.environ.get("AIFORGE_PARALLEL_SUBTASKS_MAX")
     if raw is not None:
         try:
             return max(1, min(8, int(raw)))
         except ValueError:
-            return 4
-    # A local endpoint serves one request at a time. Extra workers only queue.
-    try:
-        from aiforge_core.llm.router import is_local_endpoint
-        if is_local_endpoint("doer"):
             return 1
-    except Exception:  # noqa: BLE001
-        pass
-    return 4
+    return 1
+
+
+def fan_out_enabled() -> bool:
+    """True only when an operator OPTED IN to concurrent writer workers, each in
+    a worktree of its own: ``AIFORGE_PARALLEL_SUBTASKS=1`` set explicitly AND
+    ``AIFORGE_PARALLEL_SUBTASKS_MAX`` > 1. Otherwise a chat turn builds its
+    subtasks one after another, in place, in the chat's single worktree: no
+    per-subtask worktrees, no branches to merge."""
+    explicit = os.environ.get("AIFORGE_PARALLEL_SUBTASKS", "").strip().lower() \
+        in ("1", "true", "yes", "on")
+    return explicit and _max_workers() > 1
 
 
 def _git(args: list[str], cwd: str) -> subprocess.CompletedProcess:
@@ -183,7 +188,8 @@ def _retry_subtask(subtask: dict, last: dict, i: int) -> dict:
 
 
 def _run_with_retries(subtask: dict, wt: str, slug: str, base_branch: str,
-                      ticket_id, run_one, validate_one) -> tuple[dict, int]:
+                      ticket_id, run_one, validate_one,
+                      in_place: bool = False) -> tuple[dict, int]:
     """Run+validate the subtask, retrying (bounded) on failure/crash — subtasks
     are the risky unit. The worktree is reset between attempts so nothing leaks
     across tries. Returns ``(last_result, attempts_used_index)``."""
@@ -202,7 +208,7 @@ def _run_with_retries(subtask: dict, wt: str, slug: str, base_branch: str,
             subtask = _retry_subtask(subtask, last, i)
             # One slot: keep the file and patch the error. Resetting and
             # regenerating the whole file is the 16-generation blowup.
-            if _max_workers() == 1:
+            if in_place or _max_workers() == 1:
                 subtask = {**subtask, "_patch_retry": True}
             else:
                 _reset_worktree(wt, base_branch)

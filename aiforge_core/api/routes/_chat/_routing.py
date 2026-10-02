@@ -109,10 +109,12 @@ def _pipeline_route(_pp, prompt, cwd, session_id, history, _with_resume, _path,
                "text": f"⚠ SPEC.md write failed: {_sexc}"}
     # Best-of-N (Gap C, opt-in): when AIFORGE_BEST_OF_N is set, run the
     # single task N independent times in isolated worktrees, grade each,
-    # keep the best. Otherwise fall back to the sequential team pipeline
-    # so the user always gets a result. Default flow (flag unset) is
-    # unchanged.
-    if os.environ.get("AIFORGE_BEST_OF_N"):
+    # keep the best. A chat owns ONE worktree and ONE writer, so this also
+    # needs the explicit fan-out opt-in (AIFORGE_PARALLEL_SUBTASKS=1 +
+    # AIFORGE_PARALLEL_SUBTASKS_MAX>1); without it the sequential in-place
+    # pipeline below runs, so the user always gets a result.
+    from aiforge_core.runtime.parallel_subtasks import fan_out_enabled as _fan_out
+    if os.environ.get("AIFORGE_BEST_OF_N") and _fan_out():
         from aiforge_core.runtime import best_of_n as _bon
         _af_log.info("parallel decompose <2 subtasks — best-of-N route")
         _path["parallel"] = True

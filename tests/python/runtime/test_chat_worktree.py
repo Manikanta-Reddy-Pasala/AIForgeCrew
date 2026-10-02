@@ -222,7 +222,8 @@ def test_who_does_not_get_one(env, monkeypatch, tmp_path):
     sid = env.new_chat()
     sess = env.store.get_session(sid)
     assert cw.eligible(sess, "simple") == os.path.realpath(env.repo)
-    assert cw.eligible(sess, "team") is None                                   # team makes one per run
+    # one worktree per chat, any mode: team no longer opts out (it reuses the chat's)
+    assert cw.eligible(sess, "team") == os.path.realpath(env.repo)
     monkeypatch.setenv("AIFORGE_CHAT_WORKTREES", "0")
     assert cw.eligible(sess, "simple") is None                                 # switched off
     monkeypatch.delenv("AIFORGE_CHAT_WORKTREES")
