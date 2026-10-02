@@ -91,7 +91,7 @@ def _resolve_timeout():
         return read_to
 
 
-def _build_one(cfg: dict[str, Any]) -> BaseLlm:
+def _build_one(cfg: dict[str, Any], role: str = "") -> BaseLlm:
     """Construct a BaseLlm from a resolve_litellm-shaped dict.
 
     Recognised cfg keys (besides ``model_id``/``api_base``/``api_key``):
@@ -131,9 +131,9 @@ def _build_one(cfg: dict[str, Any]) -> BaseLlm:
     # EscalatingLlm._stamp_request.
     from aiforge_core.llm import reasoning as _reasoning
     _body: dict = {}
-    if _reasoning.reasoning_off(cfg["model_id"], api_base):
+    if _reasoning.reasoning_off(cfg["model_id"], api_base, role):
         _body.update(_reasoning.NO_THINK_KWARGS)
-    _body.update(_reasoning.effort_extras(cfg["model_id"], api_base))
+    _body.update(_reasoning.effort_extras(cfg["model_id"], api_base, role))
     if _body:
         kwargs["extra_body"] = _body
     # model_wait's liveness probe of this model goes the same way.

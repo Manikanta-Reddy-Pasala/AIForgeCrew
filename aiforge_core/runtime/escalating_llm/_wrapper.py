@@ -226,8 +226,8 @@ class EscalatingLlm(_RescueMixin, _StreamMixin, BaseLlm):
     @classmethod
     def build(cls, role: str, primary_cfg: dict[str, Any],
               chain_cfgs: list[dict[str, Any]]) -> "EscalatingLlm":
-        primary = _build_one(primary_cfg)
-        chain = [_build_one(c) for c in chain_cfgs]
+        primary = _build_one(primary_cfg, role)
+        chain = [_build_one(c, role) for c in chain_cfgs]
         labels = [c.get("_provider", "?") for c in chain_cfgs]
         return cls(
             model=primary.model,  # required pydantic field on BaseLlm
@@ -306,7 +306,7 @@ class EscalatingLlm(_RescueMixin, _StreamMixin, BaseLlm):
         req = model_overrides.apply(target, req, role=self.role)
         from aiforge_core.llm import reasoning as _reasoning
         api_base = (getattr(model, "_additional_args", None) or {}).get("api_base", "")
-        if target and _reasoning.reasoning_off(target, api_base):
+        if target and _reasoning.reasoning_off(target, api_base, self.role):
             req = _reasoning.no_think_request(req)
         return req
 

@@ -113,7 +113,7 @@ def context_window_for_role(role: str) -> int:
 
 
 def thinking_for(model: str, base_url: str = "") -> str | None:
-    """The model's explicit reasoning setting ('yes'/'no'/'low'), or None when unset/
+    """The model's explicit reasoning setting ('yes'/'no'), or None when unset/
     auto. Matched by id (a LiteLLM ``openai/`` prefix is ignored) and, when
     given, base_url."""
     model = (model or "").strip()
@@ -123,7 +123,7 @@ def thinking_for(model: str, base_url: str = "") -> str | None:
         if r.get("model") in (model, bare) and (
                 not base_url or not row_url or row_url == base_url.rstrip("/")):
             v = r.get("thinking") or "auto"
-            return v if v in ("yes", "no", "low") else None
+            return v if v in ("yes", "no") else None
     return None
 
 

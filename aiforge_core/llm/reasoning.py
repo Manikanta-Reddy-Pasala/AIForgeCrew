@@ -22,10 +22,32 @@ EFFORT_FIELD = "reasoning_effort"
 _LEVELS = ("none", "low", "medium", "high")
 
 
-def reasoning_off(model: str, base_url: str = "") -> bool:
-    """True when requests to ``model`` must not reason."""
+#: Roles that may reason. Every other role is told not to: a reasoning phase on
+#: each agent step costs minutes on a local box, and only planning (deciding
+#: what to do) benefits from it. Operators change the set with
+#: ``AIFORGE_REASONING_ROLES`` (comma-separated role names).
+DEFAULT_REASONING_ROLES = ("planner",)
+
+
+def reasoning_roles() -> "tuple[str, ...]":
+    raw = os.environ.get("AIFORGE_REASONING_ROLES")
+    if raw is None:
+        return DEFAULT_REASONING_ROLES
+    return tuple(r.strip().lower() for r in raw.split(",") if r.strip())
+
+
+def role_reasons(role: str = "") -> bool:
+    """True when ``role`` may reason. An unnamed role is left as configured."""
+    role = (role or "").strip().lower()
+    return not role or role in reasoning_roles()
+
+
+def reasoning_off(model: str, base_url: str = "", role: str = "") -> bool:
+    """True when requests to ``model`` (made for ``role``) must not reason."""
     env = os.environ.get("AIFORGE_NO_REASONING", "").strip().lower()
     if env in ("1", "true", "yes", "on"):
+        return True
+    if not role_reasons(role):
         return True
     try:
         from aiforge_core.config import model_registry
@@ -34,35 +56,25 @@ def reasoning_off(model: str, base_url: str = "") -> bool:
         return False
 
 
-def effort_for(model: str, base_url: str = "") -> "str | None":
-    """The ``reasoning_effort`` to send to ``model``, or None for the server's own
-    default.
+def effort_for(model: str, base_url: str = "", role: str = "") -> "str | None":
+    """The ``reasoning_effort`` to send, or None for the server's own default.
 
-    ``none`` when reasoning is switched off (Models -> Thinking: no, or
-    AIFORGE_NO_REASONING=1); ``low`` when the model is set to Thinking: low;
+    ``none`` when reasoning is off for this request (see :func:`reasoning_off`);
     else ``AIFORGE_REASONING_EFFORT`` (none|low|medium|high) if set.
 
-    The chat-template kwarg and ``/no_think`` do not stop Qwen3.8 reasoning on
-    LM Studio (measured: the same 27 reasoning chunks with and without them);
-    only this top-level field does, so it is sent as well. On a coding agent a
-    reasoning model spent 96% of what it generated thinking and took 9x longer
-    for the same task."""
-    if reasoning_off(model, base_url):
+    The chat-template kwarg and ``/no_think`` are ignored by some servers (LM
+    Studio's Qwen3.x); the top-level OpenAI-style field is the switch they
+    honour, so it is sent as well."""
+    if reasoning_off(model, base_url, role):
         return "none"
-    try:
-        from aiforge_core.config import model_registry
-        if model_registry.thinking_for(model, base_url) == "low":
-            return "low"
-    except Exception:  # noqa: BLE001
-        pass
     env = os.environ.get("AIFORGE_REASONING_EFFORT", "").strip().lower()
     return env if env in _LEVELS else None
 
 
-def effort_extras(model: str, base_url: str = "") -> dict:
-    """``{"reasoning_effort": …}`` for this model, unless the server already
+def effort_extras(model: str, base_url: str = "", role: str = "") -> dict:
+    """``{"reasoning_effort": …}`` for this request, unless the server already
     refused that field for it (then nothing: see fast_reasoning.note_rejection)."""
-    eff = effort_for(model, base_url)
+    eff = effort_for(model, base_url, role)
     if not eff:
         return {}
     try:
@@ -94,4 +106,4 @@ def no_think_request(llm_request):
 
 
 __all__ = ["reasoning_off", "no_think_request", "NO_THINK_KWARGS", "EFFORT_FIELD",
-           "effort_for", "effort_extras"]
+           "effort_for", "effort_extras", "role_reasons", "reasoning_roles"]

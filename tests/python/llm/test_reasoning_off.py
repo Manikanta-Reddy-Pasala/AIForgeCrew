@@ -19,9 +19,9 @@ def registry(monkeypatch):
     return rows
 
 
-def _ep(model="qwen/qwen3.8-27b", url="http://127.0.0.1:11234/v1"):
+def _ep(model="qwen/qwen3.8-27b", url="http://127.0.0.1:11234/v1", role="planner"):
     return Endpoint(base_url=url, api_key="x", model=model,
-                    provider="openai_compatible", role="chat", extras={})
+                    provider="openai_compatible", role=role, extras={})
 
 
 def test_thinking_no_turns_reasoning_off_for_that_model_only(registry):
@@ -86,9 +86,9 @@ def test_the_litellm_model_is_built_with_the_kwarg(registry, monkeypatch):
 # reasoning_effort field stops it: 0 reasoning tokens with "none". On a coding
 # task the model spent 96% of what it generated thinking and took 9x longer.
 
-def _body(model="qwen/qwen3.8-27b", **kw):
+def _body(model="qwen/qwen3.8-27b", role="planner"):
     return json.loads(_http._build_body(
-        _ep(model), [{"role": "user", "content": "hi"}], None, None, None, None))
+        _ep(model, role=role), [{"role": "user", "content": "hi"}], None, None, None, None))
 
 
 def test_thinking_no_also_sends_reasoning_effort_none(registry):
@@ -98,13 +98,29 @@ def test_thinking_no_also_sends_reasoning_effort_none(registry):
     assert body["chat_template_kwargs"] == {"enable_thinking": False}     # kept for other servers
 
 
-def test_thinking_low_sends_low_and_does_not_switch_reasoning_off(registry):
-    registry.append({"model": "qwen/qwen3.8-27b", "thinking": "low"})
-    body = _body()
-    assert body["reasoning_effort"] == "low"
-    assert "chat_template_kwargs" not in body
-    assert body["messages"][-1]["content"] == "hi"                         # no /no_think
-    assert not reasoning.reasoning_off("qwen/qwen3.8-27b")
+def test_only_the_planner_reasons_every_other_role_is_told_not_to(registry, monkeypatch):
+    monkeypatch.delenv("AIFORGE_REASONING_ROLES", raising=False)
+    monkeypatch.delenv("AIFORGE_REASONING_EFFORT", raising=False)
+    for role in ("chat", "doer", "enhancer", "reviewer", "architect"):
+        body = _body(role=role)
+        assert body["reasoning_effort"] == "none", role
+        assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    planner = _body(role="planner")
+    assert "reasoning_effort" not in planner                               # left to the model
+    assert "chat_template_kwargs" not in planner
+
+
+def test_the_reasoning_roles_are_an_operator_setting(registry, monkeypatch):
+    monkeypatch.setenv("AIFORGE_REASONING_ROLES", "planner, architect")
+    assert reasoning.role_reasons("architect")
+    assert not reasoning.role_reasons("doer")
+    monkeypatch.setenv("AIFORGE_REASONING_ROLES", "")
+    assert not reasoning.role_reasons("planner")                           # none may reason
+
+
+def test_no_role_named_leaves_the_setting_alone(registry):
+    assert reasoning.role_reasons("")
+    assert not reasoning.reasoning_off("any-model")
 
 
 def test_an_untouched_model_sends_nothing(registry, monkeypatch):
@@ -116,7 +132,7 @@ def test_an_untouched_model_sends_nothing(registry, monkeypatch):
 
 def test_one_setting_limits_every_model_and_a_model_setting_wins(registry, monkeypatch):
     monkeypatch.setenv("AIFORGE_REASONING_EFFORT", "low")
-    assert _body("whatever")["reasoning_effort"] == "low"
+    assert _body("whatever")["reasoning_effort"] == "low"                  # planner
     registry.append({"model": "m1", "thinking": "no"})
     assert _body("m1")["reasoning_effort"] == "none"                       # the model's own choice wins
     monkeypatch.setenv("AIFORGE_REASONING_EFFORT", "bogus")
@@ -141,14 +157,10 @@ def test_a_server_that_refused_the_field_is_not_sent_it_again(registry):
 
 def test_the_team_pipeline_model_carries_it_too(registry):
     pytest.importorskip("google.adk.models.lite_llm")
-    registry.append({"model": "qwen/qwen3.8-27b", "thinking": "low"})
     from aiforge_core.runtime.escalating_llm import _builder
-    llm = _builder._build_one({"model_id": "openai/qwen/qwen3.8-27b",
-                               "api_base": "http://127.0.0.1:11234/v1", "api_key": "x"})
-    assert llm._additional_args["extra_body"] == {"reasoning_effort": "low"}
-
-
-def test_the_registry_accepts_low(registry):
-    from aiforge_core.config import model_registry as mr
-    assert "low" in mr._THINKING
-    assert mr._resolve("low", "any-model", "thinking") is True             # still a thinking model
+    cfg = {"model_id": "openai/qwen/qwen3.8-27b",
+           "api_base": "http://127.0.0.1:11234/v1", "api_key": "x"}
+    doer = _builder._build_one(cfg, "doer")
+    assert doer._additional_args["extra_body"]["reasoning_effort"] == "none"
+    planner = _builder._build_one(cfg, "planner")
+    assert "extra_body" not in planner._additional_args
