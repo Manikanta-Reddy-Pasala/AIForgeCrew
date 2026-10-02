@@ -126,7 +126,7 @@ def chat_session_create(body: _NewSessionBody) -> dict:
             from aiforge_core.memory import projects as _projects
             _root = _projects.project_path_of(body.cwd)
             if _root:
-                _projects.open_project(_root)
+                _projects.open_project(_root, background=True)
         except Exception:  # noqa: BLE001 — never blocks opening a chat
             pass
     return s
@@ -136,22 +136,25 @@ def _same_folder(cwd: str | None, want: str) -> bool:
     """Whether a session's cwd IS ``want`` or sits inside it."""
     if not cwd:
         return False
-    try:
-        a = os.path.realpath(str(cwd))
-        b = os.path.realpath(want)
-    except Exception:  # noqa: BLE001
-        return False
-    return a == b or a.startswith(b + os.sep)
+    a = os.path.normpath(str(cwd))
+    b = os.path.normpath(want)
+    return a == b or a.startswith(b.rstrip(os.sep) + os.sep)
 
 
 @router.get("/api/chat/sessions")
-def chat_session_list(cwd: str | None = None) -> list[dict]:
+def chat_session_list(cwd: str | None = None, no_project: bool = False) -> list[dict]:
     """Every chat, newest first. ``cwd`` keeps only the chats opened on that
-    folder — a project's own list."""
+    folder — a project's own list. ``no_project`` keeps only the chats that
+    belong to no project (the "No repo" list)."""
     from aiforge_core.runtime import chat_store
     rows = chat_store.list_sessions()
     if cwd:
         rows = [r for r in rows if _same_folder(r.get("cwd"), cwd)]
+    elif no_project:
+        from aiforge_core.memory import projects as _projects
+        _paths = _projects.known_paths()
+        rows = [r for r in rows
+                if not _projects.project_path_of(r.get("cwd"), _paths)]
     return rows
 
 

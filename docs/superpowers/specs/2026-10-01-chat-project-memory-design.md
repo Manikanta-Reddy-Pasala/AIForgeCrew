@@ -56,11 +56,15 @@ project name is the folder name (the key memory already uses).
 - Projects are looked for in the projects folder AND in every extra folder
   mounted into the box (Settings → Mounts, `--mount`). A mounted folder that
   is itself a repo is one project; one that holds repos lists its children.
-- The Projects page is one screen: "Your projects" (the folders opened
-  before, most recent first, each removable without losing chats or memory)
-  across the top, a "New project" panel to add a folder, and the selected
-  project's chat directly below. The last project used opens by default.
-  `/projects/<name>` links redirect to `/projects?path=…`.
+- The Projects page is a list first, Cursor-style: one row per project you
+  opened before (most recent first, removable without losing chats or
+  memory), a "No repo" row for chats that belong to no project, and an "Add
+  project" row that opens the folder picker. Clicking a row opens that
+  project's chats in the usual chat layout, with a "‹ Projects" link back.
+  The selection is in the URL (`/projects?path=…`).
+- Opening a project is immediate: the chat shows at once and the project is
+  registered and its memory synced in the background. The folder scan is
+  cached for a few seconds and git is not called per folder.
 - Any folder the box can see opens by typing its path: the Projects page has
   an "Open a folder" box with suggestions as you type
   (`GET /api/projects/browse`, `POST /api/projects/open`). In Docker only the

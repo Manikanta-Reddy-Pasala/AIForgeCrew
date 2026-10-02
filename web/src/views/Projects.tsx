@@ -107,25 +107,24 @@ function OpenFolder({ onOpen }: { onOpen: (path: string) => void }) {
   );
 }
 
-const LS_LAST_PROJECT = 'aiforge.projects.last';
+const NO_REPO = '__none__';
 
-/** Operate → Projects, one page: your projects across the top, "New project"
- *  to add a folder, and the selected project's chat right below. */
+/** Operate → Projects. First a list: each project a row, "No repo" for chats
+ *  outside any project, "Add project" to pick a folder. Click a row and that
+ *  project's chats open, with the conversation beside them. */
 export default function Projects() {
   const [data, setData] = useState<ProjectList | null>(null);
   const [adding, setAdding] = useState(false);
-  const [opening, setOpening] = useState('');
   const [params, setParams] = useSearchParams();
   const selectedPath = params.get('path') || '';
-  // The opened project (registered server-side) the chat below is bound to.
+  const noRepo = selectedPath === NO_REPO;
+  // The opened project (registered server-side) the chats shown belong to.
   const [active, setActive] = useState<Project | null>(null);
 
-  function load(): Promise<ProjectList | null> {
-    return projectsApi.list().then(d => { setData(d); return d; }).catch((e: any) => {
+  function load() {
+    return projectsApi.list().then(setData).catch((e: any) => {
       toast.error(`Failed to load projects: ${e.message}`);
-      const empty = { root: '', exists: false, projects: [] };
-      setData(empty);
-      return empty;
+      setData({ root: '', exists: false, projects: [] });
     });
   }
 
@@ -135,129 +134,141 @@ export default function Projects() {
     setParams(next, { replace: false });
   }
 
-  // First load: no project in the URL → the last one used, else the most
-  // recent of yours.
-  useEffect(() => {
-    load().then(d => {
-      if (selectedPath || !d) return;
-      const mine = d.projects.filter(p => p.mine);
-      let last = '';
-      try { last = localStorage.getItem(LS_LAST_PROJECT) || ''; } catch { /* storage off */ }
-      const pick = mine.find(p => p.path === last) || mine[0];
-      if (pick) select(pick.path);
-      else setAdding(true);                    // nothing yet: start at New project
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  useEffect(() => { if (!selectedPath) load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [selectedPath]);
 
-  // Open (register + sync memory) whatever the URL selects, then show its chat.
+  // The chat needs only the folder's path and name, both known from the URL —
+  // so it shows at once. Registering the project (and syncing its memory)
+  // happens beside it; only a folder that cannot be opened sends you back.
   useEffect(() => {
-    if (!selectedPath) { setActive(null); return; }
+    if (!selectedPath || noRepo) { setActive(null); return; }
     let live = true;
-    setOpening(selectedPath);
+    const name = selectedPath.replace(/\/+$/, '').split('/').pop() || selectedPath;
+    setActive({ name, path: selectedPath } as Project);
+    setAdding(false);
     projectsApi.openPath(selectedPath).then(p => {
-      if (!live) return;
-      setActive(p);
-      setAdding(false);
-      try { localStorage.setItem(LS_LAST_PROJECT, p.path); } catch { /* storage off */ }
-      load();
+      if (live && p.name !== name) setActive(p);
     }).catch((e: any) => {
       if (!live) return;
-      setActive(null);
       toast.error(e.message || 'That folder cannot be opened');
       select('');
-    }).finally(() => { if (live) setOpening(''); });
+    });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPath]);
 
   async function remove(p: Project) {
-    if (!window.confirm(`Take “${p.name}” off your projects?\n\nIts chats and memory are kept. `
-      + 'You can add it again with New project.')) return;
+    if (!window.confirm(`Remove “${p.name}” from your projects?\n\nIts chats and memory are kept. `
+      + 'You can add it again with Add project.')) return;
     try {
       await projectsApi.remove(p.path);
-      if (selectedPath === p.path) select('');
       await load();
     } catch (e: any) { toast.error(e.message); }
   }
 
+  // ── inside a project: its chats, in the usual chat layout ────────────────
+  if (selectedPath) {
+    const title = noRepo ? 'No repo' : (active?.name || selectedPath.split('/').pop() || '');
+    return (
+      <div className="projects-page">
+        <div className="projects-crumb">
+          <button type="button" className="ghost sm" onClick={() => select('')}
+                  title="Back to the list of projects">
+            ‹ Projects
+          </button>
+          {noRepo ? <Icon.Home size={15} /> : <Icon.Folder size={15} />}
+          <strong>{title}</strong>
+          {!noRepo && <span className="muted xs projects-crumb-path" title={selectedPath}>{selectedPath}</span>}
+        </div>
+        {noRepo && <Chat key={NO_REPO} project={{ name: 'No repo', path: '', noRepo: true }} />}
+        {!noRepo && active && active.path === selectedPath
+          && <Chat key={active.path} project={{ name: active.name, path: active.path }} />}
+
+      </div>
+    );
+  }
+
+  // ── the list ─────────────────────────────────────────────────────────────
   const mine = (data?.projects || []).filter(p => p.mine);
   const others = (data?.projects || []).filter(p => !p.mine);
+  const none = data?.no_project;
 
   return (
-    <div className="projects-page">
-      <div className="projects-bar">
-        <span className="projects-bar-title">Your projects</span>
-        <div className="projects-pills">
-          {data === null && <span className="muted small">Loading…</span>}
-          {data !== null && mine.length === 0 && (
-            <span className="muted small">None yet — add one with New project.</span>
-          )}
-          {mine.map(p => (
-            <span key={p.path} className={`project-pill${p.path === selectedPath ? ' active' : ''}`}
-                  title={`${p.path}\n${p.chats || 0} chats · ${relDay(p.last_activity)} · ${memoryLabel(p)}`}>
-              <button type="button" className="project-pill-main" onClick={() => select(p.path)}>
-                <Icon.Folder size={13} /> {p.name}
-                <span className="muted xs">{p.chats || 0}</span>
-              </button>
-              <button type="button" className="project-pill-x" onClick={() => remove(p)}
-                      title="Take off your projects (chats and memory are kept)" aria-label={`Remove ${p.name}`}>
-                ✕
-              </button>
-            </span>
-          ))}
-        </div>
-        <button type="button" className={adding ? 'ghost' : ''} onClick={() => setAdding(a => !a)}
-                style={{ whiteSpace: 'nowrap' }}>
-          {adding ? 'Close' : <><Icon.Plus size={13} /> New project</>}
-        </button>
-      </div>
-
-      {adding && (
-        <div className="card" style={{ marginBottom: 10 }}>
-          <strong>New project</strong>
-          <div className="muted small" style={{ margin: '4px 0 10px' }}>
-            Pick the folder of a repo. Type its name or path — suggestions appear as you type
-            (Tab fills one in, Enter opens it).
+    <div className="projects-page projects-list-page">
+      <div className="projects-list-title">Projects</div>
+      <div className="projects-list">
+        {data === null && <div className="projects-row muted">Loading…</div>}
+        {mine.map(p => (
+          <div key={p.path} className="projects-row" title={p.path}>
+            <button type="button" className="projects-row-main" onClick={() => select(p.path)}>
+              <Icon.Folder size={18} />
+              <span className="projects-row-name">{p.name}</span>
+              <span className="muted xs">
+                {p.chats || 0} {p.chats === 1 ? 'chat' : 'chats'} · {relDay(p.last_activity)}
+                {p.memory_chars ? ` · ${memoryLabel(p)}` : ''}
+              </span>
+            </button>
+            <button type="button" className="projects-row-x" onClick={() => remove(p)}
+                    title="Remove from your projects (chats and memory are kept)"
+                    aria-label={`Remove ${p.name}`}>✕</button>
+            <button type="button" className="projects-row-go" onClick={() => select(p.path)}
+                    aria-label={`Open ${p.name}`}>›</button>
           </div>
-          <OpenFolder onOpen={select} />
-          {others.length > 0 && (
-            <>
-              <div className="muted xs" style={{ margin: '12px 0 6px' }}>
-                Found in {(data?.roots || []).map(r => r.path).join(' · ') || 'your folders'}
-              </div>
-              <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-                {others.map(p => (
-                  <button type="button" key={p.path} className="ghost sm" title={p.path}
-                          onClick={() => select(p.path)}>
-                    <Icon.Folder size={12} /> {p.name}{p.is_git ? '' : ' · not git'}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-          {data !== null && others.length === 0 && mine.length === 0 && (
-            <div className="muted small" style={{ marginTop: 10 }}>
-              No folders found. In Docker, AIForge sees its projects folder and the folders you
-              mounted — add one under Settings → Mounts (or run with --repos DIR / --mount DIR),
-              then restart. <NavLink to="/">Open settings</NavLink>
-            </div>
-          )}
+        ))}
+        <div className="projects-row">
+          <button type="button" className="projects-row-main" onClick={() => select(NO_REPO)}>
+            <Icon.Home size={18} />
+            <span className="projects-row-name">No repo</span>
+            <span className="muted xs">
+              {none ? `${none.chats} ${none.chats === 1 ? 'chat' : 'chats'} · ${relDay(none.last_activity)}`
+                    : 'chats not tied to a folder'}
+            </span>
+          </button>
+          <button type="button" className="projects-row-go" onClick={() => select(NO_REPO)}
+                  aria-label="Open chats with no repo">›</button>
         </div>
-      )}
-
-      {active && active.path === selectedPath
-        ? <Chat key={active.path} project={{ name: active.name, path: active.path }} />
-        : !adding && (
-          <div className="card muted small">
-            {opening ? `Opening ${opening}…` : 'Select one of your projects, or add one with New project.'}
+        <div className="projects-row">
+          <button type="button" className="projects-row-main muted" onClick={() => setAdding(a => !a)}>
+            <Icon.Plus size={18} />
+            <span className="projects-row-name">Add project</span>
+          </button>
+        </div>
+        {adding && (
+          <div className="projects-add">
+            <div className="muted small" style={{ marginBottom: 10 }}>
+              Pick the folder of a repo. Type its name or path — suggestions appear as you type
+              (Tab fills one in, Enter opens it).
+            </div>
+            <OpenFolder onOpen={select} />
+            {others.length > 0 && (
+              <>
+                <div className="muted xs" style={{ margin: '12px 0 6px' }}>
+                  Found in {(data?.roots || []).map(r => r.path).join(' · ') || 'your folders'}
+                </div>
+                <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                  {others.map(p => (
+                    <button type="button" key={p.path} className="ghost sm" title={p.path}
+                            onClick={() => select(p.path)}>
+                      <Icon.Folder size={12} /> {p.name}{p.is_git ? '' : ' · not git'}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+            {data !== null && others.length === 0 && mine.length === 0 && (
+              <div className="muted small" style={{ marginTop: 10 }}>
+                No folders found. In Docker, AIForge sees its projects folder and the folders you
+                mounted — add one under Settings → Mounts (or run with --repos DIR / --mount DIR),
+                then restart. <NavLink to="/">Open settings</NavLink>
+              </div>
+            )}
           </div>
         )}
+      </div>
     </div>
   );
 }
 
-/** Old link form `/projects/<name>[?path=…]` → the one-page Projects view. */
+/** Old link form `/projects/<name>[?path=…]` → the Projects view. */
 export function ProjectChat() {
   const { name = '' } = useParams();
   const [params] = useSearchParams();

@@ -85,8 +85,11 @@ export interface ChatTraceTurn {
 
 export const chatApi = {
   // `cwd` keeps only the chats opened on that folder (a project's own list).
-  sessions: (cwd?: string) => j<ChatSession[]>(
-    cwd ? `/chat/sessions?cwd=${encodeURIComponent(cwd)}` : '/chat/sessions'),
+  // `noProject` keeps only the chats that are in no project.
+  sessions: (cwd?: string, noProject = false) => {
+    if (cwd) return j<ChatSession[]>(`/chat/sessions?cwd=${encodeURIComponent(cwd)}`);
+    return j<ChatSession[]>(noProject ? '/chat/sessions?no_project=true' : '/chat/sessions');
+  },
 
   sessionLearn: (id: number, learn: boolean) =>
     j<ChatSession>(`/chat/sessions/${id}/learn`, {

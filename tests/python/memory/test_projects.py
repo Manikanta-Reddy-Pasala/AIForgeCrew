@@ -375,3 +375,48 @@ def test_a_chat_in_a_mounted_project_belongs_to_it(box):
     assert projects.project_path_of(str(alpha / "src")) == str(alpha)
     assert projects.project_of(str(alpha / "src")) == "alpha"
     assert projects.project_path_of(str(box / "private")) is None
+
+
+def test_listing_does_not_ask_git_per_folder_or_rescan_per_chat(box, monkeypatch):
+    """One page load used to run `git rev-parse` for every folder and rescan
+    the folders for every chat — seconds each on a Windows or network mount."""
+    import subprocess
+
+    from aiforge_core.memory import projects
+    projects.forget_scan()
+    scans = {"n": 0}
+    real_scan = projects._scan_folders
+
+    def _counted():
+        scans["n"] += 1
+        return real_scan()
+
+    monkeypatch.setattr(projects, "_scan_folders", _counted)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail(
+        f"git called for a repo root: {a[0]}"))
+    solo = str(box / "mnt" / "solo-repo")
+    assert projects.key_for(solo) == "solo-repo"          # has .git: no subprocess
+    paths = projects.known_paths()
+    for i in range(50):
+        projects.project_path_of(f"{solo}/src/{i}", paths)
+    projects.list_folders()
+    assert scans["n"] == 1
+
+
+def test_opening_in_the_background_returns_before_the_sync(env, monkeypatch):
+    import threading
+
+    from aiforge_core.memory import projects
+    gate, started = threading.Event(), threading.Event()
+
+    def _slow_sync(slug, **_kw):
+        started.set()
+        gate.wait(5)
+        return {"ok": True}
+
+    monkeypatch.setattr(projects, "sync", _slow_sync)
+    ent = projects.open_project(str(env / "shop"), background=True)
+    assert ent and ent["slug"] == "shop"                   # back before sync ends
+    assert str(env / "shop") in projects.opened()
+    assert started.wait(2)
+    gate.set()

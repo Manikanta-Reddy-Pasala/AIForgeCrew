@@ -33,10 +33,11 @@ def _chat_stats() -> dict:
     from aiforge_core.memory import projects
     from aiforge_core.runtime import chat_store
     out: dict = {}
+    paths = projects.known_paths()       # once, not per chat
     for s in chat_store.list_sessions() or []:
         if s.get("parent_id"):
             continue                     # side tasks are not chats of their own
-        name = projects.project_path_of(s.get("cwd"))
+        name = projects.project_path_of(s.get("cwd"), paths)
         if not name:
             continue
         row = out.setdefault(name, {"chats": 0, "last_activity": ""})
@@ -71,7 +72,21 @@ def projects_list() -> dict:
         rows.append(row)
     rows.sort(key=lambda r: (-(r["opened_at"] or 0), r["name"].lower()))
     return {"root": base, "exists": os.path.isdir(base), "projects": rows,
-            "roots": projects.roots()}
+            "roots": projects.roots(), "no_project": _no_project_stats()}
+
+
+def _no_project_stats() -> dict:
+    """Chat count and last activity of the chats that are in no project."""
+    from aiforge_core.memory import projects
+    from aiforge_core.runtime import chat_store
+    out = {"chats": 0, "last_activity": ""}
+    paths = projects.known_paths()
+    for s in chat_store.list_sessions() or []:
+        if s.get("parent_id") or projects.project_path_of(s.get("cwd"), paths):
+            continue
+        out["chats"] += 1
+        out["last_activity"] = max(out["last_activity"], str(s.get("updated_at") or ""))
+    return out
 
 
 @router.post("/api/projects/remove")
@@ -99,7 +114,7 @@ def project_open_path(body: _PathBody) -> dict:
         raise HTTPException(
             404, "That folder is not available to AIForge. In Docker, mount it "
                  "first (Settings → Mounts, or run with --mount / --repos).")
-    if not projects.open_project(path):
+    if not projects.open_project(path, background=True):
         raise HTTPException(404, f"{body.path!r} cannot be a project")
     return projects.summary(projects._folder(path, ""))
 
@@ -128,7 +143,7 @@ def project_open(name: str) -> dict:
     one-time read of its instruction files."""
     from aiforge_core.memory import projects
     path = _path_or_404(name)
-    ent = projects.open_project(path)
+    ent = projects.open_project(path, background=True)
     if not ent:
         raise HTTPException(404, f"{name!r} cannot be a project")
     folder = next((f for f in projects.list_folders() if f["name"] == name),

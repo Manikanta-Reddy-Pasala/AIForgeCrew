@@ -514,7 +514,7 @@ function copyText(t: string) {
 
 /** A chat opened from the Projects page: its sessions are the ones on this
  *  folder, and a new chat starts there. */
-export interface ChatProject { name: string; path: string }
+export interface ChatProject { name: string; path: string; noRepo?: boolean }
 
 // A heartbeat reporting at least this much silence is shown as a status line.
 const QUIET_SHOW_S = 15;
@@ -956,7 +956,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   async function loadSessions(silent = false) {
     if (!silent) setSessionsLoading(true);
     try {
-      const list = await chatApi.sessions(project?.path);
+      const list = await chatApi.sessions(project?.path || undefined, !!project?.noRepo);
       setSessions(list);
       // Defensive prune: drop builder mappings whose session no longer exists,
       // so an orphaned entry can't later collide with a recycled id and open a
@@ -1133,7 +1133,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
 
   async function createSession(cwd?: string): Promise<number | null> {
     try {
-      const where = cwd ?? project?.path;
+      const where = cwd ?? (project?.path || undefined);
       const session = await chatApi.sessionCreate(where ? { cwd: where } : undefined);
       setSessions(prev => [session, ...prev]);
       abortRef.current?.abort();   // drop any stream still tied to the old session
@@ -2024,7 +2024,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
             )}
             {(project || activeSession) && (
               <span className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 2 }}>
-                {project && (
+                {project && !project.noRepo && (
                   <NavLink to={`/memory?project=${encodeURIComponent(project.name)}`}
                            className="chip" title="Open this project's memory"
                            style={{ textDecoration: 'none' }}>

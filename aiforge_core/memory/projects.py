@@ -86,6 +86,13 @@ def key_for(path: str) -> str:
     """The memory key for a project folder — what chat recall and writeback
     already file under."""
     from aiforge_core.runtime import repo_ident
+    # A folder that is itself a repo root: its name IS the key. Asking git for
+    # the top level costs a subprocess per folder — seconds each on a slow
+    # mount (/mnt/c under WSL) — and the Projects list asks for every folder.
+    if os.path.exists(os.path.join(path, ".git")):
+        name = repo_ident.normalize_repo(os.path.basename(os.path.normpath(path)))
+        if name:
+            return name
     return repo_ident.repo_name(path, sentinel="repo")
 
 
@@ -151,10 +158,37 @@ def _child_dirs(base: str) -> list[str]:
     return out
 
 
+# The folder scan, kept for a few seconds: one page load asks for it several
+# times (the list, each chat's project, the chat counts), and each scan is a
+# directory walk that is slow on a network or Windows mount.
+_SCAN_TTL_S = 5.0
+_scan: dict = {"at": 0.0, "key": None, "rows": []}
+
+
+def _scan_key() -> tuple:
+    return (os.environ.get("AIFORGE_MOUNTS", ""),
+            os.environ.get("AIFORGE_PROJECTS_ROOT", ""),
+            os.environ.get("AIFORGE_CONFIG_DIR", ""), _BOOT_REPO_ROOT)
+
+
+def forget_scan() -> None:
+    _scan["at"] = 0.0
+
+
 def list_folders() -> list[dict]:
-    """The projects to offer. Under the projects folder: each child folder. A
-    mounted folder that is itself a repo is one project; one that holds repos
-    lists its children. Hidden folders skipped; a path is listed once."""
+    """The projects to offer (see :func:`_scan_folders`), cached briefly."""
+    key = _scan_key()
+    if _scan["key"] == key and time.time() - _scan["at"] < _SCAN_TTL_S:
+        return [dict(r) for r in _scan["rows"]]
+    rows = _scan_folders()
+    _scan.update(at=time.time(), key=key, rows=rows)
+    return [dict(r) for r in rows]
+
+
+def _scan_folders() -> list[dict]:
+    """Under the projects folder: each child folder. A mounted folder that is
+    itself a repo is one project; one that holds repos lists its children.
+    Hidden folders skipped; a path is listed once."""
     out: list[dict] = []
     seen: set[str] = set()
     for r in roots():
@@ -220,16 +254,16 @@ def known_paths() -> list[str]:
     return sorted({p for p in paths if p}, key=len, reverse=True)
 
 
-def project_path_of(cwd: "str | None") -> "str | None":
-    """The project folder a chat cwd is in (the deepest one), or None."""
+def project_path_of(cwd: "str | None",
+                    paths: "list[str] | None" = None) -> "str | None":
+    """The project folder a chat cwd is in (the deepest one), or None.
+    ``paths`` is :func:`known_paths` when the caller already has it — asking
+    for many chats in a row must not rescan the folders for each."""
     if not cwd:
         return None
-    try:
-        target = os.path.realpath(str(cwd))
-    except Exception:  # noqa: BLE001
-        return None
-    for p in known_paths():
-        if _under(target, os.path.realpath(p)):
+    target = os.path.normpath(str(cwd))
+    for p in (known_paths() if paths is None else paths):
+        if _under(target, os.path.normpath(p)):
             return p
     return None
 
@@ -523,6 +557,7 @@ def remove_opened(path: str) -> bool:
         d = _load_opened()
         d[path] = {**(d.get(path) or {}), "removed": True}
         _atomic.write_text(str(_opened_path()), json.dumps(d, indent=2, sort_keys=True))
+    forget_scan()
     return True
 
 
@@ -531,16 +566,29 @@ def opened() -> dict:
     return _load_opened()
 
 
-def open_project(path: str) -> "dict | None":
+def open_project(path: str, *, background: bool = False) -> "dict | None":
     """Register + sync a project folder, and start the one-time read of its
-    instruction files. Called when a chat is opened on it."""
+    instruction files. Called when a chat is opened on it.
+
+    ``background`` returns as soon as the project is registered and does the
+    memory sync on a thread: a click on a project must not wait for file I/O
+    in the repo (slow on a Windows or network mount) or a re-index."""
     ent = register(path)
     if not ent:
         return None
     mark_opened(path)
-    sync(ent["slug"])
-    ingest_instructions_async(ent["slug"])
-    return entry(ent["slug"])
+    forget_scan()
+    slug = ent["slug"]
+    if background:
+        def _later():
+            _quiet(sync, slug)
+            _quiet(ingest_instructions_async, slug)
+        threading.Thread(target=_later, name=f"project-open-{slug}",
+                         daemon=True).start()
+        return entry(slug)
+    sync(slug)
+    ingest_instructions_async(slug)
+    return entry(slug)
 
 
 # ── first open: read the repo's own instruction files once ───────────────────

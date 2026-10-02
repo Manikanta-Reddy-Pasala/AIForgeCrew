@@ -25,6 +25,7 @@ export interface ProjectList {
   exists: boolean;
   projects: Project[];
   roots?: { path: string; kind: 'projects' | 'mount' }[];
+  no_project?: { chats: number; last_activity: string };
 }
 
 /** A folder suggested while typing a path. `openable` false = only a step on

@@ -177,3 +177,13 @@ def test_your_projects_are_the_opened_ones_and_can_be_taken_off(client):
     assert by()["billing"]["chats"] == 1
     c.post("/api/projects/open", json={"path": str(root / "billing")})
     assert by()["billing"]["mine"] is True                # opening adds it back
+
+
+def test_no_repo_chats_are_listed_apart(client):
+    c, root = client
+    in_project = c.post("/api/chat/sessions", json={"cwd": str(root / "shop")}).json()
+    loose = c.post("/api/chat/sessions", json={}).json()
+    ids = [s["id"] for s in c.get("/api/chat/sessions", params={"no_project": True}).json()]
+    assert ids == [loose["id"]] and in_project["id"] not in ids
+    d = c.get("/api/projects").json()
+    assert d["no_project"]["chats"] == 1
