@@ -67,7 +67,7 @@ def _expand_slash_command(session, body):
     return _cmd_expanded, _cmd_help_text
 
 
-def _apply_resume_brief(_rows, prompt, cwd, body, history) -> str:
+def _apply_resume_brief(_rows, prompt, cwd, body, history, session_id=None) -> str:
     """Fold a resume inventory (what a stopped turn landed / left pending) into
     the last user row of ``history`` ONLY — never into ``prompt`` (the routers,
     trivial short-circuit, rule-capture and title generator all read prompt).
@@ -92,6 +92,20 @@ def _apply_resume_brief(_rows, prompt, cwd, body, history) -> str:
             if _hm.get("role") == "user":
                 _hm["content"] = f"{_hm.get('content') or ''}\n\n---\n{_resume_brief}"
                 break
+    # The saved handoff (runtime/handoff_store) beats the inventory above: it
+    # also knows what failed, the last error and the next step, and it replaces
+    # a replay of the unfinished turns (saved under an offload id). A message
+    # that starts a new task clears it instead, so nothing stale is inherited.
+    if session_id is not None:
+        try:
+            from aiforge_core.runtime import handoff_store
+            _seeded = handoff_store.seed_next_turn(
+                session_id, _rows, prompt, history,
+                forced=getattr(body, "resume", None))
+            if _seeded:
+                return _seeded
+        except Exception as _hexc:  # noqa: BLE001 — never break a turn over this
+            _af_log.debug("handoff resume skipped: %s", _hexc)
     return _resume_brief
 
 

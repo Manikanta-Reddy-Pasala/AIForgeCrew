@@ -179,6 +179,17 @@ def _ticket_state(ticket, scope_seed: list, rules_md: str,
                        ("user_prefs_md", pkg._user_prefs_md())):
         if value:
             state[key] = value
+    # A retry of this ticket (or a resume after a node failure) keeps what the
+    # earlier run learned: the approaches that failed and the Doer handoff.
+    try:
+        from aiforge_core.runtime import handoff_store
+        tid = getattr(ticket, "id", None)
+        if tid is not None and handoff_store.enabled():
+            state["_ticket_id"] = tid
+        handoff_store.seed_pipeline_state(
+            state, getattr(ticket, "metadata", None) or {})
+    except Exception as exc:  # noqa: BLE001
+        log.debug("handoff seed failed: %s", exc)
     return state
 
 

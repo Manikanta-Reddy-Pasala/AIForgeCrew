@@ -122,6 +122,10 @@ def _note_failed_approach(state, text: str) -> None:
     handoff.note_failed(items, text)
     state["failed_approaches"] = items
     state["failed_approaches_md"] = handoff.render_failed(items)
+    # Saved with the ticket as it happens: a retry after a node failure, or a
+    # crash, would otherwise start with an empty list.
+    from aiforge_core.runtime import handoff_store
+    handoff_store.persist_ticket(state)
 
 
 def _same_failure_stop(state) -> bool:

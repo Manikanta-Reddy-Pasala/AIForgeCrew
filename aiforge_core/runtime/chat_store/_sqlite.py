@@ -124,6 +124,9 @@ class _SqliteChatStore:
             # Where the chat RUNS: its own git worktree of the project (cwd stays
             # the project folder, the chat's identity).
             _add_column_if_missing(c, "chat_sessions", "workdir", "TEXT")
+            # The unfinished-work handoff (runtime/handoff_store.py): one JSON
+            # blob per chat, rewritten whole by a single UPDATE.
+            _add_column_if_missing(c, "chat_sessions", "handoff", "TEXT")
             yield c
             c.commit()
         finally:
@@ -163,6 +166,21 @@ class _SqliteChatStore:
             r = c.execute(_SELECT_FROM_CHAT_SESSIONS_WH,
                           (session_id,)).fetchone()
         return _session_out(dict(r)) if r else None
+
+    def set_session_handoff(self, session_id, text):
+        """Replace the chat's handoff (None clears it). One UPDATE, so a reader
+        sees the old value or the new one, never half of either. ``updated_at``
+        is left alone: a checkpoint must not reorder the chat list."""
+        with self._conn() as c:
+            cur = c.execute("UPDATE chat_sessions SET handoff=? WHERE id=?",
+                            (text, session_id))
+            return cur.rowcount > 0
+
+    def get_session_handoff(self, session_id):
+        with self._conn() as c:
+            r = c.execute("SELECT handoff FROM chat_sessions WHERE id=?",
+                          (session_id,)).fetchone()
+        return r["handoff"] if r else None
 
     def child_sessions(self, parent_id) -> list[dict]:
         with self._conn() as c:

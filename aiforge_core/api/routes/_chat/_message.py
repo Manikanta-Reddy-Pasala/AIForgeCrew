@@ -145,7 +145,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     # re-sent (what the Retry button does); `resume: true` forces it when the
     # user rephrased. Empty string when the last turn finished normally, so a
     # normal follow-up is untouched.
-    _resume_brief = _apply_resume_brief(_rows, prompt, cwd, body, history)
+    _resume_brief = _apply_resume_brief(_rows, prompt, cwd, body, history,
+                                        session_id)
     # Context-keyed workspace: if this chat is about a durable context (a Jira
     # ticket key like PROJ-42, or a Confluence page) and the session is still on
     # an EPHEMERAL folder (the default/session-<id> scratch), switch its cwd to
@@ -276,7 +277,24 @@ def chat_session_stop(session_id: int) -> dict:
             active = True
     except Exception:  # noqa: BLE001
         pass
+    try:
+        from aiforge_core.runtime import handoff_store
+        handoff_store.on_stop(session_id)     # Stop refreshes the saved handoff
+    except Exception:  # noqa: BLE001
+        pass
     return {"stopped": bool(active or bg_n), "session_id": session_id}
+
+
+@router.get("/api/chat/sessions/{session_id}/handoff",
+            responses={404: {"description": "Not found"}})
+def chat_session_handoff(session_id: int) -> dict:
+    """What the agent knows about this chat's unfinished work (goal, what is
+    verified done, what failed, last error, next step) — the saved handoff the
+    next turn resumes from, or the live one while a run is going. No model."""
+    from aiforge_core.runtime import chat_store, handoff_store
+    if not chat_store.get_session(session_id):
+        raise HTTPException(404, f"session {session_id} not found")
+    return {"session_id": session_id, **handoff_store.view(session_id)}
 
 
 @router.post("/api/chat/kill-all")

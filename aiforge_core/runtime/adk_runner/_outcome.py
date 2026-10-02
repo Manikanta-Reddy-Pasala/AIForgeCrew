@@ -180,6 +180,14 @@ def _review_pr_meta(ticket, pr_meta: dict) -> dict:
         return {"ok": False, "error": str(exc)[:200]}
 
 
+def _handoff_patch(state) -> dict:
+    try:
+        from aiforge_core.runtime import handoff_store
+        return handoff_store.ticket_patch(state)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def _status_metadata(state, v: _Verdict, pr_meta: dict, ci_meta: dict,
                      review_meta: dict, validator_out, lv) -> dict:
     return {
@@ -201,6 +209,8 @@ def _status_metadata(state, v: _Verdict, pr_meta: dict, ci_meta: dict,
         # Provenance: which path finished the ticket. "pipeline" = the
         # configured-model pipeline (+ retry chain) cleared it.
         "handled_by": "pipeline",
+        # What this run learned, for the next run of the ticket.
+        **_handoff_patch(state),
         **({"live_verifier_ok": (lv or {}).get("ok"),
             "live_verifier_rationale": (lv or {}).get("rationale"),
             "live_handoff": (lv or {}).get("live_handoff", False),

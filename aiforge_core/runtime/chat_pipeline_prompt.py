@@ -84,4 +84,11 @@ def _build_team_prompt(cwd, prompt, history, session_id, resume_brief):
         team_state["memory_brief_md"] = bundle.memory_md
     if bundle.preferences_md:
         team_state["user_prefs_md"] = bundle.preferences_md
+    try:
+        # A resumed team run starts from what the unfinished one learned: the
+        # approaches that failed and the Doer handoff (runtime/handoff_store).
+        from aiforge_core.runtime import handoff_store
+        team_state.update(handoff_store.team_seed(session_id))
+    except Exception:  # noqa: BLE001
+        pass
     return prompt, team_state

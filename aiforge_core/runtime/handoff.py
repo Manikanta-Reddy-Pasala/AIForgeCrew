@@ -81,9 +81,19 @@ def build_chat(st) -> dict:
     }
 
 
-def render(h: dict, offload_id: "str | None" = None) -> str:
-    """The handoff as the one user message a restarted run starts from."""
-    lines = ["[HANDOFF — the earlier attempt went in circles, so this is a fresh "
+MARK = "[HANDOFF"
+RESUME_HEAD = ("[HANDOFF — the previous turn in this chat ended before the work "
+               "was finished. This holds what is known; keep what is done, do "
+               "not repeat what failed, and carry on from NEXT.]")
+
+
+def render(h: dict, offload_id: "str | None" = None, resumed: bool = False) -> str:
+    """The handoff as the one user message a restarted run starts from.
+
+    ``resumed``: it seeds the NEXT turn of a chat (after a Stop, a crash or a
+    give-up) rather than a restart inside a run that went in circles."""
+    lines = [RESUME_HEAD if resumed else
+             "[HANDOFF — the earlier attempt went in circles, so this is a fresh "
              "start. It holds what is known; do not repeat what failed.]"]
     if h.get("goal"):
         lines.append(f"GOAL: {h['goal']}")
@@ -94,18 +104,25 @@ def render(h: dict, offload_id: "str | None" = None) -> str:
     if h.get("failed"):
         lines.append("ALREADY TRIED AND FAILED — choose something different:\n"
                      + render_failed(h["failed"]))
+    if h.get("green"):
+        lines.append("TESTS: the last full test run was green.")
     if h.get("error"):
         lines.append("LAST ERROR / RESULT: " + h["error"])
+    if h.get("steers"):
+        lines.append("THE USER REDIRECTED THE WORK (these override the goal "
+                     "above where they differ):\n"
+                     + "\n".join(f"- {t}" for t in h["steers"][-3:]))
     if h.get("open"):
         lines.append("NEXT: " + h["open"][0])
     else:
         lines.append("NEXT: work out the smallest step that moves the goal "
                      "forward, do it, and check it.")
+    offload_id = offload_id or h.get("offload")
     if offload_id:
         lines.append(f'The full earlier transcript is saved: memory_lookup '
                      f'{{"id": "{offload_id}"}} (only if you need a detail).')
     return "\n".join(lines)
 
 
-__all__ = ["note_failed", "render_failed", "last_attempt", "build_chat", "render",
+__all__ = ["MARK", "RESUME_HEAD", "note_failed", "render_failed", "last_attempt", "build_chat", "render",
            "MAX_FAILED"]

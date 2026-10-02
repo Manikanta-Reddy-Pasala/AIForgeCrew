@@ -118,7 +118,7 @@ def _dur(seconds: float) -> str:
 
 
 def snapshot(run, *, pending_steers: int = 0, side_tasks: "list | None" = None,
-             jobs: "list | None" = None) -> dict:
+             jobs: "list | None" = None, handoff: "dict | None" = None) -> dict:
     """The facts about a live run, as plain data."""
     now = time.time()
     open_calls = sorted(run.open_tools.values(), key=lambda c: c["at"])
@@ -139,7 +139,27 @@ def snapshot(run, *, pending_steers: int = 0, side_tasks: "list | None" = None,
         "side_tasks": side_tasks or [],
         "commands": jobs or [],
         "answered": bool(getattr(run, "answered", False)),
+        "handoff": handoff or None,
     }
+
+
+def handoff_lines(h: "dict | None") -> list:
+    """Where the work stands, from the saved handoff: done, open, what failed,
+    the last error. Empty when there is no record."""
+    if not h:
+        return []
+    out = []
+    if h.get("done"):
+        out.append("- **Done:** " + "; ".join(h["done"][-4:])[:200])
+    if h.get("open"):
+        out.append("- **Still open:** " + "; ".join(h["open"][:3])[:200])
+    if h.get("failed"):
+        out.append(f"- **Tried and failed:** {len(h['failed'])} approach"
+                   f"{'es' if len(h['failed']) != 1 else ''}, latest: "
+                   + str(h["failed"][-1])[:140])
+    if h.get("error"):
+        out.append("- **Stuck on:** " + str(h["error"])[:160])
+    return out
 
 
 def render(snap: dict) -> str:
@@ -182,6 +202,7 @@ def render(snap: dict) -> str:
     if ch and ch.get("files"):
         lines.append(f"- **Changes so far:** {ch['files']} file{'s' if ch['files'] != 1 else ''}"
                      f" (+{ch.get('additions', 0)} −{ch.get('deletions', 0)})")
+    lines += handoff_lines(snap.get("handoff"))
     quiet = snap["quiet_s"]
     if quiet >= 20:
         lines.append(f"- No new output for {_dur(quiet)} — "

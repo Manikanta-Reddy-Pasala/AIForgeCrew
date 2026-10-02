@@ -120,6 +120,9 @@ def restart_with_handoff(st) -> bool:
                 seen.clear()
         st.identical_run = None
         st.restarts = getattr(st, "restarts", 0) + 1
+        rec = getattr(st, "handoff_rec", None)
+        if rec is not None:
+            rec.note_restart(h, oid)       # the restart itself survives a crash
         return True
     except Exception:  # noqa: BLE001 — a failed restart falls back to the nudge
         return False
