@@ -143,9 +143,10 @@ def confluence_create(args: dict, cwd: str | None = None) -> dict:
     (key), ``body`` (storage XHTML). Optional: ``parent_id``,
     ``representation`` (storage|wiki).
 
-    Every new page lands with Confluence ``status=draft`` so it is not live in
-    the space until someone publishes it in the UI. There is no opt-out —
-    agent-created pages are review-first. ``confluence_read`` /
+    A new page lands as a Confluence ``status=draft`` (review-first) unless the
+    caller passes ``publish: true`` — only when the user asked to publish. The
+    page is read back by id before the tool says it was created; the result
+    names the system, id, url and status. ``confluence_read`` /
     ``confluence_update`` / attach find drafts by id automatically."""
     if not args.get("space") and default_space():
         args = {**args, "space": default_space()}
@@ -155,9 +156,10 @@ def confluence_create(args: dict, cwd: str | None = None) -> dict:
     # Rewrite mermaid/code fences + images into storage macros; images are
     # uploaded as attachments after the page exists (id needed).
     xhtml, img_refs = _storagify_media(md_to_storage(str(args["body"])))
+    publish = str(args.get("publish") or "").strip().lower() in ("1", "true", "yes")
     payload: dict = {
         "type": "page",
-        "status": "draft",
+        "status": "current" if publish else "draft",
         "title": args["title"],
         "space": {"key": args["space"]},
         "body": {"storage": {"value": xhtml,
@@ -169,14 +171,34 @@ def confluence_create(args: dict, cwd: str | None = None) -> dict:
     if not r["ok"]:
         return r
     d = r["data"] if isinstance(r["data"], dict) else {}
-    out = {"ok": True, "id": d.get("id"), "title": d.get("title"),
-           "status": d.get("status") or "draft",
+    if not d.get("id"):
+        return {"ok": False, "error": "Confluence answered but returned no page id "
+                "— nothing was created", "system": "confluence"}
+    status = d.get("status") or ("current" if publish else "draft")
+    # Read it back: a page is only "created" if it can be fetched by its id.
+    back = _get_content(str(d["id"]), "version,space")
+    bd = back["data"] if back.get("ok") and isinstance(back.get("data"), dict) else {}
+    verified = bool(bd.get("id")) and str(bd.get("id")) == str(d["id"])
+    if not verified:
+        return {"ok": False, "system": "confluence", "id": d.get("id"),
+                "error": "the create call succeeded but the page cannot be read "
+                         "back by its id — do not report it as created",
+                "url": _page_url(d)}
+    status = bd.get("status") or status
+    out = {"ok": True, "system": "confluence", "verified": True,
+           "id": d.get("id"), "title": d.get("title"), "status": status,
+           "space": ((bd.get("space") or {}).get("key") or args["space"]),
            "url": _page_url(d),
+           "visible_in_space": status != "draft",
+           "note": ("DRAFT: not visible in the space tree until it is published "
+                    "(open the url, or call confluence_update with publish=true "
+                    "if the user asked to publish)") if status == "draft"
+                   else "published and visible in the space",
            "written": {"title": d.get("title") or args["title"],
                        "body": xhtml[:2000]}}
     if img_refs and d.get("id"):
         out["attachments"] = _upload_page_images(
-            str(d["id"]), img_refs, cwd, status="draft")
+            str(d["id"]), img_refs, cwd, status=status if status == "draft" else None)
     return out
 
 
@@ -218,7 +240,8 @@ def confluence_update(args: dict, cwd: str | None = None) -> dict:
     mode = (args.get("mode") or "replace").strip().lower()
     # An EMPTY body deletes a section / a piece of text; anywhere else it is
     # a mistake (a whole page emptied, or nothing appended).
-    if not args.get("body") and not (
+    wants_publish = str(args.get("publish") or "").strip().lower() in ("1", "true", "yes")
+    if not args.get("body") and not wants_publish and not (
             args.get("body") == "" and mode in ("replace_section", "replace_text")):
         return {"ok": False, "error": "missing 'body'"}
     cur = _get_content(str(pid), "version,body.storage")
@@ -234,10 +257,13 @@ def confluence_update(args: dict, cwd: str | None = None) -> dict:
     next_ver = ((d.get("version") or {}).get("number") or 0) + 1
     title = args.get("title") or d.get("title")
     current = (((d.get("body") or {}).get("storage") or {}).get("value") or "")
-    try:
-        xhtml, img_refs = merged_body(current, args)
-    except EditError as exc:
-        return {"ok": False, "error": str(exc), "page_chars": len(current)}
+    if wants_publish and not args.get("body"):
+        xhtml, img_refs = current, []          # publish the page as it is
+    else:
+        try:
+            xhtml, img_refs = merged_body(current, args)
+        except EditError as exc:
+            return {"ok": False, "error": str(exc), "page_chars": len(current)}
     # Upload attachments FIRST (page id already exists) so the <ri:attachment>
     # references in the new body resolve as soon as the version is published.
     att_status = "draft" if page_status == "draft" else None
@@ -251,14 +277,20 @@ def confluence_update(args: dict, cwd: str | None = None) -> dict:
     }
     # Keep an unpublished draft unpublished — a bare PUT defaults to current
     # and would silently publish it.
-    if page_status == "draft":
+    publishing = (page_status == "draft" and str(args.get("publish") or "")
+                  .strip().lower() in ("1", "true", "yes"))
+    if page_status == "draft" and not publishing:
         payload["status"] = "draft"
+    elif publishing:
+        payload["status"] = "current"
     r = _request("PUT", f"/rest/api/content/{pid}", body=payload)
     if not r["ok"]:
         return r
     rd = r["data"] if isinstance(r["data"], dict) else {}
-    out = {"ok": True, "id": pid, "version": next_ver, "title": title,
-           "status": page_status,
+    out = {"ok": True, "system": "confluence", "id": pid, "version": next_ver,
+           "title": title,
+           "status": "current" if publishing else page_status,
+           "published_now": bool(publishing),
            "mode": (args.get("mode") or "replace"),
            "url": _page_url(rd),
            # What THIS edit wrote: the whole page for a replace, else the part
