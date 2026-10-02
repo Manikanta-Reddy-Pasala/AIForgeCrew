@@ -16,6 +16,7 @@ from ._config import (
     MAX_GAP_PASSES,
     MAX_REPLANS,
     MAX_VERIFY_REPLANS,
+    NO_EDIT_ITERS,
     PLATEAU_REPLANS,
     ROUTE_DONE,
     ROUTE_EXIT,
@@ -143,6 +144,21 @@ def _same_failure_stop(state) -> bool:
     return False
 
 
+def _no_edit_stop(state) -> None:
+    """Two Doer iterations in a row that changed no file: more of the same will
+    not either. Flag the loop as stalled so it is re-planned with a different
+    approach (or ships what exists) instead of burning its iteration budget."""
+    edits = state.get("_iter_edits")
+    if edits is None:
+        return
+    idle = int(state.get("_idle_iters", 0) or 0) + 1 if not edits else 0
+    state["_idle_iters"] = idle
+    if idle >= NO_EDIT_ITERS and not state.get("loop_budget_kill"):
+        state["loop_budget_kill"] = True
+        state["loop_budget_reason"] = "no_edits"
+        _trace(":NoEditStop", {"idle_iters": idle})
+
+
 def _test_gaming(state) -> bool:
     from aiforge_core.runtime.quality_gate import mark_test_gaming
     return mark_test_gaming(state, _repo_root_for_scope())
@@ -155,6 +171,7 @@ def _loop_gate(ctx):  # type: ignore[no-untyped-def]
     passed = _feedback_passed(state)
     if not passed:
         _same_failure_stop(state)
+        _no_edit_stop(state)
     elif _test_gaming(state):
         # Green by detecting the test: exit as partial with the evidence
         # (set on the verdict), never as a pass.

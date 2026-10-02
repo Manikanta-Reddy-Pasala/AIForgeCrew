@@ -23,10 +23,32 @@ OUTPUT_KEY = "validator_verdict"
 TOOLS_FACTORY = None  # judgment only — Validator never edits
 
 
+def _green_decide(state):
+    """Feedback passed, the tests ran and are green, and nothing is known broken
+    or unfinished: the independent take would only repeat that. Skipped, with a
+    verdict that says why. ``AIFORGE_VALIDATE_ON_GREEN=1`` always runs it."""
+    import os
+    if os.environ.get("AIFORGE_VALIDATE_ON_GREEN", "").strip().lower() in (
+            "1", "true", "yes", "on"):
+        return None
+    from aiforge_core.runtime.graph_pipeline._parsers import _feedback_passed
+    if not _feedback_passed(state):
+        return None
+    if state.get("tests_ok") is not True:
+        return None
+    if state.get("typecheck_ok") is False or state.get("lint_ok") is False:
+        return None
+    if state.get("doer_incomplete") or state.get("quality_issue"):
+        return None
+    return {"verdict": "approve", "skipped": True,
+            "rationale": "feedback passed and the tests are green"}
+
+
 def build(model_factory: _base.ModelFactory):
-    return _base.build_llm_agent(
+    agent = _base.build_llm_agent(
         ROLE, PROMPT, OUTPUT_KEY, TOOLS_FACTORY, model_factory,
     )
+    return _base.skip_agent_when(agent, _green_decide)
 
 
 __all__ = ["ROLE", "PROMPT", "OUTPUT_KEY", "TOOLS_FACTORY", "build"]

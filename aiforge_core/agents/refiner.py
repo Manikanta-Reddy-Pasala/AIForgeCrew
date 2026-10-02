@@ -18,10 +18,25 @@ OUTPUT_KEY = "refiner_changes"
 TOOLS_FACTORY = None   # judge-style — applies are orchestrator-side
 
 
+def _already_polished(state):
+    """The refiner polishes a diff once. On a later Doer iteration the diff is a
+    fix to something already polished, and a failing run has nothing to polish.
+    ``AIFORGE_REFINE_EVERY_ITER=1`` runs it every iteration."""
+    import os
+    if os.environ.get("AIFORGE_REFINE_EVERY_ITER", "").strip().lower() in (
+            "1", "true", "yes", "on"):
+        return None
+    if int(state.get("doer_iters", 0) or 0) < 1:
+        return None
+    return {"refiner_skipped": True, "changes": [],
+            "rationale": "already refined on an earlier iteration"}
+
+
 def build(model_factory: _base.ModelFactory):
-    return _base.build_llm_agent(
+    agent = _base.build_llm_agent(
         ROLE, PROMPT, OUTPUT_KEY, TOOLS_FACTORY, model_factory,
     )
+    return _base.skip_agent_when(agent, _already_polished)
 
 
 __all__ = ["ROLE", "PROMPT", "OUTPUT_KEY", "TOOLS_FACTORY", "build"]

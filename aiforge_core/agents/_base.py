@@ -123,4 +123,33 @@ def build_llm_agent(role: str, instruction: "str | Callable", output_key: str,
     return LlmAgent(**kwargs)
 
 
-__all__ = ["ModelFactory", "contract_for", "build_llm_agent"]
+def skip_agent_when(agent, decide):
+    """Make ``agent`` skip its model call when ``decide(state)`` returns a
+    verdict. ``decide`` gets the pipeline state and returns the dict to leave at
+    the agent's output key (the agent does not run), or None to run normally.
+    The agent's own stage callback still runs when it is not skipped."""
+    import json
+
+    key = agent.output_key
+    stage = agent.before_agent_callback
+
+    def _cb(*, callback_context, **kw):
+        state = callback_context.state
+        try:
+            verdict = decide(state)
+        except Exception:  # noqa: BLE001 — a bad check runs the agent as usual
+            verdict = None
+        if verdict is not None:
+            state[key] = verdict
+            from google.genai import types
+            return types.Content(role="model", parts=[
+                types.Part(text=json.dumps(verdict))])
+        if callable(stage):
+            return stage(callback_context=callback_context, **kw)
+        return None
+
+    agent.before_agent_callback = _cb
+    return agent
+
+
+__all__ = ["ModelFactory", "contract_for", "build_llm_agent", "skip_agent_when"]

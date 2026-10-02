@@ -331,6 +331,7 @@ async def _text_doer_node(ctx):  # type: ignore[no-untyped-def]
         from aiforge_core.llm.model_outage import LLMRequestFailing
         raise LLMRequestFailing("", 0, None, out["llm_issue"])
     state["doer_outcome"] = out.get("doer_outcome", "")
+    state["_iter_edits"] = int(out.get("edit_count") or 0)
     # Only set a signal when its tool actually ran (value not None) — matches
     # the native after_tool_callback, which never writes a signal for a tool
     # that didn't fire.

@@ -94,7 +94,9 @@ def _stub_pipeline(monkeypatch):
     chat_interject.clear(SESSION_ID)
 
 
-def test_steer_pushed_mid_run_reaches_next_executor_call(_stub_pipeline):
+def test_steer_pushed_mid_run_reaches_next_executor_call(_stub_pipeline, monkeypatch):
+    # This test follows a steer through the refiner on BOTH iterations.
+    monkeypatch.setenv("AIFORGE_REFINE_EVERY_ITER", "1")
     from aiforge_core.runtime import chat_interject
     from google.adk.runners import Runner
     from google.adk.sessions import InMemorySessionService

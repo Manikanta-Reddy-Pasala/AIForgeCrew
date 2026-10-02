@@ -73,6 +73,9 @@ MAX_REPLANS = 1
 # a different approach this many times before partial work ships for review.
 # Finishing the task comes first; 0 restores ship-the-partial at the first stall.
 PLATEAU_REPLANS = _int_env("AIFORGE_PLATEAU_REPLANS", 2)
+# Consecutive Doer iterations that change no file before the loop counts as
+# stalled (re-planned or shipped). 0 turns the rule off.
+NO_EDIT_ITERS = _int_env("AIFORGE_NO_EDIT_ITERS", 2) or 10**9
 # Verifier-reject → re-plan cap (bounded inner loop).
 MAX_VERIFY_REPLANS = 1
 # Research-gap → re-search cap (bounded research-completeness loop).
