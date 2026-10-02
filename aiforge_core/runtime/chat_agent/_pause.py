@@ -16,7 +16,7 @@ _PARTIAL = (f"\n[partial: cut at {_MAX_CHARS} characters. Read it again if "
 _HEADER = ("\n\n---\n[Already read for this task. Reuse these results "
            "instead of repeating the same lookup. A result marked partial was "
            "cut; read it again when you need more of it.]\n")
-_pauses: dict[int, dict] = {}
+_pauses: dict[str, dict] = {}
 
 
 def save(session_id, convo, *, asked: bool = False,
@@ -38,14 +38,14 @@ def save(session_id, convo, *, asked: bool = False,
             obs.append(content)
     if not obs and not asked:
         return
-    _pauses[int(session_id)] = {"obs": obs[-_MAX_OBS:], "asked": bool(asked),
+    _pauses[str(session_id)] = {"obs": obs[-_MAX_OBS:], "asked": bool(asked),
                                 "act_ask": bool(act_ask)}
 
 
 def take(session_id) -> dict | None:
     if session_id is None:
         return None
-    return _pauses.pop(int(session_id), None)
+    return _pauses.pop(str(session_id), None)
 
 
 def inject(convo: list[dict], pause: dict | None, *, plan_mode: bool = False,

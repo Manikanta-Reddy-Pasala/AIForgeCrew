@@ -19,7 +19,9 @@ def _collect(gen):
 
 
 def test_repo_map_in_system_prompt_each_turn(tmp_path):
-    """The agent must see the dir structure every turn (no re-searching)."""
+    """The agent must see the dir structure on a work turn (no re-searching).
+    A short plain remark ("hi") skips the repo walk on purpose, so the message
+    here is a real code request."""
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "App.java").write_text("class App {}")
     (tmp_path / "node_modules").mkdir()
@@ -32,7 +34,7 @@ def test_repo_map_in_system_prompt_each_turn(tmp_path):
         seen["system"] = convo[0]["content"]
         return "FINAL: done"
 
-    list(chat_agent.run_chat_agent([{"role": "user", "content": "hi"}],
+    list(chat_agent.run_chat_agent([{"role": "user", "content": "fix the bug in src/App.java"}],
                                    cwd=str(tmp_path), complete_fn=fake_complete))
     sysmsg = seen["system"]
     assert "REPO MAP" in sysmsg
@@ -107,7 +109,8 @@ def test_session_start_directive_in_prompt(tmp_path):
 
 def test_memory_recalled_at_session_start(tmp_path, monkeypatch):
     """On init (no assistant turn yet) the agent proactively recalls memory
-    keyed to the opening request and injects it into the system prompt."""
+    keyed to the opening request and injects it into the system prompt. The
+    request must be real work: a short plain remark skips recall by design."""
     from aiforge_core.memory import unified_query as uq
     from aiforge_core.runtime import chat_agent
 
@@ -127,7 +130,7 @@ def test_memory_recalled_at_session_start(tmp_path, monkeypatch):
         return "FINAL: ok"
 
     list(chat_agent.run_chat_agent(
-        [{"role": "user", "content": "fix the orders migration"}],
+        [{"role": "user", "content": "fix the orders migration bug"}],
         cwd=str(tmp_path), complete_fn=fake))
     assert calls["n"] == 1
     assert "orders migration" in (calls["q"] or "")

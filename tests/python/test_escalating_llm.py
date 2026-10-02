@@ -29,6 +29,13 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.delenv(k, raising=False)
     # These tests pin the give-up path; the stage-retry default is tested apart.
     monkeypatch.setenv("AIFORGE_PIPELINE_PERSIST_S", "-1")
+    # The rescue asks the operator's model registry for a stand-in BEFORE it
+    # probes the endpoint. Read from the box's real config, a developer machine
+    # with other models listed (or a live LM Studio behind a tunnel) answered
+    # first and the probe these tests pin never ran. Start from an empty
+    # registry; the tests that want rows set their own.
+    from aiforge_core.config import model_registry
+    monkeypatch.setattr(model_registry, "_load", lambda: [])
 
 
 def _force_primary_local(monkeypatch: pytest.MonkeyPatch) -> None:

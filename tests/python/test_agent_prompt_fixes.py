@@ -102,13 +102,24 @@ def test_doer_forbidden_no_longer_bans_real_file_surface():
         assert real not in forbidden, f"{real} is a real Doer tool, not forbidden"
 
 
-def test_doer_allowed_has_no_phantom_tools():
-    """The phantom (chat-agent, not pipeline-Doer) tools are gone."""
+def test_doer_allowed_has_no_phantom_tools(monkeypatch):
+    """Every tool the Doer is allowed is really wired to the Doer factory.
+
+    The old guard hard-coded a list of "chat-only" names (typecheck, run_tests,
+    format, lsp ...). Those tools were since wired into the pipeline Doer, so
+    the list went stale. The invariant that matters is that ``allowed`` never
+    names a tool the factory cannot build (a phantom the model would call and
+    get nothing for)."""
+    from aiforge_core.runtime.doer_tools import _wiring, adk_function_tools
+
+    # codegraph_* are wired but dropped at runtime when the binary/index is
+    # absent (box-dependent); look at the wiring, not this box.
+    monkeypatch.setattr(_wiring, "_apply_codegraph_gate", lambda tools: tools)
     doer = _load_agents()["agents"]["doer"]
     allowed = set(doer["tools"]["allowed"])
-    for phantom in (
-        "browse", "execute_ipython_cell", "delegate_to_agent", "mcp",
-        "memory_write", "format", "typecheck", "run_tests", "lsp",
-        "update_working_checkpoint",
-    ):
-        assert phantom not in allowed, f"{phantom} is not wired to the Doer factory"
+    wired = {
+        getattr(t, "name", None) or getattr(getattr(t, "func", None), "__name__", "")
+        for t in adk_function_tools(role=None)
+    }
+    phantom = sorted(allowed - wired)
+    assert not phantom, f"{phantom} are allowed for the Doer but not wired to its factory"

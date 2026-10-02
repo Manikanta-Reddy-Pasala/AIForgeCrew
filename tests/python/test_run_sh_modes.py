@@ -171,6 +171,11 @@ def test_maintenance_flags_exit_before_touching_the_stack(tmp_path: Path, flag: 
     assert _LAUNCH_BANNER_SENTINEL not in proc.stdout
 
 
+@pytest.mark.skipif(
+    not (RUN_SH.parent / ".venv" / "bin" / "python").exists(),
+    reason="needs this checkout's installed .venv: without one run.sh creates it "
+           "and installs every dependency from the package index before it "
+           "reaches --test (network, and fails offline)")
 def test_test_flag_reaches_the_probe_not_the_launch_banner(tmp_path: Path) -> None:
     """--test must take the connectivity-probe early exit, not boot the
     server.
