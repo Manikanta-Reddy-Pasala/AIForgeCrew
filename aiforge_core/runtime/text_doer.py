@@ -315,9 +315,18 @@ async def _text_doer_node(ctx):  # type: ignore[no-untyped-def]
     if cwd:
         os.environ["AIFORGE_WORKSPACE_DIR"] = cwd
         ws_token = request_context.set_workspace_dir(cwd)
+    # The first Doer pass is fast (reasoning is off for this role). A retry means
+    # the fast pass did not solve it, so the retry thinks: later iterations, a
+    # re-plan after a stall, or a re-plan after a validator rejection.
+    from aiforge_core.llm import reasoning as _reasoning
+    _retry = (int(state.get("doer_iters", 0) or 0) >= 1
+              or int(state.get("replan_count", 0) or 0) >= 1
+              or int(state.get("plateau_replan_count", 0) or 0) >= 1)
+    _btok = _reasoning._BOOST.set(_retry and _reasoning.boost_steps() > 0)
     try:
         out = await asyncio.to_thread(run_text_doer, snapshot, cwd)
     finally:
+        _reasoning._BOOST.reset(_btok)
         if ws_token is not None:
             request_context.reset_workspace_dir(ws_token)
         if cwd:
