@@ -216,6 +216,7 @@ def known_paths() -> list[str]:
     """Every project folder: the listed ones and any opened by path."""
     paths = [f["path"] for f in list_folders()]
     paths += [e.get("path") or "" for e in registered().values()]
+    paths += list(opened())
     return sorted({p for p in paths if p}, key=len, reverse=True)
 
 
@@ -491,12 +492,52 @@ def sync_for_repo(repo: "str | None", *, wait_s: float = 30.0) -> None:
         pass
 
 
+# ── "your projects": the folders the user has opened ─────────────────────────
+
+def _opened_path() -> Path:
+    return _state_dir() / "opened.json"
+
+
+def _load_opened() -> dict:
+    try:
+        d = json.loads(_opened_path().read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def mark_opened(path: str) -> None:
+    """Put ``path`` on the user's own project list (and back on it, if it was
+    removed)."""
+    path = os.path.normpath(path)
+    with _REG_LOCK:
+        d = _load_opened()
+        d[path] = {"opened_at": time.time(), "removed": False}
+        _atomic.write_text(str(_opened_path()), json.dumps(d, indent=2, sort_keys=True))
+
+
+def remove_opened(path: str) -> bool:
+    """Take ``path`` off the user's project list. Its chats and memory stay."""
+    path = os.path.normpath(path)
+    with _REG_LOCK:
+        d = _load_opened()
+        d[path] = {**(d.get(path) or {}), "removed": True}
+        _atomic.write_text(str(_opened_path()), json.dumps(d, indent=2, sort_keys=True))
+    return True
+
+
+def opened() -> dict:
+    """``{path: {opened_at, removed}}`` for every folder ever opened."""
+    return _load_opened()
+
+
 def open_project(path: str) -> "dict | None":
     """Register + sync a project folder, and start the one-time read of its
     instruction files. Called when a chat is opened on it."""
     ent = register(path)
     if not ent:
         return None
+    mark_opened(path)
     sync(ent["slug"])
     ingest_instructions_async(ent["slug"])
     return entry(ent["slug"])
@@ -897,6 +938,7 @@ def summary(folder: dict) -> dict:
 __all__ = [
     "GENERAL", "root", "roots", "list_folders", "resolve", "allowed", "browse",
     "project_of", "project_path_of", "known_paths", "key_for",
+    "mark_opened", "remove_opened", "opened",
     "slug_for", "register", "registered", "entry", "open_project", "sync",
     "sync_for_repo", "ingest_instructions", "find_stale", "sweep_stale",
     "stale_list", "stale_restore", "stale_delete", "compact",

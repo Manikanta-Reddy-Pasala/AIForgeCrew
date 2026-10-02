@@ -155,3 +155,25 @@ def test_open_by_path_and_browse(client, monkeypatch, tmp_path):
     c.post("/api/chat/sessions", json={"cwd": str(extra / "lint")})
     by = {p["name"]: p for p in c.get("/api/projects").json()["projects"]}
     assert by["lint"]["chats"] == 1 and by["shop"]["chats"] == 0
+
+
+def test_your_projects_are_the_opened_ones_and_can_be_taken_off(client):
+    c, root = client
+    by = lambda: {p["name"]: p for p in c.get("/api/projects").json()["projects"]}  # noqa: E731
+    assert by()["shop"]["mine"] is False and by()["billing"]["mine"] is False
+
+    c.post("/api/projects/open", json={"path": str(root / "shop")})
+    assert by()["shop"]["mine"] is True and by()["billing"]["mine"] is False
+    # most recently opened first
+    assert c.get("/api/projects").json()["projects"][0]["name"] == "shop"
+
+    # a project that only has chats (opened before this list existed) is yours too
+    from aiforge_core.runtime import chat_store
+    chat_store.create_session("old", str(root / "billing"))
+    assert by()["billing"]["mine"] is True
+
+    assert c.post("/api/projects/remove", json={"path": str(root / "billing")}).json()["ok"]
+    assert by()["billing"]["mine"] is False               # chats kept, off the list
+    assert by()["billing"]["chats"] == 1
+    c.post("/api/projects/open", json={"path": str(root / "billing")})
+    assert by()["billing"]["mine"] is True                # opening adds it back

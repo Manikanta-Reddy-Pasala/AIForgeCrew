@@ -1897,7 +1897,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
 
   return (
     <RuleStateCtx.Provider value={ruleState}>
-    <div className="chat-shell-v2">
+    <div className={`chat-shell-v2${project ? ' in-project' : ''}`}>
       {/* ── Left sidebar: sessions list ─────────────────────────────────────── */}
       <div className="chat-sessions-sidebar">
         <div className="chat-sessions-header" style={{ display: 'flex', gap: 6 }}>

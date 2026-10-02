@@ -21,10 +21,6 @@ function memoryLabel(p: Project): string {
   return `memory ${pct}% of cap`;
 }
 
-function projectUrl(p: { name: string; path: string }): string {
-  return `/projects/${encodeURIComponent(p.name)}?path=${encodeURIComponent(p.path)}`;
-}
-
 /** Type a folder path, get the matching folders as you type. Tab or a click
  *  fills the path in (and keeps suggesting inside it); Enter opens it. */
 function OpenFolder({ onOpen }: { onOpen: (path: string) => void }) {
@@ -111,128 +107,168 @@ function OpenFolder({ onOpen }: { onOpen: (path: string) => void }) {
   );
 }
 
-/** Operate → Projects: the folders under the mounted repos path. Opening one
- *  starts chats that already know the repo. */
+const LS_LAST_PROJECT = 'aiforge.projects.last';
+
+/** Operate → Projects, one page: your projects across the top, "New project"
+ *  to add a folder, and the selected project's chat right below. */
 export default function Projects() {
   const [data, setData] = useState<ProjectList | null>(null);
-  const [filter, setFilter] = useState('');
-  const navigate = useNavigate();
+  const [adding, setAdding] = useState(false);
+  const [opening, setOpening] = useState('');
+  const [params, setParams] = useSearchParams();
+  const selectedPath = params.get('path') || '';
+  // The opened project (registered server-side) the chat below is bound to.
+  const [active, setActive] = useState<Project | null>(null);
 
-  useEffect(() => {
-    projectsApi.list().then(setData).catch((e: any) => {
+  function load(): Promise<ProjectList | null> {
+    return projectsApi.list().then(d => { setData(d); return d; }).catch((e: any) => {
       toast.error(`Failed to load projects: ${e.message}`);
-      setData({ root: '', exists: false, projects: [] });
+      const empty = { root: '', exists: false, projects: [] };
+      setData(empty);
+      return empty;
     });
-  }, []);
-
-  async function openPath(path: string) {
-    try {
-      const p = await projectsApi.openPath(path);
-      navigate(projectUrl(p));
-    } catch (e: any) {
-      toast.error(e.message || 'That folder cannot be opened');
-    }
   }
 
-  const q = filter.trim().toLowerCase();
-  const shown = (data?.projects || []).filter(p => !q
-    || p.name.toLowerCase().includes(q) || p.path.toLowerCase().includes(q));
+  function select(path: string) {
+    const next = new URLSearchParams(params);
+    if (path) next.set('path', path); else next.delete('path');
+    setParams(next, { replace: false });
+  }
+
+  // First load: no project in the URL → the last one used, else the most
+  // recent of yours.
+  useEffect(() => {
+    load().then(d => {
+      if (selectedPath || !d) return;
+      const mine = d.projects.filter(p => p.mine);
+      let last = '';
+      try { last = localStorage.getItem(LS_LAST_PROJECT) || ''; } catch { /* storage off */ }
+      const pick = mine.find(p => p.path === last) || mine[0];
+      if (pick) select(pick.path);
+      else setAdding(true);                    // nothing yet: start at New project
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Open (register + sync memory) whatever the URL selects, then show its chat.
+  useEffect(() => {
+    if (!selectedPath) { setActive(null); return; }
+    let live = true;
+    setOpening(selectedPath);
+    projectsApi.openPath(selectedPath).then(p => {
+      if (!live) return;
+      setActive(p);
+      setAdding(false);
+      try { localStorage.setItem(LS_LAST_PROJECT, p.path); } catch { /* storage off */ }
+      load();
+    }).catch((e: any) => {
+      if (!live) return;
+      setActive(null);
+      toast.error(e.message || 'That folder cannot be opened');
+      select('');
+    }).finally(() => { if (live) setOpening(''); });
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPath]);
+
+  async function remove(p: Project) {
+    if (!window.confirm(`Take “${p.name}” off your projects?\n\nIts chats and memory are kept. `
+      + 'You can add it again with New project.')) return;
+    try {
+      await projectsApi.remove(p.path);
+      if (selectedPath === p.path) select('');
+      await load();
+    } catch (e: any) { toast.error(e.message); }
+  }
+
+  const mine = (data?.projects || []).filter(p => p.mine);
+  const others = (data?.projects || []).filter(p => !p.mine);
 
   return (
-    <>
-      <div className="page-header">
-        <div>
-          <h1>Projects</h1>
-          <div className="subtitle">
-            Pick a repo folder to chat on. The chat starts with what earlier chats
-            on that project learned.
-          </div>
+    <div className="projects-page">
+      <div className="projects-bar">
+        <span className="projects-bar-title">Your projects</span>
+        <div className="projects-pills">
+          {data === null && <span className="muted small">Loading…</span>}
+          {data !== null && mine.length === 0 && (
+            <span className="muted small">None yet — add one with New project.</span>
+          )}
+          {mine.map(p => (
+            <span key={p.path} className={`project-pill${p.path === selectedPath ? ' active' : ''}`}
+                  title={`${p.path}\n${p.chats || 0} chats · ${relDay(p.last_activity)} · ${memoryLabel(p)}`}>
+              <button type="button" className="project-pill-main" onClick={() => select(p.path)}>
+                <Icon.Folder size={13} /> {p.name}
+                <span className="muted xs">{p.chats || 0}</span>
+              </button>
+              <button type="button" className="project-pill-x" onClick={() => remove(p)}
+                      title="Take off your projects (chats and memory are kept)" aria-label={`Remove ${p.name}`}>
+                ✕
+              </button>
+            </span>
+          ))}
         </div>
+        <button type="button" className={adding ? 'ghost' : ''} onClick={() => setAdding(a => !a)}
+                style={{ whiteSpace: 'nowrap' }}>
+          {adding ? 'Close' : <><Icon.Plus size={13} /> New project</>}
+        </button>
       </div>
 
-      <div className="row" style={{ gap: 10, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-        <OpenFolder onOpen={openPath} />
-        <input placeholder="filter the list…" value={filter}
-               onChange={e => setFilter(e.target.value)}
-               style={{ width: 200, flex: '0 0 auto' }} />
-      </div>
-      {data?.roots && data.roots.length > 0 && (
-        <div className="muted xs" style={{ marginBottom: 12 }}>
-          Looking in: {data.roots.map(r => r.path).join(' · ')}
+      {adding && (
+        <div className="card" style={{ marginBottom: 10 }}>
+          <strong>New project</strong>
+          <div className="muted small" style={{ margin: '4px 0 10px' }}>
+            Pick the folder of a repo. Type its name or path — suggestions appear as you type
+            (Tab fills one in, Enter opens it).
+          </div>
+          <OpenFolder onOpen={select} />
+          {others.length > 0 && (
+            <>
+              <div className="muted xs" style={{ margin: '12px 0 6px' }}>
+                Found in {(data?.roots || []).map(r => r.path).join(' · ') || 'your folders'}
+              </div>
+              <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                {others.map(p => (
+                  <button type="button" key={p.path} className="ghost sm" title={p.path}
+                          onClick={() => select(p.path)}>
+                    <Icon.Folder size={12} /> {p.name}{p.is_git ? '' : ' · not git'}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+          {data !== null && others.length === 0 && mine.length === 0 && (
+            <div className="muted small" style={{ marginTop: 10 }}>
+              No folders found. In Docker, AIForge sees its projects folder and the folders you
+              mounted — add one under Settings → Mounts (or run with --repos DIR / --mount DIR),
+              then restart. <NavLink to="/">Open settings</NavLink>
+            </div>
+          )}
         </div>
       )}
 
-      {data === null && <div className="muted small">Loading…</div>}
-
-      {data !== null && data.projects.length === 0 && (
-        <div className="card">
-          <strong>No project folders found yet.</strong>
-          <div className="muted small" style={{ marginTop: 6 }}>
-            Type a path in the box above to open any folder AIForge can see. In Docker it
-            sees the projects folder and the folders you mounted — add one under
-            Settings → Mounts (or run with --repos DIR / --mount DIR), then restart.
-            {' '}<NavLink to="/">Open settings</NavLink>
+      {active && active.path === selectedPath
+        ? <Chat key={active.path} project={{ name: active.name, path: active.path }} />
+        : !adding && (
+          <div className="card muted small">
+            {opening ? `Opening ${opening}…` : 'Select one of your projects, or add one with New project.'}
           </div>
-        </div>
-      )}
-
-      <div style={{ display: 'grid', gap: 12,
-                    gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))' }}>
-        {shown.map(p => (
-          <button type="button" key={p.path} className="card"
-                  onClick={() => navigate(projectUrl(p))}
-                  title={p.path}
-                  style={{ textAlign: 'left', cursor: 'pointer', display: 'flex',
-                           flexDirection: 'column', gap: 6 }}>
-            <span style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
-              <Icon.Folder size={15} /> {p.name}
-            </span>
-            <span className="muted xs">
-              {p.chats || 0} {p.chats === 1 ? 'chat' : 'chats'} · {relDay(p.last_activity)}
-            </span>
-            <span className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
-              <span className="chip">{memoryLabel(p)}</span>
-              {p.stale > 0 && <span className="chip warn">{p.stale} stale</span>}
-              {!p.is_git && <span className="chip">not a git repo</span>}
-              {p.registered && !p.writable && (
-                <span className="chip warn" title="The repo is read-only, so the memory file stays in ~/.aiforge">
-                  memory kept outside repo
-                </span>
-              )}
-            </span>
-          </button>
-        ))}
-      </div>
-    </>
+        )}
+    </div>
   );
 }
 
-/** /projects/<name> — the Chat screen bound to one project folder. */
+/** Old link form `/projects/<name>[?path=…]` → the one-page Projects view. */
 export function ProjectChat() {
   const { name = '' } = useParams();
   const [params] = useSearchParams();
-  const path = params.get('path') || '';
-  const [project, setProject] = useState<Project | null>(null);
-  const [error, setError] = useState('');
-
+  const navigate = useNavigate();
   useEffect(() => {
-    setProject(null);
-    setError('');
-    // The path says exactly which folder; the name alone is the old link form.
-    (path ? projectsApi.openPath(path) : projectsApi.open(name)).then(setProject)
-      .catch((e: any) => setError(e.message || 'not found'));
-  }, [name, path]);
-
-  if (error) {
-    return (
-      <div className="card">
-        <strong>Project “{name}” is not available.</strong>
-        <div className="muted small" style={{ marginTop: 6 }}>
-          {error} · <NavLink to="/projects">Back to projects</NavLink>
-        </div>
-      </div>
-    );
-  }
-  if (!project) return <div className="muted small" style={{ padding: 24 }}>Opening {name}…</div>;
-  return <Chat key={project.path} project={{ name: project.name, path: project.path }} />;
+    const path = params.get('path');
+    if (path) { navigate(`/projects?path=${encodeURIComponent(path)}`, { replace: true }); return; }
+    projectsApi.open(name)
+      .then(p => navigate(`/projects?path=${encodeURIComponent(p.path)}`, { replace: true }))
+      .catch(() => navigate('/projects', { replace: true }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name]);
+  return <div className="muted small" style={{ padding: 24 }}>Opening {name}…</div>;
 }

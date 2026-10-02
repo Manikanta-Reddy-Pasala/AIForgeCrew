@@ -216,7 +216,7 @@ function Shell() {
     <div className={`shell${collapsed ? ' collapsed' : ''}`}>
       <Sidebar />
       <TopBar onToggleSidebar={toggle} collapsed={collapsed} />
-      <main className={`page${location.pathname.startsWith('/chat') || matchPath('/projects/:name', location.pathname) ? ' page-wide' : ''}`}>
+      <main className={`page${location.pathname.startsWith('/chat') || location.pathname.startsWith('/projects') ? ' page-wide' : ''}`}>
         {/* key on the first path SEGMENT so switching views resets the boundary,
             but a param change within a view (/tickets/1→/tickets/2) doesn't
             needlessly remount the view and drop its transient state. */}

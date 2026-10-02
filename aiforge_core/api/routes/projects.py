@@ -7,6 +7,8 @@ management surface: read, edit, compact, move to global, stale facts, forget.
 """
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -48,18 +50,36 @@ def _chat_stats() -> dict:
 def projects_list() -> dict:
     """The folders under the repos root, each with its chat and memory
     numbers."""
-    import os
-
     from aiforge_core.memory import projects
     base = projects.root()
     stats = _chat_stats()
+    opened = projects.opened()
+    folders = {f["path"]: f for f in projects.list_folders()}
+    # A folder opened by typing its path is a project too, listed or not.
+    for path, mark in opened.items():
+        if path not in folders and not mark.get("removed") and os.path.isdir(path):
+            folders[path] = projects._folder(path, "")
     rows = []
-    for f in projects.list_folders():
+    for path, f in folders.items():
         row = projects.summary(f)
-        row.update(stats.get(f["path"], {"chats": 0, "last_activity": ""}))
+        row.update(stats.get(path, {"chats": 0, "last_activity": ""}))
+        mark = opened.get(path) or {}
+        # "Yours": opened before (or already has chats), and not taken off.
+        row["mine"] = (not mark.get("removed")
+                       and (bool(mark) or row["chats"] > 0))
+        row["opened_at"] = mark.get("opened_at") or 0
         rows.append(row)
+    rows.sort(key=lambda r: (-(r["opened_at"] or 0), r["name"].lower()))
     return {"root": base, "exists": os.path.isdir(base), "projects": rows,
             "roots": projects.roots()}
+
+
+@router.post("/api/projects/remove")
+def project_remove(body: _PathBody) -> dict:
+    """Take a project off "your projects". Its chats and memory are kept; it
+    can be added again from New project."""
+    from aiforge_core.memory import projects
+    return {"ok": projects.remove_opened(os.path.expanduser(body.path))}
 
 
 @router.get("/api/projects/browse")

@@ -14,6 +14,8 @@ export interface Project {
   stale: number;
   writable: boolean;
   source?: string;        // the mounted folder it was found in
+  mine?: boolean;         // on "your projects": opened before, not taken off
+  opened_at?: number;
   chats?: number;
   last_activity?: string;
 }
@@ -62,6 +64,9 @@ export const projectsApi = {
   list: () => j<ProjectList>('/projects'),
   open: (name: string) => j<Project>(`/projects/${enc(name)}/open`, { method: 'POST' }),
   openPath: (path: string) => j<Project>('/projects/open', {
+    method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ path }),
+  }),
+  remove: (path: string) => j<{ ok: boolean }>('/projects/remove', {
     method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ path }),
   }),
   browse: (q: string, signal?: AbortSignal) =>
