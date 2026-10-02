@@ -259,3 +259,25 @@ Run on nuc, never on the Mac. Scope to changed files.
 
 Team rules, file-glob auto-attach for learned memory, a project table,
 per-user memory, approval prompts, automatic `.gitignore` edits.
+
+
+## Asking about a run while it goes on
+
+A message typed while a run is in flight is one of four things, decided by the
+server (`POST /api/chat/sessions/{id}/side`):
+
+- **A status question** ("what's the status?", "how far along are you?", "are you
+  stuck?"): answered at once from the run's own record, with no model call. It
+  names the command running, the tool call the agent is in, the last few
+  finished calls, files changed, how long it has been quiet, and any model
+  wait. Nothing is queued and nothing is interrupted.
+- **A correction** ("use the v2 endpoint instead", "also handle the empty
+  list"): a steer. It is acknowledged at once with when it will be read, and a
+  `command_wait` the agent is blocked in ends early so the agent reads it now.
+  The command keeps running and the agent is told not to start it again.
+  Stop or replace wording still ends the command.
+- **An independent task** ("meanwhile summarise the README", a question about
+  something else): a side agent, which is told the main run's live status. Its
+  answer is shown in the main chat as soon as it is ready, and filed into the
+  history once the main turn ends.
+- Anything else while idle is an ordinary turn.

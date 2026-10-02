@@ -41,6 +41,7 @@ _SIDE_CUE_RE = re.compile(
     r"|\bin\s+parallel\b|\bmeanwhile\b|\bin\s+the\s+meantime\b"
     r"|\bside\s+task\b|\bat\s+the\s+same\s+time\b|\bspin\s+(?:off|up)\b",
     re.IGNORECASE)
+_ANSWER_CHARS = 12000
 _CONTEXT_TURNS = 6
 _CONTEXT_CHARS = 400
 
@@ -170,7 +171,25 @@ def _context_preamble(parent: dict) -> str:
     return ("This is a SIDE TASK started from another chat that is still "
             "working on its own request. Do only what is asked below; do not "
             "continue that chat's work. Its recent messages, for reference "
-            "only:\n" + "\n".join(lines) + "\n\nThe side task:\n")
+            "only:\n" + "\n".join(lines) + _live_status(parent)
+            + "\n\nThe side task:\n")
+
+
+def _live_status(parent: dict) -> str:
+    """What that chat's run is doing right now, so a side agent asked about it
+    ("which file is it on?", "is it stuck?") answers from fact."""
+    try:
+        from aiforge_core.runtime import chat_runs, chat_status
+        run = chat_runs.get(parent["id"])
+        if run is None or run.done:
+            return ""
+        from aiforge_core.runtime import cmd_jobs
+        return ("\n\nLive status of that chat's running work (read-only; you "
+                "are not to touch it):\n"
+                + chat_status.render(chat_status.snapshot(
+                    run, jobs=cmd_jobs.for_session(parent["id"]))))
+    except Exception:  # noqa: BLE001 — a status line never blocks a task
+        return ""
 
 
 def _start(child: dict, parent: dict) -> None:
@@ -295,16 +314,55 @@ def _view(child: dict) -> dict:
     from aiforge_core.runtime import chat_store
     task = child.get("task") or {}
     state = task.get("state") or QUEUED
-    preview = ""
+    preview, full = "", ""
     if state == DONE:
         answer = _last(chat_store.get_messages(child["id"]) or [], "assistant") or {}
-        preview = " ".join((answer.get("content") or "").split())[:240]
+        full = (answer.get("content") or "").strip()[:_ANSWER_CHARS]
+        preview = " ".join(full.split())[:240]
     return {"id": child["id"], "title": child.get("title"), "state": state,
             "prompt": task.get("prompt") or "", "mode": task.get("mode") or "simple",
             "edits": bool(task.get("edits")), "posted": bool(task.get("posted")),
             "created": task.get("created"), "started": task.get("started"),
             "ended": task.get("ended"), "error": task.get("error"),
-            "preview": preview}
+            "preview": preview,
+            # The whole answer, so the chat can show it the moment it is ready
+            # instead of after the main run ends.
+            "answer": full}
+
+
+def status_of(session_id: int, run) -> dict:
+    """The answer to "what is the status?" for a live run — from the run's own
+    record, no model call."""
+    from aiforge_core.runtime import chat_interject, chat_status
+    try:
+        pending = len(chat_interject.peek_texts(session_id))
+    except Exception:  # noqa: BLE001
+        pending = 0
+    try:
+        tasks = [_view(c) for c in _children(session_id)]
+    except Exception:  # noqa: BLE001
+        tasks = []
+    try:
+        from aiforge_core.runtime import cmd_jobs
+        jobs = cmd_jobs.for_session(session_id)
+    except Exception:  # noqa: BLE001
+        jobs = []
+    snap = chat_status.snapshot(run, pending_steers=pending, side_tasks=tasks,
+                                jobs=jobs)
+    return {"text": chat_status.render(snap), "snapshot": snap}
+
+
+@router.get("/api/chat/sessions/{session_id}/status",
+            responses={404: {"description": "Not found"}})
+def chat_run_status(session_id: int) -> dict:
+    """What the session's run is doing right now (no model involved)."""
+    from aiforge_core.runtime import chat_runs, chat_store
+    if not chat_store.get_session(session_id):
+        raise HTTPException(404, f"session {session_id} not found")
+    run = chat_runs.get(session_id)
+    if run is None or run.done:
+        return {"running": False, "text": "**Status** — nothing is running in this chat."}
+    return {"running": True, **status_of(session_id, run)}
 
 
 @router.get("/api/chat/sessions/{session_id}/tasks",
@@ -337,11 +395,22 @@ def chat_side_message(session_id: int, body: _SideBody) -> dict:
     want = body.as_ if body.as_ in ("task", "steer") else "auto"
     if want != "task" and not _is_running(session_id):
         return {"action": "send"}
+    if want != "task":
+        from aiforge_core.runtime import chat_runs, chat_status
+        if chat_status.is_status_request(body.content):
+            run = chat_runs.get(session_id)
+            if run is not None and not run.done:
+                return {"action": "status", **status_of(session_id, run)}
     if want == "auto":
         want = classify(body.content)
     if want == "steer":
+        from aiforge_core.runtime import chat_runs, chat_status
+
         from ._message import _SteerBody, chat_session_steer
         res = chat_session_steer(session_id, _SteerBody(content=body.content))
+        if res.get("queued"):
+            run = chat_runs.get(session_id)
+            res["where"] = chat_status.waiting_on(run) if run is not None else ""
         if res.get("queued") or not res.get("unsupported"):
             return {"action": "steer", **res}
         # This run cannot be steered (best-of-N): the message still deserves

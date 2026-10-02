@@ -50,6 +50,7 @@ export function AssistantBubble({
   streaming,
   elapsedSec,
   quiet,
+  status,
   subtasks,
   captured,
   onRegenerate,
@@ -64,6 +65,8 @@ export function AssistantBubble({
   elapsedSec?: number;
   /** the run has been silent this long, doing `phase` (from the heartbeat) */
   quiet?: { seconds: number; phase: string; lost?: boolean };
+  /** the reply to a status question asked while the run goes on */
+  status?: { question: string; text: string };
   subtasks?: SubtaskItem[];
   captured?: CapturedItem[];
   onRegenerate?: () => void;
@@ -118,6 +121,13 @@ export function AssistantBubble({
       {changeSteps.length > 0 && (
         <div style={{ marginTop: text ? 8 : 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {changeSteps.map((s) => <AgentStepRow key={`chg-${stepKey(s)}`} step={s} />)}
+        </div>
+      )}
+      {status && (
+        <div style={{ margin: '6px 2px', padding: '8px 12px', borderLeft: '3px solid var(--accent, #2563eb)',
+                      background: 'var(--bg-1)', borderRadius: 6 }}>
+          <div className="xs muted" style={{ marginBottom: 4 }}>You asked: {status.question}</div>
+          <MdLite text={status.text} />
         </div>
       )}
       {streaming && quiet && (

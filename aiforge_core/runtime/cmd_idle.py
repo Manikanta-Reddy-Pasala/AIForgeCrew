@@ -121,6 +121,13 @@ class ProgressClock:
         self._cpu = cpu
         return moved
 
+    def quiet_for(self) -> float:
+        """Seconds since the command last wrote anything. Reads only; the poll
+        that calls :meth:`stalled` is what advances the clock."""
+        if self._safe_size() != self._size:
+            return 0.0
+        return max(0.0, self.clock() - self.last)
+
     def stalled(self) -> bool:
         if not self.idle_s:
             return False

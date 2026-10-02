@@ -69,6 +69,15 @@ class _Run:
         self.phase = ""
         self.quiet_notices = 0                # how many quiet notices went out
         self.worker: "threading.Thread | None" = None   # the producer thread
+        # What the run is doing right now and what it has done, kept as events
+        # go by so "what is the status?" can be answered from the run itself,
+        # instantly, without asking a model.
+        self.open_tools: dict = {}            # call_id -> {name, args, at}
+        self.recent_tools: list = []          # last few finished tool calls
+        self.tool_count = 0
+        self.last_thought = ""
+        self.last_notice = ("", 0.0)          # newest model-wait line + when
+        self.changes: dict = {}               # files / additions / deletions
 
     # -- producer side -------------------------------------------------------
 
@@ -90,6 +99,7 @@ class _Run:
                 self.last_event_at = time.time()
                 self.quiet_notices = 0
                 self.phase = _phase_after(event, self.phase)
+                self._track(event)
             if kind == "done":
                 self.answered = True
             if kind == "delta":
@@ -101,6 +111,51 @@ class _Run:
                 self.events.append(slim_event(event))
             for q in self.subscribers:
                 q.put(event)
+
+    def _track(self, event: dict) -> None:
+        """Fold one event into the live picture. Never raises."""
+        try:
+            kind = event.get("type")
+            now = time.time()
+            if kind == "tool_start":
+                key = event.get("call_id", len(self.open_tools) + self.tool_count)
+                self.open_tools[key] = {"name": event.get("name") or "a tool",
+                                        "args": short_args(event.get("args")),
+                                        "at": now}
+                while len(self.open_tools) > 12:      # a leaked start never grows
+                    self.open_tools.pop(next(iter(self.open_tools)))
+            elif kind == "tool":
+                started = self.open_tools.pop(event.get("call_id"), None)
+                if started is None and len(self.open_tools) == 1 \
+                        and event.get("call_id") is None:
+                    started = self.open_tools.pop(next(iter(self.open_tools)))
+                res = event.get("result")
+                failed = isinstance(res, dict) and (res.get("ok") is False
+                                                    or bool(res.get("error")))
+                self.tool_count += 1
+                self.recent_tools.append({
+                    "name": event.get("name") or (started or {}).get("name") or "tool",
+                    "args": short_args(event.get("args")) or (started or {}).get("args", ""),
+                    "ok": not failed,
+                    "secs": round(now - started["at"], 1) if started else None})
+                del self.recent_tools[:-6]
+            elif kind == "thought":
+                text = str(event.get("text") or "")
+                if event.get("role") == "system":
+                    if text[:1] in ("⏸", "⟳", "⚠", "⏳", "▶"):
+                        self.last_notice = (text, now)
+                elif text.strip():
+                    self.last_thought = " ".join(text.split())[:200]
+            elif kind == "changes":
+                files = event.get("files") or []
+                summ = event.get("summary") or {}
+                self.changes = {"files": summ.get("files", len(files)),
+                                "additions": summ.get("additions", 0),
+                                "deletions": summ.get("deletions", 0)}
+            elif kind in ("message", "done", "error"):
+                self.open_tools.clear()
+        except Exception:  # noqa: BLE001 — tracking never breaks a run
+            pass
 
     def _hold_delta(self, event: dict) -> None:
         """Keep the in-flight call's stream as one event per phase run."""
@@ -147,6 +202,17 @@ class _Run:
     def unsubscribe(self, q: queue.Queue) -> None:
         with self.lock:
             self.subscribers.discard(q)
+
+
+def short_args(args) -> str:
+    """One short line naming what a tool call is about."""
+    if not isinstance(args, dict) or not args:
+        return ""
+    for key in ("cmd", "command", "path", "file", "query", "pattern", "url", "id"):
+        if args.get(key):
+            return " ".join(str(args[key]).split())[:80]
+    first = next(iter(args.values()))
+    return " ".join(str(first).split())[:80]
 
 
 def _phase_after(event: dict, current: str) -> str:

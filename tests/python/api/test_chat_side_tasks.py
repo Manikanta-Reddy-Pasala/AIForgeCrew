@@ -217,3 +217,92 @@ def test_the_side_agent_is_told_it_is_a_side_task(env):
     pre = env.st._context_preamble(env.store.get_session(pid))
     assert "SIDE TASK" in pre and "moving the tax code" in pre
     assert "do not continue that chat's work" in pre
+
+
+# ── status questions, steer acknowledgements, and answers shown at once ───────
+
+def test_a_status_question_is_answered_from_the_run_not_queued_or_spun_off(env, monkeypatch):
+    from aiforge_core.runtime import chat_interject, chat_runs
+    monkeypatch.setattr(chat_runs, "_ensure_watchdog", lambda: None)
+    pid = env.parent()
+    run = chat_runs.start(pid)
+    run.publish({"type": "tool_start", "name": "run_command",
+                 "args": {"cmd": "sleep 70"}, "call_id": 1})
+    chat_interject.set_steerable(pid, True)
+    for q in ("what's the status?", "status", "how far along are you?"):
+        r = env.client.post(f"/api/chat/sessions/{pid}/side", json={"content": q}).json()
+        assert r["action"] == "status", q
+        assert "**Now:** `run_command` `sleep 70`" in r["text"]
+    assert chat_interject.pending(pid) == 0                 # no steer was queued
+    assert env.store.child_sessions(pid) == []              # no side agent either
+    chat_runs.finish_all()
+
+
+def test_a_status_question_is_a_task_only_when_the_user_says_so(env, monkeypatch):
+    from aiforge_core.runtime import chat_runs
+    monkeypatch.setattr(chat_runs, "_ensure_watchdog", lambda: None)
+    pid = env.parent()
+    chat_runs.start(pid)
+    r = env.client.post(f"/api/chat/sessions/{pid}/side",
+                        json={"content": "what's the status?", "as": "task"}).json()
+    assert r["action"] == "task"
+    chat_runs.finish_all()
+
+
+def test_a_steer_says_when_it_will_be_read(env, monkeypatch):
+    from aiforge_core.runtime import chat_interject, chat_runs
+    monkeypatch.setattr(chat_runs, "_ensure_watchdog", lambda: None)
+    pid = env.parent()
+    run = chat_runs.start(pid)
+    run.publish({"type": "tool_start", "name": "command_wait",
+                 "args": {"id": "bg-6"}, "call_id": 1})
+    chat_interject.set_steerable(pid, True)
+    r = env.client.post(f"/api/chat/sessions/{pid}/side",
+                        json={"content": "also handle the empty list case"}).json()
+    assert r["action"] == "steer" and r["queued"] is True
+    assert "inside command_wait `bg-6`" in r["where"]
+    chat_interject.clear(pid)
+    chat_runs.finish_all()
+
+
+def test_the_status_endpoint(env, monkeypatch):
+    from aiforge_core.runtime import chat_runs
+    monkeypatch.setattr(chat_runs, "_ensure_watchdog", lambda: None)
+    idle = env.store.create_session("idle", env.cwd)["id"]
+    d = env.client.get(f"/api/chat/sessions/{idle}/status").json()
+    assert d["running"] is False and "nothing is running" in d["text"]
+    pid = env.parent()
+    chat_runs.start(pid).publish({"type": "tool_start", "name": "grep",
+                                  "args": {"pattern": "TODO"}, "call_id": 1})
+    d = env.client.get(f"/api/chat/sessions/{pid}/status").json()
+    assert d["running"] is True and "**Now:** `grep` `TODO`" in d["text"]
+    assert d["snapshot"]["in_flight"][0]["name"] == "grep"
+    assert env.client.get("/api/chat/sessions/9999/status").status_code == 404
+    chat_runs.finish_all()
+
+
+def test_the_side_agent_is_told_what_the_main_run_is_doing(env, monkeypatch):
+    from aiforge_core.runtime import chat_runs
+    monkeypatch.setattr(chat_runs, "_ensure_watchdog", lambda: None)
+    pid = env.parent()
+    chat_runs.start(pid).publish({"type": "tool_start", "name": "write_file",
+                                  "args": {"path": "src/tax.py"}, "call_id": 1})
+    pre = env.st._context_preamble(env.store.get_session(pid))
+    assert "Live status of that chat's running work" in pre
+    assert "`write_file` `tax.py`" in pre
+    chat_runs.finish_all()
+    assert "Live status" not in env.st._context_preamble(env.store.get_session(pid))
+
+
+def test_a_finished_task_carries_its_whole_answer_for_the_chat_to_show(env):
+    pid = env.parent()
+    t = env.st.create(pid, "what does the retry helper do?")
+    long_answer = "It retries three times with backoff. " * 40
+    env.running.discard(t["id"])
+    env.store.add_message(t["id"], "assistant", long_answer)
+    d = env.client.get(f"/api/chat/sessions/{pid}/tasks").json()["tasks"][0]
+    # the main run is still going, so nothing is filed into its history yet…
+    assert d["state"] == "done" and d["posted"] is False
+    # …but the answer is available to show right away
+    assert d["answer"] == long_answer.strip()
+    assert len(d["preview"]) <= 240

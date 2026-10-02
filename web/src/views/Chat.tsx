@@ -1697,7 +1697,10 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
       } catch {
         r = { action: 'steer', queued: false };
       }
-      if (r.action === 'task') {
+      if (r.action === 'status') {
+        // Answered from the run itself, at once; nothing was queued or started.
+        setLiveTurn(prev => prev ? { ...prev, status: { question: q, text: r.text } } : prev);
+      } else if (r.action === 'task') {
         toast(r.task.state === 'running'
           ? 'Started as a side task — this run keeps going'
           : 'Queued as a side task — starts when it will not disturb the running one');
@@ -1713,9 +1716,9 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
         // marks it actually applied.
         setLiveTurn(prev => prev ? { ...prev, steps: [...prev.steps, {
           kind: 'thought' as const, role: 'steer',
-          text: `↪ Steer queued (applies at the next step): ${q}`,
+          text: `↪ Sent: ${q}\n${r.where || 'The agent reads it at its next step.'}`,
         }] } : prev);
-        toast('Steer queued — applies at the next step');
+        toast(r.where || 'Steer sent — the agent reads it at its next step');
       } else if (r.unsupported) {
         putComposer(q);   // restore — nothing was queued
         toast('Steering not available for this run');
@@ -2172,6 +2175,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                       streaming={liveTurn.streaming}
                       elapsedSec={liveTurn.streaming ? elapsedSec : liveTurn.elapsedSec}
                       quiet={liveTurn.streaming ? liveTurn.quiet : undefined}
+                      status={liveTurn.status}
                       /* subtasks render in the pinned bottom dock, not inline */
                       captured={liveTurn.captured}
                     />
@@ -2241,6 +2245,37 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                   </div>
                 </div>
               )}
+
+              {/* Side tasks: answered here the moment they are ready, even while
+                  the main run is still going. Once the main turn ends the server
+                  files them into the history and these disappear (posted). */}
+              {activeId === familyId && sideTasks.filter(t => !t.posted && (t.state === 'running' || t.state === 'queued'
+                  || (t.state === 'done' && t.answer))).map(t => (
+                <div key={`side-${t.id}`} className="bubble sys">
+                  <div className="bubble-avatar">AI</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="bubble-body" style={{ padding: '8px 12px' }}>
+                      <div className="xs muted" style={{ marginBottom: 4 }}>
+                        Side task · {t.prompt.length > 90 ? `${t.prompt.slice(0, 90)}…` : t.prompt}
+                      </div>
+                      {t.state === 'done'
+                        ? <MdLite text={t.answer || ''} />
+                        : (
+                          <div className="xs muted">
+                            {t.state === 'queued'
+                              ? 'Waiting — it starts when it will not disturb the running edit.'
+                              : 'Working on it…'}
+                            <div className="typing" style={{ padding: '4px 0' }}><span /><span /><span /></div>
+                          </div>
+                        )}
+                    </div>
+                    {t.state === 'done' && (
+                      <button type="button" className="ghost sm" style={{ marginTop: 4 }}
+                              onClick={() => selectSession(t.id)}>Open this task</button>
+                    )}
+                  </div>
+                </div>
+              ))}
 
               {/* Approval gate (#1): run is paused, awaiting Approve/Reject */}
               {pendingApproval && (

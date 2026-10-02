@@ -26,12 +26,14 @@ export interface SideTask {
   edits: boolean;
   posted: boolean;
   preview: string;
+  answer?: string;        // the whole answer once done
   error?: string | null;
 }
 
 export type SideAction =
   | { action: 'send' }
-  | { action: 'steer'; queued: boolean; unsupported?: boolean; reason?: string }
+  | { action: 'status'; text: string }
+  | { action: 'steer'; queued: boolean; unsupported?: boolean; reason?: string; where?: string }
   | { action: 'task'; task: SideTask };
 
 export interface ChatModelEntry {

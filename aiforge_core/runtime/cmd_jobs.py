@@ -357,6 +357,28 @@ def turn_running() -> list[Job]:
     return [j for j in mine if j.alive()]
 
 
+def for_session(session_id) -> list[dict]:
+    """What this chat's commands are doing, for a status answer: the command
+    line, how long it has run and whether it is printing. Read-only; never
+    raises."""
+    try:
+        with _LOCK:
+            mine = [j for j in _JOBS.values()
+                    if session_id is not None and str(j.session_id) == str(session_id)]
+        now = time.monotonic()
+        out = []
+        for j in mine:
+            if not j.alive():
+                continue
+            out.append({"id": j.key, "cmd": " ".join(str(j.cmd).split())[:120],
+                        "for_s": round(now - j.started, 1),
+                        "idle_s": round(float(j.clock.quiet_for()), 1),
+                        "background": bool(j.explicit)})
+        return out
+    except Exception:  # noqa: BLE001 — a status read never breaks anything
+        return []
+
+
 def running() -> list[Job]:
     """The caller's own live jobs."""
     caller = _caller()
@@ -443,20 +465,37 @@ def wait(job: Job, max_s: float | None = None, session_id=None) -> dict:
     while True:
         if not job.alive():
             return look(job, "exited")
-        why = attention(session_id, only_replace=True) if session_id else None
+        # Any message from the user ends THIS wait, not the command: the job
+        # lives on, and the agent reads the message now instead of after the
+        # whole wait (up to 5 minutes). Only a message that says to stop kills.
+        why = attention(session_id) if session_id else None
         if why == "stop":
             job.kill()
             _forget(job)
             return {"ok": False, "stopped": True, "error": "stopped by user"}
         if why == "steer":
-            from aiforge_core.runtime.run_interrupt import _newest_queued
-            stop_for_text(session_id, _newest_queued(session_id))
+            from aiforge_core.runtime.run_interrupt import (
+                _newest_queued, text_cuts_running_work, text_replaces_work)
+            newest = _newest_queued(session_id)
+            stop_for_text(session_id, newest)
             if job.killed and not job.alive():
                 seen = look(job, "stopped by the user's new message")
                 return steered(id=job.key, killed=True,
                                new_output=seen.get("new_output", ""),
                                hint="stopped, as the new message asked.")
-            return steered(id=job.key, hint=_hint(job, True))
+            if text_replaces_work(newest) or text_cuts_running_work(newest):
+                return steered(id=job.key, hint=_hint(job, True))
+            # An addition or a question: the command carries on untouched. The
+            # wait ends only so the agent reads the message now. It must NOT be
+            # told to drop the wait — it then re-ran the command.
+            res = look(job, "a new message from the user arrived")
+            res["user_message_pending"] = True
+            res["hint"] = (
+                f"The user sent a message (you read it next). Command {job.key} "
+                "is STILL RUNNING and was not touched. Do what the message asks, "
+                f"then keep waiting with command_wait id={job.key} — do NOT start "
+                "it again — unless the message changes the task.")
+            return res
         found = job.signal()
         if found:
             job.streak = 0
