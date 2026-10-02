@@ -35,6 +35,15 @@ def git_toplevel(cwd: "str | None") -> "str | None":
             top = out.stdout.strip() or None
     except Exception:  # noqa: BLE001 — resolution must never break on git
         top = None
+    if top:
+        # A chat's worktree (outside the repo, named chat-12-ab…/work) is the
+        # same repo as the folder it was made from: memory and rules are filed
+        # under the PROJECT, not under "work".
+        try:
+            from aiforge_core.runtime import chat_worktree
+            top = chat_worktree.main_repo_of(top) or top
+        except Exception:  # noqa: BLE001
+            pass
     _GIT_TOPLEVEL_CACHE[key] = top
     return top
 

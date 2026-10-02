@@ -121,6 +121,9 @@ class _SqliteChatStore:
             # the chat it belongs to; ``task`` is its JSON state.
             _add_column_if_missing(c, "chat_sessions", "parent_id", "INTEGER")
             _add_column_if_missing(c, "chat_sessions", "task", "TEXT")
+            # Where the chat RUNS: its own git worktree of the project (cwd stays
+            # the project folder, the chat's identity).
+            _add_column_if_missing(c, "chat_sessions", "workdir", "TEXT")
             yield c
             c.commit()
         finally:
@@ -140,6 +143,14 @@ class _SqliteChatStore:
         with self._conn() as c:
             c.execute(f"UPDATE chat_sessions SET cwd=?, updated_at={_NOW} WHERE id=?",
                       (cwd, session_id))
+            r = c.execute(_SELECT_FROM_CHAT_SESSIONS_WH,
+                          (session_id,)).fetchone()
+        return _session_out(dict(r)) if r else None
+
+    def set_session_workdir(self, session_id, workdir):
+        with self._conn() as c:
+            c.execute("UPDATE chat_sessions SET workdir=? WHERE id=?",
+                      (workdir, session_id))
             r = c.execute(_SELECT_FROM_CHAT_SESSIONS_WH,
                           (session_id,)).fetchone()
         return _session_out(dict(r)) if r else None

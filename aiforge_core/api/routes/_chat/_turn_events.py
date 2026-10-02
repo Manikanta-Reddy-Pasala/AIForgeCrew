@@ -179,6 +179,13 @@ def _persist_produce_turn(session_id, cwd, prompt, final_text, steps, awaiting,
         session_id=session_id, cwd=cwd, prompt=prompt, final_text=final_text,
         steps=steps, team=(team or path["parallel"]), cancelled=cancelled,
         awaiting=awaiting, mode=turn_mode, duration_s=_time.time() - turn_t0)
+    # A chat that works in its own worktree: its edits become a commit on its
+    # branch, so they are there to merge (and never lost with the folder).
+    try:
+        from aiforge_core.runtime import chat_worktree
+        chat_worktree.seal_for_session(session_id, prompt)
+    except Exception as exc:  # noqa: BLE001
+        _af_log.warning("chat worktree seal failed (session %s): %s", session_id, exc)
     if not cancelled and not team and not path["parallel"]:
         from functools import partial as _partial
 

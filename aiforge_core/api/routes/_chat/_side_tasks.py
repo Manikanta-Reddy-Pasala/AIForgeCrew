@@ -252,6 +252,10 @@ def create(parent_id: int, content: str, mode: str = "simple") -> dict:
             "state": QUEUED, "prompt": text, "mode": mode,
             "edits": edits_files(text, mode), "posted": False,
             "created": time.time()})
+        # Same workspace as the chat it belongs to: it reads what that chat has
+        # written and edits are serialised (see pump), not copied.
+        if parent.get("workdir"):
+            chat_store.set_session_workdir(child["id"], parent["workdir"])
     pump(parent["id"])
     return _view(chat_store.get_session(child["id"]) or child)
 

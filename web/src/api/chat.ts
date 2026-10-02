@@ -15,6 +15,22 @@ export interface ChatSession {
   learn?: boolean;        // false = this chat writes no memory
   parent_id?: number | null;   // set on a side task: the chat it was spun off
   running?: boolean;          // a run is going in this chat right now
+  workdir?: string | null;   // this chat's own git worktree, when it has one
+}
+
+/** A chat's own git worktree (a branch of its own in a separate folder). */
+export interface ChatWorktree {
+  active: boolean;
+  enabled?: boolean;
+  branch?: string;
+  base_branch?: string;
+  ahead?: number;           // commits on the chat's branch not yet merged
+  uncommitted?: number;     // files changed since the last commit
+  main_branch?: string;
+  main_moved?: boolean;
+  main_dirty?: number;
+  path?: string;
+  repo?: string;
 }
 
 /** Another agent run going on beside a chat (a child chat of it). */
@@ -93,6 +109,11 @@ export const chatApi = {
     if (cwd) return j<ChatSession[]>(`/chat/sessions?cwd=${encodeURIComponent(cwd)}`);
     return j<ChatSession[]>(noProject ? '/chat/sessions?no_project=true' : '/chat/sessions');
   },
+
+  worktree: (id: number) => j<ChatWorktree>(`/chat/sessions/${id}/worktree`),
+  worktreeMerge: (id: number) =>
+    j<{ ok: boolean; message: string; reason?: string; merged?: number }>(
+      `/chat/sessions/${id}/worktree/merge`, { method: 'POST' }),
 
   sessionLearn: (id: number, learn: boolean) =>
     j<ChatSession>(`/chat/sessions/${id}/learn`, {

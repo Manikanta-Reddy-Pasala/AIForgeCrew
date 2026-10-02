@@ -191,6 +191,13 @@ def chat_sessions_reset() -> dict:
     # Snapshot each session's cwd before the rows go, so we delete exactly the
     # managed workspaces they owned (a pinned user repo is refused by the helper).
     cwds = [(s or {}).get("cwd") for s in (chat_store.list_sessions() or [])]
+    try:
+        from aiforge_core.runtime import chat_worktree
+        for _s in chat_store.list_sessions() or []:
+            if not _s.get("parent_id") and _s.get("workdir"):
+                chat_worktree.remove(_s["id"])
+    except Exception:  # noqa: BLE001
+        pass
     deleted = chat_store.delete_all_sessions()
     # Wipe compaction offsets too — ids restart at 1 after a reset, so a leftover
     # marker would make the new session-1 skip folding (silent knowledge loss).
@@ -317,6 +324,12 @@ def chat_session_delete(session_id: int) -> None:
     from aiforge_core.runtime import chat_session_fold
     if chat_session_fold._enabled():
         chat_session_fold.fold_sync(session_id)
+    # Its own worktree goes with it; the branch (and so every commit) stays.
+    try:
+        from aiforge_core.runtime import chat_worktree
+        chat_worktree.remove(session_id)
+    except Exception:  # noqa: BLE001 — never blocks a delete
+        pass
     if not chat_store.delete_session(session_id):
         raise HTTPException(404, f"session {session_id} not found")
     # Drop the session's compaction-offset marker so the marker file doesn't

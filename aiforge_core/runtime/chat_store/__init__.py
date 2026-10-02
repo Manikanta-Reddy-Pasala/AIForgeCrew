@@ -39,6 +39,7 @@ from ._api import (
     set_session_cwd,
     set_session_learn,
     set_session_task,
+    set_session_workdir,
     set_session_role,
 )
 from ._helpers import (

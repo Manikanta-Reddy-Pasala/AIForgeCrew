@@ -281,3 +281,30 @@ server (`POST /api/chat/sessions/{id}/side`):
   answer is shown in the main chat as soon as it is ready, and filed into the
   history once the main turn ends.
 - Anything else while idle is an ordinary turn.
+
+
+## Each chat has its own worktree
+
+Two chats in one project used to edit the same files in the same folder. A
+fresh chat on a git project now gets a worktree and a branch of its own, made
+from the project's HEAD when it sends its first message.
+
+- `chat_sessions.cwd` stays the project folder (the chat's identity: memory
+  key, project, lists). `chat_sessions.workdir` is where it runs:
+  `<config>/chat-worktrees/<repo>-<hash>/chat-<id>-<token>/work`, outside the
+  repo, on branch `aiforge/chat-<id>-<token>`.
+- The worktree is a project: its memory, rules and notes are the project's
+  (`repo_ident` maps a worktree to the repo it was made from; `.aiforge` in the
+  worktree links to the project's).
+- Each turn's edits are committed to the chat's branch. The user's folder and
+  checked-out branch are never touched while a chat works.
+- "Merge into <branch>" (chat header) fast-forwards the user's branch to the
+  chat's commits. It rebases the chat's own branch first if the user's moved,
+  reports a conflict instead of leaving anything half-done, and refuses while
+  the user's folder has uncommitted changes or is on another branch.
+- Deleting the chat removes the worktree and keeps the branch.
+- Not for: team mode (it makes a worktree per run), side tasks (they share
+  their parent's), scratch chats, non-git folders, repos with no commit, or a
+  chat that already has an answer (it keeps working where it was).
+- `AIFORGE_CHAT_WORKTREES=0` turns it off. Creating the worktree is a checkout:
+  on a very large repo or a slow mount it takes a while, and the chat says so.

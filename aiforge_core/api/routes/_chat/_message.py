@@ -123,7 +123,12 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     # (not just what it said) on follow-ups.
     _rows = chat_store.get_messages(session_id)
     history = _chat_history_for_agent(_rows)
-    cwd = session.get("cwd") or _default_cwd()
+    # The chat's own worktree when it has one (made on its first turn, see
+    # _producer._ensure_chat_worktree); the project folder otherwise. The
+    # session's `cwd` stays the project: that is the chat's identity.
+    from aiforge_core.runtime import chat_worktree
+    cwd = (chat_worktree.workdir_of(session) if body.mode != "team" else None) \
+        or session.get("cwd") or _default_cwd()
     team = body.mode == "team"
     agent_mode = "plan" if body.mode == "plan" else "act"
     prompt = body.content.strip()

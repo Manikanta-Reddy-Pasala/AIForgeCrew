@@ -336,6 +336,43 @@ def _wait_for_slot(pc) -> bool:
     return True
 
 
+def _ensure_chat_worktree(pc) -> None:
+    """Give this chat its own git worktree the first time it speaks in a git
+    project, and run the turn in it. On any failure the turn simply runs in the
+    project folder, as it always did."""
+    try:
+        from aiforge_core.runtime import chat_runs, chat_store, chat_worktree
+        sess = chat_store.get_session(pc.session_id)
+        wd = chat_worktree.workdir_of(sess)
+        if wd:
+            if pc.body.mode != "team":
+                pc.cwd = wd
+            return
+        if not chat_worktree.eligible(sess, pc.body.mode):
+            return
+        chat_runs.set_phase(pc.session_id, "creating this chat's own workspace (git worktree)")
+        pc.run.publish({"type": "thought", "role": "system",
+                        "text": "🌿 Creating this chat's own workspace: a git worktree on a branch "
+                                "of its own, so other chats in this project do not touch your files."})
+        data = chat_worktree.ensure(pc.session_id)
+        if not data:
+            return
+        pc.cwd = data["path"]
+        note = f"🌿 Working on branch `{data['branch']}` (from `{data['base_branch'] or 'HEAD'}`). "
+        if data.get("dirty_at_start"):
+            n = len(data["dirty_at_start"])
+            note += (f"Your folder has {n} uncommitted file{'s' if n != 1 else ''}; "
+                     "they are not in this workspace.")
+        pc.run.publish({"type": "thought", "role": "system", "text": note.strip()})
+    except Exception as exc:  # noqa: BLE001 — never block the turn on this
+        try:
+            pc.run.publish({"type": "thought", "role": "system",
+                            "text": f"⚠ Could not make a separate workspace ({str(exc)[:160]}); "
+                                    "working in the project folder."})
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _bind_wait_status(pc) -> None:
     """Show "waiting for the model" lines for every model call this turn makes
     on this thread — the request classifier, the enhancer and the recall
@@ -393,6 +430,7 @@ def _produce(pc):
     _meter = _meter_token = _sess_token = _repo_token = None
     held = []                 # release only a keep-awake hold this turn took
     try:
+        _ensure_chat_worktree(pc)
         _awake_acquire()
         held.append(True)
         _capture_bg.start_turn(pc)   # a late capture waits for this turn

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
 import { NavLink, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { api, chatApi, chatSessionMessageURL, chatSessionAttachURL, chatSessionStop, chatSideMessage, chatSideTasks, SideTask, chatKillAll, chatMediaUpload, chatMediaList, chatMediaDescribe, chatMediaDelete, ChatMedia, chatSessionSpec, rules as fetchRules, ruleFlags, CapturedRule, GateFlags, ChatSession, ChatMsg, ChatModelEntry } from '../api';
+import { api, chatApi, chatSessionMessageURL, chatSessionAttachURL, chatSessionStop, chatSideMessage, chatSideTasks, SideTask, ChatWorktree, chatKillAll, chatMediaUpload, chatMediaList, chatMediaDescribe, chatMediaDelete, ChatMedia, chatSessionSpec, rules as fetchRules, ruleFlags, CapturedRule, GateFlags, ChatSession, ChatMsg, ChatModelEntry } from '../api';
 import { Icon } from '../icons';
 import { MdLite, copyText as mdCopyText } from '../mdlite';
 import { ErrorBoundary } from '../ErrorBoundary';
@@ -1221,6 +1221,32 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   const familyIdRef = useRef<number | null>(familyId);
   useEffect(() => { familyIdRef.current = familyId; }, [familyId]);
 
+  // This chat's own git worktree: its branch, and merging it back.
+  const [worktree, setWorktree] = useState<ChatWorktree | null>(null);
+  const [merging, setMerging] = useState(false);
+  function loadWorktree() {
+    const fid = familyIdRef.current;
+    if (fid === null) { setWorktree(null); return; }
+    chatApi.worktree(fid).then(w => { if (familyIdRef.current === fid) setWorktree(w); })
+      .catch(() => { /* older server: no worktree chip */ });
+  }
+  useEffect(() => { loadWorktree(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [familyId]);
+  // A turn just ended: its edits were committed to the branch.
+  useEffect(() => { if (!busy) loadWorktree(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [busy]);
+  async function mergeWorktree() {
+    const fid = familyIdRef.current;
+    if (fid === null || merging) return;
+    setMerging(true);
+    try {
+      const r = await chatApi.worktreeMerge(fid);
+      if (r.ok) toast.success(r.message); else toast.warning(r.message);
+      loadWorktree();
+    } catch (e: any) {
+      toast.error(`Merge failed: ${e.message}`);
+    } finally { setMerging(false); }
+  }
+
+
   async function loadSideTasks() {
     const fid = familyIdRef.current;
     if (fid === null) { setSideTasks([]); return; }
@@ -2066,6 +2092,23 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                            style={{ textDecoration: 'none' }}>
                     <Icon.Memory size={11} /> {project.name} memory
                   </NavLink>
+                )}
+                {worktree?.active && (
+                  <>
+                    <span className="chip ok"
+                          title={`This chat works in its own git worktree, so other chats in the project do not touch its files.\n${worktree.path}\nStarted from ${worktree.base_branch || 'HEAD'}.`}>
+                      ⎇ {worktree.branch}
+                      {(worktree.ahead ?? 0) > 0 && ` · ${worktree.ahead} commit${worktree.ahead === 1 ? '' : 's'}`}
+                      {(worktree.uncommitted ?? 0) > 0 && ' · editing'}
+                    </span>
+                    {((worktree.ahead ?? 0) > 0 || (worktree.uncommitted ?? 0) > 0) && (
+                      <button type="button" className="ghost sm" disabled={busy || merging}
+                              title={`Fast-forward ${worktree.base_branch || 'your branch'} to this chat's commits. Your folder is not touched while the chat works; if it has uncommitted changes the merge waits.`}
+                              onClick={mergeWorktree}>
+                        {merging ? 'Merging…' : `Merge into ${worktree.base_branch || 'main'}`}
+                      </button>
+                    )}
+                  </>
                 )}
                 {sameFolderRunning > 0 && (
                   <span className="chip warn"

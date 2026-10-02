@@ -29,6 +29,7 @@ from ._chat import (
     _side_tasks,  # noqa: F401
     _stages,  # noqa: F401
     _turn_events,  # noqa: F401
+    _worktree,  # noqa: F401
 )
 from ._chat._control import (  # noqa: F401
     _CheckpointBody,
