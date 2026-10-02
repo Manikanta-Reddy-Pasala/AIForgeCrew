@@ -124,8 +124,9 @@ def chat_session_create(body: _NewSessionBody) -> dict:
         # repo's .aiforge folder and read its instruction files once.
         try:
             from aiforge_core.memory import projects as _projects
-            if _projects.project_of(body.cwd):
-                _projects.open_project(body.cwd)
+            _root = _projects.project_path_of(body.cwd)
+            if _root:
+                _projects.open_project(_root)
         except Exception:  # noqa: BLE001 — never blocks opening a chat
             pass
     return s

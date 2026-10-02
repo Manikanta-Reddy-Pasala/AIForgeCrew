@@ -22,15 +22,21 @@ class _StaleBody(BaseModel):
     action: str = Field("restore", description="restore | delete")
 
 
+class _PathBody(BaseModel):
+    path: str = Field(..., min_length=1, description="absolute folder path")
+
+
 def _chat_stats() -> dict:
-    """``{project name: {chats, last_activity}}`` from the chat store."""
+    """``{project path: {chats, last_activity}}`` from the chat store."""
     from aiforge_core.memory import projects
     from aiforge_core.runtime import chat_store
     out: dict = {}
     for s in chat_store.list_sessions() or []:
-        name = projects.project_of(s.get("cwd"))
-        if not name or s.get("parent_id"):
+        if s.get("parent_id"):
             continue                     # side tasks are not chats of their own
+        name = projects.project_path_of(s.get("cwd"))
+        if not name:
+            continue
         row = out.setdefault(name, {"chats": 0, "last_activity": ""})
         row["chats"] += 1
         row["last_activity"] = max(row["last_activity"],
@@ -50,9 +56,32 @@ def projects_list() -> dict:
     rows = []
     for f in projects.list_folders():
         row = projects.summary(f)
-        row.update(stats.get(f["name"], {"chats": 0, "last_activity": ""}))
+        row.update(stats.get(f["path"], {"chats": 0, "last_activity": ""}))
         rows.append(row)
-    return {"root": base, "exists": os.path.isdir(base), "projects": rows}
+    return {"root": base, "exists": os.path.isdir(base), "projects": rows,
+            "roots": projects.roots()}
+
+
+@router.get("/api/projects/browse")
+def projects_browse(q: str = "") -> dict:
+    """Folder suggestions for what has been typed into "open a folder"."""
+    from aiforge_core.memory import projects
+    return {"q": q, "folders": projects.browse(q)}
+
+
+@router.post("/api/projects/open", responses={404: {"description": "Not found"}})
+def project_open_path(body: _PathBody) -> dict:
+    """Open any allowed folder as a project, given its path."""
+    from aiforge_core.memory import projects
+    path = projects.resolve(body.path if body.path.startswith(("/", "~"))
+                            else "/" + body.path)
+    if not path:
+        raise HTTPException(
+            404, "That folder is not available to AIForge. In Docker, mount it "
+                 "first (Settings → Mounts, or run with --mount / --repos).")
+    if not projects.open_project(path):
+        raise HTTPException(404, f"{body.path!r} cannot be a project")
+    return projects.summary(projects._folder(path, ""))
 
 
 def _path_or_404(name: str) -> str:

@@ -13,6 +13,7 @@ export interface Project {
   memory_cap: number;
   stale: number;
   writable: boolean;
+  source?: string;        // the mounted folder it was found in
   chats?: number;
   last_activity?: string;
 }
@@ -21,6 +22,16 @@ export interface ProjectList {
   root: string;
   exists: boolean;
   projects: Project[];
+  roots?: { path: string; kind: 'projects' | 'mount' }[];
+}
+
+/** A folder suggested while typing a path. `openable` false = only a step on
+ *  the way to a folder that can be opened. */
+export interface FolderHit {
+  name: string;
+  path: string;
+  is_git: boolean;
+  openable: boolean;
 }
 
 export interface StaleFact {
@@ -50,6 +61,11 @@ const enc = encodeURIComponent;
 export const projectsApi = {
   list: () => j<ProjectList>('/projects'),
   open: (name: string) => j<Project>(`/projects/${enc(name)}/open`, { method: 'POST' }),
+  openPath: (path: string) => j<Project>('/projects/open', {
+    method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ path }),
+  }),
+  browse: (q: string, signal?: AbortSignal) =>
+    j<{ q: string; folders: FolderHit[] }>(`/projects/browse?q=${enc(q)}`, { signal }),
 
   withMemory: () => j<Project[]>('/memory/projects'),
   memory: (name: string) => j<ProjectMemory>(`/memory/projects/${enc(name)}`),

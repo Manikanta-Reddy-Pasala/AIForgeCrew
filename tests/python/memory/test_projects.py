@@ -292,3 +292,86 @@ def test_scratch_chats_share_one_general_key(env, monkeypatch, tmp_path):
     assert _chat_repo_key(str(ws / "session-12")) == projects.GENERAL
     assert _chat_repo_key(str(ws / "session-13")) == projects.GENERAL
     assert _chat_repo_key(str(env / "shop")) == "shop"
+
+
+# ── every mounted folder is a place to find projects; any of them opens by path
+
+@pytest.fixture
+def box(env, monkeypatch, tmp_path):
+    """A Docker-mode box: the projects folder plus two folders the user mounted
+    — one that IS a repo, one that holds repos."""
+    cfg = tmp_path / "cfg"
+    solo = tmp_path / "mnt" / "solo-repo"
+    (solo / ".git").mkdir(parents=True)
+    many = tmp_path / "mnt" / "work"
+    (many / "alpha").mkdir(parents=True)
+    (many / "beta").mkdir()
+    (tmp_path / "private").mkdir()
+    monkeypatch.setenv("AIFORGE_SANDBOX", "1")
+    monkeypatch.setenv("AIFORGE_MOUNTS", f"{cfg}:{solo}:{many}")
+    return tmp_path
+
+
+def test_mounted_folders_are_listed_beside_the_projects_folder(box):
+    from aiforge_core.memory import projects
+    names = [f["name"] for f in projects.list_folders()]
+    assert names == ["billing", "shop", "solo-repo", "alpha", "beta"]
+    assert [r["kind"] for r in projects.roots()] == ["projects", "mount", "mount"]
+    # the config folder itself (first in AIFORGE_MOUNTS) is never a project root
+    assert str(box / "cfg") not in [r["path"] for r in projects.roots()]
+
+
+def test_a_folder_opens_by_path_only_when_the_box_can_see_it(box):
+    from aiforge_core.memory import projects
+    inside = str(box / "mnt" / "work" / "alpha")
+    assert projects.resolve(inside) == inside
+    assert projects.resolve(str(box / "mnt" / "work")) == str(box / "mnt" / "work")
+    assert projects.resolve(str(box / "private")) is None       # not mounted
+    assert projects.resolve("/etc") is None
+    assert projects.resolve(inside + "/../../../private") is None
+    assert projects.resolve("alpha") == inside                   # by name too
+
+
+def test_native_install_may_open_folders_under_home(env, monkeypatch, tmp_path):
+    from aiforge_core.memory import projects
+    home = tmp_path / "home"
+    (home / "code" / "app").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("AIFORGE_SANDBOX", raising=False)
+    monkeypatch.delenv("AIFORGE_IN_SANDBOX", raising=False)
+    assert projects.resolve(str(home / "code" / "app")) == str(home / "code" / "app")
+    assert projects.resolve(str(home)) is None                   # not the home itself
+    assert projects.resolve("/etc") is None
+
+
+def test_suggestions_follow_what_is_typed(box):
+    from aiforge_core.memory import projects
+    work = str(box / "mnt" / "work")
+    # nothing typed: the places it looks in
+    assert [h["path"] for h in projects.browse("")] == [r["path"] for r in projects.roots()]
+    # a path prefix: the folders inside, matching the last part
+    assert [h["name"] for h in projects.browse(work + "/")] == ["alpha", "beta"]
+    assert [h["name"] for h in projects.browse(work + "/al")] == ["alpha"]
+    assert [h["name"] for h in projects.browse(work + "/AL")] == ["alpha"]
+    # a bare name: matched against the listed projects
+    assert [h["name"] for h in projects.browse("sol")] == ["solo-repo"]
+    assert projects.browse(work + "/zz") == []
+
+
+def test_suggestions_lead_to_mounts_without_showing_the_rest_of_the_disk(box):
+    from aiforge_core.memory import projects
+    hits = {h["name"]: h for h in projects.browse(str(box) + "/")}
+    # "mnt" leads to the mounted folders but is not itself openable;
+    # "private" is neither, so it is not offered at all.
+    assert hits["mnt"]["openable"] is False
+    assert "private" not in hits
+    assert hits["repos"]["openable"] is True
+
+
+def test_a_chat_in_a_mounted_project_belongs_to_it(box):
+    from aiforge_core.memory import projects
+    alpha = box / "mnt" / "work" / "alpha"
+    (alpha / "src").mkdir()
+    assert projects.project_path_of(str(alpha / "src")) == str(alpha)
+    assert projects.project_of(str(alpha / "src")) == "alpha"
+    assert projects.project_path_of(str(box / "private")) is None

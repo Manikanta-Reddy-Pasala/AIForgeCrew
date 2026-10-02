@@ -94,51 +94,186 @@ def slug_for(key: str) -> str:
     return md_store._slug(key)
 
 
-def list_folders() -> list[dict]:
-    """Direct child folders of the root, as projects. Hidden folders skipped."""
-    base = root()
+def _in_sandbox() -> bool:
+    return os.environ.get("AIFORGE_SANDBOX", "") == "1" \
+        or os.environ.get("AIFORGE_IN_SANDBOX", "") == "1"
+
+
+def roots() -> list[dict]:
+    """Every folder projects are looked for in: the projects folder, plus each
+    extra folder the user mounted into the box (Settings → Mounts, or
+    ``--mount``). On a native install the mount list holds real local paths,
+    so the same list works there."""
     out: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(path: str, kind: str) -> None:
+        path = os.path.normpath(os.path.expanduser((path or "").strip()))
+        if not path or path in seen or not os.path.isdir(path):
+            return
+        seen.add(path)
+        out.append({"path": path, "kind": kind})
+
+    _add(root(), "projects")
     try:
-        entries = sorted(os.scandir(base), key=lambda e: e.name.lower())
-    except OSError:
-        return out
-    for e in entries:
-        try:
-            if not e.is_dir() or e.name.startswith("."):
-                continue
-        except OSError:
-            continue
-        out.append({
-            "name": e.name, "path": e.path,
-            "is_git": os.path.exists(os.path.join(e.path, ".git")),
-            "has_aiforge": os.path.isdir(os.path.join(e.path, ".aiforge")),
-        })
+        from aiforge_core.config.paths import config_dir
+        from aiforge_core.runtime import sandbox_mounts
+        cfg = os.path.normpath(str(config_dir()))
+        # The box's own projects folder, when --repos pointed somewhere else.
+        _add(os.path.join(cfg, "repos"), "projects")
+        for p in list(sandbox_mounts.mounted()) + list(sandbox_mounts.requested()):
+            if os.path.normpath(p) != cfg:
+                _add(p, "mount")
+    except Exception:  # noqa: BLE001 — the projects folder alone still lists
+        pass
     return out
 
 
+def _folder(path: str, source: str) -> dict:
+    return {"name": os.path.basename(os.path.normpath(path)), "path": path,
+            "is_git": os.path.exists(os.path.join(path, ".git")),
+            "has_aiforge": os.path.isdir(os.path.join(path, ".aiforge")),
+            "source": source}
+
+
+def _child_dirs(base: str) -> list[str]:
+    try:
+        entries = sorted(os.scandir(base), key=lambda e: e.name.lower())
+    except OSError:
+        return []
+    out = []
+    for e in entries:
+        try:
+            if e.is_dir() and not e.name.startswith("."):
+                out.append(e.path)
+        except OSError:
+            continue
+    return out
+
+
+def list_folders() -> list[dict]:
+    """The projects to offer. Under the projects folder: each child folder. A
+    mounted folder that is itself a repo is one project; one that holds repos
+    lists its children. Hidden folders skipped; a path is listed once."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for r in roots():
+        base = r["path"]
+        kids = _child_dirs(base)
+        if r["kind"] == "mount" and (os.path.exists(os.path.join(base, ".git"))
+                                     or not kids):
+            paths = [base]
+        else:
+            paths = kids
+        for path in paths:
+            if path not in seen:
+                seen.add(path)
+                out.append(_folder(path, base))
+    return out
+
+
+def _under(path: str, base: str) -> bool:
+    return path == base or path.startswith(base.rstrip(os.sep) + os.sep)
+
+
+def allowed(path: str) -> bool:
+    """Whether ``path`` may be opened as a project: inside one of the roots.
+    On a native install (no sandbox) also anywhere under the user's home —
+    there the app already runs with the user's own rights."""
+    try:
+        real = os.path.realpath(os.path.expanduser(str(path)))
+    except Exception:  # noqa: BLE001
+        return False
+    if any(_under(real, os.path.realpath(r["path"])) for r in roots()):
+        return True
+    if _in_sandbox():
+        return False
+    home = os.path.realpath(os.path.expanduser("~"))
+    return real != home and _under(real, home)
+
+
 def resolve(name: str) -> "str | None":
-    """Absolute path of project ``name``: a direct child of the root, nothing
-    else (no separators, no traversal)."""
+    """The folder for a project given as an absolute path (it must be
+    :func:`allowed`) or as a name: a listed project, else one opened before."""
     name = (name or "").strip()
-    if not name or name in (".", "..") or os.path.basename(name) != name:
+    if not name:
         return None
-    path = os.path.join(root(), name)
-    return path if os.path.isdir(path) else None
+    if name.startswith(("/", "~")):
+        path = os.path.normpath(os.path.expanduser(name))
+        return path if os.path.isdir(path) and allowed(path) else None
+    if name in (".", "..") or os.path.basename(name) != name:
+        return None
+    for f in list_folders():
+        if f["name"] == name:
+            return f["path"]
+    for ent in registered().values():
+        if ent.get("name") == name and os.path.isdir(ent.get("path") or ""):
+            return ent["path"]
+    return None
 
 
-def project_of(cwd: "str | None") -> "str | None":
-    """The project a chat cwd belongs to (the first folder under the root), or
-    None when the cwd is not inside the root."""
+def known_paths() -> list[str]:
+    """Every project folder: the listed ones and any opened by path."""
+    paths = [f["path"] for f in list_folders()]
+    paths += [e.get("path") or "" for e in registered().values()]
+    return sorted({p for p in paths if p}, key=len, reverse=True)
+
+
+def project_path_of(cwd: "str | None") -> "str | None":
+    """The project folder a chat cwd is in (the deepest one), or None."""
     if not cwd:
         return None
     try:
-        base = os.path.realpath(root())
         target = os.path.realpath(str(cwd))
     except Exception:  # noqa: BLE001
         return None
-    if target == base or not target.startswith(base + os.sep):
-        return None
-    return target[len(base) + 1:].split(os.sep, 1)[0] or None
+    for p in known_paths():
+        if _under(target, os.path.realpath(p)):
+            return p
+    return None
+
+
+def project_of(cwd: "str | None") -> "str | None":
+    """The NAME of the project a chat cwd is in, or None."""
+    p = project_path_of(cwd)
+    return os.path.basename(os.path.normpath(p)) if p else None
+
+
+def browse(typed: str, limit: int = 30) -> list[dict]:
+    """Folders matching what the user has typed so far — the suggestions under
+    the "open a folder" box.
+
+    Nothing typed lists the roots. Otherwise: the folders inside the typed
+    directory whose name starts with the typed last part. Only folders that
+    may be opened, or that lead to one, are offered, so the box cannot be used
+    to read the rest of the disk."""
+    typed = (typed or "").strip()
+    if not typed:
+        return [{**_folder(r["path"], r["path"]), "openable": True}
+                for r in roots()][:limit]
+    text = os.path.expanduser(typed)
+    if not text.startswith("/"):
+        # A bare name: match it against the listed projects.
+        low = text.lower()
+        return [{**f, "openable": True} for f in list_folders()
+                if low in f["name"].lower()][:limit]
+    if text.endswith("/"):
+        parent, part = os.path.normpath(text), ""
+    else:
+        parent, part = os.path.dirname(text) or "/", os.path.basename(text).lower()
+    targets = [os.path.realpath(r["path"]) for r in roots()]
+    out: list[dict] = []
+    for child in _child_dirs(parent):
+        name = os.path.basename(child)
+        if part and not name.lower().startswith(part):
+            continue
+        can_open = allowed(child)
+        leads = any(_under(t, os.path.realpath(child)) for t in targets)
+        if can_open or leads:
+            out.append({**_folder(child, parent), "openable": can_open})
+            if len(out) >= limit:
+                break
+    return out
 
 
 # ── registry ─────────────────────────────────────────────────────────────────
@@ -760,7 +895,8 @@ def summary(folder: dict) -> dict:
 
 
 __all__ = [
-    "GENERAL", "root", "list_folders", "resolve", "project_of", "key_for",
+    "GENERAL", "root", "roots", "list_folders", "resolve", "allowed", "browse",
+    "project_of", "project_path_of", "known_paths", "key_for",
     "slug_for", "register", "registered", "entry", "open_project", "sync",
     "sync_for_repo", "ingest_instructions", "find_stale", "sweep_stale",
     "stale_list", "stale_restore", "stale_delete", "compact",

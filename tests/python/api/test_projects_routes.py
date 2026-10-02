@@ -128,3 +128,30 @@ def test_learn_switch_round_trips_and_stops_writeback(client, monkeypatch):
     _history._chat_learn_writeback(str(root / "shop"), "remember x is y",
                                    "ok", [], s["id"])
     assert chat_session_fold.fold_sync(s["id"])["skipped"]
+
+
+def test_open_by_path_and_browse(client, monkeypatch, tmp_path):
+    c, root = client
+    extra = tmp_path / "mnt" / "tools"
+    (extra / "lint").mkdir(parents=True)
+    monkeypatch.setenv("AIFORGE_SANDBOX", "1")
+    monkeypatch.setenv("AIFORGE_MOUNTS", f"{tmp_path / 'cfg'}:{extra}")
+
+    d = c.get("/api/projects").json()
+    assert {p["name"] for p in d["projects"]} == {"shop", "billing", "lint"}
+    assert [r["path"] for r in d["roots"]] == [str(root), str(extra)]
+
+    hits = c.get("/api/projects/browse", params={"q": str(extra) + "/"}).json()["folders"]
+    assert [h["name"] for h in hits] == ["lint"] and hits[0]["openable"] is True
+
+    r = c.post("/api/projects/open", json={"path": str(extra / "lint")})
+    assert r.status_code == 200 and r.json()["registered"] is True
+    assert r.json()["path"] == str(extra / "lint")
+
+    bad = c.post("/api/projects/open", json={"path": str(tmp_path / "elsewhere")})
+    assert bad.status_code == 404 and "mount it first" in bad.json()["detail"]
+
+    # a chat opened there counts for that project
+    c.post("/api/chat/sessions", json={"cwd": str(extra / "lint")})
+    by = {p["name"]: p for p in c.get("/api/projects").json()["projects"]}
+    assert by["lint"]["chats"] == 1 and by["shop"]["chats"] == 0

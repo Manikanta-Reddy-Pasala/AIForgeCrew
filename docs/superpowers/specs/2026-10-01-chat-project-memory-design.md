@@ -51,8 +51,16 @@ A project is a direct child folder of the mounted repos root. There is no new
 table: the picked folder is stored in the existing `chat_sessions.cwd`, and the
 project name is the folder name (the key memory already uses).
 
-- New endpoint `GET /api/projects` returns the root and its direct child
-  folders, each with its chat count, last activity and memory numbers.
+- New endpoint `GET /api/projects` returns the folders it looks in and the
+  projects found, each with its chat count, last activity and memory numbers.
+- Projects are looked for in the projects folder AND in every extra folder
+  mounted into the box (Settings → Mounts, `--mount`). A mounted folder that
+  is itself a repo is one project; one that holds repos lists its children.
+- Any folder the box can see opens by typing its path: the Projects page has
+  an "Open a folder" box with suggestions as you type
+  (`GET /api/projects/browse`, `POST /api/projects/open`). In Docker only the
+  projects folder and mounted folders can be opened; on a native install also
+  folders under the user's home.
 - The projects root is the configured repos base, else `AIFORGE_PROJECTS_ROOT`
   (now set by the `--repos` compose file), else the folder mounted when the
   API started, else the existing default. `AIFORGE_REPO_ROOT` itself is not
