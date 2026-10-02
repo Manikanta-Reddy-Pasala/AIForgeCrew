@@ -348,13 +348,80 @@ def _review_line(subs, done, validated, failed, conflicts, conflict_details,
             + ("; integration FAILED" if integration.get("ok") is False else ""))
 
 
+def _rollback(repo_root: str, before: str) -> None:
+    """Undo a failed subtask's commits and files (back to ``before``). Ignored /
+    excluded artifacts (venvs, caches) are left alone: no ``-x``."""
+    _git(["reset", "--hard", before], repo_root)
+    _git(["clean", "-fd"], repo_root)
+
+
+def _run_one_in_place(repo_root, base_branch, ticket_id, s, run_one,
+                      validate_one, on_status, should_cancel) -> dict:
+    slug = s["slug"]
+    if should_cancel is not None and should_cancel():
+        _update(ticket_id, slug, "cancelled", on_status)
+        return {"slug": slug, "ok": False, "cancelled": True, "branch": None}
+    _update(ticket_id, slug, "running", on_status)
+    before = (_git(["rev-parse", "HEAD"], repo_root).stdout or "").strip()
+    was_clean = not (_git(["status", "--porcelain"], repo_root).stdout or "").strip()
+    last, i = _run_with_retries(s, repo_root, slug, base_branch, ticket_id,
+                                run_one, validate_one, in_place=True)
+    ok = last["ok"]
+    if not ok and before and was_clean:
+        _rollback(repo_root, before)     # a failed subtask leaves no half-work
+    _emit(ticket_id, slug,
+          "subtask_validated" if last.get("validated") else "subtask_rejected",
+          f"{slug} validation {'passed' if last.get('validated') else 'failed'}",
+          {"slug": slug, "validated": last.get("validated"), "attempts": i + 1})
+    files = ((last.get("detail") or {}).get("files")
+             if isinstance(last.get("detail"), dict) else None)
+    _update(ticket_id, slug, "done" if ok else "failed", on_status, files)
+    return {"slug": slug, "ok": ok, "ran": last.get("ran"),
+            "validated": last.get("validated"), "attempts": i + 1,
+            "branch": None, "worktree": None, "detail": last.get("detail"),
+            "validation": last.get("validation"), "error": last.get("error"),
+            "fail_sig": last.get("fail_sig", ""),
+            "same_failure": bool(last.get("same_failure"))}
+
+
+def _run_in_place(repo_root: str, base_branch: str, ticket_id, subs: list[dict],
+                  run_one, validate_one, integration_test, on_status,
+                  should_cancel) -> dict:
+    """ONE writer, ONE worktree: the subtasks run one after another directly in
+    ``repo_root`` (the chat's own worktree), each committed on the branch that
+    is already checked out there. No per-subtask worktree or branch, nothing to
+    merge, no conflicts, and each subtask sees the files the one before wrote.
+    Aggregate has the same shape as :func:`run_parallel`."""
+    results = [_run_one_in_place(repo_root, base_branch, ticket_id, s, run_one,
+                                 validate_one, on_status, should_cancel)
+               for s in subs]
+    done = sum(1 for r in results if r.get("ok"))
+    validated = sum(1 for r in results if r.get("validated"))
+    failed = len(subs) - done
+    integration: dict = {"ok": None, "skipped": True}
+    if done and integration_test is not None:
+        integration = _run_integration(repo_root, ticket_id, integration_test)
+    all_ok = done == len(subs) and integration.get("ok") is not False
+    return {"ok": all_ok, "total": len(subs), "done": done,
+            "validated": validated, "failed": failed, "merged": done,
+            "conflicts": [], "conflict_details": [], "warnings": [],
+            "integration": integration, "mode": "in_place",
+            "review": _review_line(subs, done, validated, failed, [], [],
+                                   integration, all_ok),
+            "results": results}
+
+
 def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
                  subtasks: list[dict], run_one, *, validate_one=None,
                  integration_test=None, on_status=None, merge: bool = True,
-                 should_cancel=None) -> dict:
+                 should_cancel=None, in_place: bool = False) -> dict:
     """Run ``subtasks`` concurrently (each in its own worktree), VALIDATE each
     (build/tests green), then merge the validated branches into ``base_branch``
     sequentially. Returns an aggregate incl. a review summary.
+
+    ``in_place=True`` (what a chat turn uses unless fan-out was opted into, see
+    ``_worktree.fan_out_enabled``) runs them one at a time directly in
+    ``repo_root`` instead: no worktrees, no merge (:func:`_run_in_place`).
 
     With AIFORGE_SHARED_WORKTREE=1 (OPT-IN; default OFF) this delegates to the
     shared-worktree sequential scheduler (P2); on any error it falls back to the
@@ -362,6 +429,10 @@ def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
     """
     import uuid as _uuid
     subs = [s for s in (subtasks or []) if isinstance(s, dict) and s.get("slug")]
+    if subs and in_place:
+        return _run_in_place(repo_root, base_branch, ticket_id, subs, run_one,
+                             validate_one, integration_test, on_status,
+                             should_cancel)
     if subs and _shared_worktree_enabled():
         try:
             return _run_shared_worktree(
@@ -430,6 +501,7 @@ from ._worktree import (  # noqa: F401  # read via _pkg() or by tests
     _merge_branch,
     _retries,
     _run_subtask,
+    _run_with_retries,
     _update,
     log,
 )

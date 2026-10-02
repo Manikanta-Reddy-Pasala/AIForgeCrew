@@ -127,7 +127,9 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     # _producer._ensure_chat_worktree); the project folder otherwise. The
     # session's `cwd` stays the project: that is the chat's identity.
     from aiforge_core.runtime import chat_worktree
-    cwd = (chat_worktree.workdir_of(session) if body.mode != "team" else None) \
+    # Every mode (simple, plan, team) runs in that SAME worktree: one worktree
+    # per chat for its whole life, whatever the mode switches.
+    cwd = chat_worktree.workdir_of(session) \
         or session.get("cwd") or _default_cwd()
     team = body.mode == "team"
     agent_mode = "plan" if body.mode == "plan" else "act"

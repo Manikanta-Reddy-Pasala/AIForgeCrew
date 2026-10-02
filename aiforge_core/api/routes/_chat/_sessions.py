@@ -194,6 +194,9 @@ def chat_sessions_reset() -> dict:
     try:
         from aiforge_core.runtime import chat_worktree
         for _s in chat_store.list_sessions() or []:
+            if not _s.get("parent_id"):
+                from aiforge_core.runtime import team_run_life
+                team_run_life.forget_session(_s["id"])
             if not _s.get("parent_id") and _s.get("workdir"):
                 chat_worktree.remove(_s["id"])
     except Exception:  # noqa: BLE001
@@ -325,8 +328,10 @@ def chat_session_delete(session_id: int) -> None:
     if chat_session_fold._enabled():
         chat_session_fold.fold_sync(session_id)
     # Its own worktree goes with it; the branch (and so every commit) stays.
+    # A team run parked for this chat (another repo's worktree) goes too.
     try:
-        from aiforge_core.runtime import chat_worktree
+        from aiforge_core.runtime import chat_worktree, team_run_life
+        team_run_life.forget_session(session_id)
         chat_worktree.remove(session_id)
     except Exception:  # noqa: BLE001 — never blocks a delete
         pass

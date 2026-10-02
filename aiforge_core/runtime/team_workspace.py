@@ -17,6 +17,19 @@ asked for that (or the folder was not a repo until they let us initialise it).
 
 ``SPEC.md`` for such a run lives next to the worktree, not in the repo
 (:func:`spec_path`).
+
+ONE worktree per chat (owner rule). A chat on a git project already has its own
+worktree (:mod:`chat_worktree`), made on its first message and kept in every
+mode. A team / pipeline turn in that chat runs IN it: ``_team_route`` treats the
+chat's own repo (or any path inside it) as "this workspace" and opens no run
+here, so ``git worktree list`` shows the chat's single worktree across a
+simple -> plan -> team switch. The chat's branch takes the team's commits and
+merges, :func:`chat_worktree.seal` commits what a writer left after the turn,
+and the chat's merge endpoint brings it to the user's branch. :func:`open_run`
+is therefore only for a run on a DIFFERENT repo than the chat's own (a folder
+the user names): it lives for that one turn (or while parked for "continue" /
+an answer, see ``team_run_life``) and is removed with the chat or by the stale
+sweep, so a chat never holds two worktrees of the same repo.
 """
 from __future__ import annotations
 

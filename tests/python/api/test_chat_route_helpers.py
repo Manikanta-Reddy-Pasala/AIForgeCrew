@@ -163,6 +163,9 @@ def test_a_best_of_n_build_ends_the_turn(pp, tmp_path, monkeypatch):
     from aiforge_core.runtime import best_of_n as bon
     from aiforge_core.runtime import chat_interject
     monkeypatch.setenv("AIFORGE_BEST_OF_N", "2")
+    # best-of-N makes N worktrees: needs the explicit fan-out opt-in
+    monkeypatch.setenv("AIFORGE_PARALLEL_SUBTASKS", "1")
+    monkeypatch.setenv("AIFORGE_PARALLEL_SUBTASKS_MAX", "2")
     monkeypatch.setattr(chat_interject, "set_steerable", lambda sid, val: None)
     monkeypatch.setattr(bon, "stream_best_of_n",
                         lambda spec, cwd, session_id=None: iter(pp["bon_events"]))
@@ -228,6 +231,8 @@ def test_best_of_n_marks_the_run_unsteerable(pp, tmp_path, monkeypatch):
     from aiforge_core.runtime import best_of_n as bon
     from aiforge_core.runtime import chat_interject
     monkeypatch.setenv("AIFORGE_BEST_OF_N", "3")
+    monkeypatch.setenv("AIFORGE_PARALLEL_SUBTASKS", "1")
+    monkeypatch.setenv("AIFORGE_PARALLEL_SUBTASKS_MAX", "2")
     seen: dict = {}
     monkeypatch.setattr(chat_interject, "set_steerable",
                         lambda sid, val: seen.update(sid=sid, val=val))

@@ -345,8 +345,7 @@ def _ensure_chat_worktree(pc) -> None:
         sess = chat_store.get_session(pc.session_id)
         wd = chat_worktree.workdir_of(sess)
         if wd:
-            if pc.body.mode != "team":
-                pc.cwd = wd
+            pc.cwd = wd              # same worktree in every mode
             return
         if not chat_worktree.eligible(sess, pc.body.mode):
             return

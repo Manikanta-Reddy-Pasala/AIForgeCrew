@@ -48,12 +48,14 @@ def test_max_workers_default_one_on_local_four_when_overridden(monkeypatch):
     assert pp._max_workers() == 4
 
 
-def test_max_workers_parallel_on_remote(monkeypatch):
+def test_max_workers_one_on_remote_unless_opted_in(monkeypatch):
+    # Owner rule (one worktree, one writer per chat): a remote endpoint no
+    # longer defaults to 4 workers; fan-out is an explicit opt-in.
     from aiforge_core.runtime import parallel_subtasks as pp
     monkeypatch.delenv("AIFORGE_PARALLEL_SUBTASKS_MAX", raising=False)
     monkeypatch.setattr("aiforge_core.llm.router.is_local_endpoint",
                         lambda role="doer": False)
-    assert pp._max_workers() == 4
+    assert pp._max_workers() == 1
 
 
 def test_max_workers_explicit_override_wins(monkeypatch):

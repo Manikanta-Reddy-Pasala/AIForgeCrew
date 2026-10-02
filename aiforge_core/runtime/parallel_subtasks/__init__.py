@@ -4,9 +4,12 @@ When a ticket is decomposed into subtickets, this runs each one CONCURRENTLY in
 its OWN git worktree (isolation), updating the live subtask status, then merges
 the successful branches back into the ticket's working branch in order.
 
-Default ON: ``AIFORGE_PARALLEL_SUBTASKS=0`` disables (operator decision
-2026-07-09). Concurrency capped by ``AIFORGE_PARALLEL_SUBTASKS_MAX`` (default 4)
-(default 4).
+The decompose pipeline is ON by default (``AIFORGE_PARALLEL_SUBTASKS=0``
+disables), but a chat owns ONE worktree and ONE writer: by default the subtasks
+run one after another IN PLACE in that worktree (``run_parallel(in_place=True)``)
+— no per-subtask worktree, no merge. Concurrent writers, each in a worktree of
+its own, are an explicit operator opt-in: ``AIFORGE_PARALLEL_SUBTASKS=1`` plus
+``AIFORGE_PARALLEL_SUBTASKS_MAX`` > 1 (see ``fan_out_enabled``).
 
 The per-subtask executor is INJECTED (``run_one``) so the orchestration —
 worktree isolation, concurrency, status tracking, sequential merge, conflict
@@ -21,6 +24,7 @@ from ._worktree import (
     _GIT_LOCK,
     enabled,
     _max_workers,
+    fan_out_enabled,
     _git,
     _slugify,
     _branch_for,
@@ -171,4 +175,4 @@ from ._reconcile import (
 
 __all__ = ["run_parallel", "run_subtasks_parallel", "default_run_one",
            "default_validate_one", "default_integration_test",
-           "stream_parallel_team", "enabled"]
+           "stream_parallel_team", "enabled", "fan_out_enabled"]

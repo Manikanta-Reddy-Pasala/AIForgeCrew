@@ -192,7 +192,9 @@ def _announce_execution(subs: list):
     reviewer model missing). Silent config drift is what made "why only 1?" hard."""
     sequential = os.environ.get("AIFORGE_SEQUENTIAL", "0") not in ("0", "false")
     mode = ("SEQUENTIAL (1 at a time)" if sequential
-            else f"parallel, up to {_pkg()._max_workers()} at once")
+            else f"parallel, up to {_pkg()._max_workers()} at once"
+            if _pkg().fan_out_enabled()
+            else "one at a time, in this chat's single worktree")
     try:
         reviewer = (review_gates.pick_reviewer_model()
                     or "same model (no 2nd model loaded)")
@@ -200,7 +202,7 @@ def _announce_execution(subs: list):
         reviewer = "?"
     yield {"type": "thought", "role": "system",
            "text": f"Running {len(subs)} subtasks — each in its OWN fresh context "
-                   f"+ git worktree · execution: {mode} · reviewer: {reviewer}."}
+                   f"· execution: {mode} · reviewer: {reviewer}."}
 
 
 # ---- cross-group names (bottom import = cycle-safe; all defs above are set) ----

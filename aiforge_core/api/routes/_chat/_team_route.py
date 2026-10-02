@@ -23,6 +23,7 @@ def _team_target_cwd(prompt, history, cwd, rctx, session_id=None,
     from aiforge_core.runtime.parallel_subtasks import _protected
     texts = _tt.user_texts(prompt, history)
     tgt = _tt.resolve_team_target(texts, cwd)
+    tgt = _fold_into_chat_worktree(tgt, cwd, rctx)
     rules = _protected.rules_from_texts(texts)
     _protected.clear(cwd)
     _protected.register(cwd, **rules)
@@ -84,6 +85,23 @@ def _team_target_cwd(prompt, history, cwd, rctx, session_id=None,
                 + ", ".join(f"`{o}`" for o in tgt.others)
     yield {"type": "thought", "role": "router", "text": note + "."}
     return ws.cwd
+
+
+def _fold_into_chat_worktree(tgt, cwd, rctx):
+    """The chat already works in its own worktree (``cwd``): a folder the user
+    names that is that worktree's repo (or inside it) is THIS chat's workspace,
+    not a target for a second per-run worktree. One worktree per chat — the
+    team runs in ``cwd``; its paths are localised to it (see ``localize``)."""
+    from aiforge_core.runtime import chat_worktree
+    repo = chat_worktree.main_repo_of(cwd)
+    if not repo or not tgt.retargeted:
+        return tgt
+    if not chat_worktree.covers(cwd, tgt.cwd or tgt.named):
+        return tgt
+    rctx["chat_repo"] = repo
+    _af_log.info("team run uses the chat's own worktree %s (named folder %s is "
+                 "its repo)", cwd, tgt.named)
+    return type(tgt)(cwd=cwd, missing=tgt.missing, ignored=tgt.ignored)
 
 
 def _ask_consent(session_id, folder, reason):
@@ -300,13 +318,14 @@ def localize(rctx, prompt, history):
     """``(prompt, history)`` with the user's repo paths rewritten relative to
     the run's worktree (runtime/team_target.localize_paths)."""
     ws = rctx.get("team_ws")
-    if ws is None:
+    repo = ws.repo if ws is not None else rctx.get("chat_repo")
+    if not repo:
         return prompt, history
     from aiforge_core.runtime.team_target import localize_paths
     out = []
     for m in history or []:
         if isinstance(m, dict) and (m.get("role") or "user") == "user" \
                 and isinstance(m.get("content"), str):
-            m = dict(m, content=localize_paths(m["content"], ws.repo))
+            m = dict(m, content=localize_paths(m["content"], repo))
         out.append(m)
-    return localize_paths(prompt, ws.repo), out
+    return localize_paths(prompt, repo), out
