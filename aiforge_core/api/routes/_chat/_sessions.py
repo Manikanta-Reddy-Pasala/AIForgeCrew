@@ -155,7 +155,10 @@ def chat_session_list(cwd: str | None = None, no_project: bool = False) -> list[
         _paths = _projects.known_paths()
         rows = [r for r in rows
                 if not _projects.project_path_of(r.get("cwd"), _paths)]
-    return rows
+    # Which chats have a run going right now, so the list can show it and the
+    # user can open another chat beside a busy one.
+    from aiforge_core.runtime import chat_runs
+    return [{**r, "running": chat_runs.is_running(r["id"])} for r in rows]
 
 
 def _sweep_orphan_session_dirs() -> int:

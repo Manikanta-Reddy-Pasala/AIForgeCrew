@@ -1145,6 +1145,21 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
     }
   }
 
+  // Other chats with a run going: keep their dots current, and say so when one
+  // of them works in the SAME folder as this chat (two agents editing one tree).
+  const otherRunning = sessions.filter(s => s.running && s.id !== activeId && !s.parent_id);
+  useEffect(() => {
+    if (otherRunning.length === 0) return;
+    const h = setInterval(() => loadSessions(true), 4000);
+    return () => clearInterval(h);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [otherRunning.length]);
+  const sameFolderRunning = (() => {
+    const mine = (sessions.find(s => s.id === activeId)?.cwd || '').replace(/\/+$/, '');
+    if (!mine) return 0;
+    return otherRunning.filter(s => (s.cwd || '').replace(/\/+$/, '') === mine).length;
+  })();
+
   // A message typed just as the run ended: sent when the chat is idle again.
   const queuedSendRef = useRef<string>('');
   useEffect(() => {
@@ -1917,7 +1932,9 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
       {/* ── Left sidebar: sessions list ─────────────────────────────────────── */}
       <div className="chat-sessions-sidebar">
         <div className="chat-sessions-header" style={{ display: 'flex', gap: 6 }}>
-          <button type="button" onClick={handleNewChat} disabled={busy} style={{ flex: 1 }}>
+          {/* Never disabled by a running chat: the run goes on in the background
+              (it is saved server-side) and you can start, or switch to, another. */}
+          <button type="button" onClick={handleNewChat} style={{ flex: 1 }}>
             <Icon.Plus size={13} /> New chat
           </button>
           {sessions.length > 0 && !project && (
@@ -1981,6 +1998,9 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                 ) : (
                   <>
                     <div className="chat-session-title" title={s.title}>
+                      {s.running && s.id !== activeId && (
+                        <span className="session-running" title="A run is going in this chat" />
+                      )}
                       {s.title || 'Untitled'}
                       <ModeBadge mode={s.last_mode} />
                     </div>
@@ -2046,6 +2066,12 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                            style={{ textDecoration: 'none' }}>
                     <Icon.Memory size={11} /> {project.name} memory
                   </NavLink>
+                )}
+                {sameFolderRunning > 0 && (
+                  <span className="chip warn"
+                        title="Another chat in this folder has a run going. Both can edit the same files; ask one to wait if they overlap.">
+                    ⚠ {sameFolderRunning} other {sameFolderRunning === 1 ? 'chat is' : 'chats are'} running here
+                  </span>
                 )}
                 {activeSession && (
                   <button type="button" className="ghost sm" disabled={busy}

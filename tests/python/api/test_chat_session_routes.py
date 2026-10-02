@@ -127,7 +127,9 @@ def test_the_vision_capability_is_identified_before_the_first_upload(
 
 def test_sessions_are_listed(client, store):
     store["sessions"] = [{"id": 1}, {"id": 2}]
-    assert client.get("/api/chat/sessions").json() == [{"id": 1}, {"id": 2}]
+    # each row also says whether a run is going in it (none here)
+    assert client.get("/api/chat/sessions").json() == [
+        {"id": 1, "running": False}, {"id": 2, "running": False}]
 
 
 def test_a_session_is_read_with_its_messages(client, store):
@@ -645,3 +647,28 @@ def test_an_explicit_compaction_distils_the_session(client, store, monkeypatch):
 
 def test_compacting_a_missing_session_is_a_404(client, store):
     assert client.post("/api/chat/sessions/99/compact").status_code == 404
+
+
+def test_the_session_list_says_which_chats_have_a_run_going(monkeypatch, tmp_path):
+    """So the UI can show it, and let you open another chat beside a busy one."""
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("AIFORGE_CHAT_DB_PATH", str(tmp_path / "chat.db"))
+    from aiforge_core.runtime import chat_runs, chat_store
+    chat_store.reset_backend_for_tests()
+    monkeypatch.setattr(chat_runs, "_ensure_watchdog", lambda: None)
+    app = FastAPI()
+    app.include_router(ch.router)
+    c = TestClient(app)
+    a = chat_store.create_session("busy one", str(tmp_path))["id"]
+    b = chat_store.create_session("idle one", str(tmp_path))["id"]
+    chat_runs.start(a)
+    rows = {r["id"]: r for r in c.get("/api/chat/sessions").json()}
+    assert rows[a]["running"] is True and rows[b]["running"] is False
+    # a second chat in the same folder can start while the first runs
+    assert chat_runs.is_running(a) and not chat_runs.is_running(b)
+    chat_runs.start(b)
+    assert chat_runs.is_running(a) and chat_runs.is_running(b)
+    chat_runs.finish_all()
+    rows = {r["id"]: r for r in c.get("/api/chat/sessions").json()}
+    assert rows[a]["running"] is False
+    chat_store.reset_backend_for_tests()

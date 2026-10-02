@@ -942,6 +942,12 @@ button.voice-btn.recording:hover:not(:disabled) {
   height: calc(100vh - var(--topbar-h) - var(--s-6) * 2 - 58px);
   min-height: 480px;
 }
+.session-running {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--ok, #22c55e); margin-right: 6px; vertical-align: middle;
+  animation: session-pulse 1.4s ease-in-out infinite;
+}
+@keyframes session-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 .projects-crumb {
   display: flex; align-items: center; gap: 10px;
   margin-bottom: 10px; min-height: 44px; min-width: 0;

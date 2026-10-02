@@ -14,6 +14,7 @@ export interface ChatSession {
   last_mode?: 'simple' | 'plan' | 'team';   // mode the latest user turn ran in
   learn?: boolean;        // false = this chat writes no memory
   parent_id?: number | null;   // set on a side task: the chat it was spun off
+  running?: boolean;          // a run is going in this chat right now
 }
 
 /** Another agent run going on beside a chat (a child chat of it). */
