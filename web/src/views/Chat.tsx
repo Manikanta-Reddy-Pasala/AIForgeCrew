@@ -7,6 +7,7 @@ import { MdLite, copyText as mdCopyText } from '../mdlite';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { AgentStep, SubtaskItem, RuleState, RuleStateCtx, LiveTurn, ChatMode, BuilderKind, PendingApproval } from './Chat.types';
 import { menuBtn, menuItem, LS_SESSION_KEY, LS_MODEL_KEY, LS_MODE_KEY, BUILDER_KINDS, BUILDER_LABELS, LS_BUILDER_KEY, relTime, dateTimeLabel, toAgentStep, msgAwaiting, getDismissedPlans, addDismissedPlan, isStoppedTurn, fmtTokens } from './Chat.helpers';
+import { pickChatModel } from '../chatModelPick';
 import { SubtaskList } from './Chat.SubtaskList';
 import { SideTasks } from './Chat.SideTasks';
 import SuggestionChip from './Chat.SuggestionChip';
@@ -1029,27 +1030,19 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
       const models = resp.models || [];
       setModelOptions(models);
 
-      // If saved selection is not active AND there is at least one active model, auto-switch
-      if (resp.current_active === false && models.length > 0) {
-        const firstActive = models[0];
-        setSelectedModel(firstActive.id);
-        setModelActive(firstActive.active);
-        try {
-          await chatApi.setChatModel(firstActive.id, resp.provider || undefined);
-        } catch { /* ignore — best-effort */ }
-        toast.warning(`Previous chat model not loaded — switched to ${firstActive.label || firstActive.id}`);
-      } else {
-        // Use backend's current as ground truth; fall back to localStorage, then first option
-        setSelectedModel(prev => {
-          const backendCurrent = resp.current || '';
-          const localPersisted = prev;
-          const allIds = new Set(models.map((m: ChatModelEntry) => m.id));
-          if (backendCurrent && allIds.has(backendCurrent)) return backendCurrent;
-          if (localPersisted && allIds.has(localPersisted)) return localPersisted;
-          return backendCurrent || (models[0]?.id ?? '');
-        });
-        setModelActive(resp.current_active ?? true);
+      // The model you picked stays picked until you change it. This used to
+      // switch to the first model in the list — and SAVE that — whenever the
+      // chosen one was not reported as loaded at the moment the page opened
+      // (not loaded yet, a slow or unreachable model server, a model on a
+      // second endpoint). Every visit could silently undo the choice. Now the
+      // saved choice is kept and the dot beside the picker shows its state.
+      const saved = resp.current || '';
+      if (saved && !models.some((m: ChatModelEntry) => m.id === saved)) {
+        // Keep it selectable even when the server did not list it this time.
+        setModelOptions([{ id: saved, label: saved, active: false } as ChatModelEntry, ...models]);
       }
+      setSelectedModel(prev => pickChatModel(saved, models, prev));
+      setModelActive(saved ? (resp.current_active ?? true) : (models[0]?.active ?? true));
     }).catch(() => { /* backend may not have the endpoint yet — ignore */ });
 
     chatApi.orchestratorModel().then(r => {

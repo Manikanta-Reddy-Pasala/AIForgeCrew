@@ -172,3 +172,4 @@ export function fmtTokens(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return '0';
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n));
 }
+
