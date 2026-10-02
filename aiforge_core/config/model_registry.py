@@ -50,7 +50,7 @@ from ._model_roles import (  # noqa: F401  # re-exported
 
 _LOCK = threading.Lock()
 _VISION = ("auto", "yes", "no")
-_THINKING = ("auto", "yes", "no")
+_THINKING = ("auto", "yes", "no", "low")
 
 # Name heuristics for auto-detecting a reasoning/"thinking" model (emits a
 # <think> channel). Used when thinking=='auto'. Substring match, lowercased.
@@ -136,7 +136,7 @@ def _slug(label: str, model: str) -> str:
 def _resolve(flag: str, model_id: str, kind: str) -> bool:
     """Flag ('auto'|'yes'|'no') → effective bool. 'auto' → name heuristic."""
     f = (flag or "auto").lower()
-    if f == "yes":
+    if f in ("yes", "low"):          # "low" is a thinking model asked to think briefly
         return True
     if f == "no":
         return False

@@ -274,8 +274,25 @@ def _complete_raw_once(role: str, messages: list[dict], *,
     import time as _time
     _t0 = _time.perf_counter()
     try:
-        body = _post_with_retry(ep, payload, timeout_s, role=role,
-                                source="native", meter=_meter_tok)
+        try:
+            body = _post_with_retry(ep, payload, timeout_s, role=role,
+                                    source="native", meter=_meter_tok)
+        except _LLMCancelled:
+            raise
+        except Exception as exc0:  # noqa: BLE001
+            # A server that 400s on `reasoning_effort` is remembered, and the
+            # same request goes again without it (the direct path does this in
+            # _attempt; this is the path simple chat actually uses).
+            try:
+                from aiforge_core.llm import fast_reasoning as _fr
+                refused = _fr.note_rejection(ep.base_url, exc0, getattr(ep, "model", ""))
+            except Exception:  # noqa: BLE001
+                refused = False
+            if not refused:
+                raise
+            payload = _build_body(ep, messages, temperature, max_tokens, top_p, ex)
+            body = _post_with_retry(ep, payload, timeout_s, role=role,
+                                    source="native", meter=_meter_tok)
     except _LLMCancelled:
         raise
     except Exception as exc:  # noqa: BLE001

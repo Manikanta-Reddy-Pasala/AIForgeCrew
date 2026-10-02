@@ -98,15 +98,20 @@ _NON_BODY_EXTRA_KEYS = frozenset({"insecure_tls"})
 
 
 def _apply_reasoning_off(ep: Endpoint, body: dict) -> None:
-    """Reasoning switched off for this model (Models → Thinking: no, or
-    AIFORGE_NO_REASONING=1): add both switches the Qwen/DeepSeek family honours
-    — the chat-template kwarg and /no_think on the last user turn."""
+    """Reasoning limited for this model (Models → Thinking: no / low, or
+    AIFORGE_NO_REASONING=1 / AIFORGE_REASONING_EFFORT): off adds the two soft
+    switches the Qwen/DeepSeek family honours (the chat-template kwarg and
+    /no_think on the last user turn); any limit adds the ``reasoning_effort``
+    field, which is the one LM Studio's qwen3.8 obeys."""
     try:
         from aiforge_core.llm import reasoning as _reasoning
         if _reasoning.reasoning_off(ep.model, ep.base_url):
             from ._text import _append_no_think
             body["messages"] = _append_no_think(body["messages"])
             body.update(_reasoning.NO_THINK_KWARGS)
+        # The switch that actually works on LM Studio: see reasoning.effort_for.
+        for k, v in _reasoning.effort_extras(ep.model, ep.base_url).items():
+            body.setdefault(k, v)
     except Exception:  # noqa: BLE001 — never break a call over this
         pass
 

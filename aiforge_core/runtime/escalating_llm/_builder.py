@@ -130,8 +130,12 @@ def _build_one(cfg: dict[str, Any]) -> BaseLlm:
     # (extra_body is never dropped); /no_think is added per request in
     # EscalatingLlm._stamp_request.
     from aiforge_core.llm import reasoning as _reasoning
+    _body: dict = {}
     if _reasoning.reasoning_off(cfg["model_id"], api_base):
-        kwargs["extra_body"] = dict(_reasoning.NO_THINK_KWARGS)
+        _body.update(_reasoning.NO_THINK_KWARGS)
+    _body.update(_reasoning.effort_extras(cfg["model_id"], api_base))
+    if _body:
+        kwargs["extra_body"] = _body
     # model_wait's liveness probe of this model goes the same way.
     from aiforge_core.llm import _model_probe
     _model_probe.register_send(api_base, cfg["model_id"], kwargs)

@@ -50,7 +50,7 @@ function VisionBadge({ v, onCycle }: Readonly<{
   );
 }
 
-const THINK_ORDER: RegistryModel['thinking'][] = ['auto', 'yes', 'no'];
+const THINK_ORDER: RegistryModel['thinking'][] = ['auto', 'yes', 'low', 'no'];
 function nextThinking(v: RegistryModel['thinking']): RegistryModel['thinking'] {
   return THINK_ORDER[(THINK_ORDER.indexOf(v || 'auto') + 1) % THINK_ORDER.length];
 }
@@ -60,7 +60,7 @@ function nextThinking(v: RegistryModel['thinking']): RegistryModel['thinking'] {
 function ThinkingBadge({ v, resolved, onCycle }: Readonly<{
   v: RegistryModel['thinking']; resolved?: boolean; onCycle?: () => void;
 }>) {
-  const map = { yes: ['🧠 thinking', '#d29922'], no: ['⚡ fast', '#8b949e'],
+  const map = { yes: ['🧠 thinking', '#d29922'], low: ['🧠 brief', '#6aa6ff'], no: ['⚡ fast', '#8b949e'],
                 auto: [`✨ ${resolved ? '🧠' : '⚡'} auto`, '#6aa6ff'] } as const;
   const [txt, col] = map[v || 'auto'];
   const base = { fontSize: 11, color: col, border: `1px solid ${col}`,
