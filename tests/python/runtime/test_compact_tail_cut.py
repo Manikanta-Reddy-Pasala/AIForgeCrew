@@ -31,7 +31,8 @@ def test_a_text_mode_tail_never_opens_on_an_assistant_action(monkeypatch):
     # Whatever tail size the budget picks, the message after system is user.
     for keep in (4, 5, 8, 9):
         out = comp._compact_convo(list(convo), keep_recent=keep)
-        assert "auto-condensed" in out[0]["content"]
+        assert "auto-condensed" in out[1]["content"]       # the condense note
+        assert "auto-condensed" not in out[0]["content"]
         _valid_after_system(out)
 
 
@@ -56,7 +57,8 @@ def test_a_native_tail_never_orphans_a_tool_result(monkeypatch):
     convo = _native_convo()
     for keep in (3, 4, 5, 6, 7):
         out = comp._compact_convo(list(convo), keep_recent=keep)
-        assert "auto-condensed" in out[0]["content"]
+        assert "auto-condensed" in out[1]["content"]       # the condense note
+        assert "auto-condensed" not in out[0]["content"]
         _valid_after_system(out)
         assert "not the user" in out[1]["content"]
 

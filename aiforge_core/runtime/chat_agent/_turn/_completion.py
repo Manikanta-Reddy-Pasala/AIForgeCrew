@@ -330,8 +330,41 @@ def _persist_until_answer(complete_fn, role, convo, session_id, last,
     return None, last  # pragma: no cover — the gap iterator never ends
 
 
+def _overflow_restart_enabled() -> bool:
+    return os.environ.get("AIFORGE_CHAT_CONTEXT_ERROR_RESTART", "1").strip() \
+        .lower() not in ("0", "false", "no", "off")
+
+
+def _is_overflow(exc) -> bool:
+    try:
+        from aiforge_core.llm import model_outage
+        return exc is not None and model_outage.is_context_overflow(exc)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _shrink_after_overflow(st, complete_fn, role, convo, session_id) -> str:
+    """The same prompt just failed for size twice. Do not send it a third
+    time: restart from a handoff (``st`` known), else condense. Returns what
+    was done, for the status line, or "" when nothing got smaller."""
+    if st is not None and _overflow_restart_enabled():
+        try:
+            from ._escalate import restart_with_handoff
+            before = sum(len(str(m.get("content") or "")) for m in convo)
+            if restart_with_handoff(st):
+                after = sum(len(str(m.get("content") or "")) for m in st.convo)
+                if after < before:
+                    return "restarted from a handoff"
+        except Exception:  # noqa: BLE001 — fall back to the condense
+            pass
+    if _shrink_for_retry(convo, role, complete_fn, session_id):
+        return "condensed the history"
+    return ""
+
+
 def _retry_completion(complete_fn, role, convo, session_id, exc,
-                      _step_calls, _meter, _step_tok, wait_s=None, worked=False):
+                      _step_calls, _meter, _step_tok, wait_s=None, worked=False,
+                      st=None):
     """Recover a failed model completion: retry (bounded by the per-step
     generation budget; 0 retries for a shipped-timeout or unserved-model error)
     with escalating backoff. A model OUTAGE is waited out instead (``wait_s``:
@@ -389,11 +422,22 @@ def _retry_completion(complete_fn, role, convo, session_id, exc,
     # One already waited out to its bound by the client is not re-sent either.
     if _will_wait(wait_s) and (_outage_waitable(exc) or _waited(exc)):
         _retries = 0
+    # The same prompt failing for SIZE twice in a row is not a flaky server:
+    # shrink it (a handoff restart) instead of sending it again.
+    _over_n = 1 if _is_overflow(exc) else 0
     for _rn in range(_retries):
         if session_id is not None and chat_cancel.is_cancelled(session_id):
             return _CANCELLED
         if _over_budget():
             break
+        if _over_n >= 2:
+            _over_n = 0
+            _did = _shrink_after_overflow(st, complete_fn, role, convo,
+                                          session_id)
+            yield {"type": "thought", "role": "system",
+                   "text": "⟳ the prompt is over the model's context window "
+                           "twice in a row — " + (_did or "could not shrink it")
+                           + ", sending a smaller one"}
         yield {"type": "thought", "role": "system",
                "text": f"⟳ model didn't respond — retrying ({_rn + 1}/{_retries})…"}
         # Escalating backoff, but Stop and a typed message cut it short.
@@ -410,6 +454,7 @@ def _retry_completion(complete_fn, role, convo, session_id, exc,
             break
         except Exception as exc2:  # noqa: BLE001
             _last = exc2
+            _over_n = _over_n + 1 if _is_overflow(exc2) else 0
     if out is _STEERED or out is _CANCELLED:
         return out
     _issue = _llm_issue(_last)
@@ -470,7 +515,8 @@ def _run_completion(st, role, complete_fn, session_id, _meter):
         _wait = _w if _w >= 0 else None
         out = yield from _retry_completion(
             complete_fn, role, st.convo, session_id, exc,
-            _step_calls, _meter, _step_tok, wait_s=_wait, worked=_worked)
+            _step_calls, _meter, _step_tok, wait_s=_wait, worked=_worked,
+            st=st)
         if out is _RETRY_STOP:
             return _RETRY_STOP
     # The step's sends are counted; unbind before the next one binds its

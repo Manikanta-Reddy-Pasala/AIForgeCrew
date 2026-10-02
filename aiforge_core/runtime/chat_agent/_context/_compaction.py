@@ -4,7 +4,7 @@ import os
 import re
 
 from .._shell import _ACTION_RE
-from . import _summary_bg, _tail_cut
+from . import _note, _structured, _summary_bg, _tail_cut
 from ._claim_guard import _claims_file_edits
 from ._window import _ctx_budget_chars
 
@@ -95,6 +95,10 @@ def _summary_messages(middle, prior: str = "") -> list:
     if prior:
         body = "EARLIER SUMMARY (keep what still matters):\n" + prior + \
             "\n\nNEWER TURNS:\n" + body
+    if _structured.enabled():
+        return [{"role": "system", "content": _structured.SYSTEM},
+                {"role": "user", "content":
+                 "Fill in the JSON record for this slice:\n\n" + body}]
     return [{"role": "system", "content": _COMPACT_SYS},
             {"role": "user", "content": "Summarise this slice:\n\n" + body}]
 
@@ -133,8 +137,10 @@ def _schedule_llm_summary(middle, complete_fn, run_key, gen: int,
         return
     msgs = _summary_messages(list(middle), prior)
     role = _summary_role()
-    _summary_bg.schedule(run_key, gen,
-                         lambda: _text_complete(complete_fn, role, msgs))
+    # A reply that holds no typed record is stored as "": the breadcrumb stands.
+    _summary_bg.schedule(
+        run_key, gen,
+        lambda: _structured.summarise(_text_complete(complete_fn, role, msgs)))
 
 
 def _clean_summary(text: str) -> str:
@@ -161,11 +167,15 @@ def _with_summary(block: str, summary: str) -> str:
 def _splice_ready_summary(convo: list[dict], run_key) -> list[dict]:
     """Put a finished model summary into the breadcrumb it was written for.
 
-    Checked every step, so the summary lands as soon as it is ready instead
-    of one condense later. A summary for any other condense is discarded."""
+    The breadcrumb is in the condense note (the message after the system
+    prompt) or, with ``AIFORGE_STABLE_PREFIX=0``, at the end of the system
+    message. Checked every step, so the summary lands as soon as it is ready
+    instead of one condense later. A summary for any other condense is
+    discarded."""
     if not run_key or not convo or convo[0].get("role") != "system":
         return convo
-    text = convo[0].get("content")
+    at = _note.note_index(convo) or 0
+    text = convo[at].get("content")
     if not isinstance(text, str):
         return convo
     block = _prior_block(text)
@@ -175,7 +185,7 @@ def _splice_ready_summary(convo: list[dict], run_key) -> list[dict]:
     if not summary:
         return convo
     new = text.replace(block, _with_summary(block, summary), 1)
-    return [{**convo[0], "content": new}] + convo[1:]
+    return convo[:at] + [{**convo[at], "content": new}] + convo[at + 1:]
 
 
 def release_run(run_key) -> None:
@@ -227,7 +237,7 @@ def _recent_tail_count(convo: list[dict], budget: int, *,
 
 
 _HARNESS_NOTE = re.compile(
-    r"^(OBSERVATION:|\[(?:[^\]]*not the user|system reminder)[^\]]*\]"
+    r"^(OBSERVATION:|" + re.escape(_note.NOTE_OPEN) + r"|\[(?:[^\]]*not the user|system reminder)[^\]]*\]"
     r"|You (?:narrated|signalled|described) )")
 
 
@@ -422,10 +432,65 @@ def _hist_chars(msgs: list[dict]) -> int:
     return sum(len(_text_of(m)) for m in msgs)
 
 
+_GOAL_RE = re.compile(re.escape(_GOAL_PIN_OPEN) + r".*?"
+                      + re.escape(_GOAL_PIN_CLOSE), re.S)
+
+
+def _board_re():
+    from .._turn._tasks import _BOARD_RE
+    return _BOARD_RE
+
+
+def _restart_on() -> bool:
+    """``AIFORGE_COMPACT_RESTART=0`` keeps a rolling breadcrumb on every
+    condense instead of restarting from a handoff on the second one."""
+    return os.environ.get("AIFORGE_COMPACT_RESTART", "1").strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
+def _clean_system(msg: dict) -> dict:
+    """The system message without any pinned goal, task board or condense
+    block (an older layout put them there). The SAME object when it has none,
+    so a run that never used that layout keeps byte 0 untouched."""
+    text = msg.get("content")
+    if not isinstance(text, str) or not (
+            _CONDENSE_OPEN in text or _GOAL_PIN_OPEN in text
+            or "<<AIFORGE_TASK_BOARD>>" in text):
+        return msg
+    text = _board_re().sub("", _GOAL_RE.sub("", text))
+    text = re.sub(r"\s*" + re.escape(_CONDENSE_OPEN) + r".*?"
+                  + re.escape(_CONDENSE_CLOSE), "", text, flags=re.S).rstrip()
+    return {**msg, "content": text}
+
+
+def _restart_block(st, middle, tail_text: str, carried: str, gen: int,
+                   saved, goal_block: str) -> "str | None":
+    """The condense block for a RESTART: the typed handoff record (goal, done,
+    files, what failed, last error, next) built from the run's state, plus the
+    rolling asks/files/errors, in place of one more stacked breadcrumb. None
+    on any failure, and the caller writes the ordinary breadcrumb."""
+    try:
+        from aiforge_core.runtime import handoff
+        h = handoff.build_chat(st)
+        if not h["goal"] and goal_block:
+            inner = goal_block[len(_GOAL_PIN_OPEN):-len(_GOAL_PIN_CLOSE)]
+            h["goal"] = " ".join(inner.split())[:1200]
+        head = (f"[HANDOFF (condense #{gen}) — the history was condensed "
+                f"{gen - 1} time(s) already, so it restarts from this record "
+                f"instead of stacking another summary; {len(middle)} older "
+                "messages omitted. Do not repeat what failed.]")
+        body = handoff.render(h, saved, header=head)
+        block = f"{_CONDENSE_OPEN}\n{body}{tail_text}\n{_CONDENSE_CLOSE}"
+        return _with_summary(block, carried) if carried else block
+    except Exception:  # noqa: BLE001 — a failed restart is the usual breadcrumb
+        return None
+
+
 def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None = None,
                    complete_fn=None, session_id=None, force: bool = False,
                    keep_min: int = 0, pin: "str | None" = None,
-                   run_key: "str | None" = None) -> list[dict]:
+                   run_key: "str | None" = None,
+                   handoff_st=None) -> list[dict]:
     """Auto-condense a long chat history so the context can't overflow.
 
     Keeps the system message + the last ``keep_recent`` turns verbatim and
@@ -436,11 +501,20 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
     condenses regardless of the budget (the caller wants a fresh window, not
     just a safe one). ``keep_min`` trailing messages are always kept: tool
     results the model has not read yet must not be summarised away.
-    ``session_id`` is accepted for callers and unused: a session is not a run."""
+    ``session_id`` is accepted for callers and unused: a session is not a run.
+
+    The system message is never rewritten: the breadcrumb, the pinned task and
+    the task board go in a note message right after it (see :mod:`_note`), so
+    a local server's prompt cache survives a condense. A history that was
+    already condensed once restarts from a handoff built from ``handoff_st``
+    (the run's state) instead of stacking a second breadcrumb."""
     convo = _splice_ready_summary(convo, run_key)
+    plen = _note.prefix_len(convo)
+    note_msgs = convo[1:plen]
+    work = [convo[0]] + convo[plen:] if plen > 1 else convo
     # M1: reserve the ACTUAL system-prompt size (convo[0]) rather than the fixed
     # 14K estimate, and DON'T re-count it in the over-budget sum below (it's
-    # reserved, not history).
+    # reserved, not history). The note counts as history.
     budget = _ctx_budget_chars(role, sys_chars=_system_chars(convo))
     if budget <= 0:
         return convo
@@ -450,53 +524,81 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
     # model call.
     if keep_min and _hist_chars(convo[-keep_min:]) > budget:
         keep_min = 0
-    keep_recent = max(_recent_tail_count(convo, budget, ceiling=keep_recent),
+    keep_recent = max(_recent_tail_count(work, budget, ceiling=keep_recent),
                       keep_min)
-    if len(convo) <= keep_recent + 2:
+    if len(work) <= keep_recent + 2:
         return convo
     # ``force`` condenses even when the history still FITS — used when the loop
     # grants a runaway-cap extension.
     if not force and _hist_chars(convo[1:]) <= budget:
         return convo
-    room = max(0, budget - _hist_chars(convo[-keep_recent:]))
-    start, needs_opener = _tail_cut.tail_start(convo, keep_recent, room or 1)
-    middle = convo[1:start]
+    room = max(0, budget - _hist_chars(work[-keep_recent:])
+               - _hist_chars(note_msgs))
+    start, needs_opener = _tail_cut.tail_start(work, keep_recent, room or 1)
+    middle = work[1:start]
     if not middle:
         return convo
 
     import collections as _c
-    prior_block = _prior_block(convo[0].get("content") or "")
+    stable = _note.enabled()
+    sys_text = convo[0].get("content")
+    sys_text = sys_text if isinstance(sys_text, str) else ""
+    prior_src = _note.text(convo) or sys_text
+    prior_block = _prior_block(prior_src)
     tools, user_asks, finals = _middle_signals(middle)
-    user_asks, finals = _carry_prior_thread(convo[0].get("content") or "",
-                                            user_asks, finals)
+    user_asks, finals = _carry_prior_thread(prior_src, user_asks, finals)
     used = (", ".join(f"{t}×{n}" for t, n in _c.Counter(tools).most_common(8))
             or "discussion + reads")
     # The model summary rolls: the note keeps the last one until the summary
     # of THIS condense (which covers it) is spliced in.
-    gen = _block_gen(prior_block) + 1
+    prior_gen = _block_gen(prior_block)
+    gen = prior_gen + 1
     carried = _block_summary(prior_block)
     _schedule_llm_summary(middle, complete_fn, run_key, gen, carried)
-    ed0, rd0, er0 = _carry_prior_facts(convo[0].get("content") or "")
+    ed0, rd0, er0 = _carry_prior_facts(prior_src)
     ed1, rd1, er1 = _middle_facts(middle)
     facts = (list(dict.fromkeys(ed0 + ed1)), list(dict.fromkeys(rd0 + rd1)),
              list(dict.fromkeys(er0 + er1)))
     from aiforge_core.runtime import context_offload
     saved = context_offload.save(context_offload.render(middle))
-    note = _breadcrumb(middle, used, _summary_tail(user_asks, finals, facts),
-                       carried, gen, saved)
-    # Fold the breadcrumb INTO the system message rather than inserting a
-    # separate 'user' turn — that avoids two consecutive same-role messages.
-    sys_text = _pin_goal(_stripped_system(convo), convo, pin)
-    head = [{"role": "system", "content": (sys_text + "\n\n" + note).strip()}]
-    tail = convo[start:]
-    if needs_opener:
-        tail = [_tail_cut.opener()] + tail
-    kept = head + tail
+    tail_text = _summary_tail(user_asks, finals, facts)
+    tail = work[start:]
+    if not stable:
+        note = _breadcrumb(middle, used, tail_text, carried, gen, saved)
+        # Legacy layout: fold the breadcrumb INTO the system message rather
+        # than inserting a separate 'user' turn (two same-role messages).
+        sys_new = _pin_goal(_stripped_system(convo), work, pin)
+        head = [{"role": "system", "content": (sys_new + "\n\n" + note).strip()}]
+        if needs_opener:
+            tail = [_tail_cut.opener()] + tail
+        kept = head + tail
+    else:
+        goal_prior = _GOAL_RE.search(prior_src) or _GOAL_RE.search(sys_text)
+        goal_block = _pin_goal(goal_prior.group(0) if goal_prior else "",
+                               work, pin)
+        board_prior = (_board_re().search(prior_src)
+                       or _board_re().search(sys_text))
+        board_block = board_prior.group(0).strip() if board_prior else ""
+        block = None
+        if handoff_st is not None and prior_gen >= 1 and _restart_on():
+            block = _restart_block(handoff_st, middle, tail_text, carried, gen,
+                                   saved, goal_block)
+        if block is None:
+            block = _breadcrumb(middle, used, tail_text, carried, gen, saved)
+        head = [_clean_system(convo[0]),
+                _note.build(goal_block, board_block, block)]
+        # [system, user note, assistant ack, user ...]: roles keep alternating.
+        # A tail that opens on an assistant turn follows the note directly.
+        if not needs_opener:
+            head.append(_note.ack())
+        kept = head + tail
     # A pointer is only honest while the body it names is still in the kept
     # system message or the tail. Compaction just dropped the middle, so put
     # that body back if the pointer would otherwise dangle — but only while it
     # fits, or the next step condenses again at once.
     from aiforge_core.runtime.context_seen import restore_dangling
+    # (A pointer in the system message whose body only the dropped middle held
+    # is restored there: an honest prompt beats a cache hit, and it is rare.)
     restored = restore_dangling(kept, middle)
     over = budget - _hist_chars(kept[1:]) - (_system_chars(kept)
                                              - _system_chars(convo))

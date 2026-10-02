@@ -25,7 +25,7 @@ from ._convo import (
     _append_directive,
 )
 from ._escalate import escalate, give_up_message, pause_on_stuck
-from ._progress import may_recover
+from ._progress import may_recover, note_monologue, reset_monologue
 from ._shared import (
     _THE_FINALIZE_TOOL,
 )
@@ -91,7 +91,8 @@ def _step_cap_guard(st, n):
                                    complete_fn=st.complete_fn,
                                    session_id=st.session_id, force=True,
                                    keep_min=_unread, pin=turn_pin(st),
-                                   run_key=getattr(st, "compact_key", None))
+                                   run_key=getattr(st, "compact_key", None),
+                                   handoff_st=st)
             _after_condense(st, _unread, _before_ext)
             if len(st.convo) < _before_ext:
                 st.read_sigs_seen.clear()   # results dropped → re-reads are valid
@@ -129,7 +130,8 @@ def _deadline_guard(st, n):
                                    complete_fn=st.complete_fn,
                                    session_id=st.session_id, force=True,
                                    keep_min=_unread, pin=turn_pin(st),
-                                   run_key=getattr(st, "compact_key", None))
+                                   run_key=getattr(st, "compact_key", None),
+                                   handoff_st=st)
             _after_condense(st, _unread, _before_ext)
             if len(st.convo) < _before_ext:
                 st.read_sigs_seen.clear()
@@ -198,7 +200,8 @@ def _condense_events(st, role, complete_fn, session_id, _meter) -> list:
     st.convo = _compact_convo(st.convo, role=role, complete_fn=complete_fn,
                               session_id=session_id, keep_min=_unread,
                               pin=turn_pin(st),
-                              run_key=getattr(st, "compact_key", None))
+                              run_key=getattr(st, "compact_key", None),
+                              handoff_st=st)
     _after_condense(st, _unread, _before)
     if len(st.convo) < _before:
         # The dropped turns took their tool RESULTS with them, so a read
@@ -319,6 +322,13 @@ def _stuck_output_guard(st, out):
 _IDLE_REPLIES = 8
 
 
+def _last_reply(st) -> str:
+    for m in reversed(getattr(st, "convo", None) or []):
+        if isinstance(m, dict) and m.get("role") == "assistant":
+            return _text_of(m)
+    return ""
+
+
 def _idle_reply_guard(st):
     """A reply that ran no tool and did not end the turn (narration, a
     refused FINAL, a second plan-mode question). Any tool call resets the
@@ -326,6 +336,18 @@ def _idle_reply_guard(st):
     step count. The first trip nudges, the next one stops and asks — that
     budget refills only when the model acts. Returns continue/return."""
     st.idle_replies = getattr(st, "idle_replies", 0) + 1
+    if not pause_on_stuck() and note_monologue(st, _last_reply(st)):
+        # Three replies in a row that run no tool and say the same thing:
+        # a monologue. Change approach now; do not wait for eight.
+        st.idle_replies = 0
+        reset_monologue(st)
+        _r = yield from escalate(st, "You keep saying the same thing "
+                                     "without acting.")
+        if _r == "continue":
+            return "continue"
+        yield {"type": "message", "text": give_up_message(st)}
+        yield {"type": "done"}
+        return "return"
     if st.idle_replies < _IDLE_REPLIES:
         return "continue"
     st.idle_replies = 0

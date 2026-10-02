@@ -307,7 +307,8 @@ def test_a_condense_keeps_results_the_model_has_not_read(monkeypatch):
         for i in range(60)]
     kept = _compaction._compact_convo(convo, role="chat", keep_min=25)
     assert kept[-25:] == convo[-25:]
-    assert len(kept) == 26
+    # system + condense note + the note's one-line acknowledgement + the tail
+    assert len(kept) == 28
     assert len(_compaction._compact_convo(convo, role="chat")) < 26
 
 

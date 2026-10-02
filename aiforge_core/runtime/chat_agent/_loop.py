@@ -339,6 +339,8 @@ def _dispatch_step(st, out, n, cwd, role, _complete_fn, session_id, builder,
             return (yield from _idle_reply_guard(st))
     st.continue_nudges = 0   # a real action resets the narration guard
     st.idle_replies = st.idle_trips = 0
+    if getattr(st, "monologue", None):
+        st.monologue.clear()          # a tool ran: not a monologue
     return (yield from _run_action_path(st, step, n, cwd, session_id))
 
 

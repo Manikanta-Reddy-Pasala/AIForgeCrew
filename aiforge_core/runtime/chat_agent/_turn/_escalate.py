@@ -98,6 +98,7 @@ def restart_with_handoff(st) -> bool:
     try:
         from aiforge_core.runtime import context_offload, handoff
         from .._context import _compaction as C
+        from .._context import _note
         from ._tasks import pin_board
         old = list(st.convo)
         if len(old) < 3 or old[0].get("role") != "system":
@@ -109,9 +110,12 @@ def restart_with_handoff(st) -> bool:
                               if m.get("role") == "user"
                               and not C._text_of(m).strip().startswith("OBSERVATION:")
                               and not C._is_harness_note(C._text_of(m).strip())), "")
-        sys_text = C._pin_goal(C._stripped_system(old), old)
-        st.convo[:] = [{**old[0], "content": sys_text},
-                       {"role": "user", "content": handoff.render(h, oid)}]
+        if _note.enabled():
+            _restart_into_note(st, old, h, oid)
+        else:
+            sys_text = C._pin_goal(C._stripped_system(old), old)
+            st.convo[:] = [{**old[0], "content": sys_text},
+                           {"role": "user", "content": handoff.render(h, oid)}]
         if getattr(st, "board", None):
             pin_board(st.convo, st.board)
         for name in ("read_sigs_seen", "recent_outputs"):
@@ -125,11 +129,35 @@ def restart_with_handoff(st) -> bool:
         return False
 
 
+def _restart_into_note(st, old: list, h: dict, oid) -> None:
+    """The restarted context with the system message UNTOUCHED: the pinned
+    goal, the board and the handoff go in the note right after it (see
+    ``_context._note``), so the model server's prompt cache is not thrown away
+    by the restart."""
+    from aiforge_core.runtime import handoff
+    from .._context import _compaction as C
+    from .._context import _note
+    sys_text = old[0].get("content")
+    sys_text = sys_text if isinstance(sys_text, str) else ""
+    prior_src = _note.text(old) or sys_text
+    gen = C._block_gen(C._prior_block(prior_src)) + 1
+    work = [old[0]] + old[_note.prefix_len(old):]
+    prior_goal = C._GOAL_RE.search(prior_src) or C._GOAL_RE.search(sys_text)
+    goal_block = C._pin_goal(prior_goal.group(0) if prior_goal else "", work)
+    head = (f"[HANDOFF (condense #{gen}) — the earlier attempt went in circles, "
+            "so this is a fresh start. It holds what is known; do not repeat "
+            "what failed.]")
+    block = (f"{C._CONDENSE_OPEN}\n{handoff.render(h, oid, header=head)}\n"
+             f"{C._CONDENSE_CLOSE}")
+    st.convo[:] = [C._clean_system(old[0]), _note.build(goal_block, "", block)]
+
+
 def _condense(st) -> None:
     try:
         from .._context import _compact_convo
         new = _compact_convo(st.convo, role=st.role, force=True, keep_recent=8,
-                             run_key=getattr(st, "compact_key", None))
+                             run_key=getattr(st, "compact_key", None),
+                             handoff_st=st)
         if new is not st.convo and len(new) < len(st.convo):
             st.convo[:] = new
     except Exception:  # noqa: BLE001 — a failed condense still nudges

@@ -37,6 +37,9 @@ def _wait_for(pred, timeout=3.0):
 def c(monkeypatch):
     from aiforge_core.runtime.chat_agent._context import _compaction, _summary_bg
     monkeypatch.setenv("AIFORGE_COMPACT_MODE", "llm")
+    # These fakes answer in free text; the typed-summary path has its own
+    # tests (test_structured_compaction.py).
+    monkeypatch.setenv("AIFORGE_COMPACT_STRUCTURED", "0")
     monkeypatch.setenv("AIFORGE_CHAT_CONTEXT_BUDGET_CHARS", "2000")
     _summary_bg.reset()
     yield _compaction
@@ -58,8 +61,8 @@ def test_llm_compact_returns_before_the_model_answers(c):
         out = c._compact_convo(_long_convo(), keep_recent=8,
                                complete_fn=slow, run_key="run-behind")
         assert time.monotonic() - t0 < 1.0
-        assert "auto-condensed" in out[0]["content"]
-        assert "SUMMARY FROM MODEL" not in out[0]["content"]
+        assert "auto-condensed" in out[1]["content"]
+        assert "SUMMARY FROM MODEL" not in out[1]["content"]
         assert started.wait(2)
         assert seen_role["role"] == "learner"
     finally:
@@ -74,16 +77,17 @@ def test_the_summary_lands_in_its_own_breadcrumb_next_step(c):
 
     out = c._compact_convo(_long_convo(), keep_recent=8,
                            complete_fn=fast, run_key="run-splice")
-    assert "(condense #1)" in out[0]["content"]
+    assert "(condense #1)" in out[1]["content"]
     from aiforge_core.runtime.chat_agent._context import _summary_bg
     assert _wait_for(lambda: _summary_bg.pending("run-splice") is None)
     nxt = c._compact_convo(out, keep_recent=8, complete_fn=fast,
                            run_key="run-splice")
-    sys = nxt[0]["content"]
+    sys = nxt[1]["content"]
     assert "- edited foo.py" in sys
     assert "Work done so far: file_read" in sys
     assert "(condense #1)" in sys
-    assert nxt[1:] == out[1:]                     # only the note changed
+    assert nxt[0] == out[0]                       # byte 0 never changes
+    assert nxt[2:] == out[2:]                     # only the note changed
 
 
 def test_parallel_runs_without_a_session_never_share_a_summary(c):
@@ -102,8 +106,8 @@ def test_parallel_runs_without_a_session_never_share_a_summary(c):
                      and _summary_bg.pending("run-b") is None)
     a2 = c._compact_convo(a, keep_recent=8, complete_fn=by_tag, run_key="run-a")
     b2 = c._compact_convo(b, keep_recent=8, complete_fn=by_tag, run_key="run-b")
-    assert "SUMMARY-A" in a2[0]["content"] and "SUMMARY-B" not in a2[0]["content"]
-    assert "SUMMARY-B" in b2[0]["content"] and "SUMMARY-A" not in b2[0]["content"]
+    assert "SUMMARY-A" in a2[1]["content"] and "SUMMARY-B" not in a2[1]["content"]
+    assert "SUMMARY-B" in b2[1]["content"] and "SUMMARY-A" not in b2[1]["content"]
 
 
 def test_no_run_key_means_no_background_summary(c):
@@ -115,7 +119,7 @@ def test_no_run_key_means_no_background_summary(c):
 
     out = c._compact_convo(_long_convo(), keep_recent=8, complete_fn=fn,
                            session_id=None)
-    assert "auto-condensed" in out[0]["content"]
+    assert "auto-condensed" in out[1]["content"]
     assert not called.wait(0.3)
 
 
@@ -138,14 +142,14 @@ def test_a_newer_condense_discards_the_older_summary(c):
     assert _wait_for(lambda: len(calls) == 1)
     out2 = c._compact_convo(_grow(out1), keep_recent=8, complete_fn=fn,
                             run_key="run-gen", force=True)
-    assert "(condense #2)" in out2[0]["content"]
+    assert "(condense #2)" in out2[1]["content"]
     gate1.set()
     assert _wait_for(lambda: _summary_bg.pending("run-gen") is None)
     time.sleep(0.1)
     out3 = c._compact_convo(out2, keep_recent=8, complete_fn=fn,
                             run_key="run-gen")
-    assert "NEW SLICE SUMMARY" in out3[0]["content"]
-    assert "OLD SLICE SUMMARY" not in out3[0]["content"]
+    assert "NEW SLICE SUMMARY" in out3[1]["content"]
+    assert "OLD SLICE SUMMARY" not in out3[1]["content"]
     # A stale generation is refused outright too.
     assert _summary_bg.take("run-gen", 1) == ""
 
@@ -187,7 +191,7 @@ def test_background_summary_does_not_use_the_turns_tool_queue(c, monkeypatch):
     assert _wait_for(lambda: _summary_bg.pending("run-native") is None)
     out = c._compact_convo(out, keep_recent=8, complete_fn=native,
                            run_key="run-native")
-    assert "PLAIN SUMMARY" in out[0]["content"]
+    assert "PLAIN SUMMARY" in out[1]["content"]
     assert seen["role"] == "learner"
     assert not called.is_set()
 

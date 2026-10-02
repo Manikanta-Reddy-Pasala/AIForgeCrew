@@ -86,8 +86,11 @@ def test_the_second_stuck_trip_restarts_with_a_fresh_context():
     assert "[HANDOFF" in text and "ALREADY TRIED AND FAILED" in text
     assert "Traceback" not in text                             # the transcript is gone
     assert "ValueError: bad shape" in text                     # the error line is kept
-    assert "<<AIFORGE_TASK_BOARD>>" in st.convo[0]["content"]  # board pinned back
-    assert "ORIGINAL TASK" in st.convo[0]["content"]           # goal pinned
+    # The system message stays byte-identical (prompt cache); the board and the
+    # pinned goal ride in the note right after it.
+    assert st.convo[0]["content"] == "SYSTEM RULES"
+    assert "<<AIFORGE_TASK_BOARD>>" in text                    # board pinned back
+    assert "ORIGINAL TASK" in text                             # goal pinned
     oid = text.split('"id": "')[1].split('"')[0]
     assert "Traceback" in context_offload.load(oid)["text"]    # lossless
     assert not st.read_sigs_seen and st.restarts == 1

@@ -172,16 +172,82 @@ def _window_tokens(role: str | None = None) -> int:
     return max(0, win)
 
 
+#: Callables ``fn(role) -> extra reply tokens`` the window budget asks. The
+#: reasoning-boost code registers one so a step it boosts keeps room for the
+#: extra thinking tokens (see :func:`register_reserve_hook`).
+_RESERVE_HOOKS: list = []
+
+
+def register_reserve_hook(fn) -> None:
+    """Add ``fn(role) -> int`` (extra tokens to keep free for the model's
+    reply, e.g. a reasoning allowance on a boosted step). Idempotent."""
+    if fn not in _RESERVE_HOOKS:
+        _RESERVE_HOOKS.append(fn)
+
+
+def unregister_reserve_hook(fn) -> None:
+    if fn in _RESERVE_HOOKS:
+        _RESERVE_HOOKS.remove(fn)
+
+
+def _hook_reserve_tokens(role: str | None) -> int:
+    total = 0
+    for fn in list(_RESERVE_HOOKS):
+        try:
+            total += max(0, int(fn(role) or 0))
+        except Exception:  # noqa: BLE001 — a bad hook reserves nothing
+            continue
+    return total
+
+
+def _reserve_cap_frac() -> float:
+    """Most of the window the reply reserve may take (default 0.5, env
+    ``AIFORGE_OUTPUT_RESERVE_FRAC``, clamped 0.05-0.9): the history budget
+    never collapses because the output cap or a boost is set too high."""
+    try:
+        return min(0.9, max(0.05, float(
+            os.environ.get("AIFORGE_OUTPUT_RESERVE_FRAC", "0.5"))))
+    except (TypeError, ValueError):
+        return 0.5
+
+
+def _output_reserve_tokens(win: int, role: str | None = None,
+                           extra_reserve_tokens: int = 0) -> int:
+    """Tokens of the window kept free for the model's reply: its output cap
+    (``max_output_tokens``) PLUS any reasoning allowance — the caller's
+    ``extra_reserve_tokens`` and the registered hooks — bounded to a fraction
+    of the window. With no allowance this is the output cap, as before."""
+    try:
+        from aiforge_core.config import runtime_settings
+        base = int(runtime_settings.get("max_output_tokens"))
+    except Exception:  # noqa: BLE001
+        base = 4096
+    try:
+        extra = max(0, int(extra_reserve_tokens or 0))
+    except (TypeError, ValueError):
+        extra = 0
+    extra += _hook_reserve_tokens(role)
+    total = max(0, base) + extra
+    if extra:
+        total = min(total, int(win * _reserve_cap_frac()))
+    return total
+
+
 def _ctx_budget_chars(role: str | None = None,
-                      sys_chars: int | None = None) -> int:
+                      sys_chars: int | None = None,
+                      extra_reserve_tokens: int = 0) -> int:
     """Char budget for the running conversation before auto-condensing. 0
     disables. Explicit override: AIFORGE_CHAT_CONTEXT_BUDGET_CHARS. Otherwise
     SIZED TO THE CONFIGURED MODEL WINDOW (context_window tokens → ~4 chars/token)
-    MINUS the reservations that aren't available for history — the output cap
-    (``max_output_tokens``) and the system prompt — so on a 32K local window the
-    budget leaves real room for INPUT instead of assuming the whole window is
-    history. ``sys_chars`` reserves the ACTUAL assembled system-prompt size when
-    the caller knows it (M1); when omitted it falls back to the ~14K
+    MINUS the reservations that aren't available for history — the reply
+    reserve (``max_output_tokens`` plus a reasoning allowance, see
+    :func:`_output_reserve_tokens`) and the system prompt — so on a 32K local
+    window the budget leaves real room for INPUT instead of assuming the whole
+    window is history. ``extra_reserve_tokens`` (and any hook from
+    :func:`register_reserve_hook`) widens the reply reserve for a step that
+    thinks longer, so a boosted step cannot overflow the window.
+    ``sys_chars`` reserves the ACTUAL assembled system-prompt size when the
+    caller knows it (M1); when omitted it falls back to the ~14K
     ``_SYSTEM_PROMPT_CHARS`` estimate. A cave/non-cave headroom fraction is then
     applied to the remaining usable space, and a floor keeps the budget positive
     on a tiny window."""
@@ -197,12 +263,8 @@ def _ctx_budget_chars(role: str | None = None,
     win = _window_tokens(role) or 131072
     # The context (system prompt + history) may reach _history_fraction of the
     # window — 80% by default — and never past the window minus the model's own
-    # reply (output cap), so a request always fits.
-    try:
-        from aiforge_core.config import runtime_settings
-        out_chars = int(runtime_settings.get("max_output_tokens")) * 4
-    except Exception:  # noqa: BLE001
-        out_chars = 4096 * 4
+    # reply (its output cap + any reasoning allowance), so a request always fits.
+    out_chars = _output_reserve_tokens(win, role, extra_reserve_tokens) * 4
     win_chars = win * 4                          # ~4 chars/token
     ceiling = min(int(win_chars * _history_fraction(role)),
                   win_chars - out_chars)

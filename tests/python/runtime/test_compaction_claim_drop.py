@@ -32,7 +32,7 @@ def test_edit_claim_not_persisted_as_outcome(monkeypatch):
     import aiforge_core.runtime.chat_agent._context._compaction as comp
     monkeypatch.setattr(comp, "_ctx_budget_chars", lambda *a, **k: 20000)
     out = _compact_convo(_long_convo(), keep_recent=4)
-    sys_text = out[0]["content"]
+    sys_text = out[1]["content"]          # the condense note, after the system prompt
     # It actually condensed (breadcrumb present).
     assert "auto-condensed" in sys_text
     # The hallucinated edit claim is NOT carried forward as an outcome…
