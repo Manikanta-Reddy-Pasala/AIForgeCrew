@@ -241,6 +241,11 @@ def _complete_live(complete_fn, role, convo, session_id, stream: bool = True):
     sem = _gen_sem()
     if not (yield from _acquire_slot(sem, session_id)):
         return _CANCELLED
+    try:
+        from aiforge_core.runtime import chat_runs
+        chat_runs.set_phase(session_id, "waiting for the model to answer")
+    except Exception:  # noqa: BLE001
+        pass
     import queue as _q
     deltas = _q.SimpleQueue() if stream and _stream_enabled() else None
     waits = _q.SimpleQueue()
@@ -275,7 +280,7 @@ def _drain_waits(q) -> list:
             st = q.get_nowait()
         except _q.Empty:
             return out
-        if isinstance(st, dict) and st.get("text"):
+        if isinstance(st, dict) and st.get("text") and not st.get("_shown"):
             out.append({"type": "thought", "role": "system", "text": st["text"],
                         "llm_wait": {k: st.get(k) for k in
                                      ("state", "url", "down_s", "next_probe_s")}})

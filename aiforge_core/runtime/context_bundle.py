@@ -214,7 +214,7 @@ def _project_brief(cwd: str) -> str:
     # reading the brief it mirrors.
     try:
         from aiforge_core.memory import projects as _projects
-        _projects.sync_for_repo(repo)
+        _projects.sync_for_repo(repo, wait_s=1.0)   # a turn never queues here
     except Exception:  # noqa: BLE001 — the mirror never breaks a turn
         pass
     return project_brief_text(repo)

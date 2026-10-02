@@ -168,8 +168,9 @@ def _save_registry(reg: dict) -> None:
 
 
 def registered() -> dict:
-    with _REG_LOCK:
-        return _load_registry()
+    # No lock: the file is replaced atomically, and a chat turn reads this on
+    # its way to the brief — it must never wait behind a sync in flight.
+    return _load_registry()
 
 
 def entry(slug: str) -> "dict | None":
@@ -288,7 +289,7 @@ def _merge_repo_edit(slug: str, repo_txt: str, brief_changed: bool) -> dict:
     return new
 
 
-def sync(slug: str) -> dict:
+def sync(slug: str, *, wait_s: float = 30.0) -> dict:
     """Bring the brief and ``<repo>/.aiforge/memory/MEMORY.md`` into step.
 
     An edited repo file is imported first, then the brief is written back out.
@@ -297,12 +298,17 @@ def sync(slug: str) -> dict:
     ent = entry(slug)
     if not ent:
         return {"ok": False, "error": "not a registered project"}
+    # ``wait_s`` bounds the wait for another sync in flight: the caller on a
+    # chat turn passes a short one and simply skips, the next sync catches up.
+    if not _REG_LOCK.acquire(timeout=max(0.0, wait_s)):
+        return {"ok": False, "error": "busy", "skipped": True}
     try:
-        with _REG_LOCK:
-            return _sync_locked(slug, ent)
+        return _sync_locked(slug, ent)
     except Exception as exc:  # noqa: BLE001 — a mirror must never break a turn
         _log.debug("projects: sync %s failed: %s", slug, exc)
         return {"ok": False, "error": str(exc)}
+    finally:
+        _REG_LOCK.release()
 
 
 def _sync_locked(slug: str, ent: dict) -> dict:
@@ -337,7 +343,7 @@ def _sync_locked(slug: str, ent: dict) -> dict:
             "writable": writable}
 
 
-def sync_for_repo(repo: "str | None") -> None:
+def sync_for_repo(repo: "str | None", *, wait_s: float = 30.0) -> None:
     """Sync the project that owns memory key ``repo``, if it is one. The hook
     the write path calls after it changes a brief."""
     if not repo:
@@ -345,7 +351,7 @@ def sync_for_repo(repo: "str | None") -> None:
     try:
         slug = slug_for(repo)
         if entry(slug):
-            sync(slug)
+            sync(slug, wait_s=wait_s)
     except Exception:  # noqa: BLE001
         pass
 

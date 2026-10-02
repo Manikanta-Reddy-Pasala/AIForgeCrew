@@ -336,11 +336,43 @@ def _wait_for_slot(pc) -> bool:
     return True
 
 
+def _bind_wait_status(pc) -> None:
+    """Show "waiting for the model" lines for every model call this turn makes
+    on this thread — the request classifier, the enhancer and the recall
+    summary run BEFORE the agent, and an outage there used to reach only the
+    server log while the chat showed a timer over nothing."""
+    try:
+        from aiforge_core.llm import model_wait
+
+        def _sink(st):
+            if isinstance(st, dict) and st.get("text") and not st.get("_shown"):
+                st["_shown"] = True      # the agent's own drain skips it
+                pc.run.publish({"type": "thought", "role": "system",
+                                "text": st["text"]})
+        model_wait.bind_status_sink(_sink)
+    except Exception:  # noqa: BLE001 — a status line never blocks a turn
+        pass
+
+
 def _produce(pc):
+    import threading as _threading
+
     from aiforge_core.runtime import chat_approve as _chat_approve
+    from aiforge_core.runtime import chat_runs as _chat_runs
     from aiforge_core.runtime import parallel_subtasks as _psub
-    if not _wait_for_slot(pc):
+    # The watchdog reads this: a run whose worker is gone is not running.
+    pc.run.worker = _threading.current_thread()
+    pc.run.phase = "waiting for a free slot"
+    try:
+        got_slot = _wait_for_slot(pc)
+    except Exception as exc:  # noqa: BLE001 — never leave a run nobody ends
+        pc.run.publish({"type": "error", "text": str(exc)})
+        pc.run.publish({"type": "done"})
+        pc.run.finish()
         return
+    if not got_slot:
+        return
+    _bind_wait_status(pc)
     # Bind this producer thread to the session so LLM tracing (Langfuse
     # sessions/scores) tags every generation with the run it belongs to.
     # Covers ALL modes here (simple/plan run inline in this thread; team's
@@ -376,11 +408,15 @@ def _produce(pc):
         # some Doer-side call sites resolve via request_context.get_repo_root()
         # with NO cwd) sees the SAME repo the tools run against.
         _repo_token = _reqctx.set_repo_root(pc.cwd)
+        _chat_runs.set_phase(pc.session_id, "working out how to handle the request")
         _prepare_turn(pc, _chat_approve, _psub)
         # Mirror chat activity into the observability NDJSON so the Logs page
         # shows live runs (the page tails orchestrator-<role>.ndjson).
         _clog, emit = _setup_chat_logger()
+        _chat_runs.set_phase(pc.session_id, "saving a checkpoint of the workspace")
         _auto_checkpoint(pc)   # snapshot first (off the response-open path)
+        _chat_runs.set_phase(pc.session_id,
+                             "preparing context (memory, rules, repo map)")
         _drive_produce_stream(lambda: _events(pc), st, steps, pc.run, pc.session_id,
                               pc._turn_t0, pc._turn_mode, _clog, emit)
     except Exception as exc:  # noqa: BLE001 — setup failed before the stream
@@ -388,8 +424,12 @@ def _produce(pc):
         pc.run.publish({"type": "error", "text": str(exc)})
         pc.run.publish({"type": "done"})
     finally:
-        _overlap.discard(pc)     # an early enhance the turn never used
-        _capture_bg.flush(pc)    # a background capture still in flight
+        for _cleanup in (_overlap.discard,    # an early enhance the turn never used
+                         _capture_bg.flush):  # a background capture still in flight
+            try:
+                _cleanup(pc)
+            except Exception:  # noqa: BLE001 — cleanup must not skip the finalize
+                pass
         _finalize_produce_turn(
             pc.session_id, pc.cwd, pc.prompt, st["final_text"], steps, st["awaiting"],
             pc.team, pc._path, pc._turn_mode, pc._turn_t0,

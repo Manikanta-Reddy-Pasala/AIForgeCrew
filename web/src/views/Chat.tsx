@@ -516,6 +516,12 @@ function copyText(t: string) {
  *  folder, and a new chat starts there. */
 export interface ChatProject { name: string; path: string }
 
+// A heartbeat reporting at least this much silence is shown as a status line.
+const QUIET_SHOW_S = 15;
+// No bytes at all (not even a heartbeat, which comes every 10 s) for this long
+// means the stream is dead.
+const LOST_SIGNAL_S = 40;
+
 export default function Chat({ project }: { project?: ChatProject } = {}) {
   // Each project remembers its own last-open chat.
   const lsSessionKey = project ? `${LS_SESSION_KEY}:${project.name}` : LS_SESSION_KEY;
@@ -1146,6 +1152,44 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
     }
   }
 
+  // ── Lost-signal check ─────────────────────────────────────────────────────
+  // The server sends a heartbeat every 10 s even when the run is silent. If
+  // NOTHING arrives for LOST_SIGNAL_S the stream itself is dead (proxy drop,
+  // server restart) and the timer would count over nothing. Ask the server:
+  // a run that is gone is closed here; one that is alive is re-attached.
+  const lastSignalRef = useRef<number>(Date.now());
+  useEffect(() => {
+    if (!busy) return;
+    lastSignalRef.current = Date.now();
+    const h = setInterval(async () => {
+      const sid = activeIdRef.current;
+      const silent = (Date.now() - lastSignalRef.current) / 1000;
+      if (sid === null || silent < LOST_SIGNAL_S) return;
+      lastSignalRef.current = Date.now();          // one check per window
+      setLiveTurn(prev => prev ? { ...prev, quiet: { seconds: Math.round(silent), phase: '', lost: true } } : prev);
+      try {
+        const st = await chatSideTasks(sid);
+        if (activeIdRef.current !== sid) return;
+        abortRef.current?.abort();
+        abortRef.current = null;
+        if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+        setBusy(false);
+        busyRef.current = false;
+        if (st.running) {
+          attachToRun(sid);                         // alive: pick the stream back up
+        } else {
+          setLiveTurn(null);
+          await loadSession(sid);
+          toast('That run had already ended — the chat was reloaded.');
+        }
+      } catch {
+        // the server did not answer either: keep the notice, try again next window
+      }
+    }, 5000);
+    return () => clearInterval(h);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy]);
+
   // ── Side tasks: other agent runs beside this chat ─────────────────────────
   const [sideTasks, setSideTasks] = useState<SideTask[]>([]);
   const [sideLimit, setSideLimit] = useState(1);
@@ -1348,8 +1392,18 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
       let evt: any;
       try { evt = JSON.parse(line); } catch { return; }
 
-      // Heartbeat — keeps the SSE connection warm on a slow model. No-op.
-      if (evt.type === 'ping') return;
+      lastSignalRef.current = Date.now();
+      // Heartbeat — keeps the SSE connection warm on a slow model. It also
+      // carries how long the run has been quiet and what it is doing, so a
+      // silent stretch reads as "waiting for the model · 40s", not a bare timer.
+      if (evt.type === 'ping') {
+        const seconds = Number(evt.quiet_s) || 0;
+        if (seconds >= QUIET_SHOW_S) {
+          setLiveTurn(prev => prev ? { ...prev, quiet: { seconds, phase: String(evt.phase || '') } } : prev);
+        }
+        return;
+      }
+      setLiveTurn(prev => (prev && prev.quiet) ? { ...prev, quiet: undefined } : prev);
       if (evt.type === 'attached') { handleAttached(evt); return; }
 
       // Approval gate (#1): the run is blocked server-side; surface the action
@@ -2124,6 +2178,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                       steps={liveTurn.steps}
                       streaming={liveTurn.streaming}
                       elapsedSec={liveTurn.streaming ? elapsedSec : liveTurn.elapsedSec}
+                      quiet={liveTurn.streaming ? liveTurn.quiet : undefined}
                       /* subtasks render in the pinned bottom dock, not inline */
                       captured={liveTurn.captured}
                     />

@@ -2,9 +2,12 @@
 and usage reporting."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from aiforge_core.runtime.chat_event_slim import slim_event
+
+_af_log = logging.getLogger("aiforge.chat")
 
 from ._core import (
     _PRODUCE_SEM,
@@ -239,10 +242,26 @@ def _finalize_produce_turn(session_id, cwd, prompt, final_text, steps, awaiting,
     # parallel-team is a self-contained generator, so both persist inline. Gate
     # on whether the driver actually LAUNCHED — a team run that crashes in the
     # pre-stream orchestrator never starts it and must clean up here too.
-    if not path["driver"]:
-        _persist_produce_turn(session_id, cwd, prompt, final_text, steps,
-                              awaiting, team, path, _turn_mode, _turn_t0,
-                              cancelled)
+    if path["driver"]:
+        # The driver thread carries the run from here; this producer thread
+        # ending is expected and must not read as a dead run.
+        run.worker = None
+    else:
+        try:
+            _persist_produce_turn(session_id, cwd, prompt, final_text, steps,
+                                  awaiting, team, path, _turn_mode, _turn_t0,
+                                  cancelled)
+        except Exception as exc:  # noqa: BLE001
+            # A failed save used to skip run.finish() below: the run stayed
+            # "running" forever, the chat stayed busy and every new message
+            # got a 409. Say what happened and still close the run.
+            _af_log.warning("chat turn persist failed (session %s): %s",
+                            session_id, exc)
+            try:
+                run.publish({"type": "error",
+                             "text": f"The answer could not be saved: {exc}"})
+            except Exception:  # noqa: BLE001
+                pass
     # The turn ended here (or its driver owns persistence): the crash copy
     # must not come back as a second, "interrupted" answer.
     try:

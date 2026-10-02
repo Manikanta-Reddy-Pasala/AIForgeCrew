@@ -25,10 +25,25 @@ import tempfile
 from pathlib import Path
 
 
+def _git_timeout_s() -> float:
+    """Longest one checkpoint git command may take (``AIFORGE_CHECKPOINT_GIT_S``).
+    It had none: a stuck git (a lock, a hung mount) held the turn before its
+    first step with nothing on screen."""
+    try:
+        return max(5.0, float(os.environ.get("AIFORGE_CHECKPOINT_GIT_S", "120")))
+    except (TypeError, ValueError):
+        return 120.0
+
+
 def _git(cwd: str, *args: str, env: dict | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True,
-        env={**os.environ, **(env or {})}, check=False)
+    cmd = ["git", *args]
+    try:
+        return subprocess.run(
+            cmd, cwd=cwd, capture_output=True, text=True,
+            env={**os.environ, **(env or {})}, check=False,
+            timeout=_git_timeout_s())
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", "git timed out")
 
 
 def _is_repo(cwd: str) -> bool:

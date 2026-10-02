@@ -44,6 +44,9 @@ export type LiveTurn = {
   streamText?: string;
   draft?: string;
   elapsedSec?: number;
+  // From the server heartbeat while the run says nothing: how long it has been
+  // quiet and what it is doing. Cleared by the next real event.
+  quiet?: { seconds: number; phase: string; lost?: boolean };
   awaiting?: boolean;   // agent asked a question — waiting for your reply
   subtasks?: SubtaskItem[];   // Planner decomposition (team mode)
   captured?: CapturedItem[];  // Rule/Memory/Feedback captured this turn

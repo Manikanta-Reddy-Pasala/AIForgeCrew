@@ -39,12 +39,17 @@ function uniqueKeys(steps: AgentStep[]): string[] {
   });
 }
 
+function fmtQuiet(seconds: number): string {
+  return seconds < 90 ? `${seconds}s` : `${Math.floor(seconds / 60)}m`;
+}
+
 export function AssistantBubble({
   text,
   draft,
   steps,
   streaming,
   elapsedSec,
+  quiet,
   subtasks,
   captured,
   onRegenerate,
@@ -57,6 +62,8 @@ export function AssistantBubble({
   steps: AgentStep[];
   streaming: boolean;
   elapsedSec?: number;
+  /** the run has been silent this long, doing `phase` (from the heartbeat) */
+  quiet?: { seconds: number; phase: string; lost?: boolean };
   subtasks?: SubtaskItem[];
   captured?: CapturedItem[];
   onRegenerate?: () => void;
@@ -111,6 +118,14 @@ export function AssistantBubble({
       {changeSteps.length > 0 && (
         <div style={{ marginTop: text ? 8 : 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {changeSteps.map((s) => <AgentStepRow key={`chg-${stepKey(s)}`} step={s} />)}
+        </div>
+      )}
+      {streaming && quiet && (
+        <div className="xs" title="The run has not produced anything for this long"
+             style={{ margin: '2px 2px 4px', color: quiet.lost || quiet.seconds >= 60 ? 'var(--warn)' : 'var(--fg-3)' }}>
+          {quiet.lost
+            ? `No signal from the server for ${fmtQuiet(quiet.seconds)} — checking whether the run is still alive…`
+            : `⏳ ${quiet.phase || 'Working'} · no output for ${fmtQuiet(quiet.seconds)}`}
         </div>
       )}
       {streaming && !text && draft && (

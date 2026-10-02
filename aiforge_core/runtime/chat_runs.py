@@ -29,6 +29,7 @@ chat_cancel / chat_approve / chat_interject are all in-process too).
 """
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import time
@@ -61,6 +62,13 @@ class _Run:
         self.finished = threading.Event()
         self.started_at = time.time()         # epoch secs — for reattach timer
         self.lock = threading.Lock()
+        # When the run last SAID anything, and what it is doing — so silence can
+        # be told apart from work and named ("waiting for the model", "running
+        # pytest") instead of leaving a timer counting over nothing.
+        self.last_event_at = time.time()
+        self.phase = ""
+        self.quiet_notices = 0                # how many quiet notices went out
+        self.worker: "threading.Thread | None" = None   # the producer thread
 
     # -- producer side -------------------------------------------------------
 
@@ -78,6 +86,10 @@ class _Run:
             # subscriber. Buffering the producer's pings would replay a growing
             # pile of them to every re-attach. Forward live but don't store.
             kind = event.get("type")
+            if kind != "ping" and not event.get("quiet_notice"):
+                self.last_event_at = time.time()
+                self.quiet_notices = 0
+                self.phase = _phase_after(event, self.phase)
             if kind == "done":
                 self.answered = True
             if kind == "delta":
@@ -135,6 +147,107 @@ class _Run:
     def unsubscribe(self, q: queue.Queue) -> None:
         with self.lock:
             self.subscribers.discard(q)
+
+
+def _phase_after(event: dict, current: str) -> str:
+    """What the run is doing once ``event`` has gone out."""
+    kind = event.get("type")
+    if kind == "tool_start":
+        return f"running {event.get('name') or 'a tool'}"
+    if kind == "approval":
+        return "waiting for your approval"
+    if kind == "delta":
+        return "the model is writing"
+    if kind in ("tool", "approval_expired", "auto_approved"):
+        return "waiting for the model"
+    if kind in ("message", "done", "error"):
+        return "finishing up"
+    return current
+
+
+def set_phase(session_id, text: str) -> None:
+    """Name what the session's run is about to do. For stretches that emit no
+    event of their own (a git snapshot, building context, the first model
+    call) — so a quiet spell can say what it is waiting on."""
+    if session_id is None:
+        return
+    run = get(session_id)
+    if run is not None and not run.done:
+        run.phase = text or ""
+
+
+def _fmt_quiet(seconds: float) -> str:
+    s = int(seconds)
+    return f"{s}s" if s < 90 else f"{s // 60}m"
+
+
+def _quiet_marks() -> list[float]:
+    """Seconds of silence at which a run says so (``AIFORGE_CHAT_QUIET_NOTICE_S``,
+    comma separated; the last gap repeats). Empty or 0 turns the notices off."""
+    raw = os.environ.get("AIFORGE_CHAT_QUIET_NOTICE_S", "60,180,600")
+    out: list[float] = []
+    for part in raw.split(","):
+        try:
+            v = float(part)
+        except ValueError:
+            continue
+        if v > 0:
+            out.append(v)
+    return sorted(out)
+
+
+def _next_quiet_mark(marks: list[float], sent: int) -> float:
+    if sent < len(marks):
+        return marks[sent]
+    step = marks[-1] - marks[-2] if len(marks) > 1 else marks[-1]
+    return marks[-1] + max(step, 60.0) * (sent - len(marks) + 1)
+
+
+def _check_run(run: "_Run", now: float, marks: list[float]) -> None:
+    """One watchdog look at one live run."""
+    quiet = now - run.last_event_at
+    worker = run.worker
+    if worker is not None and not worker.is_alive() and quiet > 5.0:
+        # The thread that was producing this turn is gone and never closed the
+        # run: nothing is running, whatever the UI's timer says.
+        run.publish({"type": "error",
+                     "text": "This run stopped without finishing (its worker "
+                             "ended unexpectedly). Nothing is running now — "
+                             "send the message again."})
+        run.publish({"type": "done"})
+        run.finish()
+        return
+    if marks and quiet >= _next_quiet_mark(marks, run.quiet_notices):
+        run.quiet_notices += 1
+        doing = run.phase or "still working"
+        run.publish({"type": "thought", "role": "system", "quiet_notice": True,
+                     "text": f"⏳ No output for {_fmt_quiet(quiet)} — {doing}. "
+                             "The run is alive; Stop ends it."})
+
+
+def _watch() -> None:
+    while True:
+        time.sleep(5.0)
+        try:
+            marks = _quiet_marks()
+            with _LOCK:
+                live = [r for r in _RUNS.values() if not r.done]
+            now = time.time()
+            for run in live:
+                _check_run(run, now, marks)
+        except Exception:  # noqa: BLE001 — the watchdog must outlive any run
+            pass
+
+
+_WATCH_STARTED = False
+
+
+def _ensure_watchdog() -> None:
+    global _WATCH_STARTED
+    if _WATCH_STARTED:
+        return
+    _WATCH_STARTED = True
+    threading.Thread(target=_watch, name="chat-run-watchdog", daemon=True).start()
 
 
 # Called (each on its own daemon thread) with the session id when a run ends —
@@ -203,6 +316,7 @@ def any_active() -> bool:
 def start(session_id: int) -> _Run:
     """Register a fresh run for ``session_id``, replacing any prior one."""
     _touch()
+    _ensure_watchdog()
     with _LOCK:
         run = _Run(session_id)
         _RUNS[session_id] = run
@@ -290,7 +404,11 @@ def iter_subscription(run: "_Run", q: queue.Queue,
             try:
                 item = q.get(timeout=ping_every)
             except queue.Empty:
-                yield {"type": "ping"}
+                # The heartbeat says how long the run has been quiet and what
+                # it is doing, so the UI can show that instead of a bare timer.
+                yield {"type": "ping",
+                       "quiet_s": int(max(0.0, time.time() - run.last_event_at)),
+                       "phase": run.phase}
                 continue
             if item is _SENTINEL:
                 return
