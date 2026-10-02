@@ -265,6 +265,63 @@ def _middle_signals(middle: list[dict]) -> tuple[list[str], list[str], list[str]
     return tools, user_asks, finals
 
 
+_ERR_LINE = re.compile(
+    r"(?:Traceback|Error\b|Exception\b|FAILED|\berror:|AssertionError)", re.I)
+_FACT_CAP = 8
+
+
+def _middle_facts(middle: list[dict]) -> tuple[list[str], list[str], list[str]]:
+    """``(edited, read, errors)`` from the dropped middle, taken verbatim from the
+    calls and results (no model): the paths a tool wrote or read, and the first
+    error line of a failing result. A tally of tool names loses exactly these."""
+    import json as _json
+
+    from aiforge_core.runtime.tools.mutating import FILE_WRITE_TOOLS
+
+    from .._shell import _ARGS_RE
+    edited: list[str] = []
+    read: list[str] = []
+    errors: list[str] = []
+    for m in middle:
+        content = _text_of(m)
+        if m.get("role") == "assistant":
+            mt = _ACTION_RE.search(content)
+            ma = _ARGS_RE.search(content)
+            if not (mt and ma):
+                continue
+            try:
+                args = _json.loads(ma.group(1))
+            except ValueError:
+                continue
+            if not isinstance(args, dict):
+                continue
+            paths = [args.get("path")] + list(args.get("paths") or [])
+            paths += [e.get("path") for e in args.get("edits") or []
+                      if isinstance(e, dict)]
+            bucket = edited if mt.group(1).lower() in FILE_WRITE_TOOLS else read
+            bucket.extend(str(x) for x in paths if isinstance(x, str) and x)
+        elif m.get("role") == "user" and content.startswith("OBSERVATION:"):
+            for line in content.splitlines()[:80]:
+                if _ERR_LINE.search(line) and len(line.strip()) > 8:
+                    errors.append(line.strip()[:160])
+                    break
+    return (list(dict.fromkeys(edited)), list(dict.fromkeys(read)),
+            list(dict.fromkeys(errors)))
+
+
+def _carry_prior_facts(prior: str) -> tuple[list[str], list[str], list[str]]:
+    """The ``(edited, read, errors)`` lists a PRIOR condense wrote into its note,
+    so a second condense keeps them instead of starting over."""
+    block = re.search(re.escape(_CONDENSE_OPEN) + r"(.*?)"
+                      + re.escape(_CONDENSE_CLOSE), prior or "", flags=re.S)
+    text = _SUM_RE.sub("", block.group(1)) if block else ""
+    out = []
+    for label in ("Files edited", "Files read", "Errors seen"):
+        m = re.search(label + r": (.+)", text)
+        out.append([x.strip() for x in m.group(1).split(" · ")] if m else [])
+    return out[0], out[1], out[2]
+
+
 def _carry_prior_thread(prior: str, user_asks: list, finals: list) -> tuple[list, list]:
     """ROLLING summary: carry forward asks/outcomes from the PRIOR breadcrumb so
     a second+ condense doesn't drop the original thread."""
@@ -282,7 +339,8 @@ def _carry_prior_thread(prior: str, user_asks: list, finals: list) -> tuple[list
     return user_asks, finals
 
 
-def _summary_tail(user_asks: list, finals: list) -> str:
+def _summary_tail(user_asks: list, finals: list,
+                  facts: "tuple[list, list, list] | None" = None) -> str:
     """Earlier asks + outcomes, not just tool counts — so condensation doesn't
     erase what was discussed/decided (the agent stops "forgetting" the thread
     after a long session). Heuristic, no extra LLM call; capped slices keep it
@@ -292,6 +350,13 @@ def _summary_tail(user_asks: list, finals: list) -> str:
         bits.append("Earlier asks: " + " · ".join(user_asks[-6:]))
     if finals:
         bits.append("Earlier outcomes: " + " · ".join(finals[-4:]))
+    edited, read, errors = facts or ([], [], [])
+    if edited:
+        bits.append("Files edited: " + " · ".join(edited[-_FACT_CAP:]))
+    if read:
+        bits.append("Files read: " + " · ".join(read[-_FACT_CAP:]))
+    if errors:
+        bits.append("Errors seen: " + " · ".join(errors[-5:]))
     return ("\n" + "\n".join(bits)) if bits else ""
 
 
@@ -406,7 +471,11 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
     gen = _block_gen(prior_block) + 1
     carried = _block_summary(prior_block)
     _schedule_llm_summary(middle, complete_fn, run_key, gen, carried)
-    note = _breadcrumb(middle, used, _summary_tail(user_asks, finals),
+    ed0, rd0, er0 = _carry_prior_facts(convo[0].get("content") or "")
+    ed1, rd1, er1 = _middle_facts(middle)
+    facts = (list(dict.fromkeys(ed0 + ed1)), list(dict.fromkeys(rd0 + rd1)),
+             list(dict.fromkeys(er0 + er1)))
+    note = _breadcrumb(middle, used, _summary_tail(user_asks, finals, facts),
                        carried, gen)
     # Fold the breadcrumb INTO the system message rather than inserting a
     # separate 'user' turn — that avoids two consecutive same-role messages.

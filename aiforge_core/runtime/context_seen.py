@@ -123,8 +123,8 @@ def dedupe_tool_result(messages, name: str, args, result, cwd: str | None = None
     """A copy of ``result`` with repeated artifact bodies replaced by pointers.
 
     The caller's object is not modified (the UI still shows the raw tool
-    result). Anything that is not an OKF page, skill, workflow, or memory
-    hit is returned as-is, including ordinary source-file reads.
+    result). A source file read again with the exact same text also becomes a
+    pointer. Anything else is returned as-is.
     """
     if not isinstance(result, dict) or result.get("ok") is False:
         return result
@@ -510,10 +510,29 @@ def _file_idents(path: str, meta: dict) -> list[str]:
     return [i for i in idents if i and len(i) >= 2]
 
 
+# A source file this long, read again with the same text, is a repeat worth a
+# pointer. Shorter reads cost less than the sentence that replaces them.
+_MIN_SOURCE_REPEAT = 1200
+
+
+def _source_repeat_pointer(messages, path: str, content: str) -> str | None:
+    """A pointer for a source file whose EXACT text is already in the turn, else
+    None. Lossless: a file that changed since the earlier read (an edit, a
+    different range) does not match, so its new text is sent whole. A read that
+    an earlier cut shortened does not match either."""
+    body = content.replace("\r\n", "\n").strip()
+    if len(body) < _MIN_SOURCE_REPEAT:
+        return None
+    for text in _texts(messages):
+        if body in text.replace("\r\n", "\n"):
+            return pointer("file", path, body)
+    return None
+
+
 def _pointer_for_file(messages, path: str, content: str) -> str | None:
     kind = _artifact_kind(path)
     if not kind:
-        return None
+        return _source_repeat_pointer(messages, path, content)
     meta, body = _frontmatter(content)
     body_s = body.strip()
     idents = _file_idents(path, meta)

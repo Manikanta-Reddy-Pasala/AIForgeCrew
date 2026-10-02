@@ -361,3 +361,39 @@ def test_a_dangling_pointer_is_expanded_once_and_only_from_this_turn():
     assert body not in out[1]["content"]
     seen.reset_seen_bodies()
     assert seen.restore_dangling(kept, []) is kept
+
+
+# ── source files read twice ────────────────────────────────────────────
+
+_SRC = "def f():\n    return 1\n" * 80          # well over the repeat threshold
+
+
+def test_a_source_file_read_again_unchanged_becomes_a_pointer():
+    from aiforge_core.runtime.context_seen import dedupe_tool_result
+    msgs = [{"role": "user", "content": "OBSERVATION: " + _SRC}]
+    out = dedupe_tool_result(msgs, "file_read", {"path": "a.py"},
+                             {"ok": True, "path": "a.py", "content": _SRC})
+    assert out["already_in_context"] is True
+    assert out["content"].startswith("[already in context: file a.py")
+    assert len(out["content"]) < 200
+
+
+def test_a_changed_source_file_is_sent_whole():
+    from aiforge_core.runtime.context_seen import dedupe_tool_result
+    msgs = [{"role": "user", "content": "OBSERVATION: " + _SRC}]
+    edited = _SRC.replace("return 1", "return 2", 1)
+    res = {"ok": True, "path": "a.py", "content": edited}
+    assert dedupe_tool_result(msgs, "file_read", {"path": "a.py"}, res) is res
+
+
+def test_a_short_source_file_is_not_replaced():
+    from aiforge_core.runtime.context_seen import dedupe_tool_result
+    msgs = [{"role": "user", "content": "OBSERVATION: x = 1\n"}]
+    res = {"ok": True, "path": "a.py", "content": "x = 1\n"}
+    assert dedupe_tool_result(msgs, "file_read", {"path": "a.py"}, res) is res
+
+
+def test_a_first_read_is_sent_whole():
+    from aiforge_core.runtime.context_seen import dedupe_tool_result
+    res = {"ok": True, "path": "a.py", "content": _SRC}
+    assert dedupe_tool_result([], "file_read", {"path": "a.py"}, res) is res
