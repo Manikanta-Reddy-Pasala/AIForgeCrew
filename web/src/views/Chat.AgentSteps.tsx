@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { Icon } from '../icons';
 import { AgentStep, ChangeFile } from './Chat.types';
 import { toText } from '../util';
+import { MdLite } from '../mdlite';
+import { looksLikeMarkdown } from '../looksLikeMarkdown';
 
 // ── Agent step row ─────────────────────────────────────────────────────────────
 
@@ -39,7 +41,20 @@ function ThoughtRow({ step }: Readonly<{ step: Extract<AgentStep, { kind: 'thoug
   // down, and it throws the same sentence.
   const text = String(step.text ?? '');
   const long = text.length > 180;
-  const [open, setOpen] = useState(!long);
+  const [open, setOpen] = useState(!long);   // before any early return: hooks keep their order
+  // An answer written alongside a tool call (or a steer reply) arrives as a
+  // thought. Shown as plain text, its headings, tables and bold came out as
+  // raw "## 1." and "**YES**". Markdown content is rendered as markdown.
+  if (step.role !== 'system' && step.role !== 'steer' && looksLikeMarkdown(text)) {
+    return (
+      <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', padding: '8px 12px',
+                    background: 'var(--bg-1)', border: '1px solid var(--border-0)',
+                    borderRadius: 'var(--r-sm)', fontSize: 'var(--fs-sm)' }}>
+        <AgentBadge role={step.role} />
+        <div style={{ flex: 1, minWidth: 0 }}><MdLite text={text} /></div>
+      </div>
+    );
+  }
   const preview = long && !open
     ? text.replace(/\s+/g, ' ').slice(0, 140) + '…'
     : text;

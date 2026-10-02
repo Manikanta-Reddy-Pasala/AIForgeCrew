@@ -57,6 +57,46 @@ class _SideBody(BaseModel):
 
 # ── deciding ─────────────────────────────────────────────────────────────────
 
+_INFO_OPENER_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+)?"
+    r"(?:answer|explain|describe|summari[sz]e|list|show|tell|give\s+me|what|"
+    r"which|who|whom|whose|why|how|where|when|is\s+there|are\s+there|"
+    r"do\s+(?:we|you|i)|does|did|is|are|was|were)\b", re.IGNORECASE)
+_POLITE_RE = re.compile(r"^\s*(?:please\s+)?(?:can|could|would|will)\s+you\b",
+                        re.IGNORECASE)
+_POLITE_INFO_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:can|could|would|will)\s+you\s+(?:please\s+)?"
+    r"(?:answer|explain|describe|summari[sz]e|list|show|tell|give\s+me)\b",
+    re.IGNORECASE)
+_LIST_ITEM_RE = re.compile(r"(?:^|\s)(?:\d+[.)]|[-*•])\s+\S")
+
+
+def asks_for_information(text: str) -> bool:
+    """Whether a mid-run message only wants something ANSWERED.
+
+    A request for information does not change the work in progress, so it must
+    not be folded into it: the running agent took "answer these questions" as
+    its new task, replied to them as its final answer and never finished what
+    it was doing. A message that touches the work (it names a change to make)
+    stays a steer."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    from ._overlap import has_edit_intent
+    if has_edit_intent(t):
+        return False
+    # "can you also log the date?" is an instruction; "can you explain X?" is not.
+    if _POLITE_RE.match(t) and not _POLITE_INFO_RE.match(t):
+        return False
+    if "?" in t or _INFO_OPENER_RE.match(t):
+        return True
+    if len(_LIST_ITEM_RE.findall(t)) >= 2:       # a numbered list of asks
+        return True
+    if len(t) > 200 or t.count("\n") >= 3:       # a paragraph is a request of its own
+        return True
+    return False
+
+
 def classify(text: str) -> str:
     """``"steer"`` or ``"task"`` for a message typed while a run is going.
 
@@ -76,6 +116,8 @@ def classify(text: str) -> str:
     except Exception:  # noqa: BLE001
         pass
     if _SIDE_CUE_RE.search(t):
+        return "task"
+    if asks_for_information(t):
         return "task"
     from ._sched_fold import _is_new_request
     return "task" if _is_new_request(t) else "steer"

@@ -306,3 +306,33 @@ def test_a_finished_task_carries_its_whole_answer_for_the_chat_to_show(env):
     # …but the answer is available to show right away
     assert d["answer"] == long_answer.strip()
     assert len(d["preview"]) <= 240
+
+
+# ── a request for information is its own task; a correction steers ────────────
+
+@pytest.mark.parametrize("text", [
+    "Answer these 2 questions: 1. what port does the shop API listen on 2. what is the first line of the README",
+    "answer 4 questions about the schema, the AI interface, the algorithm and the destination tables",
+    "1. schema of the first ClickHouse table\n2. is there a working AI interface\n3. is the algorithm proven",
+    "explain how the retry works", "describe the deployment flow", "summarise the open TODOs",
+    "list the failing tests", "tell me which services use redis", "show me the schema",
+    "can you explain why the build is slow", "do we have a working AI interface",
+    "why is it slow", "which tables hold the emitters?", "is there a Rust version yet?",
+    "I need to understand how the clustering step decides which pulses belong together, "
+    "what thresholds it uses, where those thresholds come from, and how they were tuned "
+    "against the 50k run so I can explain it in tomorrow's review meeting with the team",
+])
+def test_a_request_for_information_is_its_own_task(text):
+    assert __import__("aiforge_core.api.routes._chat._side_tasks",
+                      fromlist=["x"]).classify(text) == "task"
+
+
+@pytest.mark.parametrize("text", [
+    "also handle the empty list case", "make the button blue", "use postgres instead",
+    "no, name it apply_discount", "can you also log the date?", "don't touch the tests",
+    "add a retry to client.py", "stop", "scratch that, do something else",
+    "rename the helper function in utils.py", "go faster",
+])
+def test_a_correction_still_steers(text):
+    assert __import__("aiforge_core.api.routes._chat._side_tasks",
+                      fromlist=["x"]).classify(text) == "steer"

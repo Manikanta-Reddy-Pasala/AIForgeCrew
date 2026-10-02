@@ -21,6 +21,17 @@ def test_the_directive_states_priority_and_both_readings():
     assert "ADDS" in d
 
 
+def test_anything_but_an_explicit_stop_means_continue_the_task():
+    """The agent took "answer these questions" as a replacement: it answered
+    them as its final reply and never finished the work it was doing."""
+    d = chat_steer.steer_directive("answer these 4 questions about the schema")
+    assert "CONTINUE the task you were on" in d
+    assert "Do NOT end the turn" in d and "do NOT drop steps" in d
+    assert "together with the result of the original task" in d
+    # a replacement still has to be asked for in so many words
+    assert "stop, cancel, drop it, or do something else INSTEAD" in d
+
+
 def test_a_mid_run_message_reaches_the_model_as_that_directive(tmp_path):
     """End to end through the ReAct loop: what the model actually sees."""
     seen: list = []
