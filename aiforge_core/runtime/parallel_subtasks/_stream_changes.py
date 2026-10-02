@@ -113,6 +113,9 @@ _CHANGES_HIDE = (
     # aiforge internals
     _SPEC_MD, ".aiforge-venv", ".aiforge-contracts", ".aiforge-baseline",
     ".aiforge-worktrees",
+    # the code-graph index the run builds for itself: tooling, never the
+    # request's work (its .gitignore alone made a no-edit run look changed)
+    ".codegraph/",
     # python
     "__pycache__", ".pyc", ".pyo", ".egg-info", ".pytest_cache", ".ruff_cache",
     ".mypy_cache", ".tox/", ".coverage",

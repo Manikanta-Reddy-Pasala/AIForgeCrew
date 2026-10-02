@@ -303,7 +303,7 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         pending_steps=[], batch_skipped=0, batch_mark=len(convo),
         batch_unread=False, early_reads={},
         board=seed_board(_asks, _turn_goal(messages)),
-        board_used=False, plan_asked=_plan_asked, last_green_fp=None,
+        board_used=False, board_touched=False, plan_asked=_plan_asked, last_green_fp=None,
         board_nudges=0, board_closed_mark=None, unlimited=_unlimited,
         goal=_turn_goal(messages), steers=[],
         # Keys this run's background condense summary (never the session:

@@ -30,7 +30,7 @@ from ._shared import (
     _THE_FINALIZE_TOOL,
     _log,
 )
-from ._tasks import board_nudge_allowed, open_planned, unfinished_reminder
+from ._tasks import board_nudge_allowed, open_for_final, unfinished_reminder
 
 
 def _claim_guard(st, step, cwd, readonly_mode, builder, _wt_fp0):
@@ -236,14 +236,15 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
     # Task board gate: the model planned items and some are still open. A
     # long run must not stop to report half the work; bounded so a model
     # that cannot finish still exits.
-    if (st.board_used and open_planned(st.board) and not builder
-            and not st.readonly_mode and board_nudge_allowed(st)):
+    _left = open_for_final(st)
+    if ((st.board_used or getattr(st, "board_touched", False)) and _left
+            and not builder and not st.readonly_mode and board_nudge_allowed(st)):
         if step.get("text"):
             yield {"type": "thought", "text": step["text"]}
         yield {"type": "thought", "role": "system",
-               "text": f"☐ {len(open_planned(st.board))} task(s) still open — "
-                       "continuing"}
-        st.convo.append({"role": "user", "content": unfinished_reminder(st.board)})
+               "text": f"☐ {len(_left)} task(s) still open — continuing"}
+        st.convo.append({"role": "user",
+                         "content": unfinished_reminder(st.board, _left)})
         return "continue"
     # A finished answer is the answer. The task board above is the check,
     # and it does not ask the model to resend the same text as FINAL.

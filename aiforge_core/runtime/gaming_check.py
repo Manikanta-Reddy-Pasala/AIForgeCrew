@@ -106,6 +106,19 @@ def is_test_path(path: str) -> bool:
     return bool(_TEST_PATH.search(path.replace(os.sep, "/")))
 
 
+#: Installed dependencies and tooling folders: code nobody on this run wrote.
+#: A managed venv that lands in the tree (``.aiforge-venv``) holds pytest's own
+#: source, which assigns into ``pytest`` — scanned as "production code" it read
+#: as the model patching the test runner and ended a green run as test gaming.
+_VENDOR_PATH = re.compile(
+    r"(^|/)(\.aiforge-venv|\.venv|venv|site-packages|node_modules|vendor|"
+    r"\.git|\.tox|\.nox|\.codegraph|\.aiforge-worktrees|__pycache__)/")
+
+
+def is_vendor_path(path: str) -> bool:
+    return bool(_VENDOR_PATH.search(path.replace(os.sep, "/")))
+
+
 # ── what was added (only by THIS turn / run: see gaming_changes) ───────
 
 from aiforge_core.runtime.gaming_changes import (  # noqa: E402,F401
@@ -122,7 +135,7 @@ def repo_changes(cwd: str, base: str | None = None) -> dict[str, set[int] | None
     snapshot (:func:`baseline`) when given, else since HEAD; ``None`` = the
     whole file is new."""
     return _changes(cwd, base, keep=lambda p: p.endswith(_SOURCE_EXT)
-                    and not is_test_path(p))
+                    and not is_test_path(p) and not is_vendor_path(p))
 
 
 # ── the scan ─────────────────────────────────────────────────────────────
