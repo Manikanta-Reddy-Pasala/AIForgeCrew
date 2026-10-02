@@ -115,11 +115,16 @@ def classify(prompt: str, history=None, _cwd: str | None = None) -> str:
     return "complex"
 
 
-def should_downgrade_team(prompt: str, history=None, cwd: str | None = None) -> bool:
+def should_downgrade_team(prompt: str, history=None, cwd: str | None = None,
+                          first_team_turn: bool = False) -> bool:
     """True when a TEAM turn should be handled by the fast single-agent path
     instead of the full pipeline: enabled, it's a follow-up (not the first
-    turn), and the change classifies as simple."""
-    if _disabled():
+    turn), and the change classifies as simple.
+
+    ``first_team_turn``: no earlier turn of this chat ran in Team mode (the
+    user switched a simple chat to Team). That pick is explicit, so the turn
+    keeps the pipeline however much simple-chat history precedes it."""
+    if _disabled() or first_team_turn:
         return False
     if not is_followup(history):
         return False

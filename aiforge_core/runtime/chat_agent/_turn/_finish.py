@@ -71,13 +71,80 @@ def _claim_guard(st, step, cwd, readonly_mode, builder, _wt_fp0):
     return None
 
 
+#: Reminders a zero-edit FINAL gets for a change request (see _no_change_guard).
+_NO_CHANGE_NUDGES = 1
+
+
+def _no_change_guard_enabled() -> bool:
+    """AIFORGE_CHAT_NO_CHANGE_GUARD=0 turns the zero-edit check off."""
+    return os.environ.get("AIFORGE_CHAT_NO_CHANGE_GUARD", "1").strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
+def _bigger_task(st, _asks) -> bool:
+    """A multi-part, long or planned request — the kind where ending with a plan
+    instead of the work is likeliest. A short single ask is "small": it gets the
+    honest note but never an extra model turn."""
+    from aiforge_core.runtime.chat_router import _SMALL_MAX_CHARS, is_small_task
+    goal = getattr(st, "goal", "") or ""
+    if is_small_task(goal):
+        return False
+    return bool(_asks or getattr(st, "board_used", False)
+                or len(goal) >= _SMALL_MAX_CHARS)
+
+
+def _no_change_guard(st, step, cwd, readonly_mode, builder, plan_mode, _asks,
+                     _wt_fp0):
+    """Zero-edit FINAL for a request that asked for changes (the single-agent
+    twin of the team run that ends with a plan). The claim guard only catches a
+    final that CLAIMS edits; a plan, review or "the real work is (a)(b)(c)"
+    claims nothing and was accepted as the finished result.
+
+    Checks the disk, not the model's word: no landed edit AND an unchanged
+    tree. A bigger task gets one reminder to do the work (no other model call
+    is added); whatever the outcome, an accepted zero-edit final is labelled so
+    a plan is never read as the result. A final that asks the user something is
+    left alone. Returns continue or None."""
+    if (readonly_mode or plan_mode or builder or st.edits_made != 0
+            or not _no_change_guard_enabled()):
+        return None
+    from aiforge_core.runtime.chat_router import wants_changes
+    if not wants_changes(getattr(st, "goal", "") or ""):
+        return None
+    text = (step.get("text") or "").strip()
+    if not text or text.endswith("?"):
+        return None                       # asking the user, or nothing to label
+    _wt_now = _worktree_fingerprint(cwd)
+    if _wt_now == "" or _wt_now != _wt_fp0:
+        return None                       # no git signal, or a change landed
+    if (_bigger_task(st, _asks)
+            and getattr(st, "no_change_nudges", 0) < _NO_CHANGE_NUDGES):
+        st.no_change_nudges = getattr(st, "no_change_nudges", 0) + 1
+        yield {"type": "thought", "text": step["text"]}
+        yield {"type": "thought", "role": "system",
+               "text": "⚠ this request asks for changes but no file has been "
+                       "edited — doing the work…"}
+        st.convo.append({"role": "user", "content":
+            "[harness — not the user] The request asks for CHANGES, and you "
+            "have edited NO file. A plan, review or list of what remains is "
+            "not the result. Implement it now: make the edits, run the "
+            "checks, then give a FINAL that says what changed. If you have "
+            "verified that nothing needs to change, say so with the "
+            "evidence (the file and line that already does it)."})
+        return "continue"
+    step["text"] = ("(No file was changed in this turn — what follows is "
+                    "analysis or a plan, not an implementation.)\n\n" + text)
+    return None
+
+
 def _final_nudges(st, step, builder, strict_finish, _asks):
     """Pre-accept FINAL nudges: builder-not-finalized reminder, implicit-final
     doer nudge (strict_finish), and the one-time multi-ask completeness gate.
     Returns continue to loop again, or None to proceed."""
     # A reply that is only the system's `[did: …]` action log is not an answer:
     # strip it and make the model do the work (bounded; then say so plainly).
-    from ._echo import NUDGE as _ECHO_NUDGE, strip_action_log
+    from ._echo import NUDGE as _ECHO_NUDGE
+    from ._echo import strip_action_log
     _clean, _echo_only = strip_action_log(step.get("text") or "")
     if _clean != (step.get("text") or ""):
         step["text"] = _clean
@@ -356,6 +423,10 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
     _sig = yield from _claim_guard(st, step, cwd, readonly_mode, builder, _wt_fp0)
     if _sig == "continue":
         return "continue"
+    _sig = yield from _no_change_guard(st, step, cwd, readonly_mode, builder,
+                                       plan_mode, _asks, _wt_fp0)
+    if _sig == "continue":
+        return "continue"
     _sig = yield from _verify_on_final(st, step, cwd, plan_mode, builder)
     if _sig == "continue":
         return "continue"
@@ -413,7 +484,8 @@ def _handle_continue_step(st, step, builder, cwd):
     if st.continue_nudges > 2 and not pause_on_stuck():
         # It keeps not delivering: change approach and carry on (the guard
         # ends the turn with a summary only after many tries).
-        from ._escalate import escalate as _escalate, give_up_message as _gum
+        from ._escalate import escalate as _escalate
+        from ._escalate import give_up_message as _gum
         _r = yield from _escalate(
             st, "You keep saying what you will do without doing it.")
         if _r == "continue":

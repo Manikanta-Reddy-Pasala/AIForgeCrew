@@ -169,7 +169,9 @@ def _events(pc):
                              quick=bool(getattr(pc.body, "quick", False)),
                              session_id=pc.session_id,
                              single_agent=bool(getattr(
-                                 pc.body, "single_agent", False)))
+                                 pc.body, "single_agent", False)),
+                             first_team_turn=bool(getattr(
+                                 pc, "_first_team_turn", False)))
     if _turn_was_stopped(pc.session_id):
         yield from _stopped_turn()
         return
@@ -480,7 +482,8 @@ def _prepare_turn(pc, _chat_approve, _psub) -> None:
     # response-open path) rather than in the synchronous request handler,
     # so a slow/unreachable classify LLM never delays the StreamingResponse.
     pc.team, pc._auto_downgraded = _maybe_downgrade_team(
-        pc.team, pc.prompt, pc.history, pc.cwd, pc.session_id)
+        pc.team, pc.prompt, pc.history, pc.cwd, pc.session_id,
+        first_team_turn=bool(getattr(pc, "_first_team_turn", False)))
     pc._parallel_team = pc.team and _psub.enabled()
     # Review-edits gate: OFF by default — file writes/patches auto-apply,
     # no per-edit Approve/Reject prompt (the operator asked for no file-

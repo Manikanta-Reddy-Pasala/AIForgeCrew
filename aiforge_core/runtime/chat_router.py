@@ -91,6 +91,45 @@ def regex_build_fallback(p: str) -> bool:
     return bool(verb and (noun or cues))
 
 
+# An imperative that CHANGES code, un-negated ("do not change", "don't
+# implement" and "no need to add" do not count). Deliberately narrower than the
+# build regex: it is the veto on a research downgrade for an explicit Team pick,
+# so it names verbs that only ever ask for a change. "implement a rust/go read
+# path" has no build noun, which is how the build regex let it through.
+_CHANGE_VERB_RE = re.compile(
+    r"(?<!not )(?<!n't )(?<!never )(?<!without )(?<!no need to )"
+    r"\b(?:implement|build|add|fix|change|migrate|port|refactor|rewrite|replace"
+    r"|modify|optimi[sz]e|speed up|develop|introduce|remove|delete|rename"
+    r"|upgrade|integrate|convert|patch)\b", re.IGNORECASE)
+_POLITE_RE = re.compile(
+    r"^\W*(?:(?:please|pls|kindly)\s+)?(?:(?:can|could|would|will) you\s+"
+    r"(?:please\s+)?|i (?:want|need|'d like|would like) you to\s+|let'?s\s+"
+    r"|go ahead and\s+)?", re.IGNORECASE)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+|\n+")
+
+
+def wants_changes(p: str) -> bool:
+    """The request asks for code to be CHANGED or built: some sentence is an
+    un-negated change imperative ("implement …", "please fix …", "can you add
+    …?"). A plain question ("how does X implement Y?", "is it implemented?")
+    and a request with no change verb ("review the design") are not.
+
+    Used as the veto that keeps an explicit Team pick off the read-only
+    research agent: the classifier reads "check/review/verify" or a long
+    technical brief as analysis, and a Team pick that wanted an implementation
+    then ended with a research note and no edits."""
+    for sent in _SENTENCE_SPLIT_RE.split(p or ""):
+        s = sent.strip()
+        if not s:
+            continue
+        body = _POLITE_RE.sub("", s, count=1)
+        if body == s and is_advice_question(s):
+            continue
+        if _CHANGE_VERB_RE.search(body):
+            return True
+    return False
+
+
 _CHORE_RE = re.compile(
     r"\b(run|runs|execute|print|prints|echo|empty|touch|ls|cat|list the files)\b")
 
@@ -223,7 +262,12 @@ def decide(prompt: str, *, agent_mode: str, team: bool, psub_on: bool,
         doc_task = False
     # (A) an EXPLICIT team pick + a build-looking request is never downgraded to
     # the read-only research agent on a doc_analysis misclassification.
-    if team and doc_task and regex_build_fallback(prompt):
+    # Same for ANY change intent, not only a regex build: "implement a rust
+    # parallel read path" names no app/service noun, so the build regex missed
+    # it and the run was sent to the read-only research agent — a research note
+    # and zero edits for a user who asked for the work.
+    if team and doc_task and (regex_build_fallback(prompt)
+                              or wants_changes(prompt)):
         doc_task = False
 
     build_escalate = bool(
@@ -274,4 +318,4 @@ def _notice(*, agent_mode, team, psub_on, doc_task, is_build_task,
     return None
 
 
-__all__ = ["is_advice_question", "regex_build_fallback", "is_small_task", "RouteDecision", "decide"]
+__all__ = ["is_advice_question", "regex_build_fallback", "wants_changes", "is_small_task", "RouteDecision", "decide"]

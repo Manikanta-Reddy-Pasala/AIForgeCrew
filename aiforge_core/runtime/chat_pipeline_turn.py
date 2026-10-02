@@ -74,16 +74,163 @@ def _promote_team_answer(by_role: dict, st: dict, final: str,
             or by_role.get("researcher") or final or "Done.")
 
 
+# The team graph's stages, in run order, and the state key each leaves behind
+# (for a stage whose text never reached ``by_role``).
+_STAGES = (("triage", "triage_verdict"), ("enhancer", "enhanced_body"),
+           ("researcher", "research_brief_md"), ("planner", "plan_md"),
+           ("verifier", "verifier_verdict"), ("doer", "doer_outcome"))
+
+
+def _recovery_enabled() -> bool:
+    """AIFORGE_TEAM_DOER_RECOVERY=0 ends a team run that never reached its Doer
+    with the honest "nothing was implemented" message instead of running the
+    Doer on the plan."""
+    return os.environ.get("AIFORGE_TEAM_DOER_RECOVERY", "1").strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
+def _doer_ran(by_role: dict, st: dict) -> bool:
+    return bool(by_role.get("doer") or st.get("doer_outcome"))
+
+
+def _stage_reached(by_role: dict, st: dict) -> str:
+    """The last pipeline stage that produced output ("" when none did)."""
+    reached = ""
+    for role, key in _STAGES:
+        if by_role.get(role) or st.get(key):
+            reached = role
+    return reached
+
+
+def _stalled_before_doer(by_role, st, enhancer_blocked, raw_prompt) -> bool:
+    """A run for a request that asked for CHANGES that ended with no Doer: only
+    research/triage/planning text exists. Promoting it (the Researcher's brief
+    "for the Planner") presented a plan as the finished work."""
+    if enhancer_blocked or _doer_ran(by_role, st):
+        return False
+    from .chat_router import wants_changes
+    return wants_changes(raw_prompt or "")
+
+
+def _recovery_brief(raw_prompt: str, by_role: dict, st: dict, stage: str) -> str:
+    """What the Doer is handed when the team stopped before it: the request, and
+    whatever the earlier stages worked out, labelled as input rather than output."""
+    parts = [raw_prompt.strip(), "",
+             "---",
+             f"[The team's earlier stages ({stage or 'none'}) ended before the "
+             "implementation step ran, so NOTHING has been changed yet. Do the "
+             "work now: edit the files and run the checks. Do not write a plan, "
+             "a review or a brief — those are input, not the deliverable. If "
+             "you truly find nothing to change, say so with the evidence.]"]
+    for label, text in (("Plan", st.get("plan_md") or by_role.get("planner")),
+                        ("Research notes",
+                         st.get("research_brief_md")
+                         or by_role.get("researcher")),
+                        ("Restated request",
+                         st.get("enhanced_body") or by_role.get("enhancer"))):
+        text = str(text or "").strip()
+        if text:
+            parts += ["", f"{label} from the earlier stages:", text[:6000]]
+    return "\n".join(parts)
+
+
+def _run_doer_on_plan(q, steps, cwd, session_id, brief: str) -> str:
+    """Run the single agent (writable) on the brief, streaming its events into
+    the turn. Returns its final message ("" if it produced none)."""
+    from .chat_agent import run_chat_agent
+    final = ""
+    for ev in run_chat_agent([{"role": "user", "content": brief}], cwd=cwd,
+                             session_id=session_id, mode="act"):
+        if ev.get("type") == "done":
+            continue
+        if ev.get("type") == "message":
+            final = ev.get("text") or final
+        if ev.get("type") in ("thought", "tool", "error"):
+            steps.append(ev)
+        q.put(ev)
+    return final
+
+
+def _no_implementation_message(stage: str, reason: str, plan: str,
+                               attempted: bool, agent_text: str) -> str:
+    """The plain closing message for a run that changed nothing. Starts with
+    "(stopped" — the marker chat_persist reads, so Retry resumes the turn."""
+    where = (f"the {stage} stage" if stage else "its first stage")
+    lines = [f"(stopped) Nothing was implemented. The team run ended after "
+             f"{where} and never reached the step that edits files"
+             + (f": {reason}" if reason else
+                " (no error was reported; check the run's log for the cause)")
+             + "."]
+    if attempted:
+        lines.append("I then ran the implementation step directly on the plan, "
+                     "and it also made no file changes"
+                     + (f". It said: {agent_text.strip()[:1500]}"
+                        if agent_text.strip() else "."))
+    lines.append('Send "retry" to continue from here.')
+    if plan.strip():
+        lines += ["", "What the earlier stages produced (a plan/notes, NOT the "
+                      "finished work):", plan.strip()[:3000]]
+    return "\n".join(lines)
+
+
+async def _compute_team_outcome(svc, session, by_role, final, enhancer_blocked,
+                                cwd, seq_start_sha, *, raw_prompt="", q=None,
+                                steps=None, session_id=None, reason="",
+                                recover=True, only_if_stalled=False):
+    """``(message, change_events, ok)`` for a team run. ``ok`` is False when the
+    request wanted changes and none were made. With ``only_if_stalled``, None
+    unless the run ended with no Doer (the caller has its own answer otherwise).
+
+    A run that ended with no Doer is never answered with the Researcher's or
+    Planner's text. With ``recover`` the Doer is run on the plan first (the
+    stage that failed is not retried from scratch: its output is the input);
+    whatever happens, the closing message names the stage it stopped at."""
+    import asyncio
+    st = await _team_final_state(svc, session)
+    if not _stalled_before_doer(by_role, st, enhancer_blocked, raw_prompt):
+        if only_if_stalled:
+            return None
+        msg = _promote_team_answer(by_role, st, final, enhancer_blocked)
+        change_events = _team_change_events(cwd, seq_start_sha, enhancer_blocked)
+        msg = _guard_edit_claim(msg, cwd, seq_start_sha, enhancer_blocked,
+                                change_events)
+        return msg, change_events, True
+    stage = _stage_reached(by_role, st)
+    agent_text, attempted = "", False
+    if recover and q is not None and _recovery_enabled():
+        attempted = True
+        q.put({"type": "thought", "role": "system",
+               "text": (f"The team run ended after the {stage or 'first'} stage "
+                        "without editing any file"
+                        + (f" ({reason})" if reason else "")
+                        + ". Running the implementation step on the plan now "
+                          "instead of stopping.")})
+        try:
+            agent_text = await asyncio.to_thread(
+                _run_doer_on_plan, q, steps if steps is not None else [], cwd,
+                session_id, _recovery_brief(raw_prompt, by_role, st, stage))
+        except Exception as exc:  # noqa: BLE001 — report it, never raise
+            log.warning("team doer recovery failed: %s", exc)
+            reason = reason or f"the recovery step failed: {exc}"
+    change_events = _team_change_events(cwd, seq_start_sha, None)
+    if not seq_start_sha and attempted and agent_text.strip():
+        return agent_text, [], True      # no git baseline: cannot diff, trust it
+    if change_events:
+        msg = agent_text or "Done."
+        return _guard_edit_claim(msg, cwd, seq_start_sha, None,
+                                 change_events), change_events, True
+    plan = str(st.get("plan_md") or by_role.get("planner") or "")
+    return (_no_implementation_message(stage, reason, plan, attempted,
+                                       agent_text), [], False)
+
+
 async def _compute_team_answer(svc, session, by_role, final, enhancer_blocked,
                                cwd, seq_start_sha) -> "tuple[str, list]":
     """The final answer text + change events for a team run. The Changes diff is
     computed BEFORE surfacing the answer so the claim-vs-reality guard can
     cross-check an "applied fixes" claim against the ACTUAL diff."""
-    st = await _team_final_state(svc, session)
-    msg = _promote_team_answer(by_role, st, final, enhancer_blocked)
-    change_events = _team_change_events(cwd, seq_start_sha, enhancer_blocked)
-    msg = _guard_edit_claim(msg, cwd, seq_start_sha, enhancer_blocked,
-                            change_events)
+    msg, change_events, _ok = await _compute_team_outcome(
+        svc, session, by_role, final, enhancer_blocked, cwd, seq_start_sha)
     return msg, change_events
 
 

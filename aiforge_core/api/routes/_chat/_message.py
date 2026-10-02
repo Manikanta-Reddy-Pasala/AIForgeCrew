@@ -30,6 +30,7 @@ from ._producer import (
     _produce,
     _stream,
 )
+from ._routing import _first_team_turn
 from ._sched_fold import (  # noqa: F401 — re-exported for callers and tests
     _cut_background_watches,
     _fold_into_scheduled_agent,
@@ -215,7 +216,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         _cmd_expanded=_cmd_expanded, prompt=prompt, _turn_t0=_turn_t0, team=team,
         _auto_downgraded=_auto_downgraded, _parallel_team=_parallel_team,
         _path=_path, agent_mode=agent_mode, _turn_mode=_turn_mode, run=run,
-        _user_msg_id=_user_msg_id)
+        _user_msg_id=_user_msg_id,
+        _first_team_turn=bool(team and _first_team_turn(_rows, _user_msg_id)))
 
     _spawn(lambda: _produce(pc), name="chat-produce")
 
