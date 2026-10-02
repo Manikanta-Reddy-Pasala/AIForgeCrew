@@ -104,14 +104,54 @@ def test_a_finished_or_answered_run_is_reported_as_such(run):
     assert "has finished" in chat_status.render(chat_status.snapshot(run))
 
 
-def test_a_steer_is_told_when_it_will_be_read(run):
-    assert "next step" in chat_status.waiting_on(run)
+def test_a_steer_is_told_when_it_will_be_read_in_plain_words(run):
+    assert chat_status.waiting_on(run) == "The agent will read your message at its next step."
     run.publish({"type": "tool_start", "name": "command_wait", "args": {"id": "bg-6"}, "call_id": 1})
-    assert "inside command_wait `bg-6`" in chat_status.waiting_on(run)
-    assert "keeps running" in chat_status.waiting_on(run)
+    text = chat_status.waiting_on(run)
+    assert "waiting for a command to finish" in text and "within seconds" in text
+    assert "Nothing is stopped" in text
+    assert "command_wait" not in text and "bg-6" not in text       # no internals
     run.publish({"type": "tool", "name": "command_wait", "args": {}, "result": {}, "call_id": 1})
     run.publish({"type": "delta", "phase": "answer", "text": "x"})
-    assert "mid-answer" in chat_status.waiting_on(run)
+    assert "middle of an answer" in chat_status.waiting_on(run)
+
+
+def test_a_steer_during_a_long_command_does_not_show_the_raw_command(run):
+    cmd = ("cd /mnt/c/Users/Manikanta.Pasala/Documents/coderepo/ai_elint && "
+           ".aiforge-venv/bin/python -m pytest tests/unit -x -q --maxfail=3 --disable-warnings")
+    run.publish({"type": "tool_start", "name": "run_command", "args": {"cmd": cmd}, "call_id": 1})
+    text = chat_status.waiting_on(run)
+    assert text.startswith("The agent is running `python -m pytest tests/unit")
+    assert "/mnt/c" not in text and "run_command" not in text and "aiforge-venv" not in text
+    assert text.endswith("Nothing is stopped.")
+    assert "…" in text or len(chat_status.friendly_cmd(cmd)) <= 60
+    # nothing is cut in the middle of a word ("…/bi")
+    assert not chat_status.friendly_cmd(cmd).endswith("/bi")
+
+
+@pytest.mark.parametrize("cmd,want", [
+    ("cd /a/b && npm test", "npm test"),
+    ("cd /a/b; cd c && make build", "make build"),
+    ("/usr/local/bin/python3 script.py --flag", "python3 script.py --flag"),
+    ("echo hi", "echo hi"),
+    ("", ""),
+])
+def test_friendly_cmd(cmd, want):
+    assert chat_status.friendly_cmd(cmd) == want
+
+
+def test_friendly_cmd_cuts_at_a_word():
+    out = chat_status.friendly_cmd("pytest " + " ".join(f"tests/test_{i}.py" for i in range(30)), 40)
+    assert out.endswith("…") and len(out) <= 40 and not out[:-1].endswith("test_")
+
+
+def test_activity_in_words():
+    d = chat_status.describe_activity
+    assert d("write_file", "x.py") == "writing files"
+    assert d("read_file", "x.py") == "reading the project"
+    assert d("run_command", "cd /x && make") == "running `make`"
+    assert d("run_command", "") == "running a command"
+    assert d("some_new_tool") == "working with some new tool"
 
 
 def test_a_leaked_tool_start_never_grows_without_bound(run):

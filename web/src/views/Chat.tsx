@@ -1777,9 +1777,9 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
         // marks it actually applied.
         setLiveTurn(prev => prev ? { ...prev, steps: [...prev.steps, {
           kind: 'thought' as const, role: 'steer',
-          text: `↪ Sent: ${q}\n${r.where || 'The agent reads it at its next step.'}`,
+          text: `↪ Sent: ${q}\n${r.where || 'The agent will read it at its next step.'}`,
         }] } : prev);
-        toast(r.where || 'Steer sent — the agent reads it at its next step');
+        toast('Message sent. The agent will read it in a moment.');
       } else if (r.unsupported) {
         putComposer(q);   // restore — nothing was queued
         toast('Steering not available for this run');

@@ -54,14 +54,55 @@ def is_status_request(text: str) -> bool:
     return any(p.search(t) for p in _PATTERNS)
 
 
+_CD_PREFIX = re.compile(r"^\s*(?:cd\s+\S+\s*(?:&&|;)\s*)+")
+_READ_TOOLS = ("read_file", "file_read", "grep", "find", "list_dir", "list_files",
+               "glob", "repo_map", "search", "web_read", "web_search")
+_WRITE_TOOLS = ("write_file", "file_write", "edit_file", "apply_patch", "patch",
+                "str_replace", "delete_file", "move_file")
+
+
+def friendly_cmd(cmd: str, limit: int = 60) -> str:
+    """A command as a person would say it: the leading ``cd <folder> &&`` is
+    dropped, a long path to a program is shortened to its name
+    (``.aiforge-venv/bin/python`` -> ``python``), and it is cut at a word with
+    an ellipsis rather than mid-token."""
+    text = _CD_PREFIX.sub("", cmd or "").strip()
+    parts = []
+    for tok in text.split():
+        if "/" in tok and len(tok) > 12 and not tok.startswith(("-", "http")):
+            tok = tok.rstrip("/").rsplit("/", 1)[-1] or tok
+        parts.append(tok)
+    text = " ".join(parts)
+    if len(text) > limit:
+        text = text[:limit - 1].rsplit(" ", 1)[0].rstrip(" ,;&|") + "…"
+    return text
+
+
+def describe_activity(name: str, args: str = "") -> str:
+    """What a tool call means, in plain words (no tool names, no raw paths)."""
+    n = (name or "").strip()
+    if n == "run_command":
+        cmd = friendly_cmd(args)
+        return f"running `{cmd}`" if cmd else "running a command"
+    if n in ("command_wait", "command_output"):
+        return "waiting for a command to finish"
+    if n in _WRITE_TOOLS:
+        return "writing files"
+    if n in _READ_TOOLS:
+        return "reading the project"
+    return f"working with {n.replace('_', ' ')}" if n else "working"
+
+
 def _call(name: str, args: str) -> str:
     """A tool call as markdown. Names carry underscores, which markdown reads
     as emphasis ("write_file" became "writefile"), so they go in code spans; a
     path is shown by its file name."""
     arg = (args or "").strip()
-    if "/" in arg and " " not in arg:
+    if name == "run_command":
+        arg = friendly_cmd(arg, 56)
+    elif "/" in arg and " " not in arg:
         arg = arg.rstrip("/").rsplit("/", 1)[-1]
-    arg = arg[:48]
+    arg = arg[:56]
     return f"`{name}`" + (f" `{arg}`" if arg else "")
 
 
@@ -117,7 +158,8 @@ def render(snap: dict) -> str:
     if commands:
         for c in commands[:3]:
             tail = (f", no output for {_dur(c['idle_s'])}" if c.get("idle_s", 0) >= 20 else "")
-            lines.append(f"- **Running command:** `{c['cmd']}` — {_dur(c['for_s'])} so far{tail}")
+            lines.append(f"- **Running command:** `{friendly_cmd(c['cmd'], 80)}` — "
+                         f"{_dur(c['for_s'])} so far{tail}")
     elif flight:
         for c in flight:
             lines.append(f"- **Now:** {_call(c['name'], c['args'])} — {_dur(c['for_s'])} in")
@@ -157,15 +199,18 @@ def render(snap: dict) -> str:
 
 
 def waiting_on(run) -> str:
-    """One line for a just-sent steer: when will the agent read it."""
+    """One plain sentence for a just-sent steer: when will the agent read it.
+    No tool names or raw paths: this is shown to the user as the reply to what
+    they typed, and it must not read like an error."""
     flight = sorted(run.open_tools.values(), key=lambda c: c["at"])
     if flight:
         c = flight[0]
-        what = f"{c['name']} `{c['args']}`" if c["args"] else c["name"]
-        return (f"The agent is inside {what}; it reads your message as soon as "
-                "that returns. The command itself keeps running.")
+        return (f"The agent is {describe_activity(c['name'], c['args'])}. It will read your "
+                "message as soon as that finishes, usually within seconds. Nothing is stopped.")
     if run.phase == "the model is writing":
-        return "The model is mid-answer; the agent reads your message right after."
+        return "The model is in the middle of an answer; the agent reads your message right after."
     if run.phase == "waiting for your approval":
         return "The run is waiting for your approval; it reads your message after that."
-    return "The agent reads your message at its next step."
+    return "The agent will read your message at its next step."
+
+

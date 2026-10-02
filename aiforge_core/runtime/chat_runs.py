@@ -210,7 +210,10 @@ def short_args(args) -> str:
         return ""
     for key in ("cmd", "command", "path", "file", "query", "pattern", "url", "id"):
         if args.get(key):
-            return " ".join(str(args[key]).split())[:80]
+            # A command keeps more: it is shortened by the reader, and cutting
+            # it at 80 characters left "…/ai_elint && .aiforge-venv/bi".
+            limit = 240 if key in ("cmd", "command") else 80
+            return " ".join(str(args[key]).split())[:limit]
     first = next(iter(args.values()))
     return " ".join(str(first).split())[:80]
 

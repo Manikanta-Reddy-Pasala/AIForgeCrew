@@ -260,7 +260,8 @@ def test_a_steer_says_when_it_will_be_read(env, monkeypatch):
     r = env.client.post(f"/api/chat/sessions/{pid}/side",
                         json={"content": "also handle the empty list case"}).json()
     assert r["action"] == "steer" and r["queued"] is True
-    assert "inside command_wait `bg-6`" in r["where"]
+    assert "waiting for a command to finish" in r["where"]
+    assert "command_wait" not in r["where"]
     chat_interject.clear(pid)
     chat_runs.finish_all()
 
