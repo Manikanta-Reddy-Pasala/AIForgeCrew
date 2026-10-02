@@ -6,7 +6,7 @@ import { Icon } from '../icons';
 import { MdLite, copyText as mdCopyText } from '../mdlite';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { AgentStep, SubtaskItem, RuleState, RuleStateCtx, LiveTurn, ChatMode, BuilderKind, PendingApproval } from './Chat.types';
-import { menuBtn, menuItem, LS_SESSION_KEY, LS_MODEL_KEY, LS_MODE_KEY, BUILDER_KINDS, BUILDER_LABELS, LS_BUILDER_KEY, relTime, dateTimeLabel, toAgentStep, msgAwaiting, getDismissedPlans, addDismissedPlan, isStoppedTurn, fmtTokens } from './Chat.helpers';
+import { menuBtn, menuItem, LS_SESSION_KEY, LS_MODEL_KEY, LS_MODE_KEY, BUILDER_KINDS, BUILDER_LABELS, LS_BUILDER_KEY, relTime, dateTimeLabel, toAgentStep, msgAwaiting, getDismissedPlans, addDismissedPlan, isStoppedTurn, fmtTokens, pickDockSubtasks } from './Chat.helpers';
 import { pickChatModel } from '../chatModelPick';
 import { SubtaskList } from './Chat.SubtaskList';
 import { SideTasks } from './Chat.SideTasks';
@@ -109,7 +109,7 @@ function mergeUsage(prev: LiveTurn, evt: any): LiveTurn {
       pct: evt.pct, chars: evt.context_chars, budget: evt.budget_chars,
       tokens: evt.context_tokens, windowTokens: evt.window_tokens,
       compactAtTokens: evt.compact_at_tokens, compactPct: evt.compact_pct,
-      windowSource: evt.window_source,
+      windowSource: evt.window_source, stage: evt.stage,
     } : {}),
     ...(evt.llm_turn !== undefined ? {
       llmTurn: evt.llm_turn, llmSession: evt.llm_session,
@@ -1871,16 +1871,9 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   // from history, where no event flag would survive.
   const [specExists, setSpecExists] = useState(false);
 
-  // Subtasks for the pinned bottom dock: the live run's list (updates status
-  // live), else the most recent finished turn that carried a decomposition.
-  const dockSubtasks: SubtaskItem[] | undefined = (() => {
-    if (liveTurn?.subtasks?.length) return liveTurn.subtasks;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const st = (messages[i].steps || []).find((s: any) => s?.type === 'subtasks');
-      if (st?.items?.length) return st.items as SubtaskItem[];
-    }
-    return undefined;
-  })();
+  // Subtasks for the pinned bottom dock — see pickDockSubtasks: tasks belong to
+  // the turn that produced them, so an older request's list never lingers.
+  const dockSubtasks: SubtaskItem[] | undefined = pickDockSubtasks(liveTurn?.subtasks, messages);
 
   // Re-checked when the session changes and whenever the dock appears or the
   // run ends — a team run writes SPEC.md partway through, so a single check at
@@ -2328,6 +2321,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                           <span style={{ position: 'absolute', top: 0, bottom: 0, width: 1, left: `${liveTurn.usage.compactPct ?? 80}%`, background: 'var(--fg-3,#888)' }} />
                         </span>
                         context {Math.round((liveTurn.usage.tokens ?? liveTurn.usage.chars / 4) / 1000)}k / {Math.round((liveTurn.usage.windowTokens ?? liveTurn.usage.budget / 4) / 1000)}k ({liveTurn.usage.pct ?? 0}%) · compacts at {liveTurn.usage.compactPct ?? 80}%
+                        {liveTurn.usage.stage && <> · {liveTurn.usage.stage}</>}
                         {liveTurn.usage.windowSource && <> · window from {WINDOW_SOURCE_LABEL[liveTurn.usage.windowSource] ?? liveTurn.usage.windowSource}</>}
                       </div>
                     )}

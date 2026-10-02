@@ -55,6 +55,8 @@ export type LiveTurn = {
   captured?: CapturedItem[];  // Rule/Memory/Feedback captured this turn
   usage?: { pct: number; chars: number; budget: number; tokens?: number; windowTokens?: number;
     compactAtTokens?: number; compactPct?: number; windowSource?: string;
+    // Team/pipeline turns: the stage whose context this reading is (doer, planner…).
+    stage?: string;
             // Requests actually sent to the LLM: this turn, this chat, and the
             // machine-wide rate over the last minute.
             llmTurn?: number; llmSession?: number; llmPerMin?: number;

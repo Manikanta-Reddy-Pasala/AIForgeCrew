@@ -334,6 +334,11 @@ def _bill_session_tokens_locked(sid, epoch, pt: int, ct: int) -> None:
     slot["tokens_out"] = int(slot.get("tokens_out") or 0) + ct
     if epoch is not None and epoch == slot["epoch"]:
         slot["turn_tokens_in"] = int(slot.get("turn_tokens_in") or 0) + pt
+        if pt > 0:
+            # Prompt of the LAST request this turn sent = the context the model
+            # is carrying right now (provider-reported). Turn-scoped: only a
+            # send stamped with the current turn counts, and turn_reset zeroes it.
+            slot["last_prompt_tokens"] = pt
         slot["turn_tokens_out"] = int(slot.get("turn_tokens_out") or 0) + ct
 
 
@@ -395,6 +400,7 @@ def turn_reset(session_id):
         slot["turn_failed"] = 0
         slot["turn_tokens_out"] = 0
         slot["turn_tokens_in"] = 0
+        slot["last_prompt_tokens"] = 0
         slot["epoch"] += 1
         return (sid, slot["epoch"])
 

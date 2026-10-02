@@ -219,6 +219,8 @@ def snapshot(session_id=None) -> dict:
             "session_tokens_out": int(s.get("tokens_out") or 0),
             "turn_tokens_in": int(s.get("turn_tokens_in") or 0),
             "session_tokens_in": int(s.get("tokens_in") or 0),
+            # Prompt size of the most recent request THIS turn (0 = none yet).
+            "last_prompt_tokens": int(s.get("last_prompt_tokens") or 0),
         }
 
 
