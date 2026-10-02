@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
-from ._prompt_text import BATCH_READS_RULE, LONG_RUN_RULE, _SYSTEM  # noqa: F401  # re-exported
+from ._prompt_text import BATCH_READS_RULE, DECOMPOSE_RULE, LONG_RUN_RULE, _SYSTEM  # noqa: F401  # re-exported
 from ._shell import (_ACTION_RE, _ASK_RE, _FINAL_RE, _THOUGHT_RE)
 
 class _BraceScanner:

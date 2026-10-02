@@ -356,7 +356,8 @@ def _rollback(repo_root: str, before: str) -> None:
 
 
 def _run_one_in_place(repo_root, base_branch, ticket_id, s, run_one,
-                      validate_one, on_status, should_cancel) -> dict:
+                      validate_one, on_status, should_cancel,
+                      board=None) -> dict:
     slug = s["slug"]
     if should_cancel is not None and should_cancel():
         _update(ticket_id, slug, "cancelled", on_status)
@@ -364,9 +365,21 @@ def _run_one_in_place(repo_root, base_branch, ticket_id, s, run_one,
     _update(ticket_id, slug, "running", on_status)
     before = (_git(["rev-parse", "HEAD"], repo_root).stdout or "").strip()
     was_clean = not (_git(["status", "--porcelain"], repo_root).stdout or "").strip()
-    last, i = _run_with_retries(s, repo_root, slug, base_branch, ticket_id,
-                                run_one, validate_one, in_place=True)
+    # A fresh run: the shared spec, the board with every finished subtask's
+    # factual note, and only THIS subtask's spec; never the last one's transcript.
+    from . import _items
+    board = {} if board is None else board
+    _items.mark(board, slug, "running")
+    last, i = _run_with_retries(
+        _items.with_board(s, board), repo_root, slug, base_branch, ticket_id,
+        run_one, _items.evidence_validator(validate_one, repo_root, before,
+                                           _git), in_place=True)
     ok = last["ok"]
+    if ok:
+        _items.mark(board, slug, "done", _items.facts_note(
+            repo_root, before, {**last, "attempts": i + 1}, _git))
+    else:
+        _items.mark(board, slug, "failed", _items.failure_note(last))
     if not ok and before and was_clean:
         _rollback(repo_root, before)     # a failed subtask leaves no half-work
     _emit(ticket_id, slug,
@@ -386,14 +399,20 @@ def _run_one_in_place(repo_root, base_branch, ticket_id, s, run_one,
 
 def _run_in_place(repo_root: str, base_branch: str, ticket_id, subs: list[dict],
                   run_one, validate_one, integration_test, on_status,
-                  should_cancel) -> dict:
+                  should_cancel, board=None) -> dict:
     """ONE writer, ONE worktree: the subtasks run one after another directly in
     ``repo_root`` (the chat's own worktree), each committed on the branch that
     is already checked out there. No per-subtask worktree or branch, nothing to
     merge, no conflicts, and each subtask sees the files the one before wrote.
     Aggregate has the same shape as :func:`run_parallel`."""
+    from . import _items
+    if board is None:
+        board = _items.new_board(subs)
+    else:                          # one board across the phases of a run
+        for slug, it in _items.new_board(subs).items():
+            board.setdefault(slug, it)
     results = [_run_one_in_place(repo_root, base_branch, ticket_id, s, run_one,
-                                 validate_one, on_status, should_cancel)
+                                 validate_one, on_status, should_cancel, board)
                for s in subs]
     done = sum(1 for r in results if r.get("ok"))
     validated = sum(1 for r in results if r.get("validated"))
@@ -414,7 +433,8 @@ def _run_in_place(repo_root: str, base_branch: str, ticket_id, subs: list[dict],
 def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
                  subtasks: list[dict], run_one, *, validate_one=None,
                  integration_test=None, on_status=None, merge: bool = True,
-                 should_cancel=None, in_place: bool = False) -> dict:
+                 should_cancel=None, in_place: bool = False,
+                 board: dict | None = None) -> dict:
     """Run ``subtasks`` concurrently (each in its own worktree), VALIDATE each
     (build/tests green), then merge the validated branches into ``base_branch``
     sequentially. Returns an aggregate incl. a review summary.
@@ -432,7 +452,7 @@ def run_parallel(repo_root: str, base_branch: str, ticket_id: int | None,
     if subs and in_place:
         return _run_in_place(repo_root, base_branch, ticket_id, subs, run_one,
                              validate_one, integration_test, on_status,
-                             should_cancel)
+                             should_cancel, board)
     if subs and _shared_worktree_enabled():
         try:
             return _run_shared_worktree(

@@ -87,6 +87,7 @@ from ._turn._finish import (  # noqa: F401
     _turn_summary,
     _verify_on_final,
 )
+from ._turn._items import at_step_start as at_item_step_start
 from ._turn._limits import (  # noqa: F401
     _builder_nudge,
     _cap_stop_reason,
@@ -185,6 +186,7 @@ def _step_prologue(st, n, _cwd, role, complete_fn, session_id, builder):
     _sig = yield from _deadline_guard(st, n)
     if _sig == "return":
         return None, "return"
+    yield from at_item_step_start(st)
     yield from _drain_steering(st, session_id)
     try:
         from ._context._aging import age_observations

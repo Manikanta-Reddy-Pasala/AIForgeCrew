@@ -17,7 +17,13 @@ from .._context import (
     _text_of,
 )
 from .._native import _batch_cap
-from .._prompt_text import _SYSTEM, BATCH_READS_RULE, GOAL_LOOP_RULE, LONG_RUN_RULE
+from .._prompt_text import (
+    _SYSTEM,
+    BATCH_READS_RULE,
+    DECOMPOSE_RULE,
+    GOAL_LOOP_RULE,
+    LONG_RUN_RULE,
+)
 from .._tools import (
     _preferences_context,
     _rules_context,
@@ -136,6 +142,10 @@ def _sandbox_directive(readonly_mode: bool) -> str:
             "deleting data still need the user's OK.")
 
 
+#: A request this long is treated as big even when it is one sentence-block.
+_BIG_REQUEST_CHARS = 600
+
+
 def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
                  analyze_mode, builder, strict_finish, session_id, native=False,
                  unlimited=False):
@@ -212,8 +222,11 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
     # a bare URL is excluded — it already routes to web_crawl.)
     if last_user and _has_web_intent(last_user):
         _add_sys_block("web-lookup", _WEB_LOOKUP_DIRECTIVE)
-    if unlimited and len(_asks) > 1 and not readonly_mode and not builder:
+    _big = len(_asks) > 1 or len(last_user or "") >= _BIG_REQUEST_CHARS
+    if unlimited and _big and not readonly_mode and not builder:
         _add_sys_block("long-run", LONG_RUN_RULE)
+    elif _big and not readonly_mode and not builder:
+        _add_sys_block("decompose", DECOMPOSE_RULE)
     if native and _batch_cap() > 1:
         _add_sys_block("batch-reads", BATCH_READS_RULE)
     if last_user and not readonly_mode and not builder and wants_goal_loop(last_user):

@@ -21,6 +21,7 @@ from ._convo import (
     _build_convo,
 )
 from ._progress import progress_fields
+from ._items import ensure_started, item_fields
 from ._tasks import seed_board
 
 
@@ -308,7 +309,8 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         # Keys this run's background condense summary (never the session:
         # unattended runs share session None and run in parallel).
         compact_key=uuid.uuid4().hex,
-        **progress_fields())
+        **progress_fields(), **item_fields())
+    ensure_started(st)        # a request that arrives as 3+ parts is big from the start
     # What the tree already held before this turn (the user's own dirty and
     # untracked code): the test-gaming check scans only THIS turn's lines.
     st.gaming_base = ""

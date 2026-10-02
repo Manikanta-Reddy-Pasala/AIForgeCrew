@@ -203,6 +203,9 @@ def _tests_block(tests_src: str) -> str:
             + req_block + "---\n\n")
 
 
+from ._items import board_block as _board_block  # noqa: E402
+
+
 def _subtask_prompt(subtask: dict, spec_md: str, path: str, goal: str) -> str:
     retry_err = str(subtask.get("_retry_error") or "").strip()
     existing = subtask.get("_existing_files")
@@ -220,12 +223,17 @@ def _subtask_prompt(subtask: dict, spec_md: str, path: str, goal: str) -> str:
         + (f"PROJECT SPEC (shared — build YOUR slice to fit it; use the EXACT "
            f"file/dir paths it lists):\n{spec_md.strip()[:5000]}\n\n---\n\n"
            if spec_md and spec_md.strip() else "")
+        + _board_block(subtask)
         + "Implement this subtask as COMPLETE, runnable file(s) in the language "
           "the target path implies (.py→Python, .java→Java, .go→Go, .ts→"
           "TypeScript, .c/.cpp→C/C++, .rs→Rust, .sh→shell, …).\n\n"
         + (f"TARGET FILE (emit EXACTLY this path, verbatim — do not re-case or "
            f"rename the directory): {path}\n\n" if path else "")
-        + f"SUBTASK: {goal}\n\n" + _CONTRACT_RULES)
+        + f"SUBTASK: {goal}\n\n"
+        + (("ACCEPTANCE (checked when you finish):\n"
+            + "\n".join(f"- {a}" for a in subtask["acceptance"]) + "\n\n")
+           if subtask.get("acceptance") else "")
+        + _CONTRACT_RULES)
 
 
 def _remap_to_canonical(files: dict, path: str) -> dict:
