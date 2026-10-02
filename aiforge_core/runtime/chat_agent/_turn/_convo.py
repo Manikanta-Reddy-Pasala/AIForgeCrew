@@ -217,7 +217,8 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
         _add_sys_block("batch-reads", BATCH_READS_RULE)
 
     _bundle, _img_blocks = _append_context_blocks(
-        _add_sys_block, cwd, last_user, messages, session_id, role, cave)
+        _add_sys_block, cwd, last_user, messages, session_id, role, cave,
+        ample=_sys_cap >= _AMPLE_SYS_CHARS)
     if _sys_dropped:                # one-line note so the trim is visible
         _add_sys_block("_note", "[context note: dropped/trimmed lower-priority "
                        "blocks to fit the window: " + ", ".join(_sys_dropped) + "]")
@@ -231,6 +232,11 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
     sys_msg = _compress_prompt(sys_msg)   # trim whitespace bloat (caveman-style)
     convo = _history_to_convo(sys_msg, messages, _img_blocks)
     return convo, _bundle, _asks, _dropped_playbooks
+
+
+#: A system-prompt budget this large holds every block, so none is dropped by
+#: priority and the order can follow prompt-cache stability instead.
+_AMPLE_SYS_CHARS = 120_000
 
 
 def _history_to_convo(sys_msg, messages, _img_blocks):

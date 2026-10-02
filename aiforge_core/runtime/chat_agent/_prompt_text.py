@@ -473,7 +473,9 @@ LONG_RUN_RULE = (
     "running, and mark each done the moment it is finished. Then keep going "
     "until every item is done, failed or skipped. Do not stop to report "
     "partial progress; stop early only when you are blocked, and say what "
-    "blocks you. When older messages have been condensed, trust the task "
+    "blocks you. A part that is independent research or analysis can go to "
+    "a second agent with spawn_task while you work on the rest; its answer is "
+    "posted in this chat. When older messages have been condensed, trust the task "
     "board and the files on disk, and re-read what you need rather than "
     "guessing.")
 
@@ -481,7 +483,8 @@ LONG_RUN_RULE = (
 #: Added to the system prompt only when the model is driven through the
 #: tool-calling API, where one reply can carry several calls.
 BATCH_READS_RULE = (
-    "BATCH READS: when you need several independent lookups, request them "
+    "BATCH READS: when you need several independent lookups (reads, searches, "
+    "or read-only commands such as ls, git status, git log), request them "
     "as separate tool calls in ONE reply. They run at the same time, and "
     "you are told if any did not run. For several files, one read_files "
     "call is still best. A write, edit or command that is the first call "

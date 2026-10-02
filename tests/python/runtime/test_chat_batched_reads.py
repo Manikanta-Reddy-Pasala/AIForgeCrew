@@ -34,7 +34,7 @@ def test_all_read_calls_after_the_first_are_queued():
 
 @pytest.mark.parametrize("other", [
     _call("file_write", path="a.py", content="x"),
-    _call("run_command", cmd="ls"),
+    _call("run_command", cmd="pytest -q"),
     _call("gitlab_pipeline_watch", project="p", pipeline_id=1),
     _call("web_crawl", url="https://example.com"),
     _call("typecheck", path="."),
@@ -824,3 +824,27 @@ def test_write_batching_can_be_turned_off(monkeypatch):
     msg = _reply(_call("file_write", path="a.py", content="1"),
                  _call("file_write", path="b.py", content="2"))
     assert _native._queued_steps(msg) == ([], 1)
+
+
+@pytest.mark.parametrize("cmd,ok", [
+    ("ls -la src", True), ("git status", True), ("git log --oneline -5", True),
+    ("git diff HEAD~1", True), ("grep -rn TODO src", True), ("pwd", True),
+    ("find . -name '*.py'", True), ("cat README.md", True),
+    ("git commit -m x", False), ("git push", False), ("git branch -D x", False),
+    ("rm -rf build", False), ("ls | wc -l", False), ("echo hi > f", False),
+    ("find . -delete", False), ("cat $(ls)", False), ("pytest -q", False),
+    ("npm install", False), ("sed -i s/a/b/ f", False), ("", False),
+])
+def test_which_commands_count_as_read_only(cmd, ok):
+    assert _native._readonly_command(cmd) is ok
+
+
+def test_read_only_commands_in_one_reply_all_run_and_a_write_command_is_held():
+    msg = _reply(_call("run_command", cmd="git status"),
+                 _call("run_command", cmd="ls src"),
+                 _call("file_read", path="a.py"),
+                 _call("run_command", cmd="pytest -q"))
+    steps, skipped = _native._queued_steps(msg)
+    assert [s.split("\n")[0] for s in steps] == [
+        "ACTION: run_command", "ACTION: file_read"]
+    assert skipped == 1

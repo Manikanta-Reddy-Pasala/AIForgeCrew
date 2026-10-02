@@ -3,6 +3,7 @@ priority blocks that must survive trimming."""
 from __future__ import annotations
 
 import os
+import re
 
 from .._context import (
     _chat_session_recall,
@@ -61,6 +62,28 @@ def _append_session_blocks(add, cwd, messages, session_id, role):
         except Exception:  # noqa: BLE001 — okr context must never break a turn
             pass
     return _img_blocks
+
+
+_FILE_TOKEN = re.compile(r"[\w./-]+\.[A-Za-z]{1,5}\b|/[\w.-]+/")
+
+
+def _needs_repo_map(last_user) -> bool:
+    """A follow-up gets the repo map only when it looks like code work: it asks
+    to change code, or names a file or path. The map is large and the first
+    message already carried it; a plain question or a remark does not need it
+    again (grep and the memory tools are there when it does).
+    ``AIFORGE_CHAT_REPOMAP_EVERY_TURN=1`` restores it on every turn."""
+    if os.environ.get("AIFORGE_CHAT_REPOMAP_EVERY_TURN", "").strip().lower() in (
+            "1", "true", "yes", "on"):
+        return True
+    text = last_user or ""
+    try:
+        from aiforge_core.api.routes._chat._overlap import has_edit_intent
+        if has_edit_intent(text):
+            return True
+    except Exception:  # noqa: BLE001 — unsure: include it
+        return True
+    return bool(_FILE_TOKEN.search(text))
 
 
 def _followup_recall() -> bool:
@@ -177,12 +200,18 @@ def _append_recall_blocks(add, bundle, cwd, last_user, messages, session_id,
     return _img_blocks
 
 
-def _append_context_blocks(add, cwd, last_user, messages, session_id, role, cave):
+def _append_context_blocks(add, cwd, last_user, messages, session_id, role, cave,
+                           ample=False):
     """Append every dynamic context block (project memory, seed TOC, repo
     summary, workflows, skills, repo-map, @-mentions, self-learning recall +
     prior chats, prev-session continuity, session images, execution ledger, and
     the optional OKR-DAG) to the system prompt via ``add(label, block)``.
-    Returns ``(bundle, img_blocks)`` (the vision image parts for this turn)."""
+    Returns ``(bundle, img_blocks)`` (the vision image parts for this turn).
+
+    ``ample``: the window holds every block, so nothing is dropped by priority.
+    The blocks sent on the first message only (project memory, memory index) then
+    go LAST, so the part of the prompt every turn shares keeps the same bytes
+    from the second message on and the server's prompt cache is not rebuilt."""
     # Dynamic context blocks — via the SHARED bundle builder (same source
     # selection/scoping/gating as chat-team + the pipeline). rules+prefs are
     # already injected above as high-priority blocks, so skip them here.
@@ -231,8 +260,10 @@ def _append_context_blocks(add, cwd, last_user, messages, session_id, role, cave
     # chat only: repeating it on every turn spent its whole budget again each
     # time. Later turns reach memory through the memory tools.
     # AIFORGE_CHAT_BRIEF=every restores the per-turn behaviour.
+    _deferred: list = []
+    _first_only = _deferred.append if ample else (lambda b: add(*b))
     if _is_init or _brief_every_turn():
-        add("project-memory", _bundle.project_brief_md)
+        _first_only(("project-memory", _bundle.project_brief_md))
     # Seed memory / concept index — a compact TOC of EVERY brief so the agent
     # knows what memory exists to recall (the "amnesia" fix: a model never queries
     # memory it doesn't know is there). Gated by AIFORGE_SEED_TOC; embedded only.
@@ -243,7 +274,7 @@ def _append_context_blocks(add, cwd, last_user, messages, session_id, role, cave
         # memory tools reach what matters, so a follow-up does not pay for it.
         if _bsel2.embedded() and (_is_init or _brief_every_turn()):
             from aiforge_core.memory import md_store as _mds2
-            add("memory-index", _mds2.seed_memory_block())
+            _first_only(("memory-index", _mds2.seed_memory_block()))
     except Exception:  # noqa: BLE001 — seed TOC must never break a turn
         pass
     if _ctx_on("summary"):
@@ -263,7 +294,8 @@ def _append_context_blocks(add, cwd, last_user, messages, session_id, role, cave
     # skills to save tokens was a quality regression; don't.
     if _ctx_on("skills"):
         add("skills", _bundle.skills_md)
-    if _ctx_on("repomap"):
+    if _ctx_on("repomap") and (_is_init or _brief_every_turn()
+                               or _needs_repo_map(last_user)):
         add("repo-map", _bundle.repo_map_md)
     # @-mentions — static quality context too; KEEP in cave (the cap trims it
     # from the tail only if the window is genuinely too tight).
@@ -277,6 +309,8 @@ def _append_context_blocks(add, cwd, last_user, messages, session_id, role, cave
     _img_blocks = _append_recall_blocks(
         add, _bundle, cwd, last_user, messages, session_id, role,
         _proactive, _is_init)
+    for _b in _deferred:
+        add(*_b)
     return _bundle, _img_blocks
 
 

@@ -114,6 +114,12 @@ CATALOG: dict = {
         "exit_nonzero | contains:TEXT | not_contains:TEXT | regex:PATTERN.",
         {"cmd": "s", "until": "s", "interval_s": "i", "max_checks": "i",
          "timeout_s": "i", "cmd_timeout": "i"}, ("cmd",)),
+    "spawn_task": (
+        "Start a SECOND agent on a part of the request that does not depend on "
+        "your own part (research, analysis, a separate question). It runs in its "
+        "own chat and its answer is posted here when it finishes: do not wait, "
+        "continue with your part. Give it the full task text.",
+        {"task": "s", "mode": "s"}, ("task",)),
     "schedule_task": (
         "Run an instruction LATER and REPEATEDLY. action: create | list | "
         "cancel. kind 'agent' runs the instruction itself in this chat "
@@ -442,7 +448,7 @@ _CORE_ACT = frozenset({
     "plan_progress", "tool_help",
     "file_read", "read_files", "read_lines", "list_dir", "find", "grep",
     "file_patch", "multi_edit", "file_write", "file_create", "editor",
-    "run_command", "run_tests", "watch_until", "schedule_task",
+    "run_command", "run_tests", "watch_until", "schedule_task", "spawn_task",
     "command_wait", "command_output", "command_kill",
     "memory_lookup", "memory_write",
     "git_status", "git_diff", "repo_map",

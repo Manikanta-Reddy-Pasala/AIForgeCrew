@@ -334,6 +334,49 @@ def _independent_writes(calls: list) -> "list[str] | None":
     return steps
 
 
+_RO_PROGRAMS = frozenset({"ls", "cat", "head", "tail", "pwd", "wc", "grep", "rg",
+                          "which", "stat", "file", "du", "tree", "basename",
+                          "dirname", "echo", "date", "whoami", "uname", "env",
+                          "printenv", "diff", "cmp", "sort", "uniq"})
+_RO_GIT = frozenset({"status", "log", "diff", "show", "branch", "rev-parse",
+                     "ls-files", "blame", "remote", "describe", "shortlog",
+                     "ls-tree", "cat-file", "config"})
+_SHELL_META = frozenset(";&|<>`$(){}\n\\")
+
+
+def _readonly_command(cmd) -> bool:
+    """True for a plain read-only command (``ls``, ``git status``, ``grep …``):
+    one program, no pipe, redirect or substitution. Such calls in one reply
+    do not depend on each other, so they run together like any other read.
+    ``find`` qualifies without -exec/-delete/-ok. Anything else is a command the
+    model must see the result of before it chooses the next."""
+    import shlex
+    text = cmd if isinstance(cmd, str) else ""
+    if not text.strip() or any(ch in _SHELL_META for ch in text):
+        return False
+    try:
+        argv = shlex.split(text)
+    except ValueError:
+        return False
+    if not argv:
+        return False
+    prog = argv[0]
+    if prog == "git":
+        rest = [a for a in argv[1:] if not a.startswith("-")]
+        if not rest or rest[0] not in _RO_GIT:
+            return False
+        if rest[0] in ("branch", "remote", "config"):
+            return all(a.startswith("-") or a in ("branch", "remote", "config")
+                       for a in argv[1:]) and not any(
+                a in ("-d", "-D", "-m", "-M", "--set", "--unset", "add", "remove",
+                      "rm", "rename", "set-url") for a in argv[1:])
+        return True
+    if prog == "find":
+        return not any(a in ("-exec", "-execdir", "-delete", "-ok", "-okdir",
+                             "-fprint", "-fls") for a in argv)
+    return prog in _RO_PROGRAMS and prog not in ("env",) or prog == "env" and len(argv) == 1
+
+
 def _queued_steps(msg: dict) -> "tuple[list[str], int]":
     """``(steps, skipped)`` for the 2nd..Nth tool calls of one reply, so a model
     that asks for five lookups at once gets them without four more round trips.
@@ -366,7 +409,8 @@ def _queued_steps(msg: dict) -> "tuple[list[str], int]":
         step = _action_text(name, args)
         if step == first or step in wanted:
             continue
-        if name in _BATCHABLE:
+        if name in _BATCHABLE or (name == "run_command"
+                                  and _readonly_command(args.get("cmd"))):
             wanted.append(step)
         else:
             held += 1

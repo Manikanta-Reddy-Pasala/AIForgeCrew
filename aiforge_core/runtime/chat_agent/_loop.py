@@ -186,6 +186,11 @@ def _step_prologue(st, n, _cwd, role, complete_fn, session_id, builder):
     if _sig == "return":
         return None, "return"
     yield from _drain_steering(st, session_id)
+    try:
+        from ._context._aging import age_observations
+        age_observations(st.convo)
+    except Exception:  # noqa: BLE001 — ageing never blocks a step
+        pass
     yield from _condense_and_report(st, role, complete_fn, session_id, st.meter)
     out = yield from _run_completion(st, role, complete_fn, session_id, st.meter)
     st.batch_unread = False        # the model has now read the last batch
