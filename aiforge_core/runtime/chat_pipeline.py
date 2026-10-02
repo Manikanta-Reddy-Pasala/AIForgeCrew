@@ -52,6 +52,7 @@ from .chat_pipeline_turn import (  # noqa: F401  # re-exported
     _close_team_run,
     _close_turn,
     _compute_team_answer,
+    _compute_team_outcome,
     _dur,
     _emit_steer_acks,
     _finalize_subtasks,
@@ -179,7 +180,8 @@ def _drive_teardown(root_token, my_lock_gen, prev_root, session_id, cwd,
 
 
 async def _drive_run_events(agen, runner, q, session_id, chat_interject,
-                            steps: list, on_answer=None) -> dict:
+                            steps: list, on_answer=None,
+                            progress: "dict | None" = None) -> dict:
     """Drive the team pipeline's event stream: surface steer acks, honour Stop,
     map each ADK event to the queue + accumulators, and stop on the Enhancer's
     too-vague sentinel. Returns ``{by_role, final, sub_items, enhancer_blocked,
@@ -188,9 +190,14 @@ async def _drive_run_events(agen, runner, q, session_id, chat_interject,
     ``on_answer`` is awaited once, with the accumulators so far, when the answer
     is final (:func:`_answer_ready`), before the Learner runs. From then on the
     session belongs to the next turn: its steers and its Stop are not this
-    run's, and the Learner runs to completion."""
+    run's, and the Learner runs to completion.
+
+    ``progress`` (when given) receives ``by_role`` — the same dict this fills —
+    so a caller still sees what the stages produced if the stream raises."""
     from aiforge_core.runtime import chat_cancel
     by_role: dict[str, str] = {}
+    if progress is not None:
+        progress["by_role"] = by_role
     final = ""
     acc = {"emitted_subtasks": False, "sub_items": None}
     enhancer_blocked = None
@@ -233,6 +240,14 @@ async def _drive_run_events(agen, runner, q, session_id, chat_interject,
             final = t
     return {"by_role": by_role, "final": final, "sub_items": acc["sub_items"],
             "enhancer_blocked": enhancer_blocked, "answered": answered}
+
+
+def _turn_halted(session_id) -> bool:
+    """The user pressed Stop, or team_repo_net paused the run: the turn is over
+    by request, so nothing is re-run on its behalf."""
+    from aiforge_core.runtime import chat_cancel
+    return bool(session_id is not None and (chat_cancel.is_cancelled(session_id)
+                                            or _repo_net_halted(session_id)))
 
 
 def _acquire_team_run_lock(session_id, cwd, raw_prompt, started_at, q):
@@ -294,6 +309,9 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
     _sub_items: list[dict] | None = None
     _run_ok = False
     _handed_off = False                  # answer posted, Learner still running
+    _progress: dict = {}                 # the stages' output so far (by_role)
+    _svc = _session = None               # for the answer after a stream error
+    _seq_start_sha = ""
     _run_id = None                       # keys this run's shell/browser/kernel
     from aiforge_core.runtime import cmd_jobs
     _jobs_turn = cmd_jobs.begin_turn()   # commands handed back die with the run
@@ -341,7 +359,7 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
                                   # empty chat workspace; lean skips it so the
                                   # Planner (and subtask decomposition) runs.
         )
-        svc = InMemorySessionService()
+        svc = _svc = InMemorySessionService()
         # Phantom-tool guard: a text-only agent (feedback/validator/learner)
         # can emit a hallucinated function_call; without this ADK raises
         # "Tool X not found" and the whole SequentialAgent pipeline aborts
@@ -351,7 +369,7 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
         runner = Runner(agent=pipeline, app_name="aiforge-chat",
                         session_service=svc, auto_create_session=True,
                         plugins=_plugins)
-        session = await svc.create_session(
+        session = _session = await svc.create_session(
             app_name="aiforge-chat", user_id="chat",
             state=_team_state,
         )
@@ -394,7 +412,8 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
                            _sub_items, started_at, _chat_run)
 
         evres = await _events_under_deadline(agen, runner, q, session_id,
-                                             chat_interject, steps, _answer_now)
+                                             chat_interject, steps, _answer_now,
+                                             _progress)
         if evres is None and _handed_off:    # nobody reads q after a hand-off
             log.warning("team run session=%s: Learner stopped at the deadline "
                         "after the answer was posted", session_id)
@@ -403,26 +422,51 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
         by_role, final = evres["by_role"], evres["final"]
         _sub_items = evres["sub_items"] if evres["sub_items"] is not None else _sub_items
         _enhancer_blocked_reason = evres["enhancer_blocked"]
-        msg, _change_events = await _compute_team_answer(
+        _halted = _turn_halted(session_id)
+        msg, _change_events, _run_ok = await _compute_team_outcome(
             svc, session, by_role, final, _enhancer_blocked_reason,
-            cwd, _seq_start_sha)
+            cwd, _seq_start_sha, raw_prompt=raw_prompt, q=q, steps=steps,
+            session_id=session_id, recover=not _halted,
+            reason="you stopped it" if _halted else "")
         final_text = msg
-        _run_ok = True
         q.put({"type": "message", "text": msg})
         for _ev in _change_events:
             q.put(_ev)
+        if not _run_ok:                  # changed nothing: Retry must resume it
+            q.put({"type": "stopped", "reason": "no_implementation"})
     except Exception as exc:  # noqa: BLE001
         if _handed_off:                  # nobody reads q after a hand-off
             log.warning("team run session=%s: Learner failed after the answer "
                         "was posted: %s", session_id, exc)
         q.put({"type": "error", "text": f"pipeline: {exc}"})
+        _rec = None
+        if not _handed_off:
+            try:
+                _halted = _turn_halted(session_id)
+                _rec = await _compute_team_outcome(
+                    _svc, _session, _progress.get("by_role") or {}, "", None,
+                    cwd, _seq_start_sha, raw_prompt=raw_prompt, q=q,
+                    steps=steps, session_id=session_id, recover=not _halted,
+                    reason=(f"{type(exc).__name__}: {exc}"[:300]),
+                    only_if_stalled=True)
+            except Exception as _rexc:  # noqa: BLE001
+                log.warning("team run session=%s: recovery after the error "
+                            "failed: %s", session_id, _rexc)
+        if _rec is not None:
+            final_text, _rec_events, _run_ok = _rec
+            q.put({"type": "message", "text": final_text})
+            for _ev in _rec_events:
+                q.put(_ev)
+            if not _run_ok:
+                q.put({"type": "stopped", "reason": "no_implementation"})
         # The turn ended with no answer, and whatever the run had already
         # written is on disk. Same structural marker a Stop leaves, for the
         # same reason: without it `chat_resume` reads this as a turn that
         # finished normally, and Retry re-runs the whole pipeline from
         # nothing — re-doing every edit the dead run made. Team mode is the
         # expensive path to repeat.
-        q.put({"type": "stopped", "reason": "pipeline_error"})
+        if _rec is None:
+            q.put({"type": "stopped", "reason": "pipeline_error"})
     finally:
         try:
             cmd_jobs.end_turn(_jobs_turn)
@@ -437,7 +481,7 @@ async def _drive(q, session_id, cwd, raw_prompt, started_at, prompt, _team_state
 
 
 async def _events_under_deadline(agen, runner, q, session_id, chat_interject,
-                                 steps, on_answer=None):
+                                 steps, on_answer=None, progress=None):
     """``_drive_run_events`` bounded by :func:`_team_deadline_s`. Returns its
     result, or None after reporting a deadline stop (same structural marker a
     user Stop leaves, so Retry resumes instead of redoing the whole run)."""
@@ -449,7 +493,8 @@ async def _events_under_deadline(agen, runner, q, session_id, chat_interject,
     try:
         async with cm:
             return await _drive_run_events(agen, runner, q, session_id,
-                                           chat_interject, steps, on_answer)
+                                           chat_interject, steps, on_answer,
+                                           progress)
     except TimeoutError:
         with contextlib.suppress(Exception):
             await agen.aclose()

@@ -28,16 +28,33 @@ def _quick_step_cap(quick: bool) -> int | None:
         return 6
 
 
-def _maybe_downgrade_team(team, prompt, history, cwd, session_id):
+def _first_team_turn(rows, current_msg_id=None) -> bool:
+    """True when no earlier turn of this chat ran in Team mode: the user started
+    in simple chat and switched this window to Team. The history then holds
+    simple-chat turns, so the request looks like a follow-up — but the Team
+    pick is the user's explicit choice for THIS request and gets the full
+    pipeline, not a downgrade to the single agent."""
+    try:
+        return not any(
+            isinstance(r, dict) and r.get("mode") == "team"
+            and r.get("id") != current_msg_id for r in (rows or []))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _maybe_downgrade_team(team, prompt, history, cwd, session_id,
+                          first_team_turn=False):
     """Auto-route a small team follow-up down to simple mode. Run HERE (off the
     response-open path) so a slow/unreachable classify LLM never delays the
     StreamingResponse. Returns ``(team, auto_downgraded)``; routing must never
-    block a turn."""
+    block a turn. The first Team turn of a chat is never downgraded (the
+    router checks ``first_team_turn``)."""
     if not team:
         return team, False
     try:
         from aiforge_core.runtime import turn_router as _tr
-        if _tr.should_downgrade_team(prompt, history, cwd):
+        if _tr.should_downgrade_team(prompt, history, cwd,
+                                     first_team_turn=first_team_turn):
             _af_log.info("chat: team turn auto-downgraded to simple "
                          "(small follow-up) session=%s", session_id)
             return False, True
@@ -313,7 +330,7 @@ def _classify_needed(_cr, prompt: str) -> bool:
 
 def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
                        history, quick=False, session_id=None,
-                       single_agent=False):
+                       single_agent=False, first_team_turn=False):
     """Gather the (side-effecting) inputs to the task-type router and return its
     decision. The heavy which-path decision is a PURE function in chat_router;
     here we only probe parallel capability, greenfield-ness, follow-up-ness, the
@@ -327,6 +344,10 @@ def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
         from aiforge_core.runtime import turn_router as _tr2
         fresh = not _tr2.is_followup(history)
     except Exception:  # noqa: BLE001
+        fresh = True
+    # A chat switched from simple to Team: its first Team request is a fresh
+    # one for routing, whatever the simple-chat history before it says.
+    if team and first_team_turn:
         fresh = True
     # Reading every source file. It changes the route only for a team
     # follow-up that is not already a build: a fresh team turn pipelines

@@ -288,3 +288,52 @@ def test_a_short_remark_skips_the_repo_walk_and_keeps_images(monkeypatch):
     assert seen["summary"] is False
     assert imgs == [{"type": "image"}]
     assert "workflows" in added
+
+
+# ── a Team pick that wants changes is never sent to the research agent ────
+_LIVE_ASK = ("implement a rust/go based parallel read path, target 500 ms for "
+             "50k records")
+
+
+@pytest.mark.parametrize("p", [
+    _LIVE_ASK, "please fix the flaky retry test", "can you add caching to it?",
+    "Check the current state. Then implement the parallel reader.",
+    "I want you to migrate the job runner to asyncio", "speed up the loader",
+    "refactor the billing module"])
+def test_wants_changes_true(p):
+    assert cr.wants_changes(p)
+
+
+@pytest.mark.parametrize("p", [
+    "review the architecture", "how does the cache implement eviction?",
+    "is the parallel path implemented?", "do not change any files, just explain",
+    "don't implement anything yet", "write a report on our options",
+    "check whether the read path is built", "", "what did we add last week"])
+def test_wants_changes_false(p):
+    assert not cr.wants_changes(p)
+
+
+@pytest.mark.parametrize("p", [
+    _LIVE_ASK,
+    "Review what exists and verify the numbers, then implement the rust path "
+    "for 50k records"])
+def test_team_implement_never_downgraded_to_analysis(p):
+    r = _d(prompt=p, cat="doc_analysis", team=True)
+    assert not r.doc_task
+    assert r.route_pipeline
+
+
+def test_team_implement_not_downgraded_with_approvals_on_either():
+    r = _d(prompt=_LIVE_ASK, cat="doc_analysis", team=True, team_approvals=True)
+    assert not r.doc_task and not r.route_pipeline   # gated sequential team
+
+
+def test_team_review_only_prompt_still_goes_to_research():
+    r = _d(prompt="review the parallel read path design and verify the numbers",
+           cat="doc_analysis", team=True)
+    assert r.doc_task
+
+
+def test_simple_mode_doc_class_is_untouched_by_the_team_veto():
+    r = _d(prompt=_LIVE_ASK, cat="doc_analysis", team=False)
+    assert r.doc_task
