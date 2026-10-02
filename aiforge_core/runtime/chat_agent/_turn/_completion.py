@@ -350,11 +350,11 @@ def _shrink_after_overflow(st, complete_fn, role, convo, session_id) -> str:
     if st is not None and _overflow_restart_enabled():
         try:
             from ._escalate import restart_with_handoff
-            before = sum(len(str(m.get("content") or "")) for m in convo)
+            # The restart REPLACES the context in place; once it has run the
+            # run is on the handoff whatever its size, so say so (it used to
+            # report "could not shrink it" and then condense the new context).
             if restart_with_handoff(st):
-                after = sum(len(str(m.get("content") or "")) for m in st.convo)
-                if after < before:
-                    return "restarted from a handoff"
+                return "restarted from a handoff"
         except Exception:  # noqa: BLE001 — fall back to the condense
             pass
     if _shrink_for_retry(convo, role, complete_fn, session_id):

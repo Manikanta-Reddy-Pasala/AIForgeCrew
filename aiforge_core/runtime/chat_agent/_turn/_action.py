@@ -182,6 +182,10 @@ def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
         result, events = review_progress(st, result, events)
         st.board_used = st.board_used or any(
             ev["type"] == "subtasks" for ev in events)
+        # The model is working the board (also an item that came from the
+        # request's own parts): a FINAL that leaves any item open is premature.
+        if result.get("ok") and result.get("slug") in st.board:
+            st.board_touched = True
         if readonly_mode:
             # Plan mode's panel holds the planner's steps; a whole-list
             # event would replace them.

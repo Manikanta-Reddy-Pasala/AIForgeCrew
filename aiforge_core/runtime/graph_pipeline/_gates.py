@@ -242,6 +242,10 @@ def _reset_for_replan(state) -> None:
         # Both are run-scoped and both make a pass unreachable; a
         # replanned attempt that inherits them is spent before it starts.
         "doer_incomplete", "_repeat_counts",
+        # The no-edit streak: a re-planned attempt is owed its own passes. It
+        # used to inherit the streak, so its FIRST pass without an edit was
+        # already "the 3rd in a row" and the attempt stalled after one pass.
+        "_idle_iters",
         "loc_history", "loc_first_seen", "doer_outcome",
         "verifier_verdict", "verify_correctness", "verify_scope",
         "verify_risk", "verify_replan_count",

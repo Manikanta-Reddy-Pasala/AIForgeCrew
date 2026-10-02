@@ -71,6 +71,18 @@ def open_planned(board: dict) -> list[str]:
     return [s for s in open_items(board) if not board[s].get("from_request")]
 
 
+def open_for_final(st) -> list[str]:
+    """The open items a FINAL must not leave behind: the ones the model put on
+    the board itself and, once the model has worked the board with
+    plan_progress, the parts of the request as well. A multi-part request the
+    model answers in one go without touching the board is not held up (it has
+    no evidence to mark the parts with)."""
+    board = st.board
+    if getattr(st, "board_touched", False):
+        return open_items(board)
+    return open_planned(board)
+
+
 def apply_progress(board: dict, args: dict) -> tuple[dict, list[dict]]:
     """Apply one ``plan_progress`` call. Returns ``(result, ui_events)``."""
     slug = str(args.get("slug") or args.get("part") or "").strip()[:80]
@@ -208,9 +220,9 @@ def board_nudge_allowed(st) -> bool:
     return True
 
 
-def unfinished_reminder(board: dict) -> str:
+def unfinished_reminder(board: dict, slugs=None) -> str:
     items = "\n".join(f"- {s}: {board[s]['title']} ({board[s]['status']})"
-                      for s in open_planned(board))
+                      for s in (open_planned(board) if slugs is None else slugs))
     return ("[task board — not the user] These items on your task board are "
             f"still open:\n{items}\nDo the remaining work now, marking each "
             "item with plan_progress as you go. If an item cannot be done or is "
