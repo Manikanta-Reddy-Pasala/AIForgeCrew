@@ -78,17 +78,21 @@ def test_create_requires_fields(cfg):
 
 
 def test_create(cfg, monkeypatch):
-    seen = _capture(monkeypatch, {"id": "99", "title": "New", "status": "draft",
-                                  "_links": {"webui": "/display/ENG/New"}})
+    calls = _recording(monkeypatch, lambda req: {
+        "id": "99", "title": "New", "status": "draft",
+        "_links": {"webui": "/display/ENG/New"}})
     out = cf.confluence_create({"title": "New", "space": "ENG",
                                 "body": "<p>x</p>", "parent_id": "5"})
     assert out["ok"]
     assert out["id"] == "99"
-    assert out["status"] == "draft"
-    assert seen["method"] == "POST"
-    assert seen["body"]["status"] == "draft"
-    assert seen["body"]["space"]["key"] == "ENG"
-    assert seen["body"]["ancestors"] == [{"id": "5"}]
+    post = calls[0]                                  # the create; a read-back GET follows
+    assert post.get_method() == "POST"
+    body = json.loads(post.data.decode())
+    assert body["status"] == "current"               # published by default…
+    assert body["title"] == "[DRAFT] New"            # …and marked as a draft
+    assert "DRAFT" not in body["body"]["storage"]["value"]    # the title is the only mark
+    assert body["space"]["key"] == "ENG"
+    assert body["ancestors"] == [{"id": "5"}]
     assert out["url"].endswith("/display/ENG/New")
 
 
@@ -312,3 +316,96 @@ def test_mermaid_mode_explicit_macro(monkeypatch):
     monkeypatch.setenv("AIFORGE_CONFLUENCE_DIAGRAM", "mermaid")
     out, _ = cf._storagify_media("```mermaid\ngraph TD\n A-->B\n```")
     assert 'ac:name="mermaid"' in out
+
+
+# ── a page is "created" only if it can be read back; drafts say so ────────
+
+def _recording(monkeypatch, handler):
+    calls = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        calls.append(req)
+        return _Resp(handler(req))
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    return calls
+
+
+def test_create_reads_the_page_back_and_reports_system_status_and_draft(cfg, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CONFLUENCE_PUBLISH_DEFAULT", "0")
+
+    def handler(req):
+        if req.get_method() == "POST":
+            return {"id": "99", "title": "New", "status": "draft", "_links": {"webui": "/d/New"}}
+        return {"id": "99", "title": "New", "status": "draft", "space": {"key": "ENG"}}
+    calls = _recording(monkeypatch, handler)
+    out = cf.confluence_create({"title": "New", "space": "ENG", "body": "<p>x</p>"})
+    assert out["ok"] and out["verified"] and out["system"] == "confluence"
+    assert out["status"] == "draft" and out["visible_in_space"] is False
+    assert "DRAFT" in out["note"] and out["space"] == "ENG"
+    assert [c.get_method() for c in calls][:2] == ["POST", "GET"]
+
+
+def test_by_default_a_created_page_is_published_visible_and_marked(cfg, monkeypatch):
+    def handler(req):
+        return {"id": "99", "title": "[DRAFT] New", "status": "current",
+                "space": {"key": "ENG"}, "_links": {"webui": "/d/New"}}
+    calls = _recording(monkeypatch, handler)
+    out = cf.confluence_create({"title": "New", "space": "ENG", "body": "<p>x</p>"})
+    assert out["status"] == "current" and out["visible_in_space"] is True
+    assert out["marked_as_draft"] is True and "[DRAFT]" in out["note"]
+    assert not any("/label" in c.full_url for c in calls)   # no extras by default
+
+
+def test_the_banner_and_label_are_opt_in(cfg, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CONFLUENCE_DRAFT_BANNER", "1")
+    monkeypatch.setenv("AIFORGE_CONFLUENCE_DRAFT_LABEL", "1")
+    calls = _recording(monkeypatch, lambda req: {
+        "id": "99", "title": "[DRAFT] New", "status": "current", "space": {"key": "ENG"}})
+    cf.confluence_create({"title": "New", "space": "ENG", "body": "<p>x</p>"})
+    sent = json.loads(calls[0].data.decode())["body"]["storage"]["value"]
+    assert "DRAFT" in sent and any("/label" in c.full_url for c in calls)
+
+
+def test_a_page_that_cannot_be_read_back_is_not_reported_as_created(cfg, monkeypatch):
+    import urllib.error
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.get_method() == "POST":
+            return _Resp({"id": "99", "title": "New", "status": "draft"})
+        raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    out = cf.confluence_create({"title": "New", "space": "ENG", "body": "<p>x</p>"})
+    assert out["ok"] is False and "cannot be read back" in out["error"]
+
+
+def test_a_response_without_an_id_is_not_a_created_page(cfg, monkeypatch):
+    _capture(monkeypatch, {"title": "New"})
+    out = cf.confluence_create({"title": "New", "space": "ENG", "body": "<p>x</p>"})
+    assert out["ok"] is False and "no page id" in out["error"]
+
+
+def test_publish_true_creates_a_current_page_and_reports_it_visible(cfg, monkeypatch):
+    def handler(req):
+        return {"id": "99", "title": "New", "status": "current", "space": {"key": "ENG"},
+                "_links": {"webui": "/d/New"}}
+    calls = _recording(monkeypatch, handler)
+    out = cf.confluence_create({"title": "New", "space": "ENG", "body": "<p>x</p>",
+                                "publish": True})
+    assert json.loads(calls[0].data.decode())["status"] == "current"
+    assert out["status"] == "current" and out["visible_in_space"] is True
+
+
+def test_update_with_publish_and_no_body_publishes_the_draft_as_it_is(cfg, monkeypatch):
+    def handler(req):
+        if req.get_method() == "GET":
+            return {"id": "99", "title": "New", "status": "draft", "version": {"number": 1},
+                    "body": {"storage": {"value": "<p>keep</p>"}}}
+        return {"id": "99", "title": "New", "status": "current", "_links": {"webui": "/d/New"}}
+    calls = _recording(monkeypatch, handler)
+    out = cf.confluence_update({"id": "99", "publish": True})
+    put = [c for c in calls if c.get_method() == "PUT"][0]
+    sent = json.loads(put.data.decode())
+    assert sent["status"] == "current" and sent["body"]["storage"]["value"] == "<p>keep</p>"
+    assert out["ok"] and out["published_now"] is True and out["status"] == "current"

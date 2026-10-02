@@ -160,6 +160,20 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
                             "listing actions instead of finishing. Say "
                             "\"continue\" and I will pick it up, or tell me what "
                             "to change.)")
+    # "I created the Confluence page" with no successful Confluence/Jira call
+    # this turn: the page is not there. Make it call the tool, or say so.
+    from . import _external_claim as _xc
+    _missing = _xc.unbacked_claims(step.get("text") or "",
+                                   getattr(st, "external_ok", None))
+    if _missing and not builder:
+        st.external_nudges = getattr(st, "external_nudges", 0) + 1
+        if st.external_nudges <= 2:
+            yield {"type": "thought", "role": "system",
+                   "text": "↺ the answer says something was created, but no tool "
+                           "call for it succeeded — checking"}
+            st.convo.append({"role": "user", "content": _xc.nudge_text(_missing)})
+            return "continue"
+        step["text"] = _xc.disclaimer(_missing) + (step.get("text") or "")
     # In a builder session, a "final" BEFORE the finalize tool succeeded
     # means the model narrated/stalled ("let me test what's happening…")
     # instead of building the artifact — don't end the interview with

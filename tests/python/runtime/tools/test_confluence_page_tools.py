@@ -166,7 +166,9 @@ def writer(monkeypatch):
     return uploads
 
 
-def test_a_page_is_created(rest, writer):
+def test_a_page_is_created_as_an_unpublished_draft_when_asked(rest, writer, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CONFLUENCE_PUBLISH_DEFAULT", "0")
+    monkeypatch.setenv("AIFORGE_CONFLUENCE_DRAFT_MARK", "0")
     rest["replies"]["/rest/api/content"] = {"ok": True, "data": {
         "id": "9", "title": "Spec", "status": "draft"}}
     out = confluence.confluence_create({"title": "Spec", "space": "ENG",
@@ -178,6 +180,33 @@ def test_a_page_is_created(rest, writer):
     assert body["status"] == "draft"
     assert body["space"] == {"key": "ENG"}
     assert body["body"]["storage"]["value"] == "<p>hello</p>"
+
+
+def test_a_page_is_published_and_marked_as_a_draft_by_default(rest, writer):
+    rest["replies"]["/rest/api/content"] = {"ok": True, "data": {
+        "id": "9", "title": "[DRAFT] Spec", "status": "current"}}
+    out = confluence.confluence_create({"title": "Spec", "space": "ENG",
+                                        "body": "hello"})
+    body = rest["calls"][0]["body"]
+    assert body["status"] == "current"                         # visible in the space
+    assert body["title"] == "[DRAFT] Spec"                     # marked for review
+    assert "DRAFT" not in body["body"]["storage"]["value"]     # no banner to clean up
+    assert out["visible_in_space"] is True and out["marked_as_draft"] is True
+    assert "[DRAFT]" in out["note"]
+    assert not [c for c in rest["calls"] if "label" in str(c.get("path", c))]
+    confluence.confluence_create({"title": "[DRAFT] Spec", "space": "ENG", "body": "hello"})
+    titled = [c["body"]["title"] for c in rest["calls"]
+              if isinstance(c.get("body"), dict) and c["body"].get("title")]
+    assert titled[-1] == "[DRAFT] Spec"                         # not prefixed twice
+
+
+def test_publish_false_gives_a_real_unpublished_draft(rest, writer):
+    rest["replies"]["/rest/api/content"] = {"ok": True, "data": {
+        "id": "9", "title": "[DRAFT] Spec", "status": "draft"}}
+    out = confluence.confluence_create({"title": "Spec", "space": "ENG",
+                                        "body": "hello", "publish": False})
+    assert rest["calls"][0]["body"]["status"] == "draft"
+    assert out["visible_in_space"] is False and "UNPUBLISHED" in out["note"]
 
 
 def test_the_default_space_fills_a_missing_one(rest, writer, monkeypatch):
@@ -207,7 +236,14 @@ def test_inline_images_are_uploaded_after_the_page_exists(rest, writer):
                                         "body": "see img"})
     assert out["attachments"] == [{"filename": "img1.png"}]
     assert writer[0][0] == "9"                # uploaded against the new page id
-    assert writer[0][3] == "draft"            # draft container for the upload
+    assert writer[0][3] is None               # published by default: the normal container
+
+
+def test_inline_images_of_an_unpublished_draft_go_to_the_draft_container(rest, writer):
+    rest["replies"]["/rest/api/content"] = {"ok": True, "data": {"id": "9", "status": "draft"}}
+    confluence.confluence_create({"title": "t", "space": "E", "body": "see img",
+                                  "publish": False})
+    assert writer[0][3] == "draft"
 
 
 def test_a_failed_create_is_returned(rest, writer):

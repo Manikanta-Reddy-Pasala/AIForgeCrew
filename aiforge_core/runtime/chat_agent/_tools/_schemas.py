@@ -272,21 +272,24 @@ CATALOG: dict = {
                           {"query": "s", "cql": "s"}, ()),
     "confluence_read": ("READ one Confluence page (id, or title+space).",
                         {"id": "s", "title": "s", "space": "s"}, ()),
-    "confluence_create": ("WRITE: create a NEW Confluence page as an unpublished "
-                          "draft (status=draft). For a page with a mermaid diagram, the fence is shown in chat first; call this when a later message asks to commit or publish (or the same message already says commit/publish). Do not ASK permission — the Approve gate covers the call. Never use this to look pages up. "
+    "confluence_create": ("WRITE: create a NEW Confluence page — by default the page is PUBLISHED (its link works at once) and its TITLE starts with [DRAFT] so the user can review it and remove the prefix; pass publish=false only when the user explicitly wants an unpublished Confluence draft. For a page with a mermaid diagram, the fence is shown in chat first; call this when a later message asks to commit or publish (or the same message already says commit/publish). Do not ASK permission — the Approve gate covers the call. Never use this to look pages up. "
                           "Default, unless they asked for more or gave you the text: a process page opens with a short numbered flow and a mermaid flowchart, then a few bullets or one small table. Do not invent a flowchart for notes or a reference table.",
                           {"title": "s", "space": "s", "body": "s",
-                           "parent_id": "s"}, ("title", "space", "body")),
+                           "parent_id": "s", "publish": "b"},
+                          ("title", "space", "body")),
     "confluence_update": ("WRITE: edit an existing Confluence page. `body` is "
                           "MERGED into the live page per `mode`: append | prepend | "
                           "replace_section (+`section` heading) | replace_text "
                           "(+`find` exact text from confluence_read) | replace "
                           "(the COMPLETE page, tables/macros kept; refused if it "
                           "drops content unless `allow_loss`). Send only the part "
-                          "that changes.",
+                          "that changes. To PUBLISH a draft (only when the user "
+                          "asked) pass publish=true; with no body it publishes the "
+                          "page as it is.",
                           {"id": "s", "body": "s", "title": "s", "mode": "s",
-                           "section": "s", "find": "s", "allow_loss": "b"},
-                          ("id", "body")),
+                           "section": "s", "find": "s", "allow_loss": "b",
+                           "publish": "b"},
+                          ("id",)),
     "confluence_attach": ("Upload a file as a page attachment.",
                           {"id": "s", "path": "s", "url": "s"}, ("id",)),
     "confluence_children": ("Direct child pages.", {"id": "s"}, ("id",)),
