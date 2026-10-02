@@ -85,11 +85,12 @@ def test_create(cfg, monkeypatch):
                                 "body": "<p>x</p>", "parent_id": "5"})
     assert out["ok"]
     assert out["id"] == "99"
-    assert out["status"] == "draft"
     post = calls[0]                                  # the create; a read-back GET follows
     assert post.get_method() == "POST"
     body = json.loads(post.data.decode())
-    assert body["status"] == "draft"
+    assert body["status"] == "current"               # published by default…
+    assert body["title"] == "[DRAFT] New"            # …and marked as a draft
+    assert "DRAFT" in body["body"]["storage"]["value"]
     assert body["space"]["key"] == "ENG"
     assert body["ancestors"] == [{"id": "5"}]
     assert out["url"].endswith("/display/ENG/New")
@@ -331,6 +332,8 @@ def _recording(monkeypatch, handler):
 
 
 def test_create_reads_the_page_back_and_reports_system_status_and_draft(cfg, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CONFLUENCE_PUBLISH_DEFAULT", "0")
+
     def handler(req):
         if req.get_method() == "POST":
             return {"id": "99", "title": "New", "status": "draft", "_links": {"webui": "/d/New"}}
@@ -341,6 +344,18 @@ def test_create_reads_the_page_back_and_reports_system_status_and_draft(cfg, mon
     assert out["status"] == "draft" and out["visible_in_space"] is False
     assert "DRAFT" in out["note"] and out["space"] == "ENG"
     assert [c.get_method() for c in calls][:2] == ["POST", "GET"]
+
+
+def test_by_default_a_created_page_is_published_visible_and_marked(cfg, monkeypatch):
+    def handler(req):
+        return {"id": "99", "title": "[DRAFT] New", "status": "current",
+                "space": {"key": "ENG"}, "_links": {"webui": "/d/New"}}
+    calls = _recording(monkeypatch, handler)
+    out = cf.confluence_create({"title": "New", "space": "ENG", "body": "<p>x</p>"})
+    assert out["status"] == "current" and out["visible_in_space"] is True
+    assert out["marked_as_draft"] is True and "MARKED AS A DRAFT" in out["note"]
+    methods_urls = [(c.get_method(), c.full_url) for c in calls]
+    assert any("/label" in u for _m, u in methods_urls)    # the 'draft' label
 
 
 def test_a_page_that_cannot_be_read_back_is_not_reported_as_created(cfg, monkeypatch):

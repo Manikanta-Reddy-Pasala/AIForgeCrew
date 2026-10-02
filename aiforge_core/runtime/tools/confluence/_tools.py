@@ -138,15 +138,46 @@ def confluence_read(args: dict, _cwd: str | None = None) -> dict:
     return out
 
 
+_DRAFT_TITLE = "[DRAFT] "
+_DRAFT_BANNER = ('<ac:structured-macro ac:name="info"><ac:rich-text-body>'
+                 "<p><strong>DRAFT</strong> — created by AIForge, pending human "
+                 "review. Remove this note and the [DRAFT] title prefix when the "
+                 "page is approved.</p></ac:rich-text-body></ac:structured-macro>")
+
+
+def _flag(value, default: bool) -> bool:
+    if value is None or str(value).strip() == "":
+        return default
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def publish_by_default() -> bool:
+    """New pages are published (visible in the space) unless the caller says
+    ``publish: false`` or ``AIFORGE_CONFLUENCE_PUBLISH_DEFAULT=0`` makes review-first
+    drafts the default again."""
+    import os
+    return _flag(os.environ.get("AIFORGE_CONFLUENCE_PUBLISH_DEFAULT"), True)
+
+
+def mark_as_draft() -> bool:
+    """An agent-created page is MARKED as a draft for review: a ``[DRAFT]`` title
+    prefix, an info banner and a ``draft`` label (``AIFORGE_CONFLUENCE_DRAFT_MARK=0``
+    turns the marking off)."""
+    import os
+    return _flag(os.environ.get("AIFORGE_CONFLUENCE_DRAFT_MARK"), True)
+
+
 def confluence_create(args: dict, cwd: str | None = None) -> dict:
     """Create a page as a *draft* (unpublished). Required: ``title``, ``space``
     (key), ``body`` (storage XHTML). Optional: ``parent_id``,
     ``representation`` (storage|wiki).
 
-    A new page lands as a Confluence ``status=draft`` (review-first) unless the
-    caller passes ``publish: true`` — only when the user asked to publish. The
-    page is read back by id before the tool says it was created; the result
-    names the system, id, url and status. ``confluence_read`` /
+    A new page is PUBLISHED (visible in the space) by default and MARKED AS A
+    DRAFT for review: a ``[DRAFT]`` title prefix, an info banner and a ``draft``
+    label. ``publish: false`` (or AIFORGE_CONFLUENCE_PUBLISH_DEFAULT=0) creates
+    an unpublished Confluence draft instead. The page is read back by id before
+    the tool says it was created; the result names the system, id, url and
+    status. ``confluence_read`` /
     ``confluence_update`` / attach find drafts by id automatically."""
     if not args.get("space") and default_space():
         args = {**args, "space": default_space()}
@@ -156,11 +187,17 @@ def confluence_create(args: dict, cwd: str | None = None) -> dict:
     # Rewrite mermaid/code fences + images into storage macros; images are
     # uploaded as attachments after the page exists (id needed).
     xhtml, img_refs = _storagify_media(md_to_storage(str(args["body"])))
-    publish = str(args.get("publish") or "").strip().lower() in ("1", "true", "yes")
+    publish = _flag(args.get("publish"), publish_by_default())
+    marked = mark_as_draft()
+    title = str(args["title"])
+    if marked and not title.upper().startswith("[DRAFT]"):
+        title = _DRAFT_TITLE + title
+    if marked:
+        xhtml = _DRAFT_BANNER + xhtml
     payload: dict = {
         "type": "page",
         "status": "current" if publish else "draft",
-        "title": args["title"],
+        "title": title,
         "space": {"key": args["space"]},
         "body": {"storage": {"value": xhtml,
                              "representation": args.get("representation", "storage")}},
@@ -185,17 +222,29 @@ def confluence_create(args: dict, cwd: str | None = None) -> dict:
                          "back by its id — do not report it as created",
                 "url": _page_url(d)}
     status = bd.get("status") or status
+    label_result = None
+    if marked and d.get("id"):
+        label_result = confluence_add_label({"id": str(d["id"]), "labels": ["draft"]})
+    if status == "draft":
+        note = ("UNPUBLISHED DRAFT: not visible in the space tree until it is "
+                "published (open the url, or call confluence_update with "
+                "publish=true)")
+    elif marked:
+        note = ("PUBLISHED and visible in the space, MARKED AS A DRAFT for review "
+                "([DRAFT] title prefix, a banner on the page, label 'draft')")
+    else:
+        note = "published and visible in the space"
     out = {"ok": True, "system": "confluence", "verified": True,
-           "id": d.get("id"), "title": d.get("title"), "status": status,
+           "id": d.get("id"), "title": d.get("title") or title, "status": status,
            "space": ((bd.get("space") or {}).get("key") or args["space"]),
            "url": _page_url(d),
            "visible_in_space": status != "draft",
-           "note": ("DRAFT: not visible in the space tree until it is published "
-                    "(open the url, or call confluence_update with publish=true "
-                    "if the user asked to publish)") if status == "draft"
-                   else "published and visible in the space",
-           "written": {"title": d.get("title") or args["title"],
+           "marked_as_draft": bool(marked),
+           "note": note,
+           "written": {"title": d.get("title") or title,
                        "body": xhtml[:2000]}}
+    if label_result is not None and not label_result.get("ok"):
+        out["label_warning"] = "the page is created but the 'draft' label was not added"
     if img_refs and d.get("id"):
         out["attachments"] = _upload_page_images(
             str(d["id"]), img_refs, cwd, status=status if status == "draft" else None)
