@@ -38,6 +38,7 @@ from ._progress import (
 from ._shared import (
     _ACTION_SIG_MAX,
 )
+from ._items import note_evidence, review_progress
 from ._tasks import apply_progress
 
 
@@ -177,6 +178,7 @@ def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
 
     if name == "plan_progress":
         result, events = apply_progress(st.board, args)
+        result, events = review_progress(st, result, events)
         st.board_used = st.board_used or any(
             ev["type"] == "subtasks" for ev in events)
         if readonly_mode:
@@ -481,6 +483,7 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     # bodies (same skill/OKF/memory hit already in this turn) stay short.
     obs = render_observation(name, model_result, _obs_cap)
     _note_green_tests(st, name, args, result, cwd)
+    note_evidence(st, name, args, result)
     # The same failure after a different fix, again: nudge once (the nudge
     # rides on this observation), then stop and ask.
     # Steps that change nothing, read nothing new and move no test, again

@@ -27,6 +27,7 @@ from ._runners_write import (  # noqa: F401  # re-exported
     _tests_block,
     _write_subtask_files,
 )
+from ._items import board_block as _board_block
 
 
 def _doer_message(subtask: dict, spec_md: str, path: str, goal: str) -> str:
@@ -44,6 +45,7 @@ def _doer_message(subtask: dict, spec_md: str, path: str, goal: str) -> str:
          f"EXACT file/dir paths it lists, verbatim):\n"
          f"{spec_md.strip()[:6000]}\n\n---\n\n"
          if spec_md and spec_md.strip() else "")
+        + _board_block(subtask)
         + f"Implement this subtask, then build + test it.\n\n{path_pin}GOAL: {goal}\n"
         + ("ACCEPTANCE:\n" + "\n".join(f"- {a}" for a in accept) + "\n"
            if accept else "")

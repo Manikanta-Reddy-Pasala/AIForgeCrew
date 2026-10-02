@@ -87,7 +87,7 @@ def _review_written_tests(cwd: str, spec_md: str, put) -> None:
 
 
 def _run_test_first(cwd, base, subs, run_one, on_status, cancelled, spec_md,
-                    put) -> dict:
+                    put, board=None) -> dict:
     """TEST-FIRST: build the tests first (they pin behaviour from the API
     contract), merge them into base, then build each impl in a worktree that HAS
     the tests + is fed its own test content — so the impl is functionally
@@ -100,7 +100,7 @@ def _run_test_first(cwd, base, subs, run_one, on_status, cancelled, spec_md,
     agg_tests = run_parallel(cwd, base, None, test_subs, run_one,
                              validate_one=None, integration_test=None,
                              on_status=on_status, should_cancel=cancelled,
-                             in_place=not fan_out_enabled())
+                             in_place=not fan_out_enabled(), board=board)
     if cancelled():
         return agg_tests
     _review_written_tests(cwd, spec_md, put)
@@ -110,12 +110,14 @@ def _run_test_first(cwd, base, subs, run_one, on_status, cancelled, spec_md,
                             validate_one=default_validate_one,
                             integration_test=default_integration_test,
                             on_status=on_status, should_cancel=cancelled,
-                            in_place=not fan_out_enabled())
+                            in_place=not fan_out_enabled(), board=board)
     return _merge_aggs(agg_tests, agg_impl)
 
 
 def _make_runner(cwd, base, subs, run_one, on_status, cancelled, spec_md, q,
                  result: dict):
+    board = _new_board(subs)      # one board across the run's phases
+
     def _runner():
         try:
             # SEQUENTIAL mode: single branch, each subtask sees the REAL prior
@@ -136,14 +138,14 @@ def _make_runner(cwd, base, subs, run_one, on_status, cancelled, spec_md, q,
             if test_first and has_both:
                 result["agg"] = _run_test_first(
                     cwd, base, subs, run_one, on_status, cancelled, spec_md,
-                    q.put)
+                    q.put, board=board)
             else:
                 result["agg"] = run_parallel(
                     cwd, base, None, subs, run_one,
                     validate_one=default_validate_one,
                     integration_test=default_integration_test,
                     on_status=on_status, should_cancel=cancelled,
-                    in_place=not fan_out_enabled())
+                    in_place=not fan_out_enabled(), board=board)
         except Exception as exc:  # noqa: BLE001
             result["err"] = str(exc)
         finally:
@@ -395,6 +397,9 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
     subs = state.get("subs") or []
     if not subs:
         return
+    from ._items import shape_subtasks
+    for warning in shape_subtasks(subs):
+        yield {"type": "thought", "role": "planner", "text": "⚠ " + warning}
     if (yield from dirty_overlap_stop(cwd, subs)):
         return
     yield from _prepare_tree(cwd, subs)
@@ -442,6 +447,7 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
     yield from _finalize(cwd, subs, spec_md, agg, start_sha, cancelled)
 
 # ---- cross-group names (bottom import = cycle-safe; all defs above are set) ----
+from ._items import new_board as _new_board
 from ._contracts import _CONTRACT_DIR, _is_test_subtask, _matching_tests_for, _merge_aggs
 from ._orchestrate import _run_sequential, run_parallel
 from ._planning import _commit_turn_baseline, _ensure_git_workspace

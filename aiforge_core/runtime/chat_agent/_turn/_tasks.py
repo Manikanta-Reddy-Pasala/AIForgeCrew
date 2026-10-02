@@ -114,8 +114,11 @@ def apply_progress(board: dict, args: dict) -> tuple[dict, list[dict]]:
 
 
 def render_board(board: dict) -> str:
-    lines = [f"{_MARK[it['status']]} {s}: {it['title']}"
-             for s, it in board.items()]
+    lines = []
+    for s, it in board.items():
+        lines.append(f"{_MARK[it['status']]} {s}: {it['title']}")
+        if it.get("note"):
+            lines.append(f"      result: {it['note']}")
     left = len(open_items(board))
     return (f"{_BOARD_OPEN}\nYOUR TASK BOARD ({left} of {len(board)} still open; "
             "[x] done, [>] running, [ ] pending, [!] failed, [-] skipped). "
@@ -157,6 +160,10 @@ def turn_pin(st) -> str | None:
         return None
     from .._native_prompt import is_plan_execution
     limit = 4000 if is_plan_execution(goal) else 1200
+    if getattr(st, "item_resets", 0):
+        # After a reset between board items the goal is the ONLY copy of the
+        # request (its message is gone): keep it whole.
+        limit = max(limit, 8000)
     parts = ["ORIGINAL TASK (stay on this until it's fully done + verified):",
              goal[:limit]]
     if (getattr(st, "unlimited", False) and not getattr(st, "readonly_mode", False)

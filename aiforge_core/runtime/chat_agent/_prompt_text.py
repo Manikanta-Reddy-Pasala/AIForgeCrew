@@ -466,11 +466,26 @@ it succeeded from the OBSERVATION, then summarize what you did in FINAL."""
 
 #: Added to the system prompt only when the run has no step cap and no
 #: deadline (an interactive Act-mode run with the defaults).
+_DECOMPOSE = (
+    "BIG TASK = SMALL TASKS, ONE BY ONE: a request that holds several parts, "
+    "is long, or that you realise needs 3 or more steps is BIG. Before any "
+    "other work, write it as small tasks on your board: one plan_progress "
+    "call per task (slug + title), each small enough to finish and check on "
+    "its own, and say in its title how you will know it is done (a test, a "
+    "build, a file). Do them ONE BY ONE: keep a single item running, finish "
+    "it, run the check, mark it done. An item is accepted as done only with "
+    "evidence (files really changed, or a test/build that ran green); the "
+    "harness then clears your working context for the next item and carries "
+    "over only the original task, the board and a short result note per "
+    "finished item, so put what a later item needs in files, not in your head. ")
+
+
+#: Added to the system prompt only when the run has no step cap and no
+#: deadline (an interactive Act-mode run with the defaults).
 LONG_RUN_RULE = (
-    "LONG AND MULTI-TASK WORK: this run has no step or time limit. When a "
-    "request holds several tasks or needs more than a few steps, first add "
-    "each task to your board with plan_progress (slug + title), keep one item "
-    "running, and mark each done the moment it is finished. Then keep going "
+    "LONG AND MULTI-TASK WORK: this run has no step or time limit. "
+    + _DECOMPOSE +
+    "Then keep going "
     "until every item is done, failed or skipped. Do not stop to report "
     "partial progress; stop early only when you are blocked, and say what "
     "blocks you. A part that is independent research or analysis can go to "
@@ -478,6 +493,10 @@ LONG_RUN_RULE = (
     "posted in this chat. When older messages have been condensed, trust the task "
     "board and the files on disk, and re-read what you need rather than "
     "guessing.")
+
+
+#: The same decomposition rule for a big request on a run that has a step cap.
+DECOMPOSE_RULE = _DECOMPOSE.strip()
 
 
 #: Added when the message asks to iterate until a goal is met ("loop", "keep
