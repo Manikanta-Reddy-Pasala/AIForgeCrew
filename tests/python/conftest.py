@@ -50,6 +50,8 @@ os.environ.setdefault("AIFORGE_PLATEAU_REPLANS", "0")
 # A pipeline model stage that keeps failing is retried until the run is
 # cancelled; the older tests of the give-up path keep it.
 os.environ.setdefault("AIFORGE_PIPELINE_PERSIST_S", "-1")
+# Background (learner/memory) calls wait for an active chat run; tests never do.
+os.environ.setdefault("AIFORGE_BACKGROUND_YIELD_S", "0")
 # ...and the same when a test clears every AIFORGE_* variable.
 from aiforge_core.llm import model_wait as _model_wait  # noqa: E402
 

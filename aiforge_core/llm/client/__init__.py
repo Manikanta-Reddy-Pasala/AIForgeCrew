@@ -180,6 +180,8 @@ def complete(role: str, messages: list[dict], *,
     Langfuse env keys are set, every completion is also mirrored there
     (aiforge_core/integrations/langfuse_adapter)."""
     messages = _with_language(role, messages)
+    from aiforge_core.llm import background_gate
+    background_gate.wait_for_foreground(role)
     # Only the IMPORT is guarded — an exception raised from inside
     # _complete_impl must propagate, never trigger a SECOND (double-cost) call.
     try:
