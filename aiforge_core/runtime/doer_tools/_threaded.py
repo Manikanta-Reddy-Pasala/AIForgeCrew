@@ -32,6 +32,7 @@ from google.adk.tools import FunctionTool
 
 from aiforge_core.runtime.chat_agent._native import CONCURRENT_READS
 from aiforge_core.runtime.chat_agent._turn._batch import _parallel_cap
+from aiforge_core.runtime.tools.mutating import FILE_WRITE_TOOLS
 
 #: One semaphore per event loop. Each pipeline run has its own loop, so the cap
 #: (AIFORGE_CHAT_PARALLEL_READS, as in chat) holds per run: parallel subtasks
@@ -56,10 +57,7 @@ THREADED_READS = (CONCURRENT_READS | _FETCH_ALIASES | _FILE_READ_ALIASES) - _ON_
 
 #: Writes that name their files. They stay on the loop and wait for earlier
 #: reads of those files. Shell and bash are absent on purpose.
-_ORDERED_WRITES = frozenset({
-    "file_write", "file_patch", "write", "patch", "edit", "str_replace",
-    "editor", "format", "rename_symbol", "multi_edit",
-})
+_ORDERED_WRITES = FILE_WRITE_TOOLS
 _FILE_PATH_TOOLS = THREADED_READS | _ORDERED_WRITES | frozenset({
     "file_read", "read_files", "read_lines", "read",
 })

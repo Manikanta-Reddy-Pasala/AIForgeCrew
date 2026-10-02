@@ -67,6 +67,10 @@ def test_the_worker_count_is_clamped(monkeypatch, raw, expected):
 
 def test_four_workers_by_default(monkeypatch):
     monkeypatch.delenv("AIFORGE_PARALLEL_SUBTASKS_MAX", raising=False)
+    # A local endpoint defaults to ONE worker; pin a remote one so the result
+    # does not depend on where the suite runs.
+    monkeypatch.setattr("aiforge_core.llm.router.is_local_endpoint",
+                        lambda role="doer": False)
     assert wt._max_workers() == 4
 
 
@@ -208,6 +212,9 @@ def test_a_failure_with_no_reason_still_says_something():
 
 def test_retries_reset_the_worktree_between_attempts(monkeypatch):
     monkeypatch.setenv("AIFORGE_SUBTASK_RETRIES", "2")
+    # With one worker a retry patches in place instead of resetting; this test
+    # is about the several-worker path.
+    monkeypatch.setenv("AIFORGE_PARALLEL_SUBTASKS_MAX", "4")
     monkeypatch.setattr(wt, "_emit", lambda *a: None)
     resets: list = []
     monkeypatch.setattr(wt, "_reset_worktree", lambda w, b: resets.append(b))

@@ -437,12 +437,14 @@ NATIVE_TOOL_NAMES = frozenset(s["function"]["name"] for s in NATIVE_TOOL_SCHEMAS
 # What a small model can actually choose among. Claude Code and Cursor keep
 # about this many tools in front of the agent. The rest of the registry stays
 # in the prompt and is still callable as a text ACTION; it is added to the
-# native list only when the message names that system.
+# native list only when the message names that system. watch_until and
+# schedule_task are NOT core: they are the "watch" / "schedule" families
+# (_families.py), added by cue, by name or by tool_help.
 _CORE_ACT = frozenset({
     "plan_progress", "tool_help",
     "file_read", "read_files", "read_lines", "list_dir", "find", "grep",
     "file_patch", "multi_edit", "file_write", "file_create", "editor",
-    "run_command", "run_tests", "watch_until", "schedule_task",
+    "run_command", "run_tests",
     "command_wait", "command_output", "command_kill",
     "memory_lookup", "memory_write",
     "git_status", "git_diff", "repo_map",

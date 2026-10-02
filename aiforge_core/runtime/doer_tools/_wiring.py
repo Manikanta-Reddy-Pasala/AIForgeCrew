@@ -122,9 +122,10 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
                         jira_link_issues, jira_worklog, jira_remote_links,
                         resolve_repo,
                         confluence_children, confluence_attach,
-                        read_lines, rename_symbol]
+                        read_lines, rename_symbol,
+                        web_crawl]   # a real tool roles name, not an alias
     aliases = [read, write, patch, edit, str_replace, ls, shell, bash, run,
-               grep, search, http_get, web_fetch, web_crawl,
+               grep, search, http_get, web_fetch,
                commit, git_add_commit,
                todo_write, todowrite, glob, task]
     # Aliases stay on the unfiltered registry. A role's allowlist does not

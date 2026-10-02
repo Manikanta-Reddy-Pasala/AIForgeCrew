@@ -60,7 +60,7 @@ def test_the_agent_is_told_to_install_what_it_needs(sandbox, monkeypatch):
     from aiforge_core.runtime.chat_agent import _loop
     monkeypatch.setenv("AIFORGE_REPO_ROOT", "/home/me/.aiforge/repos")
     d = _loop._sandbox_directive(readonly_mode=False)
-    assert "Install ANY tool" in d
+    assert "Install ANY package" in d
     assert "never stop because a tool is missing" in d
     assert "/home/me/.aiforge/repos" in d
     assert _loop._sandbox_directive(readonly_mode=True) == ""

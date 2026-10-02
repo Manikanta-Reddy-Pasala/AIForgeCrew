@@ -137,17 +137,26 @@ def test_applied_isolated_per_session():
     assert ci.pop_applied(2) == ["for-two"]
 
 
-def test_steer_merges_into_trailing_user_turn(tmp_path):
+def test_steer_merges_into_trailing_user_turn(tmp_path, monkeypatch):
     """M1 — a steer drained when the last turn is already a user message (the
     OBSERVATION after a tool step) merges into it instead of creating a second
     consecutive user turn."""
     calls = {"n": 0}
     captured = {"msgs": None}
 
+    # A steer that arrives while the model is still WRITING its reply now stops
+    # that reply's tool call from starting (the reply has not seen it), so the
+    # steer lands after the assistant turn, not in an OBSERVATION. To hit the
+    # case this test is about, the steer has to arrive while the TOOL runs.
+    def _slow_write(args, cwd):
+        ci.push(123, "go faster")
+        return {"ok": True}
+
+    monkeypatch.setitem(ca.TOOLS, "file_write", _slow_write)
+
     def _fn(role, messages, **kw):
         calls["n"] += 1
         if calls["n"] == 1:
-            ci.push(123, "go faster")
             return 'ACTION: file_write\nARGS_JSON: {"path": "a.txt", "content": "hi"}'
         captured["msgs"] = [dict(m) for m in messages]
         return "FINAL: done"

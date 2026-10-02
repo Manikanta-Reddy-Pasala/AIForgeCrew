@@ -42,11 +42,11 @@ def enabled() -> bool:
 
 
 def _max_workers() -> int:
-    """Concurrent subtask workers — DEFAULT 4 (operator decision 2026-07-09;
-    was: auto-1 on a local endpoint). On a strictly SERIAL local server the
-    extra workers just queue on the one model (no speedup, some worktree
-    overhead) — set AIFORGE_PARALLEL_SUBTASKS_MAX=1 there; modern LM Studio /
-    llama.cpp slots and vLLM/TGI do serve concurrently and win from 4."""
+    """Concurrent subtask workers. Default 4 on a remote endpoint, 1 on a
+    local one (a local server answers one request at a time, so extra workers
+    only queue; a retry then patches in place). AIFORGE_PARALLEL_SUBTASKS_MAX
+    overrides both ways: LM Studio / llama.cpp slots and vLLM/TGI do serve
+    concurrently and win from 4."""
     raw = os.environ.get("AIFORGE_PARALLEL_SUBTASKS_MAX")
     if raw is not None:
         try:
