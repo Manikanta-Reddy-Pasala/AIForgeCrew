@@ -428,13 +428,17 @@ class Recorder:
                 why = "steps"
         elif kind == "error" and str(ev.get("text") or "").lower().startswith("stopped by user"):
             self.outcome = "stopped"
+        elif kind == "stopped":
+            # llm_unavailable / llm_request_fails / pipeline_error: the turn did
+            # not finish, and "send it again to continue" must find the handoff.
+            self.outcome = "interrupted"
         elif kind == "message" and not ev.get("supplementary"):
             text = str(ev.get("text") or "")
             if ev.get("awaiting_input"):
                 self.outcome = "awaiting"
             elif text.lstrip().startswith("(stopped"):
                 self.outcome = "gave_up"
-            elif ev.get("role") != "system":
+            elif ev.get("role") != "system" and self.outcome != "interrupted":
                 self.outcome = "final"
         closed = self._closed_count()
         if closed > self._closed >= 0:

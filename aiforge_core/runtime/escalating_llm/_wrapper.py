@@ -509,6 +509,18 @@ class EscalatingLlm(_RescueMixin, _StreamMixin, BaseLlm):
             limit = 0.0
         if limit < 0:
             return None
+        try:
+            cap = max(1, int(_os.environ.get("AIFORGE_PIPELINE_PERSIST_OTHER_ROUNDS", "20")))
+        except ValueError:
+            cap = 20
+        if rounds >= cap:
+            return None                  # an error that never turns into an answer
+        try:
+            from aiforge_core.llm import model_wait as _mw
+            if _mw.cancel_reason():
+                return None
+        except Exception:  # noqa: BLE001
+            pass
         gap = (5.0, 10.0, 20.0, 30.0)[min(rounds, 3)]
         if limit > 0 and _time.monotonic() - t0 + gap > limit:
             return None
@@ -517,8 +529,11 @@ class EscalatingLlm(_RescueMixin, _StreamMixin, BaseLlm):
                 from aiforge_core.llm import model_outage as _mo
                 if _mo.issue(exc) is not None:
                     return None
-                if _mo.classify(exc) in (_mo.CONFIG, _mo.CANCELLED):
+                kind = _mo.classify(exc)
+                if kind in (_mo.CONFIG, _mo.CANCELLED):
                     return None
+                if kind == _mo.SHIPPED and rounds >= 2:
+                    return None          # the model may still be generating it
             except Exception:  # noqa: BLE001
                 return None
         return gap

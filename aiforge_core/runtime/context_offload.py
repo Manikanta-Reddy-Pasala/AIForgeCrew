@@ -62,13 +62,20 @@ def save(text: str) -> "str | None":
     if not text:
         return None
     try:
-        text = text[:_MAX_CHARS]
+        if len(text) > _MAX_CHARS:
+            # Keep the start (the task) and the END (the latest turns, which a
+            # stuck run most needs), not just the first part.
+            keep_head = _MAX_CHARS // 4
+            text = (text[:keep_head] + "\n\n…(middle omitted)…\n\n"
+                    + text[-(_MAX_CHARS - keep_head):])
         oid = PREFIX + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]
         d = _dir()
         p = d / f"{oid[len(PREFIX):]}.txt"
         if not p.exists():
             p.write_text(text, encoding="utf-8")
             _expire(d)
+        else:
+            os.utime(p, None)          # still referenced: do not let it expire
         return oid
     except Exception:  # noqa: BLE001 — never breaks a turn
         return None

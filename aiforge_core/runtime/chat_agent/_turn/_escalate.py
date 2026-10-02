@@ -61,6 +61,8 @@ def escalate(st, why: str):
     limit = _limit()
     wrapping = bool(limit) and n > limit
     _remember_failure(st, why)
+    from ._progress import clear_call_history
+    clear_call_history(st)
     restarted = False
     if n % 2 == 0 and _restart_enabled():
         restarted = restart_with_handoff(st)
@@ -112,6 +114,8 @@ def restart_with_handoff(st) -> bool:
         if len(old) < 3 or old[0].get("role") != "system":
             return False
         oid = context_offload.save(context_offload.render(old[1:]))
+        if not oid:
+            return False          # never drop the transcript without a saved copy
         h = handoff.build_chat(st)
         if not h["goal"]:
             h["goal"] = next((C._text_of(m).strip()[:1200] for m in old[1:]
@@ -130,7 +134,8 @@ def restart_with_handoff(st) -> bool:
             seen = getattr(st, name, None)
             if hasattr(seen, "clear"):
                 seen.clear()
-        st.identical_run = None
+        from ._progress import clear_call_history
+        clear_call_history(st, identical=True)
         st.restarts = getattr(st, "restarts", 0) + 1
         rec = getattr(st, "handoff_rec", None)
         if rec is not None:

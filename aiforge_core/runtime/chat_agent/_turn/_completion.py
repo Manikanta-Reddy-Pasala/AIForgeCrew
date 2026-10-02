@@ -284,6 +284,26 @@ def _shrink_for_retry(convo, role, complete_fn, session_id) -> bool:
     return False
 
 
+def _round_cap(verdict, exc, model_outage) -> int:
+    """How many persist rounds a failure of this kind earns. An OUTAGE waits until
+    the model is back (no cap). The rest can be a request that will never work, so
+    each has a limit: a rejected request few, a call the model may still be
+    generating (a shipped timeout) fewer, anything else ~10 minutes of tries
+    (``AIFORGE_CHAT_PERSIST_OTHER_ROUNDS``, default 20)."""
+    if verdict == model_outage.OUTAGE:
+        return 10 ** 9
+    if verdict == model_outage.CONFIG:
+        return _CONFIG_ROUNDS
+    if verdict == model_outage.SHIPPED:
+        return 2
+    if model_outage.issue(exc) is not None:
+        return 6
+    try:
+        return max(1, int(os.environ.get("AIFORGE_CHAT_PERSIST_OTHER_ROUNDS", "20")))
+    except ValueError:
+        return 20
+
+
 def _persist_until_answer(complete_fn, role, convo, session_id, last,
                           limit_s: float):
     """The model keeps failing this step (the normal retries are spent, or the
@@ -307,8 +327,14 @@ def _persist_until_answer(complete_fn, role, convo, session_id, last,
             verdict = model_outage.classify(last)
         except Exception:  # noqa: BLE001
             verdict = None
-        if verdict == model_outage.CONFIG and rounds > _CONFIG_ROUNDS:
+        if rounds > _round_cap(verdict, last, model_outage):
             return None, last
+        try:
+            from aiforge_core.llm import model_wait as _mw
+            if _mw.cancel_reason():          # shutdown, a lost ticket claim, a worker stop
+                return _CANCELLED, None
+        except Exception:  # noqa: BLE001
+            pass
         shrunk = _shrink_for_retry(convo, role, complete_fn, session_id)
         yield {"type": "thought", "role": "system",
                "text": f"⏸ the model isn't answering this step — "
@@ -515,27 +541,28 @@ def _run_completion(st, role, complete_fn, session_id, _meter):
     _boosted = getattr(st, "reason_boost", 0) > 0
     if _boosted:
         st.reason_boost -= 1
-    _btok = _reasoning._BOOST.set(_boosted)
+    _btok = _reasoning._BOOST.set(_reasoning.boosted() or _boosted)
     try:
-        out = yield from _complete_live(complete_fn, role, st.convo, session_id)
-    except Exception as exc:  # noqa: BLE001
-        # EVERY run waits out a model outage — fresh or with work done,
-        # interactive or background: "if the LLM is not available it should
-        # keep on waiting". Stop (or a worker's stop event) ends the wait.
-        _worked = st.edits_made > 0
-        _w = _outage_wait_s()
-        _wait = _w if _w >= 0 else None
-        out = yield from _retry_completion(
-            complete_fn, role, st.convo, session_id, exc,
-            _step_calls, _meter, _step_tok, wait_s=_wait, worked=_worked,
-            st=st)
-        if out is _RETRY_STOP:
-            _unboost(_reasoning, _btok)
-            return _RETRY_STOP
+        try:
+            out = yield from _complete_live(complete_fn, role, st.convo, session_id)
+        except Exception as exc:  # noqa: BLE001
+            # EVERY run waits out a model outage — fresh or with work done,
+            # interactive or background: "if the LLM is not available it should
+            # keep on waiting". Stop (or a worker's stop event) ends the wait.
+            _worked = st.edits_made > 0
+            _w = _outage_wait_s()
+            _wait = _w if _w >= 0 else None
+            out = yield from _retry_completion(
+                complete_fn, role, st.convo, session_id, exc,
+                _step_calls, _meter, _step_tok, wait_s=_wait, worked=_worked,
+                st=st)
+            if out is _RETRY_STOP:
+                return _RETRY_STOP
+    finally:
+        _unboost(_reasoning, _btok)
     # The step's sends are counted; unbind before the next one binds its
     # own (a step that leaves its counter bound would have the NEXT step's
     # calls spend a budget that is already exhausted).
-    _unboost(_reasoning, _btok)
     if _meter is not None:
         _meter.step_reset(_step_tok)
         _step_tok = None

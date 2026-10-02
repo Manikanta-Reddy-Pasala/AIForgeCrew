@@ -334,10 +334,14 @@ def _independent_writes(calls: list) -> "list[str] | None":
     return steps
 
 
+#: Programs whose every form only reads. (``sort -o``, ``uniq IN OUT``,
+#: ``tree -o`` write files, so they are not here; ``sort``/``uniq`` are only
+#: allowed through the stdin-less checks below.)
 _RO_PROGRAMS = frozenset({"ls", "cat", "head", "tail", "pwd", "wc", "grep", "rg",
-                          "which", "stat", "file", "du", "tree", "basename",
+                          "which", "stat", "file", "du", "basename",
                           "dirname", "echo", "date", "whoami", "uname", "env",
-                          "printenv", "diff", "cmp", "sort", "uniq"})
+                          "printenv", "diff", "cmp"})
+_WRITES_A_FILE = ("-o", "--output", "--out")
 _RO_GIT = frozenset({"status", "log", "diff", "show", "branch", "rev-parse",
                      "ls-files", "blame", "remote", "describe", "shortlog",
                      "ls-tree", "cat-file", "config"})
@@ -361,6 +365,9 @@ def _readonly_command(cmd) -> bool:
     if not argv:
         return False
     prog = argv[0]
+    if any(a in _WRITES_A_FILE or a.startswith("--output=") or a.startswith("--out=")
+           for a in argv[1:]):
+        return False
     if prog == "git":
         rest = [a for a in argv[1:] if not a.startswith("-")]
         if not rest or rest[0] not in _RO_GIT:

@@ -300,7 +300,7 @@ def _reset_message(st) -> str:
     return (
         "[harness — not the user] CONTEXT RESET between task-board items. The "
         "working context of the finished item(s) was cleared so the next one "
-        "starts fresh and small. What carries over is in the system message: "
+        "starts fresh and small. What carries over is in the system message and the context note: "
         "the original task, your task board with a result note for every "
         "finished item (written by the harness from what really ran and "
         "changed), and the files on disk.\n"
@@ -352,16 +352,31 @@ def reset_context(st) -> bool:
     )
     from ._batch import _cancel_early_reads
     from ._tasks import pin_board, turn_pin
-    gen = _block_gen(_prior_block(convo[0].get("content") or "")) + 1
+    from .._context import _note
+    in_note = _note.note_index(convo) is not None
+    prior_src = _note.text(convo) if in_note else (convo[0].get("content") or "")
+    prior = _prior_block(prior_src)
+    gen = _block_gen(prior) + 1
     saved = context_offload.save(context_offload.render(convo[1:]))
-    where = (f'It is saved: memory_lookup {{"id": "{saved}"}} reads it.'
-             if saved else "Re-read files if you need detail.")
-    sys_text = _pin_goal(_stripped_system(convo), convo, turn_pin(st))
+    if not saved:
+        return False               # never clear the transcript without a saved copy
+    where = f'It is saved: memory_lookup {{"id": "{saved}"}} reads it.'
     block = (f"{_CONDENSE_OPEN}\n[context reset after a finished task-board "
              f"item (condense #{gen}) — {len(convo) - 1} messages cleared. "
              f"Result notes are on the task board. {where}]\n{_CONDENSE_CLOSE}")
-    fresh = [{"role": "system", "content": (sys_text + "\n\n" + block).strip()}]
-    pin_board(fresh, st.board)
+    if in_note:
+        # The note layout: the system message stays byte-identical (the prompt
+        # cache keeps its prefix) and the goal, the earlier condense record
+        # (failed approaches, files, offload ids) and the board live in the note.
+        from ._tasks import render_board
+        goal = _pin_goal("", convo, turn_pin(st)).strip()
+        note_msg = _note.build(goal, prior.strip() if prior else "", block,
+                               render_board(st.board))
+        fresh = [convo[0], note_msg, _note.ack()]
+    else:
+        sys_text = _pin_goal(_stripped_system(convo), convo, turn_pin(st))
+        fresh = [{"role": "system", "content": (sys_text + "\n\n" + block).strip()}]
+        pin_board(fresh, st.board)
     fresh.append({"role": "user", "content": _reset_message(st)})
     st.convo = fresh
     st.read_sigs_seen.clear()

@@ -322,7 +322,8 @@ async def _text_doer_node(ctx):  # type: ignore[no-untyped-def]
     _retry = (int(state.get("doer_iters", 0) or 0) >= 1
               or int(state.get("replan_count", 0) or 0) >= 1
               or int(state.get("plateau_replan_count", 0) or 0) >= 1)
-    _btok = _reasoning._BOOST.set(_retry and _reasoning.boost_steps() > 0)
+    _btok = _reasoning._BOOST.set(
+        _reasoning.boosted() or (_retry and _reasoning.boost_steps() > 0))
     try:
         out = await asyncio.to_thread(run_text_doer, snapshot, cwd)
     finally:

@@ -348,11 +348,30 @@ def _review_line(subs, done, validated, failed, conflicts, conflict_details,
             + ("; integration FAILED" if integration.get("ok") is False else ""))
 
 
-def _rollback(repo_root: str, before: str) -> None:
+def _untracked(repo_root: str) -> set:
+    out = _git(["ls-files", "--others", "--exclude-standard"], repo_root).stdout or ""
+    return {ln for ln in out.splitlines() if ln}
+
+
+def _rollback(repo_root: str, before: str, untracked_before: "set | None" = None,
+              started: "float | None" = None) -> None:
     """Undo a failed subtask's commits and files (back to ``before``). Ignored /
-    excluded artifacts (venvs, caches) are left alone: no ``-x``."""
+    excluded artifacts (venvs, caches) are left alone: no ``-x``. Only untracked
+    files that did not exist when the subtask started and appeared after it did
+    are removed (a blanket ``clean -fd`` also deleted files another writer in the
+    same worktree created meanwhile)."""
+    import os
     _git(["reset", "--hard", before], repo_root)
-    _git(["clean", "-fd"], repo_root)
+    if untracked_before is None or started is None:
+        _git(["clean", "-fd"], repo_root)
+        return
+    for rel in _untracked(repo_root) - untracked_before:
+        path = os.path.join(repo_root, rel)
+        try:
+            if os.path.getmtime(path) >= started - 1:
+                os.remove(path)
+        except OSError:
+            pass
 
 
 def _run_one_in_place(repo_root, base_branch, ticket_id, s, run_one,
@@ -365,6 +384,9 @@ def _run_one_in_place(repo_root, base_branch, ticket_id, s, run_one,
     _update(ticket_id, slug, "running", on_status)
     before = (_git(["rev-parse", "HEAD"], repo_root).stdout or "").strip()
     was_clean = not (_git(["status", "--porcelain"], repo_root).stdout or "").strip()
+    import time as _time
+    _started = _time.time()
+    _untracked_before = _untracked(repo_root)
     # A fresh run: the shared spec, the board with every finished subtask's
     # factual note, and only THIS subtask's spec; never the last one's transcript.
     from . import _items
@@ -381,7 +403,7 @@ def _run_one_in_place(repo_root, base_branch, ticket_id, s, run_one,
     else:
         _items.mark(board, slug, "failed", _items.failure_note(last))
     if not ok and before and was_clean:
-        _rollback(repo_root, before)     # a failed subtask leaves no half-work
+        _rollback(repo_root, before, _untracked_before, _started)  # no half-work
     _emit(ticket_id, slug,
           "subtask_validated" if last.get("validated") else "subtask_rejected",
           f"{slug} validation {'passed' if last.get('validated') else 'failed'}",

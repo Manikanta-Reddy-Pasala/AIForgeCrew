@@ -143,3 +143,22 @@ def no_think_request(llm_request):
 __all__ = ["reasoning_off", "no_think_request", "NO_THINK_KWARGS", "EFFORT_FIELD",
            "effort_for", "effort_extras", "role_reasons", "reasoning_roles",
            "boost", "boosted", "boost_steps"]
+
+
+def boost_reserve_tokens(_role: str = "") -> int:
+    """Reply tokens to keep free while a boosted step runs: a reasoning call
+    writes far more than a plain one, and must not overflow the window
+    (``AIFORGE_BOOST_RESERVE_TOKENS``, default 8192; 0 = none)."""
+    if not boosted():
+        return 0
+    try:
+        return max(0, int(os.environ.get("AIFORGE_BOOST_RESERVE_TOKENS", "8192")))
+    except ValueError:
+        return 8192
+
+
+try:  # the context budget asks for the reserve through this hook
+    from aiforge_core.runtime.chat_agent._context import _window as _w
+    _w.register_reserve_hook(boost_reserve_tokens)
+except Exception:  # noqa: BLE001 — budget math then simply has no extra reserve
+    pass

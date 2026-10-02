@@ -329,6 +329,7 @@ def forgive(st, sig) -> None:
     """After a recovery nudge, give this action a fresh count. The lifetime
     count is reset once per action: a second reset would make the ceiling
     one that nothing holds."""
+    clear_call_history(st)
     sig = _short(sig)
     st.strikes[f"{sig}@{st.state_fp}"] = 0
     if st.backstop.get(sig, 0) >= loop_backstop():
@@ -416,15 +417,30 @@ def bump_identical(st, sig) -> None:
         st.identical_run = (prev[0], prev[1], prev[2] + 1)
 
 
-def ping_pong(st) -> bool:
+def ping_pong(st, sig=None) -> bool:
     """A, B, A, B, A, B with the same results each time: two calls handing the
     run back and forth. Neither one repeats back to back, so the identical-run
-    count never sees it."""
+    count never sees it. With ``sig`` (the call about to run) it holds only when
+    that call is A or B: a different call breaks the pattern and must run."""
     r = list(getattr(st, "recent_calls", None) or [])
     if len(r) < 6:
         return False
     a, b = r[0], r[1]
-    return (a[0] != b[0] and r[2] == a and r[4] == a and r[3] == b and r[5] == b)
+    if not (a[0] != b[0] and r[2] == a and r[4] == a and r[3] == b and r[5] == b):
+        return False
+    return sig is None or _short(sig) in (a[0], b[0])
+
+
+def clear_call_history(st, identical: bool = False) -> None:
+    """Forget the recent calls: after a recovery or an escalation the run starts
+    a new pattern, and a stale window must not re-trip at once. The identical-run
+    COUNT is kept (a refused repeat keeps raising it until the change of
+    approach); a restart into a fresh context clears it too (``identical``)."""
+    recent = getattr(st, "recent_calls", None)
+    if hasattr(recent, "clear"):
+        recent.clear()
+    if identical:
+        st.identical_run = None
 
 
 # ── assistant monologue ────────────────────────────────────────────────────

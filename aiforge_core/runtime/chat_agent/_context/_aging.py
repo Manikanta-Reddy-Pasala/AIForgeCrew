@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 
-from .._shell import _ACTION_RE
+from .._shell import _ACTION_RE, _ARGS_RE
 
 #: Output of these is re-readable from disk or the web, so ageing loses nothing.
 _AGEABLE = frozenset({"file_read", "read_files", "read_lines", "grep", "find",
@@ -42,8 +42,30 @@ def _int_env(key: str, default: int) -> int:
         return default
 
 
-def age_observations(convo: list) -> int:
-    """Shrink old, large read/search observations in place. Returns how many."""
+def _read_sig(prev: dict) -> "str | None":
+    """The duplicate-read signature (``name|args``, as the loop keys it) of the
+    call in this assistant message."""
+    import json
+    text = str(prev.get("content") or "")
+    mt = _ACTION_RE.search(text)
+    ma = _ARGS_RE.search(text)
+    if not mt:
+        return None
+    try:
+        args = json.loads(ma.group(1)) if ma else {}
+    except ValueError:
+        return None
+    return mt.group(1) + "|" + json.dumps(args, sort_keys=True, default=str)
+
+
+def age_observations(convo: list, protect_from: "int | None" = None,
+                     forget: "set | None" = None) -> int:
+    """Shrink old, large read/search observations in place. Returns how many.
+
+    ``protect_from``: messages at or after this index are results the model has
+    not read yet (a queued batch) and are never aged. ``forget``: the loop's set
+    of reads already done; an aged read leaves it, so reading the file again is
+    allowed instead of being refused as a duplicate of text that is now a stub."""
     if not _on() or not convo:
         return 0
     keep = _int_env("AIFORGE_CHAT_AGE_KEEP", 10)       # newest messages untouched
@@ -56,7 +78,10 @@ def age_observations(convo: list) -> int:
     if _candidates(convo, keep, floor) < burst:
         return 0
     aged = 0
-    for i in range(1, max(1, len(convo) - keep)):
+    stop = max(1, len(convo) - keep)
+    if protect_from is not None:
+        stop = min(stop, max(1, protect_from))
+    for i in range(1, stop):
         m = convo[i]
         text = m.get("content") if isinstance(m, dict) else None
         if (m.get("role") != "user" or not isinstance(text, str)
@@ -82,6 +107,10 @@ def age_observations(convo: list) -> int:
             f'full text saved: memory_lookup {{"id": "{oid}"}}, or run it '
             f"again]\n{shrunk}")}
         aged += 1
+        if forget is not None:
+            sig = _read_sig(prev)
+            if sig:
+                forget.discard(sig)
     return aged
 
 
