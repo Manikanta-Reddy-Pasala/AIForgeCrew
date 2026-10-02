@@ -353,3 +353,45 @@ def may_recover(st) -> bool:
     st.stuck_recoveries += 1
     st.recoveries_total += 1
     return True
+
+#: Consecutive identical calls with identical results that count as a loop,
+#: whatever the workspace did (``AIFORGE_CHAT_IDENTICAL_REPEATS``, default 5).
+def identical_limit() -> int:
+    return _int_env("AIFORGE_CHAT_IDENTICAL_REPEATS", 5)
+
+
+_RESULT_KEYS = ("ok", "code", "exit_code", "stdout", "stderr", "error", "content",
+                "text", "output")
+
+
+def _result_hash(result) -> str:
+    body = ({k: result.get(k) for k in _RESULT_KEYS if k in result}
+            if isinstance(result, dict) else result)
+    return hashlib.sha1(json.dumps(body, sort_keys=True, default=str)  # noqa: S324
+                        .encode("utf-8", "replace")).hexdigest()
+
+
+def note_identical(st, sig, result) -> None:
+    """Count how many calls IN A ROW were this same call with this same result.
+    The workspace fingerprint can keep moving for reasons that have nothing to do
+    with the run (a log file, a folder a running service writes to) and so refill
+    every other budget; ``sudo rm -f`` of a path that is already gone, run
+    forty times, changes nothing and says the same thing each time."""
+    key, rh = _short(sig), _result_hash(result)
+    prev = getattr(st, "identical_run", None)
+    n = prev[2] + 1 if prev and prev[0] == key and prev[1] == rh else 1
+    st.identical_run = (key, rh, n)
+
+
+def identical_repeats(st, sig) -> int:
+    """Calls in a row so far that were this call with an unchanged result."""
+    prev = getattr(st, "identical_run", None)
+    return prev[2] if prev and prev[0] == _short(sig) else 0
+
+
+def bump_identical(st, sig) -> None:
+    """A repeat of an identical-result call was refused (not run): it still
+    counts, or a refused call could never reach the change-of-approach step."""
+    prev = getattr(st, "identical_run", None)
+    if prev and prev[0] == _short(sig):
+        st.identical_run = (prev[0], prev[1], prev[2] + 1)

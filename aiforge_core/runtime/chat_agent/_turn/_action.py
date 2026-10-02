@@ -26,7 +26,11 @@ from ._progress import (
     count_key,
     forgive,
     may_recover,
+    bump_identical,
+    identical_limit,
+    identical_repeats,
     note_command,
+    note_identical,
     note_read,
     note_write,
     strike,
@@ -69,6 +73,9 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
     duplicate = (_long_chain_help and name in _READ_OBS_TOOLS
                  and sig in st.read_sigs_seen)
     looping = strike(st, sig, per_state=not duplicate)
+    _ident = identical_repeats(st, sig)
+    if not looping and not duplicate and _ident >= identical_limit():
+        looping = "same"
     if duplicate and not looping:
         _recap = _progress_recap(st.convo)
         yield {"type": "thought", "role": "system",
@@ -88,7 +95,14 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
         # step (bounded); only give up if the model keeps repeating. Repeats
         # are counted per workspace state, so re-running a check after a real
         # change is not a repeat.
-        if may_recover(st):
+        # The identical-result run beats the recovery budget, which a moving
+        # workspace fingerprint can refill forever: a call that has returned the
+        # same thing this many times in a row goes straight to a change of
+        # approach (the budget of those is bounded).
+        _bump = identical_repeats(st, sig) >= identical_limit()
+        if _bump:
+            bump_identical(st, sig)
+        if identical_repeats(st, sig) < 2 * identical_limit() and may_recover(st):
             forgive(st, sig)
             _recap = _progress_recap(st.convo)
             yield {"type": "thought", "role": "system",
@@ -429,6 +443,7 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     if name in _READ_OBS_TOOLS:
         _safely(note_read, st, args, result, cwd)
     _safely(note_command, st, name, result, cwd)
+    _safely(note_identical, st, sig, result)
     yield from _record_edit(st, name, args, result, cwd)
     # Builder finalize: a successful create_job_script / learn_skill /
     # learn_workflow / remember_rule ends the interview. Signal the UI so it
