@@ -467,8 +467,13 @@ def status_of(session_id: int, run) -> dict:
         jobs = cmd_jobs.for_session(session_id)
     except Exception:  # noqa: BLE001
         jobs = []
+    try:
+        from aiforge_core.runtime import handoff_store
+        ho = handoff_store.view(session_id).get("handoff")
+    except Exception:  # noqa: BLE001
+        ho = None
     snap = chat_status.snapshot(run, pending_steers=pending, side_tasks=tasks,
-                                jobs=jobs)
+                                jobs=jobs, handoff=ho)
     return {"text": chat_status.render(snap), "snapshot": snap}
 
 
@@ -481,7 +486,18 @@ def chat_run_status(session_id: int) -> dict:
         raise HTTPException(404, f"session {session_id} not found")
     run = chat_runs.get(session_id)
     if run is None or run.done:
-        return {"running": False, "text": "**Status** — nothing is running in this chat."}
+        text = "**Status** — nothing is running in this chat."
+        try:
+            from aiforge_core.runtime import chat_status, handoff_store
+            v = handoff_store.view(session_id)
+            if v["unfinished"]:
+                text += ("\nThe last turn ended unfinished"
+                         f" ({v['handoff'].get('status')}). Say \"continue\" "
+                         "and it picks up from this:\n"
+                         + "\n".join(chat_status.handoff_lines(v["handoff"])))
+        except Exception:  # noqa: BLE001
+            pass
+        return {"running": False, "text": text}
     return {"running": True, **status_of(session_id, run)}
 
 

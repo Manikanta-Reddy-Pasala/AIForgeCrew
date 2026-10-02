@@ -380,6 +380,22 @@ def run_chat_agent(
     # decomposition: the resolve moved into the helper but the local kept the
     # caller's original None.
     complete_fn = st.complete_fn
+    # The handoff record rides the turn: refreshed at natural points, saved
+    # with the chat when the turn ends however it ends (runtime/handoff_store).
+    from aiforge_core.runtime import handoff_store
+    rec = handoff_store.Recorder(st)
+    inner = _drive(st, cwd, role, complete_fn, session_id, builder, strict_finish)
+    try:
+        for ev in inner:
+            rec.observe(ev)
+            yield ev
+    finally:
+        inner.close()
+        rec.finish()
+
+
+def _drive(st, cwd, role, complete_fn, session_id, builder, strict_finish):
+    """The loop proper: steps until the turn ends (see ``run_chat_agent``)."""
     n = 0
     from aiforge_core.runtime import cmd_jobs
     _jobs_turn = None

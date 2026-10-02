@@ -35,6 +35,8 @@ from ._api import (
     set_media_description,
     set_message_checkpoint,
     child_sessions,
+    get_session_handoff,
+    set_session_handoff,
     session_learns,
     set_session_cwd,
     set_session_learn,

@@ -187,6 +187,11 @@ async def _compute_team_outcome(svc, session, by_role, final, enhancer_blocked,
     whatever happens, the closing message names the stage it stopped at."""
     import asyncio
     st = await _team_final_state(svc, session)
+    try:
+        from aiforge_core.runtime import handoff_store
+        handoff_store.note_team_state(session_id, st)
+    except Exception:  # noqa: BLE001
+        pass
     if not _stalled_before_doer(by_role, st, enhancer_blocked, raw_prompt):
         if only_if_stalled:
             return None
@@ -271,6 +276,12 @@ def _close_turn(session_id, cwd, raw_prompt, final_text, steps, sub_items,
     for ev in _finalize_subtasks(sub_items, run_ok, cancelled):
         q.put(ev)
     if session_id is not None:
+        try:
+            from aiforge_core.runtime import handoff_store
+            handoff_store.close_team_turn(session_id, raw_prompt, sub_items,
+                                          run_ok, cancelled)
+        except Exception:  # noqa: BLE001
+            pass
         try:
             from aiforge_core.runtime import chat_persist
             chat_persist.persist_turn(
