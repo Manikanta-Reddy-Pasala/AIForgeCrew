@@ -97,12 +97,47 @@ def asks_for_information(text: str) -> bool:
     return False
 
 
-def classify(text: str) -> str:
+# An instruction about the work: "use X", "switch to Y", "go with Z", "do it",
+# "implement …", "instead", "rather than", or a stated fact that changes the
+# plan ("we have rewritten it in …", "we can't run …"). It touches the running
+# work, so a '?' (even "…right ?") does not make it a separate question.
+_DIRECTIVE_RE = re.compile(
+    r"^\W*(?:(?:no|nope|ok(?:ay)?|actually|also|and|then|so|but|please|pls)\b[\s,.:;-]*)*"
+    r"(?:use|switch|go\s+with|do\s+it|implement|build|write|port|rewrite|"
+    r"stick\s+(?:to|with)|continue\s+with|proceed\s+with|focus\s+on)\b"
+    r"|\b(?:instead|rather\s+than|switch\s+to|go\s+with|implement\s+(?:it|this|that)"
+    r"|do\s+not\s+(?:review|run)|don'?t\s+(?:review|run))\b"
+    r"|\bwe\s+(?:have|had|'ve|already|just|can'?t|cannot|no\s+longer|"
+    r"rewrote|rewritten|replaced|moved|switched|migrated|use|are\s+using)\b",
+    re.IGNORECASE)
+
+
+def is_directive(text: str) -> bool:
+    """An instruction or correction aimed at the work in progress, not a
+    question that merely ends in '?'. A message that opens as a plain question
+    ("do we have …", "what does …") is not one."""
+    t = (text or "").strip()
+    return bool(t and _DIRECTIVE_RE.search(t) and not _INFO_OPENER_RE.match(t))
+
+
+def running_mode(session_id: int) -> str:
+    """The mode (simple/plan/team) of the turn now running in this chat: the
+    mode its latest user message was sent with."""
+    try:
+        from aiforge_core.runtime import chat_store
+        last = _last(chat_store.get_messages(session_id) or [], "user") or {}
+        return last.get("mode") or "simple"
+    except Exception:  # noqa: BLE001
+        return "simple"
+
+
+def classify(text: str, mode: str = "simple") -> str:
     """``"steer"`` or ``"task"`` for a message typed while a run is going.
 
     Stopping or replacing the run, and anything that reads as an adjustment to
     it, steers. An explicit ask for another agent, a question, or a new
-    request is its own task."""
+    request is its own task. While a TEAM/pipeline run is going the default is
+    to steer: only an explicit side cue or a plain question is a task."""
     t = (text or "").strip()
     if not t:
         return "steer"
@@ -117,6 +152,11 @@ def classify(text: str) -> str:
         pass
     if _SIDE_CUE_RE.search(t):
         return "task"
+    if is_directive(t):
+        return "steer"
+    if mode == "team":
+        return "task" if (_INFO_OPENER_RE.match(t)
+                          and asks_for_information(t)) else "steer"
     if asks_for_information(t):
         return "task"
     from ._sched_fold import _is_new_request
@@ -356,6 +396,39 @@ install()
 
 # ── API ──────────────────────────────────────────────────────────────────────
 
+_QUIET_STATUS_S = 20.0
+
+
+def _live_state(child: dict) -> str:
+    """What a running side task is doing, so the chat never shows a bare
+    spinner. Silence is named: with a single model slot the side run is
+    usually waiting for the model behind the main run."""
+    try:
+        from aiforge_core.runtime import chat_runs
+        run = chat_runs.get(child["id"])
+        if run is None or run.done:
+            return "starting…"
+        quiet = time.time() - run.last_event_at
+        phase = run.phase or ""
+        if phase and quiet < _QUIET_STATUS_S:
+            return phase
+        parent_id = child.get("parent_id")
+        ahead = 0
+        if parent_id and _is_running(parent_id):
+            ahead = 1
+        if parent_id:
+            ahead += sum(1 for c in _children(parent_id)
+                         if c["id"] != child["id"]
+                         and (c.get("task") or {}).get("state") == RUNNING)
+        mins = f"{int(quiet)}s" if quiet < 90 else f"{int(quiet // 60)}m"
+        if ahead:
+            return (f"waiting for the model, queued behind {ahead} other "
+                    f"run{'s' if ahead != 1 else ''} (quiet {mins})")
+        return f"{phase or 'waiting for the model'} (quiet {mins})"
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _view(child: dict) -> dict:
     from aiforge_core.runtime import chat_store
     task = child.get("task") or {}
@@ -371,6 +444,7 @@ def _view(child: dict) -> dict:
             "created": task.get("created"), "started": task.get("started"),
             "ended": task.get("ended"), "error": task.get("error"),
             "preview": preview,
+            "status": _live_state(child) if state == RUNNING else "",
             # The whole answer, so the chat can show it the moment it is ready
             # instead of after the main run ends.
             "answer": full}
@@ -448,7 +522,7 @@ def chat_side_message(session_id: int, body: _SideBody) -> dict:
             if run is not None and not run.done:
                 return {"action": "status", **status_of(session_id, run)}
     if want == "auto":
-        want = classify(body.content)
+        want = classify(body.content, running_mode(session_id))
     if want == "steer":
         from aiforge_core.runtime import chat_runs, chat_status
 

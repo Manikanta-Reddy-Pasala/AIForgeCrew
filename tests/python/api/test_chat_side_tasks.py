@@ -337,3 +337,74 @@ def test_a_request_for_information_is_its_own_task(text):
 def test_a_correction_still_steers(text):
     assert __import__("aiforge_core.api.routes._chat._side_tasks",
                       fromlist=["x"]).classify(text) == "steer"
+
+
+# ── a directive steers the running pipeline, even with a '?' ─────────────────
+
+_LIVE_BUG = ("we can't run python application right ? we have rewritten rust "
+             "and go based solution use our rust and go solution and implement "
+             "it, do not review")
+
+
+@pytest.mark.parametrize("mode", ["simple", "team"])
+@pytest.mark.parametrize("text", [
+    _LIVE_BUG,
+    "we can't run python application right ?",
+    "use the rust one instead, ok?",
+    "switch to the go service",
+    "implement it, don't review",
+    "go with option b",
+])
+def test_a_directive_steers_even_with_a_question_mark(text, mode):
+    from aiforge_core.api.routes._chat import _side_tasks as st
+    assert st.classify(text, mode) == "steer"
+
+
+@pytest.mark.parametrize("text", ["ok", "thanks, looks fine", "carry on"])
+def test_a_team_run_steers_by_default(text):
+    from aiforge_core.api.routes._chat import _side_tasks as st
+    assert st.classify(text, "team") == "steer"
+
+
+@pytest.mark.parametrize("text", [
+    "what does the retry helper do?",
+    "explain how the retry works",
+    "run another agent to check the logs",
+    "meanwhile summarise the README",
+    "do we have a working AI interface",
+])
+def test_a_team_run_still_spins_off_real_side_requests(text):
+    from aiforge_core.api.routes._chat import _side_tasks as st
+    assert st.classify(text, "team") == "task"
+
+
+def test_the_side_route_steers_a_directive_into_a_team_run(env, monkeypatch):
+    pid = env.parent(prompt="build the shop", mode="team")
+    seen = {}
+
+    def _steer(sid, body):
+        seen["text"] = body.content
+        return {"queued": True}
+
+    from aiforge_core.api.routes._chat import _message
+    monkeypatch.setattr(_message, "chat_session_steer", _steer)
+    r = env.client.post(f"/api/chat/sessions/{pid}/side", json={"content": _LIVE_BUG}).json()
+    assert r["action"] == "steer" and seen["text"] == _LIVE_BUG
+    assert env.started == []
+
+
+def test_a_running_side_task_never_shows_a_bare_spinner(env):
+    import time as _t
+    pid = env.parent()
+    t = env.st.create(pid, "what does the retry helper do?")
+    child = env.store.get_session(t["id"])
+    from aiforge_core.runtime import chat_runs
+    assert env.st._view(child)["status"] == "starting…"
+    run = chat_runs.start(t["id"])
+    try:
+        run.last_event_at = _t.time() - 120
+        run.phase = ""
+        s = env.st._view(child)["status"]
+        assert "waiting for the model" in s and "queued behind 1" in s
+    finally:
+        chat_runs.finish(t["id"])

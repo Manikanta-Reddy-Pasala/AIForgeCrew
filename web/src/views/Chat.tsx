@@ -2353,7 +2353,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                           <div className="xs muted">
                             {t.state === 'queued'
                               ? 'Waiting — it starts when it will not disturb the running edit.'
-                              : 'Working on it…'}
+                              : `Working on it${t.status ? ` — ${t.status}` : '…'}`}
                             <div className="typing" style={{ padding: '4px 0' }}><span /><span /><span /></div>
                           </div>
                         )}

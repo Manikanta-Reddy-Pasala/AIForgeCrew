@@ -43,6 +43,7 @@ export interface SideTask {
   edits: boolean;
   posted: boolean;
   preview: string;
+  status?: string;
   answer?: string;        // the whole answer once done
   error?: string | null;
 }
