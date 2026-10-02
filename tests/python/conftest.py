@@ -47,6 +47,9 @@ os.environ.setdefault("AIFORGE_CHAT_PAUSE_ON_STUCK", "1")
 # A stalled Doer loop is re-planned with a different approach before partial
 # work ships; the older gate tests expect ship-the-partial at the first stall.
 os.environ.setdefault("AIFORGE_PLATEAU_REPLANS", "0")
+# A pipeline model stage that keeps failing is retried until the run is
+# cancelled; the older tests of the give-up path keep it.
+os.environ.setdefault("AIFORGE_PIPELINE_PERSIST_S", "-1")
 # ...and the same when a test clears every AIFORGE_* variable.
 from aiforge_core.llm import model_wait as _model_wait  # noqa: E402
 

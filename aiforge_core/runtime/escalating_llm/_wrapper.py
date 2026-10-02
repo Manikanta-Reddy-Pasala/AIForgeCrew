@@ -465,6 +465,7 @@ class EscalatingLlm(_RescueMixin, _StreamMixin, BaseLlm):
 
         t0 = _time.monotonic()
         waiter = None
+        rounds = 0
         while True:
             state: dict = {"exc": None, "done": False}
             for label, model in self._candidates():
@@ -483,8 +484,44 @@ class EscalatingLlm(_RescueMixin, _StreamMixin, BaseLlm):
             # without a key, say) failed for another reason after it.
             exc = state.get("outage") or state["exc"]
             if exc is None or not waiter.waitable(exc):
-                self._exhausted(state["exc"])
+                gap = self._persist_gap(state["exc"], rounds, t0)
+                if gap is None:
+                    self._exhausted(state["exc"])
+                rounds += 1
+                log.warning("llm.persist role=%s round=%d err=%.140s — waiting "
+                            "%ds, then the whole chain is tried again",
+                            self.role, rounds, str(state["exc"]), int(gap))
+                await asyncio.sleep(gap)
+                continue
             await waiter.await_wait(exc)
+
+    def _persist_gap(self, exc, rounds: int, t0: float) -> "float | None":
+        """Seconds to wait before another sweep of the chain, or None to give up.
+
+        A stage the model keeps failing must not end the ticket: finishing the
+        task comes first. Only a failure that waiting cannot fix (config, auth,
+        a rejected request, a cancel) or the bound ends it.
+        ``AIFORGE_PIPELINE_PERSIST_S``: 0 = until the run is cancelled (default),
+        >0 = a bound in seconds, <0 = off (the old behaviour)."""
+        try:
+            limit = float(_os.environ.get("AIFORGE_PIPELINE_PERSIST_S", "0"))
+        except ValueError:
+            limit = 0.0
+        if limit < 0:
+            return None
+        gap = (5.0, 10.0, 20.0, 30.0)[min(rounds, 3)]
+        if limit > 0 and _time.monotonic() - t0 + gap > limit:
+            return None
+        if exc is not None:
+            try:
+                from aiforge_core.llm import model_outage as _mo
+                if _mo.issue(exc) is not None:
+                    return None
+                if _mo.classify(exc) in (_mo.CONFIG, _mo.CANCELLED):
+                    return None
+            except Exception:  # noqa: BLE001
+                return None
+        return gap
 
     def _outage_waiter(self):
         return _outage.waiter_for(self.primary_model, self.role)

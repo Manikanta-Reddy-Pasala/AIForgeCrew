@@ -27,6 +27,8 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for k in list(os.environ.keys()):
         if k.startswith(("AIFORGE_", "OLLAMA_CLOUD_", "ANTHROPIC_")):
             monkeypatch.delenv(k, raising=False)
+    # These tests pin the give-up path; the stage-retry default is tested apart.
+    monkeypatch.setenv("AIFORGE_PIPELINE_PERSIST_S", "-1")
 
 
 def _force_primary_local(monkeypatch: pytest.MonkeyPatch) -> None:
