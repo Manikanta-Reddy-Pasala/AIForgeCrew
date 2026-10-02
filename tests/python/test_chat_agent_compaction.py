@@ -24,14 +24,16 @@ def test_compact_convo_condenses_long_history(monkeypatch):
         convo.append({"role": "user", "content": "OBSERVATION: " + "x" * 200})
     out = ca._compact_convo(convo, keep_recent=8)
     assert out[0]["role"] == "system"                      # system preserved
-    # breadcrumb folded INTO the system message (no separate user turn → no
-    # consecutive same-role messages); actions summarized.
-    assert "auto-condensed" in out[0]["content"]
-    assert "file_read" in out[0]["content"]
+    # The breadcrumb lives in its own note message right AFTER the system
+    # prompt (the system message stays byte-identical so a local server's
+    # prompt cache survives a condense); actions summarized there.
+    assert "auto-condensed" in out[1]["content"]
+    assert "file_read" in out[1]["content"]
+    assert "auto-condensed" not in out[0]["content"]
     # Size-aware tail: the kept recent slice FITS the (tiny 2000-char) budget so
     # condense actually frees the window, with a usable floor (>=4). Bounded by
     # chars, not a fixed count.
-    tail = out[1:]
+    tail = out[3:]                                         # after system, note, ack
     assert 4 <= len(tail) < 60
     assert sum(len(m.get("content") or "") for m in tail) <= 2000
     # no two consecutive non-system same-role messages
@@ -65,9 +67,12 @@ def test_compact_convo_sentinel_strip_is_exact(monkeypatch):
     out = ca._compact_convo(out)          # re-condense
     out = ca._compact_convo(out)
     s = out[0]["content"]
+    assert s == sysc                                   # byte 0 never rewritten
     assert "KEEP_ME" in s
     assert "KEEP_END" in s
-    assert s.count(ca._CONDENSE_OPEN) == 1             # exactly one block
+    # exactly one block, in the note
+    assert "".join(m["content"] for m in out).count(ca._CONDENSE_OPEN) == 1
+    assert out[1]["content"].count(ca._CONDENSE_OPEN) == 1
 
 
 def test_usage_event_emitted(tmp_path):
@@ -103,7 +108,7 @@ def test_condense_summary_includes_earlier_asks(monkeypatch):
         convo.append({"role": "user", "content": f"OBSERVATION: {'x' * 50}"})
         convo.append({"role": "assistant", "content": f"ACTION: grep\nq{i}"})
     out = ca._compact_convo(convo, keep_recent=4)
-    sys_text = out[0]["content"]
+    sys_text = out[1]["content"]                       # the condense note
     assert "auto-condensed" in sys_text
     assert "Earlier asks:" in sys_text
     assert "invoice exporter" in sys_text
@@ -188,6 +193,6 @@ def test_force_condenses_a_history_that_still_fits(monkeypatch):
     assert ca._compact_convo(list(convo), keep_recent=8) == convo   # fits → untouched
     out = ca._compact_convo(list(convo), keep_recent=8, force=True)
     assert len(out) < len(convo)
-    assert "auto-condensed" in out[0]["content"]
+    assert "auto-condensed" in out[1]["content"]
     assert out[0]["role"] == "system"
     assert out[-1]["role"] == "user"

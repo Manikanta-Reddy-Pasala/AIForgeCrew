@@ -229,6 +229,26 @@ def classify(exc: BaseException | None) -> str:
     return OTHER
 
 
+#: What servers and gateways say when the PROMPT is bigger than the window.
+_OVERFLOW_MARKERS = (
+    "context_length_exceeded", "maximum context length", "context length",
+    "context window", "contextwindowexceedederror", "exceeds the available "
+    "context", "exceed_context_size", "exceeds context", "exceeded context",
+    "prompt is too long", "prompt too long", "input is too long",
+    "too many tokens", "maximum prompt length", "prompt length exceeds",
+    "requested tokens exceed", "n_ctx",
+)
+
+
+def is_context_overflow(exc: BaseException | None) -> bool:
+    """The request failed because the prompt does not fit the model's window.
+    Re-sending the same prompt cannot work; it has to get smaller."""
+    try:
+        return any(m in _text(e) for e in chain(exc) for m in _OVERFLOW_MARKERS)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def is_outage(exc: BaseException | None) -> bool:
     return classify(exc) == OUTAGE
 

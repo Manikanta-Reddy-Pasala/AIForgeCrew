@@ -81,10 +81,15 @@ def build_chat(st) -> dict:
     }
 
 
-def render(h: dict, offload_id: "str | None" = None) -> str:
-    """The handoff as the one user message a restarted run starts from."""
-    lines = ["[HANDOFF — the earlier attempt went in circles, so this is a fresh "
-             "start. It holds what is known; do not repeat what failed.]"]
+_DEFAULT_HEAD = ("[HANDOFF — the earlier attempt went in circles, so this is a "
+                 "fresh start. It holds what is known; do not repeat what failed.]")
+
+
+def render(h: dict, offload_id: "str | None" = None,
+           header: "str | None" = None) -> str:
+    """The handoff as the one user message a restarted run starts from.
+    ``header`` replaces the first line (a condense restart is not a stuck one)."""
+    lines = [header or _DEFAULT_HEAD]
     if h.get("goal"):
         lines.append(f"GOAL: {h['goal']}")
     if h.get("done"):

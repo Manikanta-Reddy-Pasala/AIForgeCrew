@@ -4,7 +4,7 @@ Items come from the parts of a multi-part message (``part-N``) and from the
 model's own ``plan_progress`` calls: a new slug with a title adds an item, a
 known slug changes its status. A long run condenses its history many times,
 and the model's progress calls go with it, so after each condense the board is
-pinned into the system message. A FINAL that leaves items open gets a bounded
+pinned into the condense note (the message after the system prompt). A FINAL that leaves items open gets a bounded
 reminder.
 """
 from __future__ import annotations
@@ -130,9 +130,17 @@ _BOARD_RE = re.compile(r"\s*" + re.escape(_BOARD_OPEN) + r".*?"
 
 
 def pin_board(convo: list[dict], board: dict) -> None:
-    """Put the current board at the end of the system message, replacing the
-    one pinned before."""
+    """Pin the current board, replacing the one pinned before: in the condense
+    note when the history has one (the system message stays byte-identical, so
+    the model server's prompt cache survives), else at the end of the system
+    message."""
     if not board or not convo or convo[0].get("role") != "system":
+        return
+    from .._context import _note
+    at = _note.note_index(convo)
+    if at is not None:
+        convo[at] = {**convo[at], "content": _note.with_board(
+            convo[at]["content"], render_board(board), _BOARD_RE)}
         return
     text = convo[0].get("content")
     if not isinstance(text, str):

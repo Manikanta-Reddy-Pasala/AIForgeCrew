@@ -308,8 +308,10 @@ def test_compaction_fires_at_80_percent_and_keeps_the_ask_and_unread_tail(
         convo.append({"role": "assistant", "content": f"ACTION: grep\n{i}"})
         convo.append({"role": "user", "content": "OBSERVATION: later filler"})
     kept = comp._compact_convo(convo, role="chat", keep_recent=4, keep_min=8)
-    assert "auto-condensed" in kept[0]["content"]
-    assert "please add the export" in kept[0]["content"]
+    # the breadcrumb + pinned task live in the note after the system prompt
+    assert "auto-condensed" in kept[1]["content"]
+    assert "please add the export" in kept[1]["content"]
+    assert kept[0] == convo[0]                       # system prompt untouched
     assert any(m.get("content") == unread for m in kept)
     dropped = comp._compact_convo(convo, role="chat", keep_recent=4, keep_min=0)
     assert all(m.get("content") != unread for m in dropped)

@@ -14,7 +14,7 @@ import re
 # header (pytest's docs URL, a path named ticket) must not add tools either.
 # A steer merged on with a blank line is the person's words and is kept.
 _HARNESS_SEGMENT = re.compile(
-    r"^(?:OBSERVATION:|\[loop guard|\[(?:[^\]]*not the user|system reminder)"
+    r"^(?:OBSERVATION:|<<AIFORGE_CTX_NOTE>>|\[loop guard|\[(?:[^\]]*not the user|system reminder)"
     r"[^\]]*\]|You (?:narrated|signalled|described) )")
 # A steer, or the correction typed when a tool call is rejected. Both are
 # the person's words and are merged onto the observation with a blank line.

@@ -410,3 +410,72 @@ def ping_pong(st) -> bool:
         return False
     a, b = r[0], r[1]
     return (a[0] != b[0] and r[2] == a and r[4] == a and r[3] == b and r[5] == b)
+
+
+# ── assistant monologue ────────────────────────────────────────────────────
+# OpenHands' third stuck pattern: the model answers three times in a row, runs
+# no tool, and says essentially the same thing each time. Word-for-word
+# repeats are the stuck-output guard's; this catches the reworded ones.
+
+def monologue_limit() -> int:
+    """Replies in a row that count as a monologue
+    (``AIFORGE_CHAT_MONOLOGUE_REPEATS``, default 3; 0 turns the check off)."""
+    try:
+        return max(0, int(os.environ.get("AIFORGE_CHAT_MONOLOGUE_REPEATS", "3")))
+    except ValueError:
+        return 3
+
+
+def _similarity_floor() -> float:
+    try:
+        return min(1.0, max(0.5, float(
+            os.environ.get("AIFORGE_CHAT_MONOLOGUE_SIMILARITY", "0.85"))))
+    except ValueError:
+        return 0.85
+
+
+def _normalised(text: str) -> str:
+    """Case, punctuation, digits and spacing removed: two replies that differ
+    only in those are the same thing said again."""
+    import re
+    words = re.sub(r"[^a-z\s]+", " ", str(text or "").lower()).split()
+    return " ".join(words)[:800]
+
+
+def similar_text(a: str, b: str) -> bool:
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    import difflib
+    sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    floor = _similarity_floor()
+    return sm.real_quick_ratio() >= floor and sm.quick_ratio() >= floor \
+        and sm.ratio() >= floor
+
+
+def note_monologue(st, text: str) -> bool:
+    """Record one reply that ran no tool. True when the last N such replies
+    (N = :func:`monologue_limit`) all say essentially the same thing."""
+    n = monologue_limit()
+    if n <= 0:
+        return False
+    recent = getattr(st, "monologue", None)
+    if recent is None:
+        recent = st.monologue = collections.deque(maxlen=n)
+    elif recent.maxlen != n:
+        recent = st.monologue = collections.deque(recent, maxlen=n)
+    norm = _normalised(text)
+    if not norm:
+        return False
+    recent.append(norm)
+    if len(recent) < n:
+        return False
+    items = list(recent)
+    return all(similar_text(items[i], items[i + 1]) for i in range(n - 1))
+
+
+def reset_monologue(st) -> None:
+    recent = getattr(st, "monologue", None)
+    if recent is not None:
+        recent.clear()
