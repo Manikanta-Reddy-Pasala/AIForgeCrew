@@ -52,7 +52,7 @@ _RUNS: dict[str, TeamWorkspace] = {}
 # kept out through .git/info/exclude, never through the user's .gitignore.
 _EXCLUDE_LINES = (".aiforge/", ".aiforge-worktrees/", ".aiforge-workspace",
                   ".aiforge-venv/", ".aiforge-contracts/", ".aiforge-baseline",
-                  "__pycache__/", ".pytest_cache/")
+                  "__pycache__/", ".pytest_cache/", ".codegraph/", "graphify-out/")
 _OWN_ARTIFACTS = ("SPEC.md", ".aiforge-baseline", ".aiforge-workspace",
                   ".aiforge-contracts", ".aiforge-worktrees", ".aiforge")
 _MAX_INIT_FILES = 2000

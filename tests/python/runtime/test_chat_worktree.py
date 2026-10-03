@@ -66,8 +66,8 @@ def test_a_chat_gets_a_worktree_on_its_own_branch_and_the_users_folder_is_untouc
     data = cw.ensure(sid)
     wt = data["path"]
     assert os.path.isdir(wt) and cw.is_worktree(wt)
-    assert os.sep + "chat-worktrees" + os.sep in wt                               # under the config dir
-    assert not wt.startswith(str(env.repo))                                       # not inside the repo
+    # inside the project, in the folder git is told to ignore
+    assert wt.startswith(os.path.join(str(env.repo), ".aiforge-worktrees") + os.sep)
     assert data["branch"].startswith("aiforge/chat-") and data["base_branch"] == "main"
     assert (env.repo / "src" / "cart.py").read_text() == (open(os.path.join(wt, "src", "cart.py")).read())
     # the session keeps the project as its folder; the worktree is where it runs
@@ -301,3 +301,50 @@ def test_only_a_fresh_chat_gets_one(env):
     assert cw.eligible(env.store.get_session(sid), "simple")        # its first message: yes
     env.store.add_message(sid, "assistant", "done")
     assert cw.eligible(env.store.get_session(sid), "simple") is None
+
+
+def test_the_worktree_can_live_in_the_config_folder(env, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_WORKTREE_PLACE", "config")
+    cw = _cw()
+    wt = cw.ensure(env.new_chat())["path"]
+    assert os.sep + "chat-worktrees" + os.sep in wt and not wt.startswith(str(env.repo))
+
+
+def test_indexes_and_scratch_files_never_reach_the_branch(env):
+    cw = _cw()
+    sid = env.new_chat()
+    wt = cw.ensure(sid)["path"]
+    os.makedirs(os.path.join(wt, ".codegraph"))
+    open(os.path.join(wt, ".codegraph", "graph.db"), "w").write("x")
+    os.makedirs(os.path.join(wt, "graphify-out"))
+    open(os.path.join(wt, "graphify-out", "GRAPH.md"), "w").write("x")
+    scratch = cw.scratch_dir(wt)
+    assert scratch and os.path.isdir(scratch) and not scratch.startswith(wt + os.sep)
+    open(os.path.join(scratch, "probe.py"), "w").write("print(1)\n")
+    open(os.path.join(wt, "src", "tax.py"), "w").write("def vat(x):\n    return x * 0.2\n")
+    assert cw.seal_for_session(sid, "tax") == ["src/tax.py"]
+    assert cw.info(env.store.get_session(sid))["uncommitted"] == []
+    assert cw.scratch_dir(str(env.repo)) is None            # the user's folder has none
+    # the scratch folder is writable for the agent, and the agent is told of it
+    from aiforge_core.runtime.chat_agent._turn._state import _writable_roots
+    assert scratch in _writable_roots([], sid, wt)
+    assert scratch in cw.prompt_note(wt) and "never committed" in cw.prompt_note(wt)
+
+
+def test_an_index_committed_by_an_earlier_turn_is_taken_out_again(env):
+    cw = _cw()
+    sid = env.new_chat()
+    wt = cw.ensure(sid)["path"]
+    os.makedirs(os.path.join(wt, ".codegraph"))
+    open(os.path.join(wt, ".codegraph", "graph.db"), "w").write("x")
+    _git(wt, "add", "-f", ".codegraph")
+    _git(wt, "commit", "-q", "-m", "old turn")
+    assert cw.seal_for_session(sid, "tidy") == [".codegraph/graph.db"]
+    assert _git(wt, "ls-files", "--", ".codegraph").stdout.strip() == ""
+    assert os.path.exists(os.path.join(wt, ".codegraph", "graph.db"))   # still on disk
+
+
+def test_the_users_status_does_not_show_the_worktree_folder(env):
+    cw = _cw()
+    cw.ensure(env.new_chat())
+    assert _git(env.repo, "status", "--porcelain").stdout == ""

@@ -73,6 +73,36 @@ def _root() -> str:
     return os.path.join(str(config_dir()), "chat-worktrees")
 
 
+#: Where a chat's worktree lives inside its project (kept out of git by
+#: ``.git/info/exclude``; the same folder ticket and subtask worktrees use).
+_IN_REPO = ".aiforge-worktrees"
+#: Next to the worktree, outside its git tree: nothing in it can be committed.
+_SCRATCH = "scratch"
+
+
+def _in_repo() -> bool:
+    """AIFORGE_CHAT_WORKTREE_PLACE: ``repo`` (default) puts a chat's worktree in
+    ``<project>/.aiforge-worktrees/``; ``config`` in AIForge's own folder."""
+    return os.environ.get("AIFORGE_CHAT_WORKTREE_PLACE", "repo").strip().lower() \
+        not in ("config", "home", "outside")
+
+
+def _run_dir(repo: str, name: str) -> str:
+    if _in_repo() and os.access(repo, os.W_OK):
+        return os.path.join(repo, _IN_REPO, name)
+    slug = re.sub(r"[^a-z0-9]+", "-", os.path.basename(repo).lower()).strip("-") or "repo"
+    key = hashlib.sha1(repo.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
+    return os.path.join(_root(), f"{slug}-{key}", name)
+
+
+def scratch_dir(cwd: "str | None") -> "str | None":
+    """The chat's scratch folder (for a path that is a chat worktree): where
+    helper scripts, logs and dumps go that are not part of the change."""
+    if not cwd or not is_worktree(cwd) or not _read_meta(str(cwd)):
+        return None
+    return os.path.join(os.path.dirname(os.path.normpath(str(cwd))), _SCRATCH)
+
+
 # ── what a path is ───────────────────────────────────────────────────────────
 
 def main_repo_of(path: "str | None") -> "str | None":
@@ -279,11 +309,10 @@ def ensure(session_id) -> "dict | None":
             return info(sess)
         token = uuid.uuid4().hex[:4]
         branch = f"{_prefix(repo)}/chat-{sess['id']}-{token}"
-        slug = re.sub(r"[^a-z0-9]+", "-", os.path.basename(repo).lower()).strip("-") or "repo"
-        key = hashlib.sha1(repo.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
-        run_dir = os.path.join(_root(), f"{slug}-{key}", f"chat-{sess['id']}-{token}")
+        _exclude_state(repo)           # before the folder exists in the repo
+        run_dir = _run_dir(repo, f"chat-{sess['id']}-{token}")
         wt = os.path.join(run_dir, "work")
-        os.makedirs(run_dir, exist_ok=True)
+        os.makedirs(os.path.join(run_dir, _SCRATCH), exist_ok=True)
         base_sha = _out(["rev-parse", "HEAD"], repo)
         base_branch = _out(["symbolic-ref", "--short", "-q", "HEAD"], repo)
         dirty = _tw.dirty_files(repo)
@@ -364,6 +393,7 @@ def seal(session_or_path, message: str = "") -> list[str]:
     if not wt or not os.path.isdir(wt) or not is_worktree(wt):
         return []
     try:
+        _untrack_own(wt)
         _git(["add", "-A", "--", *_tw.seal_pathspecs()], wt)
         names = [n for n in _out(["diff", "--cached", "--name-only"], wt).splitlines() if n]
         if not names:
@@ -374,6 +404,23 @@ def seal(session_or_path, message: str = "") -> list[str]:
     except Exception as exc:  # noqa: BLE001
         log.warning("chat worktree seal failed in %s: %s", wt, exc)
         return []
+
+
+#: Written into a workspace by AIForge's own tools; never part of a change.
+_OWN_INDEXES = (".codegraph", "graphify-out")
+
+
+def _untrack_own(wt: str) -> None:
+    """Take AIForge's own index folders back out of the chat's branch when an
+    earlier turn committed them (they were not excluded then) and the project
+    itself does not track them."""
+    base = _read_meta(wt).get("base_sha") or ""
+    for name in _OWN_INDEXES:
+        if not _out(["ls-files", "--", name], wt):
+            continue
+        if base and _out(["ls-tree", "--name-only", base, "--", name], wt):
+            continue                      # the project tracks it: leave it
+        _git(["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", name], wt)
 
 
 def _commit(wt: str, message: str) -> bool:
@@ -486,7 +533,19 @@ def prompt_note(cwd: "str | None") -> str:
             f"The project's own folder, {repo}, belongs to the user and to other chats: do "
             "not read-modify-write files there by absolute path. Make every edit inside "
             "your workspace (relative paths). Your changes are committed to your branch "
-            "after each turn and the user merges them when ready.")
+            "after each turn and the user merges them when ready."
+            + _scratch_note(cwd))
+
+
+def _scratch_note(cwd) -> str:
+    scratch = scratch_dir(cwd)
+    if not scratch:
+        return ""
+    return ("\nEVERY file left in the workspace is committed and reaches the user's "
+            "branch. Put only the requested change there. A helper script, a "
+            "one-off test driver, a log, a dump, downloaded or generated data that "
+            f"you make only to do the work goes in {scratch} (never committed); "
+            "delete what you no longer need.")
 
 
 __all__ = ["enabled", "covers", "main_repo_of", "is_worktree", "workdir_of", "eligible", "ensure",

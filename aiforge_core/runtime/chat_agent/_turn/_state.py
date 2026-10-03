@@ -2,6 +2,7 @@
 the loop state."""
 from __future__ import annotations
 
+import os
 import time
 import uuid
 
@@ -121,6 +122,15 @@ def _writable_roots(messages, session_id, cwd=None) -> list:
         # naming it (or allowing the team there) is not a write grant.
         from aiforge_core.runtime.team_run_life import jail_roots
         roots = jail_roots(cwd, roots)
+    except Exception:  # noqa: BLE001
+        pass
+    # The chat's scratch folder sits next to its worktree, outside the git tree.
+    try:
+        from aiforge_core.runtime import chat_worktree as _cw
+        scratch = _cw.scratch_dir(cwd)
+        if scratch and scratch not in roots:
+            os.makedirs(scratch, exist_ok=True)
+            roots.append(scratch)
     except Exception:  # noqa: BLE001
         pass
     return roots

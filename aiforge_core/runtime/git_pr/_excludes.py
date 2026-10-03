@@ -22,6 +22,8 @@ log = logging.getLogger("aiforge.git_pr")
 # the diff stays scoped to real Doer work.
 _EXCLUDE_PATHSPECS: tuple[str, ...] = (
     ":(exclude)graphify-out",
+    ":(exclude).codegraph",
+    ":(exclude).codegraph.build.lock",
     ":(exclude).aiforge",
     ":(exclude).aiforge-worktrees",
     ":(exclude).aiforge-workspace",
@@ -65,7 +67,7 @@ _EXCLUDE_PATHSPECS: tuple[str, ...] = (
 # `pkg/build/mod.go`. Those four are excluded only at the TOP LEVEL (see
 # :data:`_EXCLUDE_TOPLEVEL`), matching their top-level-only pathspecs above.
 _EXCLUDE_DIR_SEGMENTS = frozenset({
-    "graphify-out", ".aiforge", ".aiforge-worktrees", ".idea", ".vscode",
+    "graphify-out", ".codegraph", ".aiforge", ".aiforge-worktrees", ".idea", ".vscode",
     "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache",
     "node_modules", ".venv", "venv", ".git",
 })
@@ -118,7 +120,7 @@ def is_excluded_path(rel: str) -> bool:
 _ARTIFACT_IGNORE_LINES: tuple[str, ...] = (
     # aiforge internals
     ".aiforge/", ".aiforge-worktrees/", ".aiforge-workspace", ".aiforge-venv/",
-    "graphify-out/", "perf.ndjson",
+    "graphify-out/", ".codegraph/", "perf.ndjson",
     # python
     "__pycache__/", "*.py[cod]", ".pytest_cache/", ".ruff_cache/",
     ".mypy_cache/", ".coverage", "*.egg-info/", ".venv/", "venv/",
