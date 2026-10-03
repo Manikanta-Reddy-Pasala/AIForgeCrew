@@ -341,6 +341,15 @@ def _is_managed_workspace(cwd: str) -> bool:
         p = os.path.realpath(cwd) + os.sep
     except Exception:  # noqa: BLE001
         return False
+    try:
+        # A chat's worktree of the user's project also lives under
+        # .aiforge-worktrees, and it is the user's code: no .gitignore of ours
+        # and no baseline commit may land on a branch they will merge or push.
+        from aiforge_core.runtime import chat_worktree
+        if chat_worktree.scratch_dir(cwd):
+            return False
+    except Exception:  # noqa: BLE001
+        pass
     return (
         (os.sep + "chat-workspaces" + os.sep + "session-") in p
         or (os.sep + ".aiforge-worktrees" + os.sep) in p

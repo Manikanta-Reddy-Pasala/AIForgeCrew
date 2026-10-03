@@ -544,8 +544,8 @@ def _scratch_note(cwd) -> str:
     return ("\nEVERY file left in the workspace is committed and reaches the user's "
             "branch. Put only the requested change there. A helper script, a "
             "one-off test driver, a log, a dump, downloaded or generated data that "
-            f"you make only to do the work goes in {scratch} (never committed); "
-            "delete what you no longer need.")
+            f"you make only to do the work goes in {scratch} (never committed, "
+            "no need to delete it).")
 
 
 __all__ = ["enabled", "covers", "main_repo_of", "is_worktree", "workdir_of", "eligible", "ensure",

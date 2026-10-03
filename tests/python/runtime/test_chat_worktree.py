@@ -348,3 +348,16 @@ def test_the_users_status_does_not_show_the_worktree_folder(env):
     cw = _cw()
     cw.ensure(env.new_chat())
     assert _git(env.repo, "status", "--porcelain").stdout == ""
+
+
+def test_no_gitignore_or_baseline_commit_of_ours_lands_on_the_chat_branch(env):
+    from aiforge_core.runtime.parallel_subtasks import _planning
+    cw = _cw()
+    sid = env.new_chat()
+    wt = cw.ensure(sid)["path"]
+    head = _git(wt, "rev-parse", "HEAD").stdout.strip()
+    assert not _planning._is_managed_workspace(wt)
+    assert _planning._commit_turn_baseline(wt) == head
+    assert _git(wt, "rev-parse", "HEAD").stdout.strip() == head
+    assert not os.path.exists(os.path.join(wt, ".gitignore"))
+    assert _git(wt, "status", "--porcelain").stdout == ""
