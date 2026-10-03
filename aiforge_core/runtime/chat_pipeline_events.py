@@ -79,15 +79,31 @@ def map_event(event) -> list[dict]:
     content = getattr(event, "content", None)
     parts = getattr(content, "parts", None) or []
     out: list[dict] = []
+    # A streamed reply's REASONING comes back on the finished event as one
+    # part per chunk. Mapped part by part, a planner that thought for six
+    # thousand tokens became six thousand one-word steps in the stored turn.
+    # It is one step.
+    thinking = "".join(getattr(p, "text", "") or "" for p in parts
+                       if _is_reasoning(p)).strip()
+    if thinking:
+        out.append({"type": "thought", "role": author, "text": thinking,
+                    "phase": "thinking"})
     for p in parts:
-        out.extend(_part_events(author, p))
+        if not _is_reasoning(p):
+            out.extend(_part_events(author, p))
     return out
 
 
+def _is_reasoning(part) -> bool:
+    return getattr(part, "thought", None) is True
+
+
 def _event_text(event) -> str:
+    """What the agent wrote (its reasoning is not part of it)."""
     content = getattr(event, "content", None)
     parts = getattr(content, "parts", None) or []
-    return "".join(getattr(p, "text", "") or "" for p in parts).strip()
+    return "".join(getattr(p, "text", "") or "" for p in parts
+                   if not _is_reasoning(p)).strip()
 
 
 def _team_change_events(cwd: str, seq_start_sha: str, enhancer_blocked) -> list:
@@ -166,7 +182,8 @@ def _process_team_event(ev: dict, q, steps: list, by_role: dict,
     q.put(ev)
     if ev.get("type") in ("thought", "tool", "error"):
         steps.append(ev)
-    if ev.get("type") == "thought" and ev.get("role") and ev.get("text"):
+    if (ev.get("type") == "thought" and ev.get("role") and ev.get("text")
+            and ev.get("phase") != "thinking"):      # reasoning is not the answer
         by_role[ev["role"]] = ev["text"]
         if ev["role"] == "planner" and not acc["emitted_subtasks"]:
             sub_ev = _planner_subtask_event(ev["text"])

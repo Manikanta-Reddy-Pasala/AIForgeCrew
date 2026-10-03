@@ -45,6 +45,22 @@ def test_unknown_role_defaults_openai_compatible_without_global(cfg):
         cfg.get("some_future_role")
 
 
+def test_a_default_model_env_alone_reaches_every_role(cfg, monkeypatch):
+    """Live: AIFORGE_DEFAULT_MODEL was set without AIFORGE_DEFAULT_PROVIDER and
+    was ignored. Every role but chat ran on the "unconfigured" placeholder and
+    a Team run had no endpoint. There is one provider; the model is enough."""
+    monkeypatch.setenv("AIFORGE_DEFAULT_MODEL", "served-model")
+    monkeypatch.setenv("AIFORGE_OPENAI_COMPAT_BASE_URL", "http://lmbox:1234/v1")
+    for role in ("triage", "doer", "enhancer", "validator"):
+        out = cfg.resolve_litellm(role)
+        assert out["model_id"] == "openai/served-model"
+        assert out["api_base"] == "http://lmbox:1234/v1"
+    # A persisted global default still outranks the env.
+    cfg.set_role("_default", "openai_compatible", "picked-in-ui",
+                 base_url="http://ui-choice:1/v1")
+    assert cfg.resolve_litellm("doer")["model_id"] == "openai/picked-in-ui"
+
+
 # ── ensure_runtime ───────────────────────────────────────────────────
 def test_ensure_runtime_reports_present_tool():
     from aiforge_core.runtime.tools.ensure_runtime import ensure_runtime

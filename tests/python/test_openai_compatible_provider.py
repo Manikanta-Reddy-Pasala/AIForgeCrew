@@ -73,6 +73,27 @@ def test_resolve_litellm_openai_compatible(cfgdir):
     assert out["api_key"] == "sk-key"
 
 
+def test_resolve_litellm_never_leaves_a_role_without_an_endpoint(cfgdir, monkeypatch):
+    """Live: the box was configured by AIFORGE_OPENAI_COMPAT_BASE_URL alone.
+    Simple chat (direct client) answered from the local server; a Team run
+    (this path) got ``api_base=None``, which LiteLLM reads as the vendor's
+    public API — the prompt went to api.openai.com and the run died on a 401."""
+    monkeypatch.delenv("AIFORGE_DOER_BASE_URL", raising=False)
+    monkeypatch.setenv("AIFORGE_OPENAI_COMPAT_BASE_URL", "http://lmbox:1234")
+    assert cfgdir.resolve_litellm("doer")["api_base"] == "http://lmbox:1234/v1"
+    # No URL anywhere: the direct client's local default, never nothing.
+    monkeypatch.delenv("AIFORGE_OPENAI_COMPAT_BASE_URL")
+    monkeypatch.setenv("AIFORGE_LM_BASE_URL", "http://studio:1234/v1")
+    assert cfgdir.resolve_litellm("doer")["api_base"] == "http://studio:1234/v1"
+    monkeypatch.delenv("AIFORGE_LM_BASE_URL")
+    from aiforge_core.llm.providers.openai_compatible import _DEFAULT_BASE
+    assert cfgdir.resolve_litellm("doer")["api_base"] == _DEFAULT_BASE
+    # A role's own stored URL still wins over the one-endpoint env.
+    monkeypatch.setenv("AIFORGE_OPENAI_COMPAT_BASE_URL", "http://lmbox:1234")
+    cfgdir.set_role("doer", "openai_compatible", "m", base_url="http://own:9000/v1")
+    assert cfgdir.resolve_litellm("doer")["api_base"] == "http://own:9000/v1"
+
+
 def test_resolve_litellm_blank_key_sentinel(cfgdir):
     cfgdir.set_role("doer", "openai_compatible", "m", base_url="http://oss:1234")
     out = cfgdir.resolve_litellm("doer")

@@ -70,8 +70,46 @@ def _promote_team_answer(by_role: dict, st: dict, final: str,
     if enhancer_blocked:
         return (f"I need more detail before I can build this — {enhancer_blocked}. "
                 f"Could you say what to build/change and where?")
-    return (by_role.get("doer") or st.get("doer_outcome")
+    return (readable_outcome(by_role.get("doer"))
+            or readable_outcome(st.get("doer_outcome"))
             or by_role.get("researcher") or final or "Done.")
+
+
+def readable_outcome(value) -> str:
+    """The Doer's closing JSON (``{file_diffs, compile_status, test_status,
+    turn_log}``) as a reply a person can read: its one-line log, the files,
+    the check states. That JSON is the contract the next stage reads; live, a
+    Team run that worked answered the user with it verbatim. Any other text is
+    returned unchanged."""
+    import json
+    data = value
+    if isinstance(value, str):
+        body = value.strip()
+        if body.startswith("```"):
+            body = body.strip("`").strip()
+            body = body[4:].strip() if body.lower().startswith("json") else body
+        if not (body.startswith("{") and body.endswith("}")):
+            return value
+        try:
+            data = json.loads(body)
+        except ValueError:
+            return value
+    if not isinstance(data, dict) or not ({"turn_log", "file_diffs"} & set(data)):
+        return value if isinstance(value, str) else ""
+    lines = [str(data.get("turn_log") or "").strip()]
+    paths = [str(f["path"]) for f in data.get("file_diffs") or []
+             if isinstance(f, dict) and f.get("path")]
+    if paths:
+        lines.append("Files changed: " + ", ".join(f"`{p}`" for p in paths[:20]))
+    checks = [f"{label} {data[key]}" for key, label in
+              (("compile_status", "build"), ("test_status", "tests"))
+              if data.get(key) and str(data[key]).lower() != "skipped"]
+    if checks:
+        lines.append("Checks: " + ", ".join(checks) + ".")
+    if data.get("blocker"):
+        lines.append(f"Blocked: {data['blocker']}")
+    return "\n\n".join(ln for ln in lines if ln) or (
+        value if isinstance(value, str) else "")
 
 
 # The team graph's stages, in run order, and the state key each leaves behind
