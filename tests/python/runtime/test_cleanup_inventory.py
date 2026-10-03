@@ -167,7 +167,7 @@ def test_the_undo_names_the_interpreter_and_the_folder():
     assert _undo(found) == {
         "pip package `rich`": "/w/.venv/bin/pip uninstall -y rich",
         "npm package `left-pad`": "cd /w/svc && npm uninstall left-pad",
-        "git branch `ops/x`": "cd /w/infra && git branch -D ops/x"}
+        "git branch `ops/x`": "cd /w/infra && git branch -d ops/x"}
     module = D.replay([_cmd("/opt/py/bin/python3.11 -m pip install rich", stdout=PIP_RICH)], "/w")
     assert list(_undo(module).values()) == ["/opt/py/bin/python3.11 -m pip uninstall -y rich"]
 
@@ -277,7 +277,7 @@ def test_docker_containers_and_compose_stacks():
     assert _undo(found) == {
         "docker container `pg`": "docker rm -f pg",
         "docker container `3f2a9c1d8e7b`": "docker rm -f 3f2a9c1d8e7b",
-        "docker compose stack `dev.yml`": "docker compose -f dev.yml down"}
+        "docker compose stack `dev.yml`": "docker compose -f dev.yml stop"}
     gone = D.replay([_cmd("docker run -d --name pg postgres:16"), _cmd("docker rm -f pg"),
                      _cmd("docker compose up -d", stderr="Container x  Created"),
                      _cmd("docker compose down")], "/w")
@@ -330,13 +330,13 @@ def test_git_branches_worktrees_stashes_and_commits():
         _cmd("git commit -m wip"),
     ], "/w/repo")
     undo = _undo(found)
-    assert undo == {"git branch `feat/x`": "git branch -D feat/x",
+    assert undo == {"git branch `feat/x`": "git branch -d feat/x",
                     "git worktree": "git worktree remove /w/wt",
-                    "git branch `side`": "git branch -D side",
+                    "git branch `side`": "git branch -d side",
                     "git stash entry": "",             # worked out against the live list
                     "commits not pushed": ""}          # pushing is never a cleanup step
     assert not any("push" in u for u in undo.values())
-    gone = D.replay([_cmd("git checkout -b feat/x"), _cmd("git branch -D feat/x"),
+    gone = D.replay([_cmd("git checkout -b feat/x"), _cmd("git branch -d feat/x"),
                      _cmd("git commit -m wip"), _cmd("git push origin feat/x")], "/w/repo")
     assert gone == {}
 

@@ -73,16 +73,27 @@ _ENV_SWITCH = frozenset({"source", ".", "activate", "conda", "nvm", "pyenv", "ex
                          "workon", "asdf"})
 _PIP_ENV_HINT = "uninstall it with the pip of the environment it went into"
 
+_VAL = r"""(?:"[^"]*"|'[^']*'|[^\s'"]+)"""          # a value, quoted or bare
 _SECRETS = (
-    (re.compile(r"(://[^\s/:@]+:)[^\s/@]+@"), r"\1***@"),
-    (re.compile(r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY)[A-Z0-9_]*"
-                r"\s*[=:]\s*)[^\s'\"]+"), r"\1***"),
+    # user:password@host — the password may itself contain '/'
+    (re.compile(r"(://[^\s/:@]+:)[^\s@]+@"), r"\1***@"),
+    # NAME_TOKEN=..., "password": "...", X-Api-Key: ... (quoted or bare values)
+    (re.compile(r"(?i)([\w-]*(?:TOKEN|SECRET|PASSWORD|PASSWD|PWD|API[_-]?KEY|APIKEY|"
+                r"ACCESS[_-]?KEY|PRIVATE[_-]?KEY|COOKIE|CREDENTIALS?)[\w-]*[\"']?"
+                r"\s*[=:]\s*)" + _VAL), r"\1***"),
     (re.compile(r"\b(ghp_|gho_|ghs_|github_pat_|glpat-|sk-|hf_|xox[baprs]-|AKIA)[\w-]{6,}"),
      r"\1***"),
+    # Authorization: Bearer|Basic|Token <value>, and a bare 'bearer <value>'
+    (re.compile(r"(?i)(authorization\s*[:=]\s*[\"']?\s*\w+\s+)[^\s'\"]+"), r"\1***"),
     (re.compile(r"(?i)\b(bearer\s+)[^\s'\"]+"), r"\1***"),
-    (re.compile(r"(?i)(--(?:password|token|secret|api-key)[= ])[^\s'\"]+"), r"\1***"),
+    (re.compile(r"(?i)(--(?:password|passwd|token|secret|api-key|apikey|auth)[= ])" + _VAL),
+     r"\1***"),
     (re.compile(r"((?:^|\s)(?:-u|--user)[= ]\s*[^\s:'\"]+:)(?!\d+\b)[^\s'\"]+"), r"\1***"),
     (re.compile(r"(\bsshpass\s+-p\s*)\S+"), r"\1***"),
+    # mysql -pSECRET / mysql -p SECRET, docker login -p X, redis-cli -a X
+    (re.compile(r"(\b(?:mysql|mysqldump|mariadb|mysqladmin)\b[^\n|;&]*?\s-p)\S+"), r"\1***"),
+    (re.compile(r"(\bdocker\s+login\b[^\n|;&]*?\s(?:-p|--password)[= ]?\s*)\S+"), r"\1***"),
+    (re.compile(r"(\bredis-cli\b[^\n|;&]*?\s-a\s+)\S+"), r"\1***"),
 )
 
 
@@ -577,10 +588,16 @@ class Replay:
                     "docker", key,
                     "docker compose stack" + (f" `{proj or f}`" if proj or f else "")
                     + (f" (services: {', '.join(services)})" if services else ""),
-                    here, self._at(here, f"{base} down") if whole else "",
+                    # ``stop``, never ``down``: output saying "Created" does not
+                    # prove no container, network or volume of this project
+                    # existed before (stopped ones stay silent), and ``down``
+                    # would remove those too.
+                    here, self._at(here, stop) if whole else "",
                     cwd=here, project=proj,
-                    hint="" if whole else f"it may predate this chat; stop what it started "
-                                          f"with: {self._at(here, stop)}"))
+                    hint=(f"remove it for good with: {self._at(here, base + ' down')} "
+                          "(only if nothing in it predates this chat)") if whole
+                    else f"it may predate this chat; stop what it started "
+                         f"with: {self._at(here, stop)}"))
             elif verbs[:1] in (["down"], ["rm"]) and not part.piped:
                 self.resolve(key)
             return
@@ -674,7 +691,9 @@ class Replay:
 
     def _branch(self, name: str, here: str) -> None:
         self.add(_entry("git", f"git:branch:{here}:{name}", f"git branch `{name}`", here,
-                        self._at(here, f"git branch -D {shlex.quote(name)}"),
+                        # -d, not -D: git refuses when the branch holds commits
+                        # that are merged nowhere, instead of throwing them away.
+                        self._at(here, f"git branch -d {shlex.quote(name)}"),
                         branch=name, cwd=here))
 
     def _rm(self, args: list, here: str) -> None:
@@ -701,7 +720,9 @@ class Replay:
         head = os.path.basename(toks[0])
         proven: list = []
         written: list = []
-        if head == "mktemp" and alone and not part.piped:
+        # The real mktemp only (a repo-local ./mktemp script could print any path).
+        if (head == "mktemp" and toks[0] in ("mktemp", "/usr/bin/mktemp", "/bin/mktemp")
+                and alone and not part.piped):
             # The whole command was one mktemp: its one output line is the path.
             lines = str(res.get("stdout") or "").strip().splitlines()
             if len(lines) == 1:

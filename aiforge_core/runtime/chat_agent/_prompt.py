@@ -272,6 +272,11 @@ def _credible_action(out: str):
 _NARRATED_RE = re.compile(r"^\s*(?:\W{0,3})Called\s+([A-Za-z_]\w*)\s*\(", re.S)
 
 
+_NARRATED_MAX = 20_000
+#: A fabricated result the model tacks on after the call ("Result of x:\n…").
+_NARRATED_TAIL = re.compile(r"^(?:Result of\b.*)$", re.S | re.I)
+
+
 def _balanced(text: str, start: int) -> int:
     """Index just past the brace/bracket group that opens at ``start``, or -1.
     Quotes are respected so a brace inside a string does not count."""
@@ -321,16 +326,24 @@ def narrated_call(text: str) -> "tuple[str, dict] | None":
     if at >= len(text) or text[at] != "{":
         return None
     end = _balanced(text, at)
-    if end < 0:
+    if end < 0 or end - at > _NARRATED_MAX:
+        return None
+    # The call must be the WHOLE reply (bar the closing paren and any made-up
+    # "Result of …" block the model appended). A reply that goes on to explain —
+    # "Called run_command({...}) to build it, then …" — is the model REPORTING
+    # what it ran, and running it again would repeat a command it only described.
+    rest = text[end:].strip().lstrip(")").strip()
+    rest = _NARRATED_TAIL.sub("", rest).strip()
+    if rest and not rest.startswith(";"):
         return None
     raw = text[at:end]
     try:
         args = json.loads(raw)
-    except ValueError:
+    except Exception:  # noqa: BLE001 — incl. RecursionError on hostile nesting
         try:
             import ast
             args = ast.literal_eval(raw)
-        except (ValueError, SyntaxError):
+        except Exception:  # noqa: BLE001
             return None
     return (name, args) if isinstance(args, dict) else None
 

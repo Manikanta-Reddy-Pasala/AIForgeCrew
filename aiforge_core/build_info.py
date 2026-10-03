@@ -18,6 +18,11 @@ def build() -> dict:
     when = os.environ.get("AIFORGE_BUILD_DATE", "").strip()
     if not sha:
         root = Path(__file__).resolve().parent.parent
+        # Only THIS checkout: without its own .git, `git -C` climbs to whatever
+        # repository the package happens to be installed inside (a venv in some
+        # project) and would report that project's last commit.
+        if not (root / ".git").exists():
+            return {"commit": "unknown", "date": when, "subject": ""}
         try:
             out = subprocess.run(
                 ["git", "-C", str(root), "log", "-1", "--format=%h|%cI|%s"],
@@ -28,3 +33,10 @@ def build() -> dict:
         except (OSError, subprocess.SubprocessError):
             pass
     return {"commit": sha or "unknown", "date": when, "subject": ""}
+
+
+def public() -> dict:
+    """What an unauthenticated caller may see: the short commit and its date. The
+    commit SUBJECT stays out — it often names the security fix it shipped."""
+    b = build()
+    return {"commit": b.get("commit"), "date": b.get("date")}

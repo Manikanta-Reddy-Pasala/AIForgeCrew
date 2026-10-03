@@ -206,7 +206,18 @@ def _is_read(name: str, args, reads: frozenset) -> bool:
     return name in reads
 
 
-_MARKERS = re.compile(r"<</?AIFORGE_[A-Z_]*>>|\[[^\]\n]{0,60}not the user\]", re.I)
+#: Text that poses as the harness or as the user. A tool's output is data: a
+#: page or a test that prints one of these must not be able to close our block,
+#: open a "handoff", or speak as "a new message from the user".
+_MARKERS = re.compile(
+    r"<</?AIFORGE_[A-Z_]*>>|\[[^\]\n]{0,60}not the user\]"
+    r"|\[\s*(?:NEW MESSAGE FROM THE USER|HANDOFF|MANDATORY user instruction|"
+    r"action log|context note|loop guard|harness|system reminder)[^\]\n]{0,120}\]?",
+    re.I)
+
+
+def strip_markers(text: str) -> str:
+    return _MARKERS.sub("", str(text or ""))
 
 
 def _clip(text, n: int) -> str:

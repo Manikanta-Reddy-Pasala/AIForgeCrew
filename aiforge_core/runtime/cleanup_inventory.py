@@ -632,8 +632,20 @@ def _signature(entries: list) -> str:
                              for e in entries), default=str)
 
 
+def _safe(text) -> str:
+    """Entry text is built from commands and paths: mask credentials and drop
+    anything posing as a harness marker before a person or the model reads it."""
+    try:
+        from aiforge_core.runtime.action_log import strip_markers
+        from aiforge_core.runtime.cleanup_detect import redact
+        return strip_markers(redact(str(text or "")))
+    except Exception:  # noqa: BLE001
+        return str(text or "")
+
+
 def line(e: dict) -> str:
     """One entry as text: what, where, how to undo."""
+    e = {**e, **{k: _safe(e.get(k)) for k in ("what", "where", "undo", "hint")}}
     text = str(e.get("what") or "")
     where = str(e.get("where") or "")
     if where and where not in text:
@@ -656,9 +668,9 @@ def lines(entries: list, limit: int = 12) -> list:
 
 def public(e: dict) -> dict:
     """An entry as the API and the tool return it."""
-    return {"kind": e.get("kind"), "what": e.get("what") or "",
-            "where": e.get("where") or "", "undo": e.get("undo") or "",
-            "hint": e.get("hint") or "",
+    return {"kind": e.get("kind"), "what": _safe(e.get("what")),
+            "where": _safe(e.get("where")), "undo": _safe(e.get("undo")),
+            "hint": _safe(e.get("hint")),
             "verified": bool(e.get("verified", e.get("kind") == "job"))}
 
 
