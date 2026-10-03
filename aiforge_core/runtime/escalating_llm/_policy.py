@@ -4,10 +4,11 @@ Split out of the former single-module ``escalating_llm``; behaviour identical.
 """
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from google.adk.models.llm_response import LlmResponse
+
+from aiforge_core.llm import retry_policy
 
 
 # Substrings that mark a TRANSIENT failure worth retrying the SAME endpoint
@@ -32,28 +33,9 @@ _TRANSIENT_MARKERS = (
 )
 
 
-def _attempt_retries() -> int:
-    # Default 1 (one try, then escalate to the next candidate in the chain).
-    # For a LOCAL primary, 3× same-endpoint read-retries on a transient error
-    # just burns serial minutes before reaching the cloud rescue — the
-    # connect-preflight already fails-fast on unreachable hosts, so these are
-    # pure read-retry latency. Env override preserved for ops.
-    try:
-        return max(1, int(os.environ.get("AIFORGE_LLM_ATTEMPT_RETRIES", "1")))
-    except ValueError:
-        return 1
-
-
-def _demote_after() -> int:
-    """Consecutive primary failures required before STICKY-demoting the
-    local primary for the rest of the run. Default 2 so a SINGLE transient
-    blip escalates that one call to cloud but doesn't divert the whole
-    multi-stage run — the next call retries the local primary. Env override
-    ``AIFORGE_PRIMARY_DEMOTE_AFTER`` (mirrors the _attempt_retries idiom)."""
-    try:
-        return max(1, int(os.environ.get("AIFORGE_PRIMARY_DEMOTE_AFTER", "2")))
-    except (TypeError, ValueError):
-        return 2
+# The retry knobs live in llm/retry_policy.
+_attempt_retries = retry_policy.attempt_retries
+_demote_after = retry_policy.demote_after
 
 
 def _is_transient_llm_error(exc: Exception) -> bool:

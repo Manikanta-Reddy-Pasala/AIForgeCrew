@@ -14,6 +14,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 
 from aiforge_core.llm import endpoint_breaker as _breaker
+from aiforge_core.llm import retry_policy as _retry_policy
 
 from . import _outage
 from ._builder import _build_one, _mirror_to_langfuse
@@ -341,7 +342,7 @@ class EscalatingLlm(_RescueMixin, _StreamMixin, BaseLlm):
                     log.warning("llm.attempt_retry role=%s attempt=%s "
                                 "try=%d/%d err=%.140s", self.role, label,
                                 t + 1, tries, str(exc))
-                    await asyncio.sleep(min(8.0, 0.5 * (2 ** t)) + 0.1)
+                    await asyncio.sleep(_retry_policy.attempt_backoff_s(t))
                     continue
                 raise
         return buffered
@@ -496,47 +497,11 @@ class EscalatingLlm(_RescueMixin, _StreamMixin, BaseLlm):
             await waiter.await_wait(exc)
 
     def _persist_gap(self, exc, rounds: int, t0: float) -> "float | None":
-        """Seconds to wait before another sweep of the chain, or None to give up.
-
-        A stage the model keeps failing must not end the ticket: finishing the
-        task comes first. Only a failure that waiting cannot fix (config, auth,
-        a rejected request, a cancel) or the bound ends it.
-        ``AIFORGE_PIPELINE_PERSIST_S``: 0 = until the run is cancelled (default),
-        >0 = a bound in seconds, <0 = off (the old behaviour)."""
-        try:
-            limit = float(_os.environ.get("AIFORGE_PIPELINE_PERSIST_S", "0"))
-        except ValueError:
-            limit = 0.0
-        if limit < 0:
-            return None
-        try:
-            other_s = max(1.0, float(_os.environ.get("AIFORGE_PIPELINE_PERSIST_OTHER_S", "1800")))
-        except ValueError:
-            other_s = 1800.0
-        if _time.monotonic() - t0 > other_s:
-            return None                  # an error that never turns into an answer
-        try:
-            from aiforge_core.llm import model_wait as _mw
-            if _mw.cancel_reason():
-                return None
-        except Exception:  # noqa: BLE001
-            pass
-        gap = (5.0, 10.0, 20.0, 30.0)[min(rounds, 3)]
-        if limit > 0 and _time.monotonic() - t0 + gap > limit:
-            return None
-        if exc is not None:
-            try:
-                from aiforge_core.llm import model_outage as _mo
-                if _mo.issue(exc) is not None:
-                    return None
-                kind = _mo.classify(exc)
-                if kind in (_mo.CONFIG, _mo.CANCELLED):
-                    return None
-                if kind == _mo.SHIPPED and rounds >= 2:
-                    return None          # the model may still be generating it
-            except Exception:  # noqa: BLE001
-                return None
-        return gap
+        """Seconds to wait before another sweep of the chain, or None to give up
+        (``llm/retry_policy.pipeline_persist_gap``; ``AIFORGE_PIPELINE_PERSIST_S``)."""
+        return _retry_policy.pipeline_persist_gap(
+            _retry_policy.RetryPolicy.from_env("pipeline"), exc, rounds,
+            _time.monotonic() - t0)
 
     def _outage_waiter(self):
         return _outage.waiter_for(self.primary_model, self.role)

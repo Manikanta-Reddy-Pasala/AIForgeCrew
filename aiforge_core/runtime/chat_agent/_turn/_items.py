@@ -343,12 +343,11 @@ def reset_context(st) -> bool:
     from aiforge_core.runtime import context_offload
 
     from .._context._compaction import (
-        _CONDENSE_CLOSE,
-        _CONDENSE_OPEN,
         _block_gen,
         _pin_goal,
         _prior_block,
         _stripped_system,
+        condense_block,
     )
     from ._batch import _cancel_early_reads
     from ._tasks import pin_board, turn_pin
@@ -361,9 +360,10 @@ def reset_context(st) -> bool:
     if not saved:
         return False               # never clear the transcript without a saved copy
     where = f'It is saved: memory_lookup {{"id": "{saved}"}} reads it.'
-    block = (f"{_CONDENSE_OPEN}\n[context reset after a finished task-board "
-             f"item (condense #{gen}) — {len(convo) - 1} messages cleared. "
-             f"Result notes are on the task board. {where}]\n{_CONDENSE_CLOSE}")
+    block = condense_block(
+        f"[context reset after a finished task-board "
+        f"item (condense #{gen}) — {len(convo) - 1} messages cleared. "
+        f"Result notes are on the task board. {where}]")
     if in_note:
         # The note layout: the system message stays byte-identical (the prompt
         # cache keeps its prefix) and the goal, the earlier condense record
