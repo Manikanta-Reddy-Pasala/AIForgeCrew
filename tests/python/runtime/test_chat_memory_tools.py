@@ -51,10 +51,12 @@ def test_recall_is_scoped_to_the_repo_the_write_path_uses(monkeypatch):
                                      {"text": "theirs", "source": "doer",
                                       "project": "billing"}]})
     out = M._t_memory_lookup({"query": "deploy", "limit": 3}, "/repo/sub")
-    # a hit from another project says which one
+    # a hit from another project says which one, and that its paths are not ours
+    from aiforge_core.runtime import chat_scope
     assert out["hits"] == [{"text": "a fact", "source": "chat"},
                            {"text": "theirs", "source": "doer",
-                            "project": "billing"}]
+                            "project": "billing",
+                            "note": chat_scope.OTHER_PROJECT_NOTE}]
     # the chat's own repo, and allowed to look outside it
     assert seen == {"q": "deploy", "limit": 3, "repo": "AIForgeCrew",
                     "cross_project": True}
@@ -79,11 +81,13 @@ def test_prior_conversations_are_searchable(monkeypatch):
     from aiforge_core.runtime import chat_store
     seen: dict = {}
     monkeypatch.setattr(chat_store, "search_messages",
-                        lambda q, limit=None: seen.update(q=q, limit=limit)
+                        lambda q, limit=None, project=None:
+                        seen.update(q=q, limit=limit, project=project)
                         or [{"session_id": 3, "text": "we chose postgres"}])
     out = M._t_search_chat_sessions({"q": "database", "limit": "4"}, "/r")
     assert out["hits"][0]["session_id"] == 3
     assert seen["limit"] == 4
+    assert seen["project"] == M._chat_repo_key("/r")   # this project's chats
 
 
 def test_a_broken_session_search_is_soft(monkeypatch):

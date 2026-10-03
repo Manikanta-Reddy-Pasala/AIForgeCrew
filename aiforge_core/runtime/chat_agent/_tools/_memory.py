@@ -17,6 +17,14 @@ from ._grep import (  # noqa: F401  # re-exported
 from ._shared import _chat_repo_key, _coerce_int, _elaborate_body
 
 
+def _other_project(project: "str | None") -> dict:
+    """The fields a tool hit from ANOTHER project carries, else nothing."""
+    if not project:
+        return {}
+    from aiforge_core.runtime import chat_scope
+    return {"project": project, "note": chat_scope.OTHER_PROJECT_NOTE}
+
+
 def _t_memory_lookup(args: dict, cwd: str) -> dict:
     # An id restores text a condense saved (see runtime.context_offload).
     oid = str(args.get("id") or "").strip()
@@ -37,21 +45,41 @@ def _t_memory_lookup(args: dict, cwd: str) -> dict:
                         repo=_repo, cross_project=True)
         return {"ok": True, "hits": [
             {"text": (h.get("text") or "")[:400], "source": h.get("source"),
-             **({"project": h["project"]} if h.get("project") else {})}
+             **_other_project(h.get("project"))}
             for h in res.get("hits", [])
         ]}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
 
 
-def _t_search_chat_sessions(args: dict, _cwd: str) -> dict:
+def _truthy(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
+def _t_search_chat_sessions(args: dict, cwd: str) -> dict:
     """Search PRIOR chat sessions' message content — recall what you discussed
-    with the user in past conversations. Local + cheap (one SQLite scan)."""
+    with the user in past conversations. Local + cheap (one SQLite scan).
+
+    This project's conversations only. ``all_projects`` (the user asked about
+    another project's chat) searches every one, and each hit from elsewhere
+    says so: its paths and results are that project's, not this one's."""
     try:
         q = args.get("query") or args.get("q") or ""
         limit = _coerce_int(args.get("limit"), 6)
         from aiforge_core.runtime import chat_store
-        return {"ok": True, "hits": chat_store.search_messages(q, limit=limit)}
+        own = _chat_repo_key(cwd)
+        if not _truthy(args.get("all_projects")):
+            hits = chat_store.search_messages(q, limit=limit, project=own)
+            return {"ok": True, "hits": [
+                {k: v for k, v in h.items() if k != "project"} for h in hits]}
+        hits = []
+        for h in chat_store.search_messages(q, limit=limit):
+            project = h.get("project")
+            hits.append({**{k: v for k, v in h.items() if k != "project"},
+                         **_other_project(project if project != own else None)})
+        return {"ok": True, "hits": hits}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
 

@@ -107,23 +107,53 @@ def get_messages(session_id: int) -> list[dict]:
     return _backend().get_messages(session_id)
 
 
+def _session_projects() -> dict:
+    """``{session_id: project key}`` from each session's stored folder. Soft-
+    fails to ``{}`` (then nothing is labelled, and a scoped search is empty)."""
+    try:
+        from aiforge_core.runtime import chat_scope
+        return {sid: chat_scope.session_project(cwd)
+                for sid, cwd in _backend()._session_cwds().items()}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def search_messages(query: str, *, limit: int = 6,
-                    exclude_session: "int | None" = None) -> list[dict]:
+                    exclude_session: "int | None" = None,
+                    project: "str | None" = None) -> list[dict]:
     """Full-text-ish search over prior chat message CONTENT (all sessions except
     ``exclude_session``). Cheap + local: one indexed-ish scan, no LLM, no
     network. A message matches if its content contains ANY query token (tokens:
     lowercase alphanumeric, len>=3, common stopwords dropped). Ranked by
     (# distinct tokens matched desc, then recency desc). Returns up to ``limit``
-    hits: ``[{"session_id","session_title","role","content","created_at"}]``
-    with each content truncated to ~300 chars. Soft-fail: any error → []."""
+    hits: ``[{"session_id","session_title","role","content","created_at",
+    "project"}]`` with each content truncated to ~300 chars. Soft-fail: any
+    error → [].
+
+    ``project`` — only sessions that worked in that project (by the session's
+    stored folder, see :mod:`chat_scope`). What a chat did in another repo is
+    not an answer about this one; a scoped search that cannot establish the
+    scope returns nothing rather than everything."""
     toks = _tokens(query)
     if not toks:
         return []
+    projects = _session_projects()
     try:
-        rows = _backend()._search_candidates(toks, exclude_session)
+        if project is None:
+            rows = _backend()._search_candidates(toks, exclude_session)
+        else:
+            only = [sid for sid, key in projects.items() if key == project]
+            if not only:
+                return []
+            rows = _backend()._search_candidates(toks, exclude_session, only)
     except Exception:  # noqa: BLE001 — search must never break a chat turn
         return []
-    return _rank_search(rows, toks, limit)
+    hits = _rank_search(rows, toks, limit)
+    for h in hits:
+        key = projects.get(h.get("session_id"))
+        if key:
+            h["project"] = key
+    return hits
 
 
 def add_message(session_id: int, role: str, content: str,

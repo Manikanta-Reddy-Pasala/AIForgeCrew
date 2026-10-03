@@ -163,7 +163,8 @@ def _observation_rows(observations, repo: str) -> list[dict]:
 
 
 def _chat_sessions(text: str, *, limit: int,
-                   exclude_session: int | None = None) -> list[dict]:
+                   exclude_session: int | None = None,
+                   project: str | None = None) -> list[dict]:
     """Flatten prior chat-session message hits into ranked rows (gap F3).
 
     ``chat_store.search_messages`` returns ``[{session_id, session_title,
@@ -171,15 +172,23 @@ def _chat_sessions(text: str, *, limit: int,
     to a unified hit tagged ``source="chat"`` with a descending raw score so
     the in-source order survives min-max normalization (equal scores would
     collapse to a single value and lose the ranking). Per-session ``group``
-    lets ``_diversify`` cap a single chatty session. Soft-fail → []."""
+    lets ``_diversify`` cap a single chatty session. Soft-fail → [].
+
+    ``project`` — only chats that worked in that project. A scoped recall must
+    never fall back to every project's chats, so there is no unscoped retry."""
     from aiforge_core.runtime import chat_store
-    # Exclude the CURRENT session so a live turn's own messages don't return
-    # as "prior chat" (gap M4). Soft-fail if the backend lacks the kwarg.
-    try:
+    if project is not None:
         rows = chat_store.search_messages(
-            text, limit=limit, exclude_session=exclude_session) or []
-    except TypeError:
-        rows = chat_store.search_messages(text, limit=limit) or []
+            text, limit=limit, exclude_session=exclude_session,
+            project=project) or []
+    else:
+        # Exclude the CURRENT session so a live turn's own messages don't return
+        # as "prior chat" (gap M4). Soft-fail if the backend lacks the kwarg.
+        try:
+            rows = chat_store.search_messages(
+                text, limit=limit, exclude_session=exclude_session) or []
+        except TypeError:
+            rows = chat_store.search_messages(text, limit=limit) or []
     out: list[dict] = []
     n = len(rows)
     for i, r in enumerate(rows):
