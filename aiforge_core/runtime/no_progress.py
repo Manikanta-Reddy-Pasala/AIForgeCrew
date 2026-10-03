@@ -127,6 +127,42 @@ def observe(track: dict, template: str, out_class: str, progress: bool) -> str:
     return NUDGE if track["trips"] == 1 else STOP
 
 
+#: First sightings remembered per run; the oldest are forgotten.
+_MAX_SEEN = 20_000
+
+
+def note_new(seen, key: str) -> bool:
+    """True the first time ``key`` is seen (``seen``: an OrderedDict kept by
+    the caller, bounded here)."""
+    if key in seen:
+        return False
+    seen[key] = True
+    while len(seen) > _MAX_SEEN:
+        seen.popitem(last=False)
+    return True
+
+
+def fails_moved(prev, name: str, args, res):
+    """``(moved, now)``: fewer failing tests, or red turned green, in a FINISHED
+    run; ``prev`` is the failing-test count last seen (None: none yet) and
+    ``now`` replaces it. A command checked on until it ended counts as its
+    original command; one still running is neither a pass nor a failure."""
+    from aiforge_core.runtime.cmd_finished import as_run
+    from aiforge_core.runtime.failure_signature import failure_of, result_text
+    run = as_run(name, args, res)
+    if run is None or (run[0] not in _SHELL_TOOLS and run[0] != "run_tests"):
+        return False, prev
+    done = run[2]
+    if done.get("stopped") or done.get("timed_out"):
+        return False, prev            # ended by someone, not by the code
+    fail = failure_of(result_text(done)) if done.get("ok") is False else None
+    if fail is not None and fail.signature:
+        return prev is not None and fail.count < prev, fail.count
+    if done.get("ok") is True and prev:
+        return True, 0
+    return False, prev
+
+
 def would_trip(track: dict, template: str, out_class: str) -> bool:
     """Whether one more idle step like this one would trip a rule — so a
     caller can check a costly progress signal only when it matters."""
@@ -167,4 +203,5 @@ def stop_text(reason: str = "") -> str:
 
 
 __all__ = ["NUDGE", "STOP", "no_progress_steps", "command_template",
-           "output_class", "shell_read_paths", "observe", "would_trip", "nudge_text", "stop_text"]
+           "output_class", "shell_read_paths", "observe", "would_trip", "nudge_text", "stop_text",
+           "note_new", "fails_moved"]

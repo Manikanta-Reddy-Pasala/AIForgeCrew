@@ -118,10 +118,7 @@ def _note_failed_approach(state, text: str) -> None:
     from a fresh prompt, so without this it repeats the attempt that just failed
     (Reflexion's lesson). Rendered into the Doer seed as failed_approaches_md."""
     from aiforge_core.runtime import handoff
-    items = list(state.get("failed_approaches") or [])
-    handoff.note_failed(items, text)
-    state["failed_approaches"] = items
-    state["failed_approaches_md"] = handoff.render_failed(items)
+    handoff.record_failed(state, text)
     # Saved with the ticket as it happens: a retry after a node failure, or a
     # crash, would otherwise start with an empty list.
     from aiforge_core.runtime import handoff_store
@@ -145,15 +142,16 @@ def _same_failure_stop(state) -> bool:
     fail = Failure(str(raw[0] or ""), int(raw[1] or 0), str(raw[2] or ""))
     track = copy.deepcopy(state.get("_same_failure") or {})
     attempt = f"{state.get('replan_count', 0) or 0}:{state.get('doer_iters', 0) or 0}"
-    verdict = same_failure.observe(track, fail, attempt)
+    verdict = same_failure.judge(track, fail, attempt)
     state["_same_failure"] = track          # reassigned: a state delta
     _note_failed_approach(state, f"pass {attempt}: the tests failed — "
                                  f"{fail.headline[:140]}")
-    if verdict == same_failure.NUDGE:
-        state["replan_note"] = same_failure.nudge_text(fail)
+    kind = verdict[0] if verdict else ""
+    if kind == same_failure.NUDGE:
+        state["replan_note"] = verdict[1]
         _trace(":SameFailureNudge", {"failure": fail.headline[:120]})
         return False
-    if verdict == same_failure.STOP:
+    if kind == same_failure.STOP:
         state["loop_budget_kill"] = True
         state["loop_budget_reason"] = "same_failure"
         _trace(":SameFailureStop", {"failure": fail.headline[:120]})

@@ -31,6 +31,22 @@ def note_failed(items: list, text: str) -> None:
     del items[:-MAX_FAILED]
 
 
+def record_failed(holder, text: str) -> None:
+    """The one writer of a run's failed approaches. ``holder`` is a pipeline
+    state (a mapping: ``failed_approaches`` is reassigned, as a state delta,
+    and ``failed_approaches_md`` re-rendered) or a chat loop state (an
+    object: its ``failed_approaches`` list is appended to)."""
+    if hasattr(holder, "get") and hasattr(holder, "__setitem__"):
+        items = list(holder.get("failed_approaches") or [])
+        note_failed(items, text)
+        holder["failed_approaches"] = items
+        holder["failed_approaches_md"] = render_failed(items)
+        return
+    if not hasattr(holder, "failed_approaches"):
+        holder.failed_approaches = []
+    note_failed(holder.failed_approaches, text)
+
+
 def render_failed(items: list) -> str:
     return "\n".join(f"- {t}" for t in items[-MAX_FAILED:])
 
@@ -126,5 +142,5 @@ def render(h: dict, offload_id: "str | None" = None,
     return "\n".join(lines)
 
 
-__all__ = ["MARK", "RESUME_HEAD", "note_failed", "render_failed", "last_attempt", "build_chat", "render",
+__all__ = ["MARK", "RESUME_HEAD", "note_failed", "record_failed", "render_failed", "last_attempt", "build_chat", "render",
            "MAX_FAILED"]

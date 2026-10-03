@@ -81,11 +81,8 @@ def _remember_failure(st, why: str) -> None:
     """Write down the approach that just failed, so the next attempt (and the
     handoff after a restart) can say what not to repeat."""
     from aiforge_core.runtime import handoff
-    if not hasattr(st, "failed_approaches"):
-        st.failed_approaches = []
     attempt = handoff.last_attempt(getattr(st, "convo", []))
-    handoff.note_failed(st.failed_approaches,
-                        f"{attempt}" if attempt else why.rstrip("."))
+    handoff.record_failed(st, f"{attempt}" if attempt else why.rstrip("."))
 
 
 def restart_with_handoff(st) -> bool:

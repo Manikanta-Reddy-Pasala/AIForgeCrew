@@ -64,6 +64,18 @@ def observe(track: dict, fail: Failure, state_key: str, limit: int | None = None
     return NUDGE if track["trips"] == 1 else STOP
 
 
+def judge(track: dict, fail: Failure, state_key: str):
+    """``observe`` plus its text: ``None``, ``("nudge", text)`` or
+    ``("stop", text)`` — the one reading both the chat loop and the pipeline
+    take of a failing run."""
+    verdict = observe(track, fail, state_key)
+    if verdict == NUDGE:
+        return verdict, nudge_text(fail)
+    if verdict == STOP:
+        return verdict, stop_text(fail)
+    return None
+
+
 def nudge_text(fail: Failure, limit: int | None = None) -> str:
     """The directed nudge after the first trip."""
     n = limit or same_failure_limit()
@@ -87,5 +99,5 @@ def stop_text(fail_or_headline) -> str:
               "or tell me how you'd like me to proceed?")
 
 
-__all__ = ["NUDGE", "STOP", "same_failure_limit", "observe", "nudge_text",
+__all__ = ["NUDGE", "STOP", "same_failure_limit", "observe", "judge", "nudge_text",
            "stop_text"]

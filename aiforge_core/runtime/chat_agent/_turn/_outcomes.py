@@ -149,12 +149,7 @@ def _judge(st, fail):
     track = getattr(st, "same_fail", None)
     if track is None or not fail.signature:
         return None
-    verdict = same_failure.observe(track, fail, _state_key(st))
-    if verdict == same_failure.NUDGE:
-        return verdict, same_failure.nudge_text(fail)
-    if verdict == same_failure.STOP:
-        return verdict, same_failure.stop_text(fail)
-    return None
+    return same_failure.judge(track, fail, _state_key(st))
 
 
 # ── verify on FINAL ──────────────────────────────────────────────────────

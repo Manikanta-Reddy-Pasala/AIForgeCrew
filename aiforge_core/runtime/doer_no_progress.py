@@ -15,12 +15,10 @@ import collections
 import threading
 
 from aiforge_core.runtime import no_progress
-from aiforge_core.runtime.cmd_finished import as_run
-from aiforge_core.runtime.failure_signature import failure_of, result_text
+from aiforge_core.runtime.failure_signature import result_text
 
 _CHECK_INS = ("command_wait", "command_output")
 _MAX_RUNS = 64
-_MAX_SEEN = 20_000
 
 
 class DoerProgressGuard:
@@ -39,38 +37,13 @@ class DoerProgressGuard:
             self._runs.popitem(last=False)
         return run
 
-    def _new(self, run, key: str) -> bool:
-        if key in run["seen"]:
-            return False
-        run["seen"][key] = True
-        while len(run["seen"]) > _MAX_SEEN:
-            run["seen"].popitem(last=False)
-        return True
-
     @staticmethod
-    def _fails_moved(run, name, args, res) -> bool:
-        """Fewer failing tests or red turned green in a FINISHED run (a
-        checked-on command that ended counts as its original command; one
-        still running is neither a pass nor a failure)."""
-        done = as_run(name, args, res)
-        if done is None or (done[0] != "run_tests"
-                            and done[0] not in no_progress._SHELL_TOOLS):
-            return False
-        res = done[2]
-        if res.get("stopped") or res.get("timed_out"):
-            return False
-        fail = failure_of(result_text(res)) if res.get("ok") is False else None
-        if fail is not None and fail.signature:
-            moved = run["fails"] is not None and fail.count < run["fails"]
-            run["fails"] = fail.count
-            return moved
-        if res.get("ok") is True and run["fails"]:
-            run["fails"] = 0
-            return True
-        return False
+    def _new(run, key: str) -> bool:
+        return no_progress.note_new(run["seen"], key)
 
     def _progress(self, run, name, args, res) -> bool:
-        progressed = self._fails_moved(run, name, args, res)
+        progressed, run["fails"] = no_progress.fails_moved(
+            run["fails"], name, args, res)
         if name in _CHECK_INS:
             return bool(res.get("output_growing") or res.get("cpu_active")
                         or res.get("running") is False) or progressed

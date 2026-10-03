@@ -14,10 +14,10 @@ import collections
 import contextlib
 
 from aiforge_core.runtime import no_progress
-from aiforge_core.runtime.failure_signature import failure_of, result_text
+from aiforge_core.runtime.failure_signature import result_text
 
 from .._registry import _READONLY_TOOLS
-from ._progress import _SHELL_TOOLS, _refresh_tree, _remember
+from ._progress import _SHELL_TOOLS, _refresh_tree
 
 _CHECK_INS = ("command_wait", "command_output")
 
@@ -37,10 +37,7 @@ def _mark(st) -> tuple:
 
 
 def _new(st, key: str) -> bool:
-    if key in st.np_seen:
-        return False
-    _remember(st.np_seen, key)
-    return True
+    return no_progress.note_new(st.np_seen, key)
 
 
 def _shell_reads_new_path(st, args) -> bool:
@@ -48,25 +45,10 @@ def _shell_reads_new_path(st, args) -> bool:
 
 
 def _fails_moved(st, name, args, res) -> bool:
-    """Fewer failing tests, or red turned green, in a FINISHED run — a
-    command checked on until it ended counts; one still running is neither
-    a pass nor a failure."""
-    from aiforge_core.runtime.cmd_finished import as_run
-    run = as_run(name, args, res)
-    if run is None or (run[0] not in _SHELL_TOOLS and run[0] != "run_tests"):
-        return False
-    done = run[2]
-    if done.get("stopped") or done.get("timed_out"):
-        return False                  # ended by someone, not by the code
-    fail = failure_of(result_text(done)) if done.get("ok") is False else None
-    if fail is not None and fail.signature:
-        moved = st.np_fails is not None and fail.count < st.np_fails
-        st.np_fails = fail.count
-        return moved
-    if done.get("ok") is True and st.np_fails:
-        st.np_fails = 0
-        return True
-    return False
+    """Fewer failing tests, or red turned green, in a FINISHED run (see
+    :func:`no_progress.fails_moved`)."""
+    moved, st.np_fails = no_progress.fails_moved(st.np_fails, name, args, res)
+    return moved
 
 
 def _signals(st, name, args, result) -> bool:

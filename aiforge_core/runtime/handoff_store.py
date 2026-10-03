@@ -369,10 +369,8 @@ class Recorder:
         self.prior = prior
         self.offload = prior.get("offload")
         self.last_error = prior.get("error") or ""
-        if not hasattr(self.st, "failed_approaches"):
-            self.st.failed_approaches = []
         for t in prior.get("failed") or []:
-            handoff.note_failed(self.st.failed_approaches, t)
+            handoff.record_failed(self.st, t)
 
     # -- building --
 
