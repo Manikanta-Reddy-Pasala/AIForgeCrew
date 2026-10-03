@@ -126,8 +126,8 @@ def _text(exc: BaseException) -> str:
     body = ""
     if isinstance(exc, urllib.error.HTTPError):
         try:
-            from aiforge_core.llm.client._errors import _full_err_body
-            body = _full_err_body(exc)
+            from aiforge_core.llm.client._errors import full_err_body
+            body = full_err_body(exc)
         except Exception:  # noqa: BLE001
             body = ""
     return (type(exc).__name__ + " " + str(exc) + " " + body).lower()

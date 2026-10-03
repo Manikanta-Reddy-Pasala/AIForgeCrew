@@ -25,7 +25,7 @@ This module was split (grouped by concern) into ``_helpers`` / ``_text`` /
 plus ``_attempt`` (one attempt:
 ``_try_post``), ``_chain`` (the model chain) and ``_missing`` (an unserved
 model). ``complete`` / ``complete_raw`` / ``_complete_impl`` /
-``_trace_generation`` stay here. The moved code looks these names up on this
+``trace_generation`` stay here. The moved code looks these names up on this
 package when it runs, so a test that replaces them here still takes effect:
 ``resolve``, ``escalate``, ``fallback``, ``_try_post``, ``_post_with_retry``,
 ``_record_usage``, ``_build_body``, ``_log``, ``_complete_impl``,
@@ -45,9 +45,9 @@ import threading
 import time  # noqa: F401  # tests patch time.sleep through client
 import urllib.request
 
-from .. import providers as _providers
+from .. import hooks, providers as _providers
 from .. import rate_limiter as _rl
-from .._ssl import _ca_bundle as _ssl_ca_bundle
+from .._ssl import ca_bundle as _ssl_ca_bundle
 from .._ssl import auto_relax_internal as _ssl_auto_relax
 from .._ssl import context_for as _ssl_context_for
 from .._ssl import insecure_context as _ssl_insecure
@@ -96,7 +96,7 @@ from ._http import (
     shipped_timeout,  # re-export: callers above the transport
 )
 from ._missing import (  # noqa: F401  # re-exported
-    _autofallback_enabled,
+    autofallback_enabled,
     _diagnose_missing,
     _exhausted_error,
     _log_model_missing,
@@ -114,6 +114,7 @@ from ._text import (  # noqa: F401  # tests reach these as client.<name>
     _extract_text,
     _is_garbage,
     _strip_think,
+    strip_think,
 )
 
 __all__ = [
@@ -130,7 +131,7 @@ __all__ = [
 ]
 
 
-def _trace_generation(role: str, messages: list[dict], output: str,
+def trace_generation(role: str, messages: list[dict], output: str,
                       latency_ms: int, error: str = "") -> None:
     """Mirror one completion to Langfuse when configured (env keys). Pure
     side-channel: soft-fails, never touches the call result. The file-based
@@ -146,8 +147,7 @@ def _trace_generation(role: str, messages: list[dict], output: str,
         except Exception:  # noqa: BLE001
             model = ""
         try:
-            from aiforge_core.runtime.request_context import get_session_id
-            _sid = get_session_id()
+            _sid = hooks.session_id()
         except Exception:  # noqa: BLE001
             _sid = None
         _lf.record_generation(role=role, model=model, messages=messages,
@@ -184,26 +184,19 @@ def complete(role: str, messages: list[dict], *,
     background_gate.wait_for_foreground(role)
     # Only the IMPORT is guarded — an exception raised from inside
     # _complete_impl must propagate, never trigger a SECOND (double-cost) call.
-    try:
-        from aiforge_core.runtime import perf_recorder
-    except Exception:  # noqa: BLE001 — perf recording is optional
-        perf_recorder = None
     import time as _time
     _t0 = _time.monotonic()
     kw = {"temperature": temperature, "max_tokens": max_tokens,
           "top_p": top_p, "extras": extras, "timeout_s": timeout_s}
     try:
-        if perf_recorder is not None:
-            with perf_recorder.timed("LLM", role):
-                out = _waiting(role, lambda: _complete_impl(role, messages, **kw))
-        else:
+        with hooks.timed_perf("LLM", role):
             out = _waiting(role, lambda: _complete_impl(role, messages, **kw))
     except Exception as exc:
-        _trace_generation(role, messages, "",
+        trace_generation(role, messages, "",
                           int((_time.monotonic() - _t0) * 1000),
                           error=str(exc))
         raise
-    _trace_generation(role, messages, out or "",
+    trace_generation(role, messages, out or "",
                       int((_time.monotonic() - _t0) * 1000))
     return out
 
@@ -327,8 +320,7 @@ def _perf_record(family: str, name: str, t0: float) -> None:
     try:
         import time as _time
 
-        from aiforge_core.runtime import perf_recorder
-        perf_recorder.record(family, name, (_time.perf_counter() - t0) * 1000.0)
+        hooks.record_perf(family, name, (_time.perf_counter() - t0) * 1000.0)
     except Exception:  # noqa: BLE001 — perf recording is optional
         pass
 

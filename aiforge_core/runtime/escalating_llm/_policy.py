@@ -108,12 +108,12 @@ def _is_empty(resp: LlmResponse) -> bool:
     content = getattr(resp, "content", None)
     if content is None:
         return True
-    from aiforge_core.llm.client import _strip_think
+    from aiforge_core.llm.client import strip_think
     parts = getattr(content, "parts", None) or []
     has_signal = False
     for p in parts:
         text = getattr(p, "text", None)
-        if text and _strip_think(text.strip()):
+        if text and strip_think(text.strip()):
             has_signal = True
             break
         if getattr(p, "function_call", None):

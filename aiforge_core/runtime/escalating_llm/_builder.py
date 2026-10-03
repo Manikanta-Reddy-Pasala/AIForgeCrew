@@ -59,7 +59,7 @@ def _maybe_relax_tls(kwargs: dict, cfg: dict, api_base: str) -> None:
     if not str(api_base).lower().startswith("https://"):
         return
     from aiforge_core.llm import _ssl as _llm_ssl
-    if _llm_ssl._ca_bundle():
+    if _llm_ssl.ca_bundle():
         return
     if not (cfg.get("insecure_tls") or not _llm_ssl._verify_enabled()
             or _llm_ssl.auto_relax_internal(api_base)):

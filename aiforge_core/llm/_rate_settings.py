@@ -212,9 +212,12 @@ _DEFAULT_COMPACTION_RPM = 5.0
 _DEFAULT_CHAT_RPM = 0.0
 
 
-def _category(role: "str | None") -> str:
+def category(role: "str | None") -> str:
     """Which sub-ceiling this call counts against: 'compaction' or 'chat'."""
     return "compaction" if role in _compaction_roles() else "chat"
+
+
+_category = category  # the name the rate limiter re-exports and tests use
 
 
 def _cat_rpm(cat: str) -> float:

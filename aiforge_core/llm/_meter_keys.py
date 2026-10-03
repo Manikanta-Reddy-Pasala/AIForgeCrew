@@ -1,6 +1,8 @@
 """Which session and step a request is billed to."""
 from __future__ import annotations
 
+from . import hooks
+
 
 def _pkg():
     """The parent module, looked up on each call so a name patched there is the
@@ -45,10 +47,9 @@ def _attribute(sid, role):
     if sid is not None and role:
         return sid, role
     try:
-        from aiforge_core.runtime import request_context
         if sid is None:
-            sid = _key(request_context.context_session_id())
-        role = role or request_context.get_role()
+            sid = _key(hooks.context_session_id())
+        role = role or hooks.role()
     except Exception:  # noqa: BLE001
         pass
     return sid, role

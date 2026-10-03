@@ -126,7 +126,7 @@ def auto_relax_internal(url: str | None) -> bool:
     pkg = _pkg()
     if not url or not str(url).lower().startswith("https://"):
         return False
-    if pkg._ca_bundle():
+    if pkg.ca_bundle():
         return False
     raw = os.environ.get("AIFORGE_LLM_TLS_STRICT_INTERNAL", "")
     if raw.strip().lower() not in pkg._FALSEY:

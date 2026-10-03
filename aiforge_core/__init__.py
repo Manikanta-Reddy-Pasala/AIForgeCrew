@@ -46,5 +46,6 @@ for _var, _off in (
     _os.environ.setdefault(_var, _off)
 
 from .agents import AgentContract, load_agents  # noqa: E402
+from . import _wiring  # noqa: E402,F401  # plugs the runtime into llm.hooks
 
 __all__ = ["AgentContract", "load_agents"]

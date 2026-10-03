@@ -7,7 +7,7 @@ import contextvars
 import threading
 from typing import Any, Callable
 
-from . import model_outage
+from . import hooks, model_outage
 
 _SHUTDOWN = threading.Event()
 
@@ -111,7 +111,7 @@ def _reset_for_tests() -> None:
     _SHUTDOWN.clear()
 
 
-def _fired(src) -> bool:
+def fired(src) -> bool:
     try:
         if src is None:
             return False
@@ -127,26 +127,15 @@ def cancel_reason() -> str | None:
     if _SHUTDOWN.is_set():
         return "shutting down"
     for src, why in _SCOPES.get():
-        if _fired(src):
+        if fired(src):
             return why
     try:
         from aiforge_core.llm.client._http import _CANCEL
-        if _fired(_CANCEL.get()):
+        if fired(_CANCEL.get()):
             return "stopped"
     except Exception:  # noqa: BLE001
         pass
-    try:
-        from aiforge_core.runtime import run_interrupt
-        if _fired(run_interrupt._stop_event.get()):
-            return "stopped"
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        from aiforge_core.runtime import chat_cancel
-        sid = chat_cancel.active()
-        if sid is not None and chat_cancel.is_cancelled(sid):
-            return "stopped"
-    except Exception:  # noqa: BLE001
-        pass
+    if hooks.stop_requested():
+        return "stopped"
     return None
 

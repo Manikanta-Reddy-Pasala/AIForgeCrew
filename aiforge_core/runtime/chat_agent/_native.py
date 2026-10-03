@@ -82,8 +82,8 @@ def _tools_unsupported(exc: Exception) -> bool:
     # is in the response BODY — `str(exc)` alone is just "HTTP Error 400: Bad
     # Request" (no tool/reject word). Classify on str(exc) + the HTTP body.
     try:
-        from aiforge_core.llm.client._errors import _http_err_body
-        body = _http_err_body(exc)
+        from aiforge_core.llm.client._errors import http_err_body
+        body = http_err_body(exc)
     except Exception:  # noqa: BLE001
         body = ""
     m = (str(exc) + " " + body).lower()
@@ -153,8 +153,8 @@ def _rejects_only_tool_choice(exc: Exception) -> bool:
     so a model that does native FC with ``tool_choice="auto"`` isn't wrongly
     disabled just because it refuses ``"required"``."""
     try:
-        from aiforge_core.llm.client._errors import _http_err_body
-        m = (str(exc) + " " + _http_err_body(exc)).lower()
+        from aiforge_core.llm.client._errors import http_err_body
+        m = (str(exc) + " " + http_err_body(exc)).lower()
     except Exception:  # noqa: BLE001
         m = str(exc).lower()
     return "tool_choice" in m or "tool choice" in m
@@ -213,19 +213,19 @@ def _synth_step(msg: dict) -> str:
     they are all read-only. Returns the
     ``_NATIVE_ARGS_UNRECOVERABLE`` sentinel when a named call's arguments were
     attempted but can't be parsed (caller falls back to text for that turn)."""
-    from aiforge_core.llm.client._text import _msg_text, _strip_think
+    from aiforge_core.llm.client._text import msg_text, strip_think
     calls = msg.get("tool_calls") or []
     if not calls:
         # Out of tokens mid-reasoning: the reasoning channel is an unfinished
         # thought, not the reply — return nothing so the empty-turn retry runs.
         if (msg.get("_finish_reason") == "length"
-                and not _strip_think((msg.get("content") or "").strip())):
+                and not strip_think((msg.get("content") or "").strip())):
             return ""
-        return _msg_text(msg)
+        return msg_text(msg)
     fn = (calls[0] or {}).get("function") or {}
     name = fn.get("name") or ""
     if not name:
-        return _msg_text(msg)          # nameless call carries no action → content
+        return msg_text(msg)          # nameless call carries no action → content
     args = _resolve_call_args(fn.get("arguments"))
     if not isinstance(args, dict):
         return _NATIVE_ARGS_UNRECOVERABLE
@@ -245,8 +245,8 @@ def _narration(msg: dict) -> str:
     the action so its prose can never be read as the action or its args, and
     a line opening with "WORD:" is indented so it cannot end the thought early
     or pass for a protocol marker."""
-    from aiforge_core.llm.client._text import _strip_think
-    text = _strip_think((msg.get("content") or "").strip()).strip()
+    from aiforge_core.llm.client._text import strip_think
+    text = strip_think((msg.get("content") or "").strip()).strip()
     # A hybrid model may also WRITE the text protocol in its content: keep the
     # prose, not a second copy of the call.
     text = re.sub(r"^[ \t]*THOUGHT[ \t]*:[ \t]*", "", text, flags=re.I)
@@ -442,8 +442,8 @@ def _native_error_transient(exc) -> bool:
     server rejecting the 'tools' field with unfamiliar wording) is non-transient
     and falls back to text for THIS turn only."""
     try:
-        from aiforge_core.llm.client._errors import _is_transient_exc
-        return bool(_is_transient_exc(exc)[0])
+        from aiforge_core.llm.client._errors import is_transient_exc
+        return bool(is_transient_exc(exc)[0])
     except Exception:  # noqa: BLE001
         return False
 

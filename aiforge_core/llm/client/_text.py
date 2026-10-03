@@ -41,7 +41,7 @@ _THINK_OPEN_RE = re.compile(
 )
 
 
-def _strip_think(text: str) -> str:
+def strip_think(text: str) -> str:
     if "<" not in text:
         return text
     # Strip one-or-more leading closed think blocks (reasoning-then-answer).
@@ -57,17 +57,17 @@ def _strip_think(text: str) -> str:
     return text.strip()
 
 
-def _msg_text(msg: dict) -> str:
+def msg_text(msg: dict) -> str:
     """Answer text from an assistant MESSAGE dict: think-stripped ``content``,
     else the ``reasoning_content`` channel (also think-stripped). Shared by the
     text path and the native path's plain-content branch so both recover a
     reasoning-only reply identically."""
-    content = _strip_think((msg.get("content") or "").strip())
+    content = strip_think((msg.get("content") or "").strip())
     if content:
         return content
     # content was empty or pure <think> — fall back to the reasoning channel,
     # but strip any nested think markers there too (some proxies double-wrap).
-    return _strip_think((msg.get("reasoning_content") or "").strip())
+    return strip_think((msg.get("reasoning_content") or "").strip())
 
 
 def _extract_text(resp_body: dict) -> str:
@@ -80,9 +80,9 @@ def _extract_text(resp_body: dict) -> str:
     # enhanced build spec (and the chat's visible reply). Empty instead, so the
     # caller's empty-response retry (with /no_think) runs.
     if (choice.get("finish_reason") == "length"
-            and not _strip_think((msg.get("content") or "").strip())):
+            and not strip_think((msg.get("content") or "").strip())):
         return ""
-    return _msg_text(msg)
+    return msg_text(msg)
 
 
 def _is_garbage(text: str, *, allow_empty_json: bool = False) -> bool:
@@ -133,3 +133,6 @@ def _append_no_think(messages: list[dict]) -> list[dict]:
             return out
     out.append({"role": "user", "content": "/no_think"})
     return out
+
+
+_strip_think = strip_think  # old name: tests and the package re-export use it

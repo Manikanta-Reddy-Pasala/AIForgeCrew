@@ -76,8 +76,8 @@ def note_rejection(base_url: str, exc: Exception, model: str = "") -> bool:
     if int(getattr(exc, "code", 0) or 0) != 400:
         return False
     try:
-        from .client._errors import _http_err_body
-        body = _http_err_body(exc).lower()
+        from .client._errors import http_err_body
+        body = http_err_body(exc).lower()
     except Exception:  # noqa: BLE001
         body = ""
     if not _NAMES_PARAM.search(body):
