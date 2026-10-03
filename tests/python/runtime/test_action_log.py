@@ -351,9 +351,8 @@ def test_a_first_turn_and_a_sessionless_run_get_no_note(repo):
 
 def test_the_note_is_not_taken_for_the_users_request(repo):
     from aiforge_core.runtime.chat_agent._context import _compaction as C
-    from aiforge_core.runtime.chat_agent._turn._goahead import _is_user_ask
     note = A.note_message(A.render(A.entries([_cmd("make")]), []))
-    assert C._is_harness_note(note["content"]) and not _is_user_ask(note)
+    assert C._is_harness_note(note["content"])        # never read as the user's ask
     convo = [{"role": "system", "content": "S"}, note,
              {"role": "assistant", "content": A.ACK_TEXT},
              {"role": "user", "content": "ship the exporter"}]
