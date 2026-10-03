@@ -9,6 +9,7 @@ fires. This module wires that graph.
 Graph shape::
 
     START → triage → triage_gate ──trivial─────────────────────► doer
+                                ├──small───────────────────────► planner
                                 └──full──► enhancer
         enhancer ─┬► researcher ──┐
                   ├► ctx_repomap ─┤ (parallel) → context_join → merge_context
@@ -241,6 +242,19 @@ def _quality_signal_cb():
     return make_quality_signal_callback()
 
 
+def _finish_cb():
+    """``finish`` ends the Doer's turn (see doer_finish). First of the
+    after-tool callbacks: it returns None, so the rest still run."""
+    from .doer_finish import make_finish_callback
+    return make_finish_callback()
+
+
+def _outcome_cb():
+    """The Doer's outcome carries what the turn did (see doer_finish)."""
+    from .doer_finish import make_outcome_callback
+    return make_outcome_callback()
+
+
 def _hook_before_cb():
     from .hooks import adk_before_tool_callback
     return adk_before_tool_callback()
@@ -259,6 +273,8 @@ _DOER_TOOL_CALLBACKS = (
     ("before_tool_callback", _scope_guard_cb),
     ("before_tool_callback", _repeat_guard_cb),
     ("before_tool_callback", _approval_gate_cb),
+    ("after_tool_callback", _finish_cb),
+    ("after_agent_callback", _outcome_cb),
     ("after_tool_callback", _quality_signal_cb),
     ("before_tool_callback", _hook_before_cb),
     ("after_tool_callback", _hook_after_cb),

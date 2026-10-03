@@ -42,7 +42,8 @@ def finish(
     """Doer-only explicit termination signal.
 
     Returns ``{ok: True, terminate: True, summary, status}`` on success.
-    ADK's LoopAgent inspects ``terminate=True`` to halt the Doer step;
+    The Doer's after-tool callback (``runtime.doer_finish``) acts on
+    ``terminate=True``: the turn ends here and ``summary`` is its outcome;
     the Feedback agent downstream reads ``summary`` and the last
     ``compile_status`` / ``test_status`` from session state.
     """

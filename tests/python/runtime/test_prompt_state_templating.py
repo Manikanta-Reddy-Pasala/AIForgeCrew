@@ -68,6 +68,16 @@ def test_validator_injects_plan_and_doer_outcome() -> None:
     assert "IN-LOOP FEEDBACK VERDICT:\npass" in out
 
 
+def test_validator_is_told_the_route_its_fast_path_rules_depend_on() -> None:
+    """Rules 6 and 7 exempt the trivial fast-path; the Validator could not
+    know the run was on it (live: it demanded overflow and type-coercion tests
+    for a two-line function, and the replan took eight minutes)."""
+    out = _render(prompts.VALIDATOR, {
+        "graph_route": {"complexity": "trivial", "route": "trivial"}})
+    assert "'route': 'trivial'" in out
+    assert "{graph_route?}" not in _render(prompts.VALIDATOR, {})
+
+
 def test_planner_injects_enhanced_body() -> None:
     out = _render(prompts.PLANNER, {"enhanced_body": "GOAL: add endpoint"})
     assert "GOAL: add endpoint" in out

@@ -33,6 +33,12 @@ def _part_events(author: str, part) -> list[dict]:
             summary = ""
         out.append({"type": "thought", "role": author,
                     "text": f"{getattr(fr, 'name', '?')} → {summary}"})
+        # A `finish` that ended the turn: its summary is the agent's closing
+        # statement (there is no closing text after it — see doer_finish).
+        from .doer_finish import enabled, finish_summary
+        closing = finish_summary(getattr(fr, "name", ""), resp) if enabled() else ""
+        if closing:
+            out.append({"type": "thought", "role": author, "text": closing})
     return out
 
 
