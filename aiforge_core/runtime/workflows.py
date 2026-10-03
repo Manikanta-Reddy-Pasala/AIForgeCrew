@@ -210,8 +210,10 @@ def auto_context(query: str, cwd: str | None = None, k: int = 3) -> str:
         block = f"{head}\n{w.body[:_WF_MAX_BODY]}"
         scripts = scripts_for(getattr(w, "source", "") or "")
         if scripts:
-            block += ("\n(helper scripts — RUN these with run_command instead "
-                      "of re-deriving the commands: " + ", ".join(scripts) + ")")
+            block += ("\n(this procedure is scripted — run it as ONE step with "
+                      f'workflow_run {{"name": "{w.name}"}} instead of doing '
+                      "the steps call by call; scripts: "
+                      + ", ".join(Path(s).name for s in scripts) + ")")
         parts.append(block)
     return ("APPLICABLE WORKFLOWS — when a procedure below matches the request, "
             "follow its steps IN ORDER and honour any output format or naming "

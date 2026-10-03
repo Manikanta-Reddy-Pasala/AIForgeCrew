@@ -47,6 +47,10 @@ _CMD_TOOLS = {"run_command", "bash", "shell", "run_shell", "serve",
               "watch_until", "ui_check"}
 _CMD_ARG_KEYS = ("cmd", "command", "input")
 
+# Tools that run a SAVED script: judged by the lines of that script, as if
+# each had been sent as its own command.
+_SCRIPT_TOOLS = {"workflow_run"}
+
 # Tools whose args carry CODE that can reach a shell from the inside. A cell
 # is a shell with three extra characters (`!curl x | sh`, os.system,
 # subprocess), so leaving it out of the risk path meant the identical string
@@ -167,11 +171,12 @@ def _egress_refusal(tool: str, args: dict | None) -> str:
     LIBRARY calls — requests, urllib, a raw socket — cannot be caught here at
     all; ``runtime.tools.kernel_egress`` guards those inside the kernel.
     """
-    if tool not in _CMD_TOOLS and tool not in _CODE_TOOLS:
+    if tool not in _CMD_TOOLS | _CODE_TOOLS | _SCRIPT_TOOLS:
         return ""
     try:
         from aiforge_core.net import egress as _eg
         lines = ([_cmd_from_args(args)] if tool in _CMD_TOOLS else
+                 _script_lines(args) if tool in _SCRIPT_TOOLS else
                  command_risk.shell_strings_in_code(_code_from_args(args)))
         for line in lines:
             refusal = _eg.command_refusal(line)
@@ -194,7 +199,28 @@ def _risk_verdict(tool: str, args: dict | None) -> dict:
         return command_risk.assess_code(_code_from_args(args))
     if tool in _CMD_TOOLS:
         return command_risk.assess(_cmd_from_args(args))
+    if tool in _SCRIPT_TOOLS:
+        return _worst(command_risk.assess(ln) for ln in _script_lines(args))
     return {}
+
+
+def _script_lines(args: dict | None) -> list:
+    try:
+        from aiforge_core.runtime import workflow_run
+        return workflow_run.script_lines(args)
+    except Exception:  # noqa: BLE001 — a gate bug must not block every call
+        return []
+
+
+def _worst(verdicts) -> dict:
+    """The most severe of several verdicts ({} for none)."""
+    order = {command_risk.DANGEROUS: 2, command_risk.CAUTION: 1}
+    worst: dict = {}
+    for v in verdicts:
+        if v and (not worst or order.get(v.get("level"), 0)
+                  > order.get(worst.get("level"), 0)):
+            worst = v
+    return worst
 
 
 def _ask_caution() -> bool:

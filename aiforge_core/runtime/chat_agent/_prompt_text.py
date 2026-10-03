@@ -107,6 +107,7 @@ Tool arguments:
 - learn_skill  {{"name": "...", "description": "when to use it", "body": "the step-by-step playbook", "triggers": ["word1","word2"], "scope": "global|repo"}}
                 (author a reusable skill after solving something non-trivial — also recorded in memory)
 - workflow_search {{"query": "..."}}                     (find reusable WORKFLOW.md end-to-end procedures)
+- workflow_run    {{"name": "...", "args": ["..."]}}       (run a saved workflow's script as ONE step — a deploy, a pipeline check, a release; prefer it to doing the same steps call by call; on failure you get the output and the written steps)
 - learn_workflow  {{"name": "...", "description": "when to use it", "body": "the end-to-end steps", "triggers": ["word1"], "scope": "global|repo", "scripts": [{{"name": "step1.sh", "content": "#!/usr/bin/env bash\\n...", "test": "bash step1.sh --dry-run"}}]}}
                 (author a reusable multi-step workflow when the user asks or after running a repeatable procedure)
                 (optional scripts land in the workflow's own scripts/ folder, chmod +x; the body should call them by path. HARD GATE: every script is syntax-checked AND its "test" command — default: the script itself, no args — is actually RUN; ANY failure refuses the whole save, so write scripts that terminate cleanly or give each a fast --dry-run test. "test": "skip" only for a genuinely prod-only script, justified in the body)

@@ -177,6 +177,8 @@ class ZeroEditGuard:
         changed, or — in a tree that is clean before and after (a chat's
         workspace is committed at the start of every turn, so that is the
         normal case) — the commit it is on changed. No git: no verdict."""
+        if self._runbook_ran(st):
+            return True
         now = _worktree_fingerprint(self.cwd)
         if now != self.wt_fp0:
             return True
@@ -184,6 +186,18 @@ class ZeroEditGuard:
             return False                  # the same dirty tree as at the start
         head = head_commit(self.cwd)
         return head is None or head != getattr(st, "head0", None)
+
+    @staticmethod
+    def _runbook_ran(st) -> bool:
+        """The turn's work was a saved runbook that ran to the end (a deploy, a
+        pipeline check): it changes no file and is the result all the same.
+        Live, the check after one made the model run the deploy again."""
+        try:
+            from aiforge_core.runtime import action_log, workflow_run
+            return workflow_run.succeeded_in(
+                action_log.live_steps(getattr(st, "session_id", None)))
+        except Exception:  # noqa: BLE001
+            return False
 
     def _answered_directly(self, st) -> bool:
         """An obvious question: the answer stands and no extra model step is
