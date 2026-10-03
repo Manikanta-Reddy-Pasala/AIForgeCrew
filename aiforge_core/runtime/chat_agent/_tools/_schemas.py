@@ -183,6 +183,13 @@ CATALOG: dict = {
                      "triggers": "arrs", "scope": "s"}, ("name", "body")),
     "workflow_search": ("Find reusable WORKFLOW.md procedures.", {"query": "s"},
                         ("query",)),
+    "workflow_run": (
+        "Run a saved workflow's script as ONE step (deploy, pipeline check, "
+        "release …) instead of doing its steps call by call. Same waiting "
+        "and ids as run_command. On failure you get the output and the "
+        "written steps.",
+        {"name": "s", "args": "arrs", "script": "s", "timeout": "i",
+         "background": "b"}, ("name",)),
     "learn_workflow": ("Author a reusable multi-step workflow.",
                        {"name": "s", "description": "s", "body": "s",
                         "triggers": "arrs", "scope": "s", "scripts": "arr"},

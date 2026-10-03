@@ -79,6 +79,31 @@ def _convo_text(convo) -> str:
     return "\n".join(parts)
 
 
+_SCRIPTED: dict = {}          # folder -> (checked at, has one)
+_SCRIPTED_TTL_S = 60.0
+
+
+def has_scripted_workflow(session_id) -> bool:
+    """A saved workflow with a script exists for this chat's folder (or
+    globally): only then is ``workflow_run`` worth a place on the native list.
+    Never raises."""
+    import time
+    try:
+        from aiforge_core.runtime import cleanup_inventory, workflows
+        cwd = cleanup_inventory.session_cwd(session_id) if session_id is not None else ""
+        key = (cwd, str(workflows._global_dir()))
+        hit = _SCRIPTED.get(key)
+        now = time.monotonic()
+        if hit and now - hit[0] < _SCRIPTED_TTL_S:
+            return hit[1]
+        found = any(workflows.scripts_for(getattr(w, "source", "") or "")
+                    for w in workflows.load(cwd or None))
+        _SCRIPTED[key] = (now, found)
+        return found
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def select_native_tools(convo, *, mode: str = "act", builder: str = "",
                         schemas: list | None = None,
                         session_id=None) -> list:
@@ -102,6 +127,8 @@ def select_native_tools(convo, *, mode: str = "act", builder: str = "",
         extra |= _sticky_tools.kept(session_id)
     except Exception:  # noqa: BLE001
         pass
+    if has_scripted_workflow(session_id):
+        extra = set(extra) | {"workflow_run"}
     return filter_native(list(schemas), mode=mode or "act",
                          text=_convo_text(convo), builder=builder or "",
                          extra=extra)

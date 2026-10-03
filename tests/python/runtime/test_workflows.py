@@ -99,7 +99,7 @@ def test_write_with_scripts_creates_scripts_folder(wf):
         assert os.access(p, os.X_OK)          # chmod +x applied
     # runtime surfaces: auto_context tells the agent to RUN the scripts…
     block = wf.auto_context("nightly export")
-    assert "helper scripts" in block
+    assert "workflow_run" in block
     assert "export.sh" in block
     # …and search hits carry the script paths.
     hit = next(h for h in wf.search("nightly export") if h["name"] == "Nightly export")

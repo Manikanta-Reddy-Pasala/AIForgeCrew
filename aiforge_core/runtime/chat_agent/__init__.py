@@ -150,6 +150,7 @@ from ._tools import (
     _t_list_services,
     _t_skill_search,
     _t_learn_skill,
+    _t_workflow_run,
     _t_workflow_search,
     _t_learn_workflow,
     _ROOT_SCOPED_TOOLS,

@@ -48,6 +48,22 @@ def _t_workflow_search(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def _t_workflow_run(args: dict, cwd: str) -> dict:
+    """Run a saved workflow's script as one step (see runtime.workflow_run)."""
+    try:
+        from aiforge_core.runtime import workflow_run
+        from .._shell import _t_run_command
+        name = args.get("name") or args.get("workflow") or ""
+        if not str(name).strip():
+            return {"ok": False, "error": "name is required"}
+        return workflow_run.run(
+            str(name), cwd, _t_run_command, args=args.get("args"),
+            script=str(args.get("script") or ""), timeout=args.get("timeout"),
+            background=bool(args.get("background")))
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
 def _t_learn_workflow(args: dict, cwd: str) -> dict:
     """Author a reusable workflow (WORKFLOW.md) — an end-to-end procedure —
     so future sessions (or the user) can reuse it. scope: 'global' or 'repo'.

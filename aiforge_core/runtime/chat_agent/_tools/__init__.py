@@ -115,6 +115,7 @@ from ._code import (
 from ._skills import (
     _t_skill_search,
     _t_learn_skill,
+    _t_workflow_run,
     _t_workflow_search,
     _t_learn_workflow,
     _t_editor,
