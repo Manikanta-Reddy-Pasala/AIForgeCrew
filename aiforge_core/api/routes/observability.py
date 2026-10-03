@@ -31,6 +31,11 @@ def health() -> dict:
     from aiforge_core.tickets.backend_factory import get_backend
     status = {"ok": True, "storage": None, "lm_studio": False}
     try:
+        from aiforge_core.build_info import build
+        status["build"] = build()        # which commit this process is running
+    except Exception:
+        pass
+    try:
         be = get_backend()
         status["storage"] = be.name
         # Cheap reachability probe — an identifier that never exists.
