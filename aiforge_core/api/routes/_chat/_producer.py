@@ -17,7 +17,6 @@ from ._prep import (
 )
 from ._routing import (
     _decide_chat_route,
-    _maybe_downgrade_team,
     _plan_mode_route,
     _rule_capture_pass,
     _should_skip_enhance,
@@ -223,10 +222,6 @@ def _single_agent_route(pc, _rd, _pp, rctx, cwd, _doc_task, _is_build_task,
     from aiforge_core.runtime.chat_agent._native_prompt import is_plan_execution
     if is_plan_execution(pc.prompt):
         _skip_enhance = True
-    if pc._auto_downgraded:
-        yield {"type": "thought", "role": "router",
-               "text": "Small follow-up — handling directly (skipped the "
-                       "full pipeline for speed)."}
     if rctx.get("spec") is not None:
         # The build route already enhanced this exact prompt (same history,
         # cwd and repo scope) before it found a single task: reuse that spec.
@@ -477,13 +472,9 @@ def _produce(pc):
 
 
 def _prepare_turn(pc, _chat_approve, _psub) -> None:
-    """Route the turn (team or simple) and set its approval gates."""
-    # Auto-route classify + its dependents, run HERE (already off the
-    # response-open path) rather than in the synchronous request handler,
-    # so a slow/unreachable classify LLM never delays the StreamingResponse.
-    pc.team, pc._auto_downgraded = _maybe_downgrade_team(
-        pc.team, pc.prompt, pc.history, pc.cwd, pc.session_id,
-        first_team_turn=bool(getattr(pc, "_first_team_turn", False)))
+    """Set the turn's mode (team or simple) and its approval gates."""
+    # Team is the user's pick for this message: it is not downgraded to the
+    # single agent on a helper model's judgement of how small the message is.
     pc._parallel_team = pc.team and _psub.enabled()
     # Review-edits gate: OFF by default — file writes/patches auto-apply,
     # no per-edit Approve/Reject prompt (the operator asked for no file-

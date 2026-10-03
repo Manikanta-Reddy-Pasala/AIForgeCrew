@@ -8,8 +8,9 @@ run, the same folder. Everything per-session keeps working per task.
 
 What this module decides:
 
-* steer or task — a correction steers the running turn as before; a new
-  request, a question, or "run another agent …" becomes a side task;
+* steer or task — a message typed during a run goes to that run (the model
+  working on it reads it and decides what it means); a side task is made only
+  on the user's explicit action or an explicit cue ("run another agent …");
 * now or queued — a task that only reads starts at once (within the model
   server's parallel slots). A task that edits files waits while another run in
   the same chat is editing, and starts by itself when that run ends;
@@ -57,87 +58,20 @@ class _SideBody(BaseModel):
 
 # ── deciding ─────────────────────────────────────────────────────────────────
 
-_INFO_OPENER_RE = re.compile(
-    r"^\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+)?"
-    r"(?:answer|explain|describe|summari[sz]e|list|show|tell|give\s+me|what|"
-    r"which|who|whom|whose|why|how|where|when|is\s+there|are\s+there|"
-    r"do\s+(?:we|you|i)|does|did|is|are|was|were)\b", re.IGNORECASE)
-_POLITE_RE = re.compile(r"^\s*(?:please\s+)?(?:can|could|would|will)\s+you\b",
-                        re.IGNORECASE)
-_POLITE_INFO_RE = re.compile(
-    r"^\s*(?:please\s+)?(?:can|could|would|will)\s+you\s+(?:please\s+)?"
-    r"(?:answer|explain|describe|summari[sz]e|list|show|tell|give\s+me)\b",
-    re.IGNORECASE)
-_LIST_ITEM_RE = re.compile(r"(?:^|\s)(?:\d+[.)]|[-*•])\s+\S")
-
-
-def asks_for_information(text: str) -> bool:
-    """Whether a mid-run message only wants something ANSWERED.
-
-    A request for information does not change the work in progress, so it must
-    not be folded into it: the running agent took "answer these questions" as
-    its new task, replied to them as its final answer and never finished what
-    it was doing. A message that touches the work (it names a change to make)
-    stays a steer."""
-    t = (text or "").strip()
-    if not t:
-        return False
-    from ._overlap import has_edit_intent
-    if has_edit_intent(t):
-        return False
-    # "can you also log the date?" is an instruction; "can you explain X?" is not.
-    if _POLITE_RE.match(t) and not _POLITE_INFO_RE.match(t):
-        return False
-    if "?" in t or _INFO_OPENER_RE.match(t):
-        return True
-    if len(_LIST_ITEM_RE.findall(t)) >= 2:       # a numbered list of asks
-        return True
-    if len(t) > 200 or t.count("\n") >= 3:       # a paragraph is a request of its own
-        return True
-    return False
-
-
-# An instruction about the work: "use X", "switch to Y", "go with Z", "do it",
-# "implement …", "instead", "rather than", or a stated fact that changes the
-# plan ("we have rewritten it in …", "we can't run …"). It touches the running
-# work, so a '?' (even "…right ?") does not make it a separate question.
-_DIRECTIVE_RE = re.compile(
-    r"^\W*(?:(?:no|nope|ok(?:ay)?|actually|also|and|then|so|but|please|pls)\b[\s,.:;-]*)*"
-    r"(?:use|switch|go\s+with|do\s+it|implement|build|write|port|rewrite|"
-    r"stick\s+(?:to|with)|continue\s+with|proceed\s+with|focus\s+on)\b"
-    r"|\b(?:instead|rather\s+than|switch\s+to|go\s+with|implement\s+(?:it|this|that)"
-    r"|do\s+not\s+(?:review|run)|don'?t\s+(?:review|run))\b"
-    r"|\bwe\s+(?:have|had|'ve|already|just|can'?t|cannot|no\s+longer|"
-    r"rewrote|rewritten|replaced|moved|switched|migrated|use|are\s+using)\b",
-    re.IGNORECASE)
-
-
-def is_directive(text: str) -> bool:
-    """An instruction or correction aimed at the work in progress, not a
-    question that merely ends in '?'. A message that opens as a plain question
-    ("do we have …", "what does …") is not one."""
-    t = (text or "").strip()
-    return bool(t and _DIRECTIVE_RE.search(t) and not _INFO_OPENER_RE.match(t))
-
-
-def running_mode(session_id: int) -> str:
-    """The mode (simple/plan/team) of the turn now running in this chat: the
-    mode its latest user message was sent with."""
-    try:
-        from aiforge_core.runtime import chat_store
-        last = _last(chat_store.get_messages(session_id) or [], "user") or {}
-        return last.get("mode") or "simple"
-    except Exception:  # noqa: BLE001
-        return "simple"
-
-
 def classify(text: str, mode: str = "simple") -> str:
     """``"steer"`` or ``"task"`` for a message typed while a run is going.
 
-    Stopping or replacing the run, and anything that reads as an adjustment to
-    it, steers. An explicit ask for another agent, a question, or a new
-    request is its own task. While a TEAM/pipeline run is going the default is
-    to steer: only an explicit side cue or a plain question is a task."""
+    A message typed during a run goes to that run: the model working on the
+    task reads it at its next step and decides what it means — a correction, an
+    extra requirement, a question, a go-ahead. Nothing here guesses that from
+    the wording (a '?', the length, a list, the opening word): those guesses
+    sent corrections away as side tasks and left the run on the wrong course.
+
+    A side task is something the user asks for on purpose: the explicit action
+    (``as: "task"`` on the request) or a cue typed in the message ("another
+    agent", "in parallel", "meanwhile", "side task"). ``mode`` no longer
+    matters; it stays for callers that pass it."""
+    del mode
     t = (text or "").strip()
     if not t:
         return "steer"
@@ -150,17 +84,7 @@ def classify(text: str, mode: str = "simple") -> str:
             return "steer"
     except Exception:  # noqa: BLE001
         pass
-    if _SIDE_CUE_RE.search(t):
-        return "task"
-    if is_directive(t):
-        return "steer"
-    if mode == "team":
-        return "task" if (_INFO_OPENER_RE.match(t)
-                          and asks_for_information(t)) else "steer"
-    if asks_for_information(t):
-        return "task"
-    from ._sched_fold import _is_new_request
-    return "task" if _is_new_request(t) else "steer"
+    return "task" if _SIDE_CUE_RE.search(t) else "steer"
 
 
 def edits_files(text: str, mode: str) -> bool:
@@ -546,7 +470,7 @@ def chat_side_message(session_id: int, body: _SideBody) -> dict:
             if run is not None and not run.done:
                 return {"action": "status", **status_of(session_id, run)}
     if want == "auto":
-        want = classify(body.content, running_mode(session_id))
+        want = classify(body.content)
     if want == "steer":
         from aiforge_core.runtime import chat_runs, chat_status
 

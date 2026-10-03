@@ -108,23 +108,45 @@ def build_chat(st) -> dict:
 
 
 MARK = "[HANDOFF"
+#: The model decides whether the new message continues that work: it has the
+#: message and the conversation, the harness has only word rules.
 RESUME_HEAD = ("[HANDOFF — the previous turn in this chat ended before the work "
-               "was finished. This holds what is known; keep what is done, do "
-               "not repeat what failed, and carry on from NEXT.]")
+               "was finished. This holds what is known about it. If the new "
+               "message continues this work, keep what is done, do not repeat "
+               "what failed, and carry on from NEXT; if it is about something "
+               "else, ignore this block.]")
+#: The same record under a message that names a task of its own. Live, with the
+#: line above, a model asked "what is the capital of France?" answered — and
+#: then also carried on from NEXT. Here the new message is named as the request
+#: and the earlier work is not to be resumed unasked.
+REFERENCE_MARK = "[HANDOFF — for reference only."
+REFERENCE_HEAD = ("[HANDOFF — for reference only. The previous turn in this chat "
+                  "was stopped before its work was finished; this is what is "
+                  "known about that work. The user's new message, above, is the "
+                  "request for this turn: do what it asks. If it continues or "
+                  "changes this earlier work, carry on from NEXT (keep what is "
+                  "done, do not repeat what failed). If it is about something "
+                  "else, ignore this block: do not resume the earlier work on "
+                  "your own, and do not mention it.]")
 _DEFAULT_HEAD = ("[HANDOFF — the earlier attempt went in circles, so this is a "
                  "fresh start. It holds what is known; do not repeat what failed.]")
 
 
 def render(h: dict, offload_id: "str | None" = None,
-           header: "str | None" = None, resumed: bool = False) -> str:
+           header: "str | None" = None, resumed: bool = False,
+           reference: bool = False) -> str:
     """The handoff as the one user message a restarted run starts from.
 
     ``header`` replaces the first line (a condense restart is not a stuck one).
     ``resumed``: it seeds the NEXT turn of a chat (after a Stop, a crash or a
-    give-up) rather than a restart inside a run that went in circles."""
+    give-up) rather than a restart inside a run that went in circles.
+    ``reference``: the new message names a task of its own, so the record is
+    reference material under it, not the turn's request."""
+    if reference:
+        header = header or REFERENCE_HEAD
     lines = [header or (RESUME_HEAD if resumed else _DEFAULT_HEAD)]
     if h.get("goal"):
-        lines.append(f"GOAL: {h['goal']}")
+        lines.append(("EARLIER GOAL: " if reference else "GOAL: ") + h["goal"])
     if h.get("done"):
         lines.append("DONE (verified): " + "; ".join(h["done"]))
     if h.get("files"):
@@ -144,10 +166,12 @@ def render(h: dict, offload_id: "str | None" = None,
         lines.append("THE USER REDIRECTED THE WORK (these override the goal "
                      "above where they differ):\n"
                      + "\n".join(f"- {t}" for t in h["steers"][-3:]))
+    nxt = ("NEXT (only if the new message continues this work): " if reference
+           else "NEXT: ")
     if h.get("open"):
-        lines.append("NEXT: " + h["open"][0])
+        lines.append(nxt + h["open"][0])
     else:
-        lines.append("NEXT: work out the smallest step that moves the goal "
+        lines.append(nxt + "work out the smallest step that moves the goal "
                      "forward, do it, and check it.")
     offload_id = offload_id or h.get("offload")
     if offload_id:
@@ -156,5 +180,5 @@ def render(h: dict, offload_id: "str | None" = None,
     return "\n".join(lines)
 
 
-__all__ = ["MARK", "RESUME_HEAD", "note_failed", "record_failed", "render_failed", "last_attempt", "build_chat", "render",
+__all__ = ["MARK", "RESUME_HEAD", "REFERENCE_HEAD", "REFERENCE_MARK", "note_failed", "record_failed", "render_failed", "last_attempt", "build_chat", "render",
            "MAX_FAILED"]

@@ -146,6 +146,15 @@ def _sandbox_directive(readonly_mode: bool) -> str:
 _BIG_REQUEST_CHARS = 600
 
 
+def _own_words(last_user: str) -> str:
+    """The user's message without a reference-only handoff under it. The parts
+    of THAT block ("NEXT: add mul and div") are not asks of this message: read
+    as such they became a checklist the model had to finish, and a chat asked
+    "what is the capital of France?" went back to the unfinished refactor."""
+    from aiforge_core.runtime.handoff import REFERENCE_MARK
+    return (last_user or "").split("\n\n---\n" + REFERENCE_MARK)[0]
+
+
 def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
                  analyze_mode, builder, strict_finish, session_id, native=False,
                  unlimited=False):
@@ -165,7 +174,8 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
     # them made the Doer enumerate its own charter in FINAL and burned an extra
     # model turn on the completeness gate every run.
     from .._native_prompt import is_plan_execution
-    _asks = [] if (builder or strict_finish or is_plan_execution(last_user)) else _split_asks(last_user)
+    _asks = [] if (builder or strict_finish or is_plan_execution(last_user)) \
+        else _split_asks(_own_words(last_user))
     sys_msg = _prepend_priority_blocks(
         sys_msg, _asks, prefs, rules, analyze_mode, plan_mode, builder)
     # Reply language (Settings): part of the protected core, never trimmed —

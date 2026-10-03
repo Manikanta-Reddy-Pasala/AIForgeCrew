@@ -51,8 +51,9 @@ def _wire(monkeypatch, classify_return):
 
     monkeypatch.setattr(pp, "_enhance", fake_enhance)
     monkeypatch.setattr(chat_agent, "run_chat_agent", fake_run_chat_agent)
+    # The team-downgrade classifier is gone; patching it must not fail here.
     monkeypatch.setattr(turn_router, "classify",
-                        lambda *a, **k: classify_return)
+                        lambda *a, **k: classify_return, raising=False)
     return enhance_calls
 
 
@@ -123,7 +124,7 @@ def test_a_short_followup_skips_when_classify_would_raise(app_client, monkeypatc
 
     monkeypatch.setattr(pp, "_enhance", fake_enhance)
     monkeypatch.setattr(chat_agent, "run_chat_agent", fake_run_chat_agent)
-    monkeypatch.setattr(turn_router, "classify", boom)
+    monkeypatch.setattr(turn_router, "classify", boom, raising=False)
 
     sid = client.post("/api/chat/sessions", json={"title": "t"}).json()["id"]
     client.post(f"/api/chat/sessions/{sid}/message",

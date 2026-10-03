@@ -268,14 +268,14 @@ def decide(prompt: str, *, agent_mode: str, team: bool, psub_on: bool,
     # plan turn to the research agent on a doc class.
     if agent_mode == "plan":
         doc_task = False
-    # (A) an EXPLICIT team pick + a build-looking request is never downgraded to
-    # the read-only research agent on a doc_analysis misclassification.
-    # Same for ANY change intent, not only a regex build: "implement a rust
-    # parallel read path" names no app/service noun, so the build regex missed
-    # it and the run was sent to the read-only research agent — a research note
-    # and zero edits for a user who asked for the work.
-    if team and doc_task and (regex_build_fallback(prompt)
-                              or wants_changes(prompt)):
+    # (A) an EXPLICIT team pick is never downgraded to the read-only research
+    # agent on the classifier's doc_analysis label. The user chose the mode;
+    # the team's own agents read the request with the conversation and decide
+    # what it needs. (A classifier label used to send "implement a rust
+    # parallel read path" to research: a note and zero edits for a user who
+    # asked for the work. Guessing from the wording which labels to trust was
+    # the next patch on the same hole.)
+    if team:
         doc_task = False
 
     build_escalate = bool(

@@ -5,9 +5,10 @@ re-checked the tree, wrote "Nothing was written this turn … say start and I wi
 do step 1 in the next turn", and stopped. Said again, same result: a loop where
 every turn ends with a request for permission the user has already given.
 
-This module recognises a go-ahead message and a final that asks for one, and
-finds the request the go-ahead refers to, so the zero-edit guard can hold such a
-turn to the standard of a change request.
+This module recognises a short go-ahead message, a final that asks for one,
+and a final that admits nothing was done. They are cheap filters around the
+zero-edit check (_guards/zero_edit): whether the user's message asked for work
+is decided by the working model, in its own context, not by these patterns.
 """
 from __future__ import annotations
 
@@ -67,32 +68,3 @@ def asks_permission(text: str) -> bool:
 def admits_no_work(text: str) -> bool:
     """The reply itself says nothing was done / the work will happen next turn."""
     return bool(_ADMITS_NO_WORK.search(text or ""))
-
-
-def _is_user_ask(m: dict) -> bool:
-    from .._context._compaction import _is_harness_note, _text_of
-    if (m or {}).get("role") != "user":
-        return False
-    t = _text_of(m).strip()
-    return bool(t) and not t.startswith(("OBSERVATION:", "<<AIFORGE")) \
-        and not t.startswith("[HANDOFF") and not _is_harness_note(t)
-
-
-def effective_goal(st) -> str:
-    """The request a go-ahead refers to: the latest earlier user message that is
-    not itself a go-ahead. The turn's own goal when it is not a go-ahead."""
-    goal = (getattr(st, "goal", "") or "").strip()
-    if not is_go_ahead(goal):
-        return goal
-    from .._context._compaction import _text_of
-    for m in reversed(getattr(st, "convo", []) or []):
-        if _is_user_ask(m):
-            t = _text_of(m).strip()
-            if t and t != goal and not is_go_ahead(t):
-                return t
-    return goal
-
-
-def had_earlier_assistant_turn(st) -> bool:
-    return any((m or {}).get("role") == "assistant"
-               for m in (getattr(st, "convo", []) or [])[1:])

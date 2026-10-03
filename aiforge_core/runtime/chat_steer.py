@@ -38,15 +38,8 @@ def reject_directive(tool_name: str, guidance: str) -> str:
 
 
 def steer_directive(text: str) -> str:
-    """What the model is TOLD when a mid-run message arrives.
-
-    A bare "[steer] …" tag was too weak to change anything: a local model read
-    it as a footnote to the request it was already executing and carried on
-    answering the OLD question. The message the user typed after the run
-    started is, by definition, the more recent statement of what they want —
-    say so, in the imperative, and make the two possible readings explicit
-    (replaces vs adds) so the model has to pick one rather than defaulting to
-    the plan already in its context.
+    """What the model is TOLD when a mid-run message arrives: the user's words
+    under a short header (see :func:`steer_block`).
 
     NOT used by parallel-team mode: that folds steering into SPEC.md as a
     "[MANDATORY user instruction]" line (parallel_subtasks/_stream_steer.py), where
@@ -57,12 +50,15 @@ def steer_directive(text: str) -> str:
 
 
 def steer_block(texts: "list[str]") -> str:
-    """One directive for however many messages drained together.
+    """The messages that drained together, as ONE light wrapper.
 
-    A directive per message meant three queued steers produced three blocks
-    each claiming to be THE most recent instruction, with no ordering signal —
-    "use postgres" and the "actually no, sqlite" that followed it a second
-    later arrived as equals. One header, numbered, newest marked.
+    The running model reads the user's words and decides what they mean — a
+    correction, an extra requirement, a question, a change of task. The wrapper
+    only says where the words come from and that the task goes on unless they
+    say otherwise; it does not tell the model how to classify them. Several
+    messages are numbered in the order they were sent, the newest marked.
+    The opening "[NEW MESSAGE FROM THE USER" is matched elsewhere
+    (chat_agent/_native_replay, _native_select): keep it.
     """
     items = [t for t in (texts or []) if str(t).strip()]
     if not items:
@@ -71,27 +67,12 @@ def steer_block(texts: "list[str]") -> str:
         body = items[0]
     else:
         body = "\n".join(
-            f"{i + 1}. {t}" + ("   ← the latest, and the one that wins if they "
-                               "conflict" if i == len(items) - 1 else "")
+            f"{i + 1}. {t}" + ("   ← the latest" if i == len(items) - 1 else "")
             for i, t in enumerate(items))
-    return (
-        "[NEW MESSAGE FROM THE USER — sent while you were working. It is the "
-        "user's MOST RECENT instruction and takes PRIORITY over what you are "
-        "currently doing.]\n"
-        f"{body}\n"
-        "Decide which it is.\n"
-        "- It REPLACES the work: it says to stop, cancel, drop it, or do "
-        "something else INSTEAD. Then abandon the old request and do this.\n"
-        "- Anything else ADDS to the work — a correction, an extra "
-        "requirement, a question. Handle it now, then CONTINUE the task you "
-        "were on, from where you left off, and finish it. Do NOT end the turn "
-        "after handling it and do NOT drop steps you had not finished. A "
-        "question is answered in your final reply, together with the result of "
-        "the original task.\n"
-        "Act on it now — do NOT reply with a sentence about which reading you "
-        "chose: a bare line of prose ends the turn, and the user gets a "
-        "comment where the work should have been."
-    )
+    return ("[NEW MESSAGE FROM THE USER — sent while you were working.]\n"
+            f"{body}\n"
+            "Address it, and continue with the task you were on unless it says "
+            "otherwise.")
 
 
 def reject_note(guidance: str) -> str:

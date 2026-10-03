@@ -154,20 +154,8 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     # pages and scratch persist across every session that touches it. A session
     # already pinned to a context or to a real repo the user chose is left as-is.
     cwd = _rehome_context_workspace(cwd, prompt, session_id)
-    # Per-turn auto-route: once a team session has produced output, a small
-    # follow-up ("rename that", "add a test") shouldn't re-run the whole heavy
-    # pipeline (worktree + planner + verifier + slow Doer loop = minutes). A
-    # cheap classify downgrades simple follow-ups to the fast single-agent
-    # path. First team turn + genuinely complex follow-ups keep the pipeline.
-    # Safe by default: any classifier failure leaves team=True. Disable with
-    # AIFORGE_TEAM_AUTO_ROUTE=0.
-    # NOTE: the actual classify call is deferred to the top of `_produce()`
-    # (in `_producer.py`) — it's an LLM round-trip, and running it HERE, in the
-    # synchronous request handler, delays the StreamingResponse from opening
-    # at all: an unreachable/slow endpoint's retry+backoff chain (many
-    # seconds) left the client with zero bytes and no ping, looking hung,
-    # for a decision that only affects `_parallel_team` / `_events()` (both
-    # only read once the background thread is already running).
+    # A Team turn runs the team: the mode is the user's pick for this message
+    # and no classifier downgrades it to the single agent.
     _auto_downgraded = False
     _parallel_team = False   # finalized in _produce(), once `team` is settled
 

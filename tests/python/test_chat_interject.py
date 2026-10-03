@@ -174,17 +174,14 @@ def test_steer_merges_into_trailing_user_turn(tmp_path, monkeypatch):
     merged = [m for m in msgs if m.get("role") == "user"
               and "OBSERVATION" in (m.get("content") or "")
               and "go faster" in (m.get("content") or "")
-              and "takes PRIORITY" in (m.get("content") or "")]
+              and "sent while you were working" in (m.get("content") or "")]
     assert merged, msgs
 
 
 def test_run_chat_agent_injects_drained_steer(tmp_path):
     """A steer pushed mid-run is drained at the next step, folded into the
-    working convo as a PRIORITY instruction, and echoed as a steer thought.
-
-    The wording is the feature: a bare "[steer] …" tag read as a footnote to
-    the request already in context, and the model kept answering the old
-    question."""
+    working convo under the "new message from the user" header, and echoed as
+    a steer thought."""
     seen = {"convo_has_steer": False}
     calls = {"n": 0}
 
@@ -200,7 +197,7 @@ def test_run_chat_agent_injects_drained_steer(tmp_path):
         # rather than added as a second consecutive user message (M1).
         seen["convo_has_steer"] = any(
             "go faster" in (m.get("content") or "")
-            and "takes PRIORITY" in (m.get("content") or "")
+            and "sent while you were working" in (m.get("content") or "")
             for m in messages)
         return "FINAL: done"
 

@@ -80,9 +80,12 @@ def test_team_build_not_downgraded_by_doc_misclass():
     assert r.route_pipeline
 
 
-def test_team_real_doc_stays_doc():
+def test_team_pick_is_not_sent_to_research_on_a_doc_label():
+    """Team is the user's pick: the classifier's label does not move the turn
+    to the read-only research agent, whatever the wording."""
     r = _d(prompt="write a report on our options", cat="doc_analysis", team=True)
-    assert r.doc_task                  # no code noun → genuine doc
+    assert not r.doc_task
+    assert r.route_pipeline
 
 
 # ── F: fresh explicit team always pipelines; follow-up doesn't ────────────
@@ -328,10 +331,10 @@ def test_team_implement_not_downgraded_with_approvals_on_either():
     assert not r.doc_task and not r.route_pipeline   # gated sequential team
 
 
-def test_team_review_only_prompt_still_goes_to_research():
+def test_team_review_only_prompt_stays_with_the_team():
     r = _d(prompt="review the parallel read path design and verify the numbers",
            cat="doc_analysis", team=True)
-    assert r.doc_task
+    assert not r.doc_task and r.route_pipeline
 
 
 def test_simple_mode_doc_class_is_untouched_by_the_team_veto():

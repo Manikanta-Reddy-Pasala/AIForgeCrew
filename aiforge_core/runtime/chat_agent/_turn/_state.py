@@ -310,6 +310,12 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         # unattended runs share session None and run in parallel).
         compact_key=uuid.uuid4().hex,
         **progress_fields(), **item_fields())
+    # The commit the turn starts on: with a clean tree before and after, a
+    # moved HEAD is the only sign that work landed (see _guards/zero_edit).
+    st.head0 = None
+    if _edit_claim_guard_enabled() and not readonly_mode and not builder:
+        from .._guards.zero_edit import head_commit
+        st.head0 = head_commit(cwd)
     ensure_started(st)        # a request that arrives as 3+ parts is big from the start
     # What the tree already held before this turn (the user's own dirty and
     # untracked code): the test-gaming check scans only THIS turn's lines.

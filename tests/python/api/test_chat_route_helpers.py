@@ -333,14 +333,8 @@ def _skip(**kw):
 @pytest.fixture
 def router(monkeypatch):
     from aiforge_core.runtime import turn_router as tr
-    state: dict = {"followup": True, "cls": "simple"}
+    state: dict = {"followup": True}
     monkeypatch.setattr(tr, "is_followup", lambda h: state["followup"])
-
-    def _classify(prompt, history=None):
-        if isinstance(state["cls"], Exception):
-            raise state["cls"]
-        return state["cls"]
-    monkeypatch.setattr(tr, "classify", _classify)
     return state
 
 
@@ -379,13 +373,31 @@ def test_a_real_build_still_gets_the_enhancer(router):
     assert _skip(is_build_task=True, prompt="build a todo app") is False
 
 
-def test_a_short_follow_up_skips_without_calling_the_classifier(router, monkeypatch):
+def test_a_short_follow_up_skips_without_calling_a_model(router, monkeypatch):
     """'tear' during a chat used to wait on a classify call, then often the
     enhancer too, before the agent saw it."""
-    from aiforge_core.runtime import turn_router as tr
-    monkeypatch.setattr(tr, "classify",
+    from aiforge_core.llm import client
+    monkeypatch.setattr(client, "complete",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("llm")))
     assert _skip(prompt="tear") is True
+
+
+@pytest.mark.parametrize("prompt", [
+    "continue", "do it", "yes", "yes continue building the api service",
+    "ok go ahead and implement the backend service with tests",
+    "its ok continue simplfying all files .. use kiss and seperation of ceoncers..",
+])
+def test_a_short_go_ahead_in_an_existing_chat_is_never_rewritten(router, prompt):
+    """It points at the turns before it. The working model has those turns; a
+    helper model's restatement is a guess at what the message refers to. Also
+    when the words look like a build ("build the api service")."""
+    assert _skip(prompt=prompt) is True
+    assert _skip(prompt=prompt, cat="code_build") is True
+
+
+def test_a_go_ahead_shaped_first_message_follows_the_usual_rules(router):
+    router["followup"] = False              # nothing before it to point at
+    assert _skip(prompt="ok go ahead and implement the backend service with tests") is False
 
 
 def test_a_pipeline_route_answers_from_its_own_flags(router):

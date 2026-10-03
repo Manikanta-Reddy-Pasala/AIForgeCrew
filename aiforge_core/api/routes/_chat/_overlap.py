@@ -63,7 +63,7 @@ def _classifier_will_run(prompt, history, *, team, quick, single_agent) -> bool:
         return False
 
 
-def _enhance_will_run(prompt) -> bool:
+def _enhance_will_run(prompt, history=None) -> bool:
     """Whether the single-agent path would enhance this prompt when it is not
     sent to the pipeline (the only case the early call is for)."""
     try:
@@ -72,7 +72,7 @@ def _enhance_will_run(prompt) -> bool:
         if is_plan_execution(prompt):
             return False
         from ._routing import _should_skip_enhance
-        return not _should_skip_enhance(False, False, False, None, prompt)
+        return not _should_skip_enhance(False, False, False, history, prompt)
     except Exception:  # noqa: BLE001
         return False
 
@@ -151,7 +151,7 @@ def start(pc, _pp) -> "EarlyEnhance | None":
             quick=bool(getattr(body, "quick", False)),
             single_agent=bool(getattr(body, "single_agent", False))):
         return None
-    if not _enhance_will_run(pc.prompt) or not _slots_allow():
+    if not _enhance_will_run(pc.prompt, pc.history) or not _slots_allow():
         return None
     if _reads_as_answer(pc.prompt):
         return None
