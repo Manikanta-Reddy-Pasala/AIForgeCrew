@@ -17,7 +17,8 @@ import urllib.request
 
 from .. import providers as _providers
 from .. import rate_limiter as _rl
-from .._ssl import _ca_bundle as _ssl_ca_bundle
+from .. import hooks
+from .._ssl import ca_bundle as _ssl_ca_bundle
 from .._ssl import auto_relax_internal as _ssl_auto_relax
 from .._ssl import context_for as _ssl_context_for
 from .._ssl import insecure_context as _ssl_insecure
@@ -370,16 +371,15 @@ def _post(ep: Endpoint, payload: bytes, timeout_s: int,
     _waited_ms = (_time.perf_counter() - _wait_t0) * 1000.0
     if _waited_ms >= 50:
         try:
-            from aiforge_core.runtime import perf_recorder
-            perf_recorder.record("Queue", role or ep.provider, _waited_ms)
+            hooks.record_perf("Queue", role or ep.provider, _waited_ms)
         except Exception:  # noqa: BLE001
             pass
     cancel = _CANCEL.get()
     _owned_cancel = None
     if cancel is None and role:
         try:
-            from aiforge_core.llm._rate_settings import _category
-            if _category(role) == "compaction":
+            from aiforge_core.llm._rate_settings import category
+            if category(role) == "compaction":
                 _owned_cancel = threading.Event()
                 from aiforge_core.llm.interactive_gate import track_background
                 track_background(_owned_cancel)

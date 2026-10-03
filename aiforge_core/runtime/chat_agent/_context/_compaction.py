@@ -5,7 +5,7 @@ import re
 
 from .._shell import _ACTION_RE
 from . import _note, _structured, _summary_bg, _tail_cut
-from ._claim_guard import _claims_file_edits
+from .._guards.file_edit import _claims_file_edits
 from ._window import _ctx_budget_chars
 
 

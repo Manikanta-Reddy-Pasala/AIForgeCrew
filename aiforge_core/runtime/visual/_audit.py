@@ -85,13 +85,13 @@ def _run(path: str, prompt: str, role: str,
         # yes/no answer… Let me look carefully") as if it were the audit. Read
         # ``content`` ourselves so an answerless reply is reported as one.
         from aiforge_core.llm.client import complete_raw
-        from aiforge_core.llm.client._text import _strip_think
+        from aiforge_core.llm.client._text import strip_think
         msg = complete_raw(vrole, [{"role": "user", "content": content}],
                            max_tokens=max_tokens or _max_tokens())
     except Exception as exc:  # noqa: BLE001 — a dead VLM must not kill the turn
         return {"ok": False, "error": "vision_call_failed",
                 "detail": str(exc)[:300], "vision_role": vrole}
-    text = _strip_think(str((msg or {}).get("content") or "").strip())
+    text = strip_think(str((msg or {}).get("content") or "").strip())
     if not text:
         return {"ok": False, "error": "vision_empty_reply", "vision_role": vrole,
                 "hint": ("the vision model spent its whole budget reasoning and "

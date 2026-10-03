@@ -5,6 +5,8 @@ import contextvars
 import logging
 import os
 
+from aiforge_core.llm import reasoning
+
 log = logging.getLogger("aiforge.chat.window")
 
 # One chat step asks for the window several times (the condense budget, the
@@ -172,34 +174,6 @@ def _window_tokens(role: str | None = None) -> int:
     return max(0, win)
 
 
-#: Callables ``fn(role) -> extra reply tokens`` the window budget asks. The
-#: reasoning-boost code registers one so a step it boosts keeps room for the
-#: extra thinking tokens (see :func:`register_reserve_hook`).
-_RESERVE_HOOKS: list = []
-
-
-def register_reserve_hook(fn) -> None:
-    """Add ``fn(role) -> int`` (extra tokens to keep free for the model's
-    reply, e.g. a reasoning allowance on a boosted step). Idempotent."""
-    if fn not in _RESERVE_HOOKS:
-        _RESERVE_HOOKS.append(fn)
-
-
-def unregister_reserve_hook(fn) -> None:
-    if fn in _RESERVE_HOOKS:
-        _RESERVE_HOOKS.remove(fn)
-
-
-def _hook_reserve_tokens(role: str | None) -> int:
-    total = 0
-    for fn in list(_RESERVE_HOOKS):
-        try:
-            total += max(0, int(fn(role) or 0))
-        except Exception:  # noqa: BLE001 — a bad hook reserves nothing
-            continue
-    return total
-
-
 def _reserve_cap_frac() -> float:
     """Most of the window the reply reserve may take (default 0.5, env
     ``AIFORGE_OUTPUT_RESERVE_FRAC``, clamped 0.05-0.9): the history budget
@@ -215,7 +189,7 @@ def _output_reserve_tokens(win: int, role: str | None = None,
                            extra_reserve_tokens: int = 0) -> int:
     """Tokens of the window kept free for the model's reply: its output cap
     (``max_output_tokens``) PLUS any reasoning allowance — the caller's
-    ``extra_reserve_tokens`` and the registered hooks — bounded to a fraction
+    ``extra_reserve_tokens`` and the reasoning boost's — bounded to a fraction
     of the window. With no allowance this is the output cap, as before."""
     try:
         from aiforge_core.config import runtime_settings
@@ -226,7 +200,7 @@ def _output_reserve_tokens(win: int, role: str | None = None,
         extra = max(0, int(extra_reserve_tokens or 0))
     except (TypeError, ValueError):
         extra = 0
-    extra += _hook_reserve_tokens(role)
+    extra += reasoning.boost_reserve_tokens(role)
     total = max(0, base) + extra
     if extra:
         total = min(total, int(win * _reserve_cap_frac()))
@@ -243,8 +217,8 @@ def _ctx_budget_chars(role: str | None = None,
     reserve (``max_output_tokens`` plus a reasoning allowance, see
     :func:`_output_reserve_tokens`) and the system prompt — so on a 32K local
     window the budget leaves real room for INPUT instead of assuming the whole
-    window is history. ``extra_reserve_tokens`` (and any hook from
-    :func:`register_reserve_hook`) widens the reply reserve for a step that
+    window is history. ``extra_reserve_tokens`` (and the reasoning
+    boost's reserve) widens the reply reserve for a step that
     thinks longer, so a boosted step cannot overflow the window.
     ``sys_chars`` reserves the ACTUAL assembled system-prompt size when the
     caller knows it (M1); when omitted it falls back to the ~14K

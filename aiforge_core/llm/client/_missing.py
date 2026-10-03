@@ -22,7 +22,7 @@ def _pkg():
     return package
 
 
-def _autofallback_enabled() -> bool:
+def autofallback_enabled() -> bool:
     """Stand in for a missing model with one the endpoint serves.
 
     On by default: a box that serves SOMETHING can usually still do the work,
@@ -92,7 +92,7 @@ def _substitute_attempt(role: str, primary: Endpoint, missing: list,
     endpoint actually has. A rescue, not a routing decision: logged loudly at
     WARNING every time, because a silent substitution means the operator never
     learns their config is wrong and quietly gets a different model."""
-    if not _autofallback_enabled():
+    if not autofallback_enabled():
         return None
     try:
         from ._models import pick_substitute as _pick

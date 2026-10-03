@@ -37,12 +37,11 @@ def wait_for_foreground(role: str) -> float:
         limit = _limit_s()
         if limit <= 0 or (role or "").lower() not in background_roles():
             return 0.0
-        from aiforge_core.llm import slots
-        from aiforge_core.runtime import chat_runs
+        from aiforge_core.llm import hooks, slots
         if slots.parallel_ok(role, slots.CHAT_ROLE):
             return 0.0
         t0 = time.monotonic()
-        while chat_runs.any_active() and time.monotonic() - t0 < limit:
+        while hooks.is_foreground_active() and time.monotonic() - t0 < limit:
             time.sleep(_POLL_S)
         return time.monotonic() - t0
     except Exception:  # noqa: BLE001 — a gate never blocks a call for good

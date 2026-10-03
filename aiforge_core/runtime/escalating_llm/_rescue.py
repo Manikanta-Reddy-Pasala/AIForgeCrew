@@ -42,8 +42,8 @@ class _RescueMixin:
         if not (_looks_like_missing_model(exc) or _is_transient_llm_error(exc)):
             return False
         try:
-            from aiforge_core.llm.client import _autofallback_enabled
-            return bool(_autofallback_enabled())
+            from aiforge_core.llm.client import autofallback_enabled
+            return bool(autofallback_enabled())
         except Exception:  # noqa: BLE001
             return True
 

@@ -11,14 +11,16 @@ import threading
 import time
 
 from .._context import (
-    _claims_file_edits,
-    _edit_claim_disclaimer,
-    _edit_claim_guard_enabled,
-    _edit_claim_nudge,
     _fire_stop,
     _repo_name,
     _text_of,
-    _worktree_fingerprint,
+)
+from .._guards import (
+    EchoGuard,
+    ExternalClaimGuard,
+    FileEditClaimGuard,
+    ZeroEditGuard,
+    run_guards,
 )
 from .._prompt import _strip_reasoning_prefix
 from .._registry import (
@@ -35,147 +37,18 @@ from ._shared import (
 from ._tasks import board_nudge_allowed, open_for_final, unfinished_reminder
 
 
-def _claim_guard(st, step, cwd, readonly_mode, builder, _wt_fp0):
-    """Claim-vs-reality guard: when the model claims edits but landed zero and
-    the tree is unchanged, nudge it to write (bounded); on the last try prepend
-    an honest disclaimer. Returns continue or None."""
-    # Claim-vs-reality guard: the model asserts it edited/created files
-    # but landed ZERO edits this turn AND the working tree is unchanged
-    # (checked against every tool + any on-disk write, not just counted
-    # ones) — a hallucinated tool-use surfaced as prose (the frequent
-    # "I applied the fix to X / Confirmed Fixes Applied" with no diff).
-    # Nudge it to actually write (bounded); if it still won't, prepend an
-    # honest note so the user is never told a change landed that didn't.
-    # Opt out: AIFORGE_CHAT_EDIT_CLAIM_GUARD=0.
-    # Disk cross-check: "" = no git signal (honor the contract — NOT
-    # "clean"), so in a non-git workspace we rely on _edits_made==0 alone;
-    # with git, fire only when the tree is UNCHANGED (a real write would
-    # have dirtied it — an incidental dirty tree suppressing the guard is
-    # an accepted conservative miss).
-    _wt_now = (_worktree_fingerprint(cwd)
-               if _edit_claim_guard_enabled() else "")
-    _no_landed_write = (_wt_now == "" or _wt_now == _wt_fp0)
-    if (not readonly_mode and not builder and st.edits_made == 0
-            and _edit_claim_guard_enabled()
-            and _claims_file_edits(step.get("text") or "")
-            and _no_landed_write):
-        if st.edit_claim_nudges < 2:
-            st.edit_claim_nudges += 1
-            if step.get("text"):
-                yield {"type": "thought", "text": step["text"]}
-            yield {"type": "thought", "role": "system",
-                   "text": "⚠ you described file edits but no write ran "
-                           "and nothing changed on disk — applying for "
-                           "real…"}
-            st.convo.append({"role": "user", "content": _edit_claim_nudge()})
-            return "continue"
-        step["text"] = _edit_claim_disclaimer(step.get("text") or "")
-    return None
-
-
-#: Reminders a zero-edit FINAL gets for a change request (see _no_change_guard).
-_NO_CHANGE_NUDGES = 1
-
-
-def _no_change_guard_enabled() -> bool:
-    """AIFORGE_CHAT_NO_CHANGE_GUARD=0 turns the zero-edit check off."""
-    return os.environ.get("AIFORGE_CHAT_NO_CHANGE_GUARD", "1").strip().lower() \
-        not in ("0", "false", "no", "off")
-
-
-def _bigger_task(st, _asks) -> bool:
-    """A multi-part, long or planned request — the kind where ending with a plan
-    instead of the work is likeliest. A short single ask is "small": it gets the
-    honest note but never an extra model turn."""
-    from aiforge_core.runtime.chat_router import _SMALL_MAX_CHARS, is_small_task
-    goal = getattr(st, "goal", "") or ""
-    if is_small_task(goal):
-        return False
-    return bool(_asks or getattr(st, "board_used", False)
-                or len(goal) >= _SMALL_MAX_CHARS)
-
-
-def _no_change_guard(st, step, cwd, readonly_mode, builder, plan_mode, _asks,
-                     _wt_fp0):
-    """Zero-edit FINAL for a request that asked for changes (the single-agent
-    twin of the team run that ends with a plan). The claim guard only catches a
-    final that CLAIMS edits; a plan, review or "the real work is (a)(b)(c)"
-    claims nothing and was accepted as the finished result.
-
-    Checks the disk, not the model's word: no landed edit AND an unchanged
-    tree. A bigger task gets one reminder to do the work (no other model call
-    is added); whatever the outcome, an accepted zero-edit final is labelled so
-    a plan is never read as the result. A final that asks the user something is
-    left alone. Returns continue or None."""
-    if (readonly_mode or plan_mode or builder or st.edits_made != 0
-            or not _no_change_guard_enabled()):
-        return None
-    from aiforge_core.runtime.chat_router import wants_changes
-    if not wants_changes(getattr(st, "goal", "") or ""):
-        return None
-    text = (step.get("text") or "").strip()
-    if not text or text.endswith("?"):
-        return None                       # asking the user, or nothing to label
-    _wt_now = _worktree_fingerprint(cwd)
-    if _wt_now == "" or _wt_now != _wt_fp0:
-        return None                       # no git signal, or a change landed
-    if (_bigger_task(st, _asks)
-            and getattr(st, "no_change_nudges", 0) < _NO_CHANGE_NUDGES):
-        st.no_change_nudges = getattr(st, "no_change_nudges", 0) + 1
-        yield {"type": "thought", "text": step["text"]}
-        yield {"type": "thought", "role": "system",
-               "text": "⚠ this request asks for changes but no file has been "
-                       "edited — doing the work…"}
-        st.convo.append({"role": "user", "content":
-            "[harness — not the user] The request asks for CHANGES, and you "
-            "have edited NO file. A plan, review or list of what remains is "
-            "not the result. Implement it now: make the edits, run the "
-            "checks, then give a FINAL that says what changed. If you have "
-            "verified that nothing needs to change, say so with the "
-            "evidence (the file and line that already does it)."})
-        return "continue"
-    step["text"] = ("(No file was changed in this turn — what follows is "
-                    "analysis or a plan, not an implementation.)\n\n" + text)
-    return None
-
-
 def _final_nudges(st, step, builder, strict_finish, _asks):
     """Pre-accept FINAL nudges: builder-not-finalized reminder, implicit-final
     doer nudge (strict_finish), and the one-time multi-ask completeness gate.
     Returns continue to loop again, or None to proceed."""
-    # A reply that is only the system's `[did: …]` action log is not an answer:
-    # strip it and make the model do the work (bounded; then say so plainly).
-    from ._echo import NUDGE as _ECHO_NUDGE
-    from ._echo import strip_action_log
-    _clean, _echo_only = strip_action_log(step.get("text") or "")
-    if _clean != (step.get("text") or ""):
-        step["text"] = _clean
-        if _echo_only:
-            st.echo_nudges = getattr(st, "echo_nudges", 0) + 1
-            if st.echo_nudges <= 3:
-                yield {"type": "thought", "role": "system",
-                       "text": "↺ the reply was only an action log — asking for "
-                               "the actual result"}
-                st.convo.append({"role": "user", "content": _ECHO_NUDGE})
-                return "continue"
-            step["text"] = ("(I could not produce a result for this: I kept "
-                            "listing actions instead of finishing. Say "
-                            "\"continue\" and I will pick it up, or tell me what "
-                            "to change.)")
-    # "I created the Confluence page" with no successful Confluence/Jira call
-    # this turn: the page is not there. Make it call the tool, or say so.
-    from . import _external_claim as _xc
-    _missing = _xc.unbacked_claims(step.get("text") or "",
-                                   getattr(st, "external_ok", None))
-    if _missing and not builder:
-        st.external_nudges = getattr(st, "external_nudges", 0) + 1
-        if st.external_nudges <= 2:
-            yield {"type": "thought", "role": "system",
-                   "text": "↺ the answer says something was created, but no tool "
-                           "call for it succeeded — checking"}
-            st.convo.append({"role": "user", "content": _xc.nudge_text(_missing)})
-            return "continue"
-        step["text"] = _xc.disclaimer(_missing) + (step.get("text") or "")
+    # A reply that is only the system's `[did: …]` action log is not an answer
+    # (strip it, make the model do the work); "I created the Confluence page"
+    # with no successful Confluence/Jira call this turn is not true (make it
+    # call the tool, or say so).
+    _sig = yield from run_guards(st, step, [EchoGuard(),
+                                            ExternalClaimGuard(builder)])
+    if _sig == "continue":
+        return "continue"
     # In a builder session, a "final" BEFORE the finalize tool succeeded
     # means the model narrated/stalled ("let me test what's happening…")
     # instead of building the artifact — don't end the interview with
@@ -437,11 +310,9 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
     _sig = yield from _final_nudges(st, step, builder, strict_finish, _asks)
     if _sig == "continue":
         return "continue"
-    _sig = yield from _claim_guard(st, step, cwd, readonly_mode, builder, _wt_fp0)
-    if _sig == "continue":
-        return "continue"
-    _sig = yield from _no_change_guard(st, step, cwd, readonly_mode, builder,
-                                       plan_mode, _asks, _wt_fp0)
+    _sig = yield from run_guards(st, step, [
+        FileEditClaimGuard(cwd, readonly_mode, builder, _wt_fp0),
+        ZeroEditGuard(cwd, readonly_mode, builder, plan_mode, _asks, _wt_fp0)])
     if _sig == "continue":
         return "continue"
     _sig = yield from _verify_on_final(st, step, cwd, plan_mode, builder)

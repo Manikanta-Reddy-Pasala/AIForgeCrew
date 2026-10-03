@@ -10,7 +10,7 @@ context_for``) keep working.
 from __future__ import annotations
 
 from aiforge_core.net.ssl import (
-    _ca_bundle,
+    ca_bundle,
     _verify_enabled,
     auto_relax_internal,
     context_for,
@@ -19,5 +19,5 @@ from aiforge_core.net.ssl import (
 
 __all__ = [
     "context_for", "insecure_context", "auto_relax_internal",
-    "_ca_bundle", "_verify_enabled",
+    "ca_bundle", "_verify_enabled",
 ]

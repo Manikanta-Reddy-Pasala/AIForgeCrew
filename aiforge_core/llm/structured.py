@@ -141,8 +141,8 @@ def structured_complete(role: str, messages: list[dict],
                 # The instructor path talks to the endpoint directly (bypasses
                 # client.complete), so mirror it to Langfuse here too.
                 try:
-                    from aiforge_core.llm.client import _trace_generation
-                    _trace_generation(role, list(messages),
+                    from aiforge_core.llm.client import trace_generation
+                    trace_generation(role, list(messages),
                                       res.model_dump_json()[:8000], 0)
                 except Exception:  # noqa: BLE001 — tracing never breaks a call
                     pass

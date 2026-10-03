@@ -22,7 +22,7 @@ if os.environ.get("AIFORGE_LLM_RETRY_AUTH", "1") not in ("0", "false", "no"):
     _TRANSIENT_HTTP = _TRANSIENT_HTTP | {401, 403}
 
 
-def _http_err_body(exc: Exception) -> str:
+def http_err_body(exc: Exception) -> str:
     """Best-effort read of an HTTPError response body (the proxy's actual
     rejection detail, e.g. which param it didn't like). urllib's HTTPError
     is a file-like; reading it is one-shot, so guard against re-reads."""
@@ -124,7 +124,7 @@ def _error_message(body: str) -> str:
     return txt
 
 
-def _full_err_body(exc: Exception) -> str:
+def full_err_body(exc: Exception) -> str:
     """The WHOLE error body, unclipped. ``_http_err_body`` truncates to 600
     chars because it feeds a log line; classification must not, or a gateway
     that echoes the request before its verdict is judged on the echo — the two
@@ -154,7 +154,7 @@ def is_rate_limited(exc: Exception) -> bool:
     three copies of this judgement is three chances for them to disagree."""
     if not isinstance(exc, urllib.error.HTTPError):
         return False
-    return status_body_is_rate_limited(exc.code, _full_err_body(exc))
+    return status_body_is_rate_limited(exc.code, full_err_body(exc))
 
 
 def is_quota_exhausted(exc: Exception) -> bool:
@@ -164,7 +164,7 @@ def is_quota_exhausted(exc: Exception) -> bool:
         return False
     if not (400 <= exc.code < 500):
         return False
-    return body_is_quota_exhausted(_full_err_body(exc))
+    return body_is_quota_exhausted(full_err_body(exc))
 
 
 def body_is_quota_exhausted(body: str) -> bool:
@@ -247,7 +247,7 @@ def _http_error_transient(exc: "urllib.error.HTTPError") -> tuple[bool, str]:
     return False, f"http_{exc.code}"
 
 
-def _is_transient_exc(exc: Exception) -> tuple[bool, str]:
+def is_transient_exc(exc: Exception) -> tuple[bool, str]:
     """Return (retry?, label) for transport exceptions.
 
     HTTPError 5xx / 408 / 429 → retry (server-side or rate-limit).
@@ -273,3 +273,9 @@ def _is_transient_exc(exc: Exception) -> tuple[bool, str]:
     if isinstance(exc, OSError):
         return True, "os_error"
     return False, exc.__class__.__name__
+
+
+_http_err_body = http_err_body  # old name: tests and the package re-export use it
+
+
+_is_transient_exc = is_transient_exc  # old name: tests and the package re-export use it

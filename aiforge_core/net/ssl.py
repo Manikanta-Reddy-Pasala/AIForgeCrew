@@ -85,7 +85,7 @@ def _verify_enabled() -> bool:
     return raw.strip().lower() not in _FALSEY
 
 
-def _ca_bundle() -> str | None:
+def ca_bundle() -> str | None:
     """The CA bundle for AIForge's own traffic.
 
     ``AIFORGE_LLM_CA_BUNDLE`` still wins for the model endpoint alone; anything
@@ -180,7 +180,7 @@ def insecure_context(url: str | None = None) -> ssl.SSLContext:
     certificate error rather than opening it, which is the correct direction for
     a fallback to fail in.
     """
-    bundle = _ca_bundle()
+    bundle = ca_bundle()
     if bundle:
         try:
             return ssl.create_default_context(cafile=bundle)
@@ -232,7 +232,7 @@ def public_verifying_context() -> "ssl.SSLContext | None":
     then exactly right), and NEVER relaxes verification: this is the verified
     attempt.
     """
-    bundle = _ca_bundle()
+    bundle = ca_bundle()
     if not bundle:
         return None
     try:
@@ -314,7 +314,7 @@ def context_for(url: str | None) -> ssl.SSLContext | None:
     if not url or not str(url).lower().startswith("https://"):
         return None
 
-    ca = _ca_bundle()
+    ca = ca_bundle()
     if ca:
         # Verification stays ON, anchored to the supplied CA bundle.
         return ssl.create_default_context(cafile=ca)
@@ -340,9 +340,12 @@ def httpx_verify(url: str | None = None, *, insecure_tls: bool = False):
     auto-relaxed internal host → verification OFF (unless a CA bundle pins it);
     else the per-url context / CA bundle / default verify. Returns
     True | <ssl.SSLContext>. httpx accepts both."""
-    if (insecure_tls or auto_relax_internal(url)) and not _ca_bundle():
+    if (insecure_tls or auto_relax_internal(url)) and not ca_bundle():
         return insecure_context(url)        # verifying, pinned to that host
     ctx = context_for(url)
     if ctx is not None:
         return ctx
-    return _ca_bundle() or True
+    return ca_bundle() or True
+
+
+_ca_bundle = ca_bundle  # old name, kept for callers that still import it

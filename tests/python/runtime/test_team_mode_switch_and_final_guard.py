@@ -21,7 +21,7 @@ import pytest
 
 from aiforge_core.api.routes._chat import _routing as R
 from aiforge_core.runtime import chat_pipeline_prompt as PP
-from aiforge_core.runtime.chat_agent._turn import _finish
+from aiforge_core.runtime.chat_agent._guards import ZeroEditGuard, run_guards, zero_edit
 
 ASK = ("implement a rust/go based parallel read path, target 500 ms for 50k "
        "records")
@@ -140,12 +140,12 @@ def _run(gen):
 @pytest.fixture
 def clean_tree(monkeypatch):
     """A git workspace whose tree did not change this turn."""
-    monkeypatch.setattr(_finish, "_worktree_fingerprint", lambda cwd: "fp")
+    monkeypatch.setattr(zero_edit, "_worktree_fingerprint", lambda cwd: "fp")
 
 
 def _guard(st, step, asks=(), plan=False, readonly=False):
-    return _run(_finish._no_change_guard(st, step, "/r", readonly, "", plan,
-                                         list(asks), "fp"))
+    return _run(run_guards(st, step, [ZeroEditGuard(
+        "/r", readonly, "", plan, list(asks), "fp")]))
 
 
 def test_a_plan_for_a_bigger_change_request_is_sent_back_once(clean_tree):
@@ -182,13 +182,13 @@ def test_a_turn_that_edited_is_left_alone(clean_tree):
 
 
 def test_a_change_on_disk_without_a_counted_edit_is_left_alone(monkeypatch):
-    monkeypatch.setattr(_finish, "_worktree_fingerprint", lambda cwd: "other")
+    monkeypatch.setattr(zero_edit, "_worktree_fingerprint", lambda cwd: "other")
     step = {"text": "done"}
     assert _guard(_st(), step)[1] is None and step["text"] == "done"
 
 
 def test_no_git_signal_means_no_verdict(monkeypatch):
-    monkeypatch.setattr(_finish, "_worktree_fingerprint", lambda cwd: "")
+    monkeypatch.setattr(zero_edit, "_worktree_fingerprint", lambda cwd: "")
     step = {"text": "done"}
     assert _guard(_st(), step)[1] is None and step["text"] == "done"
 
