@@ -450,6 +450,24 @@ def test_stuck_state_resets_by_scope():
     assert st.identical_run is None and not st.recent_outputs
 
 
+def test_the_pipeline_loop_scoped_keys_are_declared_once():
+    from aiforge_core.runtime.graph_pipeline import _gates as G
+    assert set(G._scoped("iter")) == {
+        "tests_ok", "typecheck_ok", "lint_ok", "doer_incomplete",
+        "_repeat_counts", "_iter_fail"}
+    assert set(G._scoped("verify")) == {
+        "verifier_verdict", "verify_correctness", "verify_scope",
+        "verify_risk", "scope_allowlist_globs"}
+    assert set(G._scoped("replan")) == {
+        "feedback_verdict", "loop_budget_kill", "loop_budget_reason",
+        "doer_loop_started_at", "doer_incomplete", "_repeat_counts",
+        "_idle_iters", "loc_history", "loc_first_seen", "doer_outcome",
+        "verifier_verdict", "verify_correctness", "verify_scope",
+        "verify_risk", "verify_replan_count", "tests_ok", "typecheck_ok",
+        "lint_ok", "scope_allowlist_globs"}
+    assert len({k for k, _ in G.LOOP_SCOPED_KEYS}) == len(G.LOOP_SCOPED_KEYS)
+
+
 # ── policy: env is re-read on every load ─────────────────────────────────
 
 def test_policy_rereads_the_environment(monkeypatch):

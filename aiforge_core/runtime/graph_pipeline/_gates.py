@@ -11,6 +11,8 @@ import logging
 import os
 import time
 
+from aiforge_core.runtime import stuck_signal as K
+
 from ._config import (
     DOER_MAX_WALL_S,
     MAX_GAP_PASSES,
@@ -91,26 +93,61 @@ def _exhaustion_reason(wall_kill: bool, cap_out: bool, max_iters: int,
     return str(state.get("loop_budget_reason", "loc plateau"))
 
 
-# Per-iteration quality signals, cleared before the NEXT Doer pass so its
-# Feedback gate reasons ONLY over the tools that fire THAT iteration.
-_PER_ITER_KEYS = (
-    "tests_ok", "typecheck_ok", "lint_ok",
+# Every state key that belongs to ONE Doer loop, with the moments it is
+# cleared: "iter" = before the NEXT Doer pass (so its Feedback gate reasons
+# ONLY over the tools that fire THAT iteration), "replan" = when the plan is
+# thrown away (so the new attempt starts clean), "verify" = when the verifier
+# rejects the plan. A key written anywhere in the loop is declared HERE, once.
+LOOP_SCOPED_KEYS = (
+    # (key, cleared on)
+    ("tests_ok", ("iter", "replan")),
+    ("typecheck_ok", ("iter", "replan")),
+    ("lint_ok", ("iter", "replan")),
     # `doer_incomplete` is written when a Doer turn stops early or lands zero
     # edits, and the Feedback quality gate turns it into a hard fail. Nothing
     # ever cleared it, so ONE bad turn made the pass-exit unreachable for the
     # rest of the run AND for the replanned attempt: the loop then ground to
     # its ceiling with a green tree and a model saying "pass" every iteration.
-    "doer_incomplete",
+    ("doer_incomplete", ("iter", "replan")),
     # The repeat guard counts identical (tool, args) calls for the whole RUN.
     # `run_tests` with byte-identical args is the normal case once per
     # iteration, so from iteration 4 the guard short-circuited it — and ADK
     # still fires the after-tool callback, which recorded the green suite as
     # tests_ok=False.
-    "_repeat_counts",
+    ("_repeat_counts", ("iter", "replan")),
     # The failure the last test run in THIS iteration ended on (see
     # _same_failure_stop). A stale one would count the same run twice.
-    "_iter_fail",
+    ("_iter_fail", ("iter",)),
+    # The loop's own verdict and kill flags: a replanned attempt that inherits
+    # them EXITS the Doer loop at zero real iterations.
+    ("feedback_verdict", ("replan",)),
+    ("loop_budget_kill", ("replan",)),
+    ("loop_budget_reason", ("replan",)),
+    ("doer_loop_started_at", ("replan",)),
+    # The no-edit streak: a re-planned attempt is owed its own passes. It
+    # used to inherit the streak, so its FIRST pass without an edit was
+    # already "the 3rd in a row" and the attempt stalled after one pass.
+    ("_idle_iters", ("replan",)),
+    ("loc_history", ("replan",)),
+    ("loc_first_seen", ("replan",)),
+    ("doer_outcome", ("replan",)),
+    ("verifier_verdict", ("replan", "verify")),
+    ("verify_correctness", ("replan", "verify")),
+    ("verify_scope", ("replan", "verify")),
+    ("verify_risk", ("replan", "verify")),
+    ("verify_replan_count", ("replan",)),
+    # plan-derived scope: cleared so plan_promote re-derives from the NEW plan
+    # (+ operator seeds) instead of monotonically widening with the rejected
+    # plan's globs.
+    ("scope_allowlist_globs", ("replan", "verify")),
 )
+
+
+def _scoped(moment: str) -> tuple:
+    return tuple(k for k, moments in LOOP_SCOPED_KEYS if moment in moments)
+
+
+_PER_ITER_KEYS = _scoped("iter")
 
 
 def _note_failed_approach(state, text: str) -> None:
@@ -153,7 +190,7 @@ def _same_failure_stop(state) -> bool:
         return False
     if kind == same_failure.STOP:
         state["loop_budget_kill"] = True
-        state["loop_budget_reason"] = "same_failure"
+        state["loop_budget_reason"] = K.SAME_FAILURE
         _trace(":SameFailureStop", {"failure": fail.headline[:120]})
         return True
     return False
@@ -234,27 +271,7 @@ def _reset_for_replan(state) -> None:
     from the prior pass: loop_gate then read the old "pass" (or kill flag) and
     EXITED the Doer loop at zero real iterations, silently wasting the replan."""
     state["doer_iters"] = 0
-    _clear_state(state, (
-        "feedback_verdict", "loop_budget_kill", "loop_budget_reason",
-        "doer_loop_started_at",
-        # Both are run-scoped and both make a pass unreachable; a
-        # replanned attempt that inherits them is spent before it starts.
-        "doer_incomplete", "_repeat_counts",
-        # The no-edit streak: a re-planned attempt is owed its own passes. It
-        # used to inherit the streak, so its FIRST pass without an edit was
-        # already "the 3rd in a row" and the attempt stalled after one pass.
-        "_idle_iters",
-        "loc_history", "loc_first_seen", "doer_outcome",
-        "verifier_verdict", "verify_correctness", "verify_scope",
-        "verify_risk", "verify_replan_count",
-        # quality-gate signals: a stale tests_ok=False from the failed
-        # pass would force Feedback's gate to fail the replanned pass
-        # unless the new Doer happens to re-run run_tests.
-        "tests_ok", "typecheck_ok", "lint_ok",
-        # plan-derived scope: cleared so plan_promote re-derives from
-        # the NEW plan (+ operator seeds) instead of monotonically
-        # widening with the rejected plan's globs.
-        "scope_allowlist_globs"))
+    _clear_state(state, _scoped("replan"))
 
 
 def _validator_gate(ctx):  # type: ignore[no-untyped-def]
@@ -336,9 +353,7 @@ def _verifier_gate(ctx):  # type: ignore[no-untyped-def]
         )
         # clear stale per-axis verdicts + plan-derived scope so the
         # re-plan's verifier pass and plan_promote run fresh
-        _clear_state(state, ("verifier_verdict", "verify_correctness",
-                             "verify_scope", "verify_risk",
-                             "scope_allowlist_globs"))
+        _clear_state(state, _scoped("verify"))
         ctx.route = ROUTE_VERIFY_REPLAN
         _trace(":VerifyReplan", {"replan": vreplans + 1, "why": why})
     else:

@@ -15,6 +15,7 @@ import collections
 import threading
 
 from aiforge_core.runtime import no_progress
+from aiforge_core.runtime import stuck_signal as K
 from aiforge_core.runtime.failure_signature import result_text
 
 _CHECK_INS = ("command_wait", "command_output")
@@ -79,7 +80,7 @@ class DoerProgressGuard:
                               "converging.")
             if state is not None:
                 state["loop_budget_kill"] = True
-                state["loop_budget_reason"] = "no_progress"
+                state["loop_budget_reason"] = K.NO_PROGRESS
             return {**response, "loop_guard": run["stopped"]}
         return None
 
