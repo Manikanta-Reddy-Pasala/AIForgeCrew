@@ -377,8 +377,9 @@ def chat(monkeypatch):
     import aiforge_core.memory.unified_query as pkg
     seen: dict = {}
     monkeypatch.setattr(pkg, "_chat_sessions",
-                        lambda text, limit=None, exclude_session=None:
-                        seen.update(exclude=exclude_session)
+                        lambda text, limit=None, exclude_session=None,
+                        project=None:
+                        seen.update(exclude=exclude_session, project=project)
                         or [{"text": "we chose postgres"}], raising=False)
     return seen
 
@@ -389,6 +390,15 @@ def test_prior_chats_inform_a_scoped_recall_too(chat, monkeypatch):
     assert ctx.used == ["chat"]
     assert chat["exclude"] == 9, \
         "and the live turn is not recalled as prior chat"
+    assert chat["project"] == "AIForgeCrew", \
+        "and only this project's chats are read"
+
+
+def test_a_repo_less_recall_reads_every_projects_chats(chat, monkeypatch):
+    monkeypatch.delenv("AIFORGE_AFM_REPO", raising=False)
+    ctx = _ctx(monkeypatch, repo=None)
+    Q._src_chat(ctx)
+    assert ctx.used == ["chat"] and chat["project"] is None
 
 
 def test_chat_recall_can_be_switched_off_entirely(chat, monkeypatch):
