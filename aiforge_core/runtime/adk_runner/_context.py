@@ -10,7 +10,7 @@ class _CtxLimits:
     """The trimming budget, read from env once instead of by each closure."""
 
     __slots__ = ("keep_invocations", "max_contents", "strategy",
-                 "max_chars", "max_part_chars", "min_keep")
+                 "max_chars", "max_part_chars", "min_keep", "trim_step")
 
     def __init__(self) -> None:
         self.keep_invocations = _int_env("AIFORGE_CONTEXT_KEEP_INVOCATIONS", 12)
@@ -22,6 +22,8 @@ class _CtxLimits:
         self.max_chars = max(4000, max_tokens * 4)
         self.max_part_chars = _int_env("AIFORGE_CONTEXT_MAX_PART_CHARS", 24000)
         self.min_keep = max(4, _int_env("AIFORGE_CONTEXT_MIN_KEEP", 8))
+        # Contents dropped at a time by the count cap (1 = slide every call).
+        self.trim_step = max(1, _int_env("AIFORGE_CONTEXT_TRIM_STEP", 10))
 
 
 def _int_env(key: str, default: int) -> int:
@@ -144,12 +146,20 @@ def _cap_content(c, cap: int):
         return c
 
 
-def _window(contents: list, n: int, adjust, is_human) -> list:
+def _window(contents: list, n: int, adjust, is_human, step: int = 1) -> list:
     """The seed user message plus the last ``n`` contents, split adjusted so a
-    function response is never orphaned from its call."""
+    function response is never orphaned from its call.
+
+    With ``step`` > 1 the cut moves ``step`` contents at a time (keeping
+    ``n`` to ``n + step - 1``): a cut that slides on every call changes the
+    beginning of every request, and the model server then re-reads the whole
+    prompt each time instead of reusing its cache."""
     if n <= 0 or len(contents) <= n:
         return list(contents)
-    split = len(contents) - n
+    step = max(1, step)
+    split = ((len(contents) - n) // step) * step
+    if split <= 0:
+        return list(contents)
     with contextlib.suppress(Exception):
         split = adjust(contents, split)
     head_seed = [c for c in contents[:split] if is_human(c)][:1]
@@ -164,9 +174,10 @@ def _tail_trimmer(lim: "_CtxLimits", adjust, is_human):
         contents = [_cap_content(c, lim.max_part_chars)
                     for c in _dedupe_adjacent_user(contents)]
         keep_n = lim.max_contents if lim.max_contents > 0 else len(contents)
-        out = _window(contents, keep_n, adjust, is_human)
+        out = _window(contents, keep_n, adjust, is_human, lim.trim_step)
         # Token-budget pass: if the kept window is still too heavy, shrink
         # the tail window until under the char ceiling (or we hit min_keep).
+        # Exact, not stepped: the budget is a hard limit.
         while (lim.max_chars > 0 and keep_n > lim.min_keep
                and sum(_content_chars(c) for c in out) > lim.max_chars):
             keep_n -= 4

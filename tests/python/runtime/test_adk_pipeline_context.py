@@ -250,6 +250,9 @@ def limits(monkeypatch):
               "AIFORGE_CONTEXT_MAX_PART_CHARS", "AIFORGE_CONTEXT_MIN_KEEP",
               "AIFORGE_CONDENSER_STRATEGY", "AIFORGE_CONTEXT_FILTER_DISABLE"):
         monkeypatch.delenv(k, raising=False)
+    # These tests assert exact tail sizes: cut one content at a time (the
+    # stepped cut has its own tests in test_team_small_speed.py).
+    monkeypatch.setenv("AIFORGE_CONTEXT_TRIM_STEP", "1")
     return monkeypatch
 
 

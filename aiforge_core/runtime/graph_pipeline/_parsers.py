@@ -159,6 +159,74 @@ def _read_complexity(state: Any) -> str:
     return "moderate"
 
 
+def _read_estimated_files(state: Any) -> int:
+    """Triage's own ``estimated_files`` (the files the request names or
+    implies). 0 when triage did not say — which never counts as small."""
+    try:
+        raw = state.get("triage_verdict")
+        obj = raw if isinstance(raw, dict) else (
+            _json_or_embedded(_unfence(raw), raw)
+            if isinstance(raw, str) and raw.strip() else None)
+        if isinstance(obj, dict):
+            return max(0, int(obj.get("estimated_files") or 0))
+    except Exception:  # noqa: BLE001
+        pass
+    return 0
+
+
+def _small_max_files() -> int:
+    """The file count up to which a change is small
+    (``AIFORGE_SMALL_MAX_FILES``, default 2)."""
+    try:
+        return max(0, int(os.environ.get("AIFORGE_SMALL_MAX_FILES", "2")))
+    except (TypeError, ValueError):
+        return 2
+
+
+def _env_on(name: str, default: str = "1") -> bool:
+    return str(os.environ.get(name, default)).strip().lower() \
+        in ("1", "true", "yes", "on")
+
+
+def _is_small(state: Any, complexity: Any) -> bool:
+    """Triage sized the change at ``_small_max_files`` files or fewer and did
+    not call it hard. Such a request names its files, so the Planner can plan
+    it from the request alone; the Doer reads the code it needs.
+    ``AIFORGE_SMALL_ROUTE=0`` sends it down the full path instead."""
+    if not _env_on("AIFORGE_SMALL_ROUTE"):
+        return False
+    if _normalize_complexity(complexity) in _COMPLEX_TOKENS:
+        return False
+    return 0 < _read_estimated_files(state) <= _small_max_files()
+
+
+_GLOB_CHARS = frozenset("*?[")
+
+
+def _plan_is_small(obj: Any) -> bool:
+    """The Planner's own plan is one small step: it declared no subtickets
+    and scoped the change to at most ``_small_max_files`` named files (no
+    wildcard). Nothing but the plan is read."""
+    if not isinstance(obj, dict):
+        return False
+    if obj.get("subtickets") or obj.get("child_subtickets"):
+        return False
+    globs = obj.get("scope_allowlist_globs")
+    if not isinstance(globs, list) or not globs:
+        return False
+    names = {str(g).strip() for g in globs if str(g).strip()}
+    if any(_GLOB_CHARS & set(n) for n in names):
+        return False
+    return 0 < len(names) <= _small_max_files()
+
+
+def small_plan_skip(state: Any) -> bool:
+    """True when the stages that only pay off on a larger plan (the plan
+    critic, the diff polish) are skipped: the plan in state is small (set by
+    ``plan_promote``) and ``AIFORGE_SMALL_PLAN_SKIP`` is not 0."""
+    return bool(state.get("plan_small")) and _env_on("AIFORGE_SMALL_PLAN_SKIP")
+
+
 def _unfence(text: str) -> str:
     """Strip a ``` fence and a leading ``json`` marker."""
     text = text.strip().strip("`")
