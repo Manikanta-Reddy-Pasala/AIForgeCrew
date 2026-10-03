@@ -98,7 +98,12 @@ def _run_dir(repo: str, name: str) -> str:
 def scratch_dir(cwd: "str | None") -> "str | None":
     """The chat's scratch folder (for a path that is a chat worktree): where
     helper scripts, logs and dumps go that are not part of the change."""
-    if not cwd or not is_worktree(cwd) or not _read_meta(str(cwd)):
+    if not cwd or not is_worktree(cwd):
+        return None
+    meta = _read_meta(str(cwd))
+    # A team run's worktree keeps a meta file of its own next to it: only the
+    # one :func:`ensure` wrote names a chat.
+    if meta.get("session_id") is None or "dirty_at_start" not in meta:
         return None
     return os.path.join(os.path.dirname(os.path.normpath(str(cwd))), _SCRATCH)
 

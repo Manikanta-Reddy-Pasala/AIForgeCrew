@@ -327,7 +327,10 @@ def _ensure_git_workspace(cwd: str) -> str:
         # .gitignore is the committed baseline (the workspace marker is
         # excluded); excludes keep any stray junk out of the baseline too.
         _git(["add", "-A", "--", ".", *_EXCLUDE_PATHSPECS], cwd)
-        _git(["commit", "-m", "workspace baseline"], cwd)
+        # --allow-empty: a repo with no commit and nothing but excluded files
+        # still needs a HEAD, or every later diff of the turn has no base and
+        # the run reports "no file changes" for work that is on disk.
+        _git(["commit", "--allow-empty", "-m", "workspace baseline"], cwd)
     cur = _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd)
     return (cur.stdout or "").strip() or "main"
 
