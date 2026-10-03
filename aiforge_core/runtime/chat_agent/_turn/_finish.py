@@ -25,6 +25,7 @@ from .._registry import (
     _BUILDER_FINALIZE_TOOL,
 )
 from ._escalate import pause_on_stuck
+from ._stuck.detect import detect
 from ._stuck.ladder import change_approach
 from ._outcomes import _verify_on_final
 from ._shared import (
@@ -496,8 +497,8 @@ def _handle_continue_step(st, step, builder, cwd):
     _empty_final = step.get("reason") == "empty_final"
     if step.get("thought"):
         yield {"type": "thought", "text": step["thought"]}
-    st.continue_nudges += 1
-    if st.continue_nudges > 2 and not pause_on_stuck():
+    signal = detect("narration", st)
+    if signal and not pause_on_stuck():
         # It keeps not delivering: change approach and carry on (the guard
         # ends the turn with a summary only after many tries).
         _r = yield from change_approach(
@@ -505,7 +506,7 @@ def _handle_continue_step(st, step, builder, cwd):
         if _r == "continue":
             st.continue_nudges = 0
         return _r
-    if st.continue_nudges > 2:
+    if signal:
         # It keeps not delivering — stop cleanly rather than loop to
         # the safety cap.
         _fire_stop("no_action", cwd)

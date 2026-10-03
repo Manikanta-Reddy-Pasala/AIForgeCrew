@@ -21,6 +21,7 @@ from ._approval import (
 )
 from aiforge_core.runtime.stuck_policy import Policy
 
+from ._stuck.detect import detect
 from ._stuck.ladder import Pause, finish_stuck, nudge
 from ._idle_steps import note_step
 from ._outcomes import _note_green_tests, note_failure
@@ -32,7 +33,6 @@ from ._progress import (
     identical_repeats,
     note_command,
     note_identical,
-    ping_pong,
     note_read,
     note_write,
     strike,
@@ -75,10 +75,9 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
     # re-asking between new reads is still stopped eventually.
     duplicate = (_long_chain_help and name in _READ_OBS_TOOLS
                  and sig in st.read_sigs_seen)
-    looping = strike(st, sig, per_state=not duplicate)
-    _ident = identical_repeats(st, sig)
-    if not looping and not duplicate and (_ident >= Policy.load().identical_repeats or ping_pong(st, sig)):
-        looping = "same"
+    signal = detect("action", st, sig, strike(st, sig, per_state=not duplicate),
+                    duplicate)
+    looping = signal.detail if signal else ""
     if duplicate and not looping:
         _recap = _progress_recap(st.convo)
         yield from nudge(

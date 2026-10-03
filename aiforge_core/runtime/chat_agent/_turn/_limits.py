@@ -5,7 +5,6 @@ from __future__ import annotations
 import time
 
 from .._context import (
-    _OUTPUT_REPEAT,
     _compact_convo,
     _ctx_budget_chars,
     _fire_stop,
@@ -24,8 +23,9 @@ from ._batch import (
 from ._convo import (
     _append_directive,
 )
-from ._escalate import pause_on_stuck
-from ._progress import may_recover, note_monologue, reset_monologue
+from ._progress import may_recover
+from ._stuck.detect import IDLE_REPLIES, detect
+from ._stuck.signal import MONOLOGUE
 from ._stuck.ladder import Pause, change_approach, finish_stuck, nudge
 from ._shared import (
     _THE_FINALIZE_TOOL,
@@ -278,9 +278,7 @@ def _stuck_output_guard(st, out):
     # re-emits an action it already ran — so FIRST recover with a progress
     # recap + "do the NEXT step" nudge (bounded); only give up if that keeps
     # failing. The old hard bail here discarded all the work done so far.
-    st.recent_outputs.append(out.strip())
-    if (len(st.recent_outputs) == _OUTPUT_REPEAT
-            and len(set(st.recent_outputs)) == 1):
+    if detect("output", st, out):
         if may_recover(st):
             st.recent_outputs.clear()          # fresh slate for the recovered plan
             _recap = _progress_recap(st.convo)
@@ -308,9 +306,7 @@ def _stuck_output_guard(st, out):
     return None
 
 
-#: Replies in a row that run no tool before the run counts as going round:
-#: above every bounded nudge the final/continue gates can send in a row.
-_IDLE_REPLIES = 8
+_IDLE_REPLIES = IDLE_REPLIES      # the tests count steps against it
 
 
 def _last_reply(st) -> str:
@@ -326,19 +322,15 @@ def _idle_reply_guard(st):
     count; a run that keeps talking without acting is a loop, whatever its
     step count. The first trip nudges, the next one stops and asks — that
     budget refills only when the model acts. Returns continue/return."""
-    st.idle_replies = getattr(st, "idle_replies", 0) + 1
-    if not pause_on_stuck() and note_monologue(st, _last_reply(st)):
+    signal = detect("reply", st, _last_reply(st))
+    if signal is None:
+        return "continue"
+    if signal.kind == MONOLOGUE:
         # Three replies in a row that run no tool and say the same thing:
         # a monologue. Change approach now; do not wait for eight.
-        st.idle_replies = 0
-        reset_monologue(st)
         return (yield from change_approach(
             st, "You keep saying the same thing without acting."))
-    if st.idle_replies < _IDLE_REPLIES:
-        return "continue"
-    st.idle_replies = 0
-    st.idle_trips = getattr(st, "idle_trips", 0) + 1
-    if st.idle_trips == 1:
+    if signal.detail == "nudge":
         yield from nudge(
             st, "↺ replying without acting — nudge to act or finish",
             "[loop guard — not the user] Your last replies ran no tool and "

@@ -401,6 +401,55 @@ def test_post_tool_nudge_rides_on_the_observation():
     assert st.convo[-1]["content"].endswith("\nWARN")
 
 
+# ── detectors report Signals and never touch the conversation ───────────
+
+def test_detectors_return_signals_without_touching_the_conversation():
+    from aiforge_core.runtime.chat_agent._turn._progress import note_identical
+    from aiforge_core.runtime.chat_agent._turn._stuck import signal as K
+    from aiforge_core.runtime.chat_agent._turn._stuck.detect import detect
+    st = _st()
+    before = list(st.convo)
+    assert [detect("output", st, "x") for _ in range(2)] == [None, None]
+    assert detect("output", st, "x") == K.Signal(K.SAME_OUTPUT, "x", "")
+    assert detect("narration", st) is None and detect("narration", st) is None
+    assert detect("narration", st).kind == K.NARRATION
+    assert detect("action", st, "s", "same", False) == K.Signal(K.SAME_ACTION, "s", "same")
+    assert detect("action", st, "s", "", True) is None
+    for _ in range(5):
+        note_identical(st, "s", {"ok": True})
+    assert detect("action", st, "s", "", False).kind == K.IDENTICAL_RESULT
+    assert detect("action", st, "s", "", True) is None       # a skipped duplicate read
+    assert st.convo == before
+
+
+def test_a_ping_pong_is_a_signal():
+    from aiforge_core.runtime.chat_agent._turn._progress import note_identical
+    from aiforge_core.runtime.chat_agent._turn._stuck import signal as K
+    from aiforge_core.runtime.chat_agent._turn._stuck.detect import detect
+    st = _st()
+    for sig in ("a", "b") * 3:
+        note_identical(st, sig, {"ok": True})
+    assert detect("action", st, "a", "", False).kind == K.PING_PONG
+    assert detect("action", st, "c", "", False) is None
+
+
+def test_stuck_state_resets_by_scope():
+    from aiforge_core.runtime.chat_agent._turn._stuck.state import LoopState
+    st = LoopState(stuck_recoveries=2, continue_nudges=2, convo=[])
+    assert st.stuck.stuck_recoveries == 2 and st.continue_nudges == 2
+    st.recent_calls.append(("k", "r"))
+    st.identical_run = ("k", "r", 3)
+    st.recent_outputs.append("o")
+    st.idle_replies = st.idle_trips = 4
+    st.stuck.reset("recovery")
+    assert not st.recent_calls and st.identical_run == ("k", "r", 3)
+    st.stuck.reset("action")
+    assert (st.continue_nudges, st.idle_replies, st.idle_trips) == (0, 0, 0)
+    assert st.stuck_recoveries == 2                      # a budget, not a streak
+    st.stuck.reset("restart")
+    assert st.identical_run is None and not st.recent_outputs
+
+
 # ── policy: env is re-read on every load ─────────────────────────────────
 
 def test_policy_rereads_the_environment(monkeypatch):
