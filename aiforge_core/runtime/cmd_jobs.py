@@ -419,6 +419,8 @@ def _hint(job: Job, alive: bool, why: str | None = None) -> str:
 
 def look(job: Job, why: str | None = None) -> dict:
     """What happened since the last look. Advances the look position."""
+    if why and sig.is_failure_reason(why):
+        _grace_for_exit(job)
     alive = job.alive()
     parts = job._unread(advance=True)
     shown = [parts[0]] if parts[0] else []
@@ -454,6 +456,23 @@ def _record_end(job: Job, code, ended_by) -> None:
 
 def default_wait_s(job: Job) -> float:
     return min(300.0, 15.0 * (2 ** min(job.streak, 5)))
+
+
+#: How long a command that just printed an error is given to exit by itself.
+_EXIT_GRACE_S = 1.5
+
+
+def _grace_for_exit(job: Job) -> None:
+    """A command whose output already shows a failure is very often seconds
+    (or milliseconds) from exiting: a test runner prints its summary and then
+    returns its code. Handing it back in that instant reports ``running`` with
+    ``ok: True`` for a run that is a heartbeat from ``ok: False, code: 1`` — and
+    which of the two the caller sees was a race with the process teardown. A
+    short grace lets the exit land so the result carries the real code; a
+    command that really keeps running is handed back as before."""
+    deadline = time.monotonic() + _EXIT_GRACE_S
+    while job.alive() and time.monotonic() < deadline:
+        time.sleep(0.02)
 
 
 def wait(job: Job, max_s: float | None = None, session_id=None) -> dict:

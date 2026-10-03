@@ -15,6 +15,16 @@ import tempfile
 
 os.environ.setdefault("AIFORGE_AUTODETECT_CTX", "0")
 
+# HERMETIC MODEL ENDPOINT. An unstubbed model call must fail fast against a
+# port nothing listens on, never reach whatever the box happens to run on the
+# default 127.0.0.1:1234 (an SSH tunnel to a live LM Studio on the CI/test
+# host: the call then hangs or answers "No models loaded"). ASSIGNED, not
+# setdefault: an operator's exported endpoint must not leak into tests either.
+# Tests that exercise endpoint resolution set their own values via monkeypatch.
+_DEAD_ENDPOINT = "http://127.0.0.1:9/v1"
+os.environ["AIFORGE_LM_BASE_URL"] = _DEAD_ENDPOINT
+os.environ["AIFORGE_OPENAI_COMPAT_BASE_URL"] = _DEAD_ENDPOINT
+
 # The OKR scope classifier (md_store.classify_scope, wired into capture) makes
 # one learner-role LLM call per captured fact. Off by default in the suite so
 # captures don't attempt the network (fast, deterministic fallback = honour the
