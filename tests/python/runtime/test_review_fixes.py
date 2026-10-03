@@ -107,7 +107,9 @@ def test_a_boosted_step_reserves_reply_tokens():
     with reasoning.boost():
         assert reasoning.boost_reserve_tokens() > 0
     from aiforge_core.runtime.chat_agent._context import _window as W
-    assert reasoning.boost_reserve_tokens in W._RESERVE_HOOKS
+    plain = W._output_reserve_tokens(131072)
+    with reasoning.boost():
+        assert W._output_reserve_tokens(131072) > plain
 
 
 def test_a_nested_boost_is_not_clobbered_by_a_non_boosted_step():

@@ -371,7 +371,6 @@ def window(monkeypatch):
     from aiforge_core.config import runtime_settings
     monkeypatch.setattr(runtime_settings, "get",
                         lambda k, *a, **kw: 4096 if k == "max_output_tokens" else 0)
-    monkeypatch.setattr(W, "_RESERVE_HOOKS", [])
     return 131072
 
 
@@ -398,22 +397,12 @@ def test_the_reserve_is_capped_to_a_window_fraction(window):
     assert huge == window * 4 - int(window * 0.5) * 4
 
 
-def test_a_registered_hook_adds_to_the_reserve(window):
+def test_a_boosted_step_adds_to_the_reserve(window, monkeypatch):
+    from aiforge_core.llm import reasoning
+    monkeypatch.setenv("AIFORGE_BOOST_RESERVE_TOKENS", "50000")
     base = W._ctx_budget_chars("chat", sys_chars=5000)
-    calls = []
-
-    def hook(role):
-        calls.append(role)
-        return 50_000
-    W.register_reserve_hook(hook)
-    W.register_reserve_hook(hook)                      # idempotent
-    try:
+    with reasoning.boost():
         assert W._ctx_budget_chars("chat", sys_chars=5000) < base
-        assert calls and W._RESERVE_HOOKS.count(hook) == 1
-        W.register_reserve_hook(lambda role: 1 / 0)    # a broken hook is ignored
-        assert W._ctx_budget_chars("chat", sys_chars=5000) < base
-    finally:
-        W._RESERVE_HOOKS.clear()
     assert W._ctx_budget_chars("chat", sys_chars=5000) == base
 
 
