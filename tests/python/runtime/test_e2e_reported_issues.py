@@ -689,6 +689,11 @@ def api(monkeypatch, tmp_path):
     for _sid in chat_runs.finish_all():
         a.settle(_sid, timeout=10.0)
     chat_runs._RUNS.clear()
+    # cancel_all() leaves each token registered AND cancelled; a later test that
+    # reuses one of those session ids (run_chat_agent called directly, which
+    # does not start a fresh token) would then see "cancelled" and stop at once.
+    for _sid in list(chat_cancel.active_sessions()):
+        chat_cancel.finish(_sid)
     chat_store.reset_backend_for_tests()
 
 
