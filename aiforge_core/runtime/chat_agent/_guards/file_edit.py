@@ -275,6 +275,58 @@ def _edit_claim_disclaimer(text: str) -> str:
     return _EDIT_CLAIM_NOTE + (text or "")
 
 
+#: Sent once when a chat that HAS changed files before ends a turn, with no
+#: file changed, on an answer that speaks of file changes. Usually that answer
+#: is a truthful account of the earlier turns ("did you change the code?" →
+#: "yes: a.py, b.py"). Live, the accusing nudge below turned it into "Corrected
+#: record: no file-write actions this turn … say go" — the harness had made the
+#: model deny its own work and wait for a go-ahead.
+_RECAP_HEAD = (
+    "[harness — not the user] A routine check before this turn ends. The user "
+    "does not see this note. No file was changed in THIS turn, and your answer "
+    "above speaks of file changes.\n")
+_RECAP_BODY = (
+    "If that message asked for new work, or for a change that is not on disk "
+    "yet: do it now with tool calls.\n"
+    "If it asked about work done in earlier turns of this chat (the action log "
+    "lists it) and your answer describes that work correctly: reply with the "
+    "single word SAME and your answer is sent to the user unchanged. Do not "
+    "add that nothing was written in this turn, and do not ask the user for a "
+    "go-ahead.\n"
+    "If the answer describes a change that was never made: make it now, or "
+    "rewrite the answer so that it says what is really on disk.")
+RECAP_CHECK = _RECAP_HEAD + _RECAP_BODY
+
+
+def recap_check(goal: str) -> str:
+    """The check, with the user's own message quoted: a small model answering
+    a harness note loses track of which message it is answering."""
+    goal = " ".join(str(goal or "").split())[:400]
+    if not goal:
+        return RECAP_CHECK
+    return f'{_RECAP_HEAD}The user\'s last message was: "{goal}"\n{_RECAP_BODY}'
+
+
+def chat_wrote_before(session_id) -> bool:
+    """An earlier turn of this chat ran an action that was not a read and did
+    not fail (a write, a patch, a command). Never raises."""
+    if session_id is None:
+        return False
+    try:
+        from aiforge_core.runtime import action_log
+        reads = action_log._read_tools()
+        for s in action_log._stored_steps(session_id):
+            name = str(s.get("name") or "")
+            args = s.get("args") if isinstance(s.get("args"), dict) else {}
+            if name and name not in action_log._SKIP \
+                    and not action_log._is_read(name, args, reads) \
+                    and action_log._ok(s.get("result")) is not False:
+                return True
+    except Exception:  # noqa: BLE001 — no log: the guard behaves as before
+        pass
+    return False
+
+
 class FileEditClaimGuard:
     """The model says it edited files but landed zero edits AND the working
     tree is unchanged (checked against every tool + any on-disk write, not just
@@ -318,3 +370,39 @@ class FileEditClaimGuard:
 
     def disclaimer(self, claims) -> str:
         return _EDIT_CLAIM_NOTE
+
+    def check(self, st, step):
+        """A chat that changed files in an EARLIER turn is asked a neutral
+        question once, and its answer decides; the accusing nudge and the
+        "nothing was written" label are for a chat that has never written."""
+        from .base import _check
+        from .zero_edit import _tool_calls
+        text = step.get("text") or ""
+        if not self.applies(st):
+            return None
+        if getattr(st, "recap_checked", False):
+            return self._after_recap_check(st, step, text)
+        if not _claims_file_edits(text) or self.evidence(st):
+            return None
+        if not chat_wrote_before(getattr(st, "session_id", None)):
+            return (yield from _check(self, st, step))
+        st.recap_checked = True
+        st.recap_answer = text
+        # This check asks what the zero-edit check asks; it is not sent twice.
+        st.zero_edit_checked = True
+        st.zero_edit_answer = text
+        st.zero_edit_tools = _tool_calls(st)
+        yield {"type": "thought", "role": "system",
+               "text": "↻ no file changed in this turn — checking whether the "
+                       "answer describes earlier work…"}
+        st.convo.append({"role": "user", "content": recap_check(
+            getattr(st, "goal", ""))})
+        return "continue"
+
+    def _after_recap_check(self, st, step, text):
+        """``SAME``: the answer written for the user is sent as it was, and the
+        zero-edit check is not asked the same thing again."""
+        from .zero_edit import _says_same
+        if _says_same(text.strip()):
+            step["text"] = getattr(st, "recap_answer", "") or text
+        return None

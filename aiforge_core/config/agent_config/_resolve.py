@@ -17,6 +17,11 @@ from ._state import (
 def _env_default_row():
     """The AIFORGE_DEFAULT_* env one-endpoint default, or None when unset."""
     prov = os.environ.get("AIFORGE_DEFAULT_PROVIDER")
+    if not prov and (os.environ.get("AIFORGE_DEFAULT_MODEL") or "").strip():
+        # A model with no provider named: there is one provider. Without this
+        # the model applied to no role, and every side role (triage, enhancer,
+        # learner) sent the placeholder id and got HTTP 400 on each request.
+        prov = "openai_compatible"
     if prov:
         return {
             "provider": prov,

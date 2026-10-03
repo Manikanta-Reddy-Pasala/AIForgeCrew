@@ -79,7 +79,8 @@ _SAME_START = re.compile(
 
 _ABOUT_THE_USER = re.compile(
     r"\bthe\s+user(?:'s)?\b|\buser's\s+(?:message|request|question|last)\b"
-    r"|\bthe\s+(?:request|message|question)\s+(?:was|is|only|did|does)\b", re.I)
+    r"|\bthe\s+(?:request|message|question)\s+(?:was|is|only|did|does)\b"
+    r"|\bthe\s+(?:harness|action\s+log)\b|\bthe\s+note\s+(?:is|was|above)\b", re.I)
 
 
 def _to_the_harness(text: str) -> bool:
