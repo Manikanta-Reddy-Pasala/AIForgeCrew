@@ -19,6 +19,8 @@ from .._guards import (
     EchoGuard,
     ExternalClaimGuard,
     FileEditClaimGuard,
+    UnchangedFileClaimGuard,
+    UnpassedCheckGuard,
     ZeroEditGuard,
     run_guards,
 )
@@ -313,7 +315,12 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
     _sig = yield from run_guards(st, step, [
         FileEditClaimGuard(cwd, readonly_mode, builder, _wt_fp0),
         ZeroEditGuard(cwd, readonly_mode, builder, plan_mode, _asks, _wt_fp0,
-                      strict=strict_finish)])
+                      strict=strict_finish),
+        # A turn that DID change files: the answer against the disk (a file
+        # named as changed that no write touched) and against the turn's own
+        # commands (a check that failed after the last change).
+        UnchangedFileClaimGuard(cwd, readonly_mode, builder, plan_mode),
+        UnpassedCheckGuard(readonly_mode, builder, plan_mode)])
     if _sig == "continue":
         return "continue"
     _sig = yield from _verify_on_final(st, step, cwd, plan_mode, builder)

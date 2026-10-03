@@ -17,10 +17,13 @@ from ._state import (
 def _env_default_row():
     """The AIFORGE_DEFAULT_* env one-endpoint default, or None when unset."""
     prov = os.environ.get("AIFORGE_DEFAULT_PROVIDER")
-    if not prov and (os.environ.get("AIFORGE_DEFAULT_MODEL") or "").strip():
-        # A model with no provider named: there is one provider. Without this
-        # the model applied to no role, and every side role (triage, enhancer,
-        # learner) sent the placeholder id and got HTTP 400 on each request.
+    if not prov and (os.environ.get("AIFORGE_DEFAULT_MODEL", "").strip()
+                     or os.environ.get("AIFORGE_DEFAULT_BASE_URL", "").strip()):
+        # A default model or URL with no provider named: there is one provider.
+        # Requiring the third variable left AIFORGE_DEFAULT_MODEL silently
+        # ignored — every role but chat ran on the "unconfigured" placeholder,
+        # paid a failed request per call to be handed a substitute, and Team
+        # mode had no endpoint at all.
         prov = "openai_compatible"
     if prov:
         return {

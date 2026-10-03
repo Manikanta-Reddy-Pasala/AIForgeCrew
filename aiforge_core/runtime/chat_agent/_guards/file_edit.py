@@ -261,7 +261,9 @@ def _edit_claim_nudge() -> str:
         "real ACTION (file_write / patch / …) to apply the change NOW, or if you "
         "genuinely cannot, say so plainly. If you already made this change in an "
         "EARLIER turn and are only recapping, say 'previously' explicitly. "
-        "Re-read the file first if unsure.")
+        "Re-read the file first if unsure. If your message was the answer to "
+        "a question and claims no change made in this turn, reply with the "
+        "single word SAME: it is then sent as you wrote it.")
 
 
 _EDIT_CLAIM_NOTE = ("⚠ Note: no file changes were recorded this turn — "
@@ -349,7 +351,21 @@ class FileEditClaimGuard:
 
     def applies(self, st) -> bool:
         return (not self.readonly_mode and not self.builder
-                and st.edits_made == 0 and _edit_claim_guard_enabled())
+                and st.edits_made == 0 and _edit_claim_guard_enabled()
+                and not self._plain_question(st))
+
+    @staticmethod
+    def _plain_question(st) -> bool:
+        """The user asked a question that names no change ("when did you
+        commit", "how would you do it?"). Its answer speaks of earlier or
+        proposed edits by nature; live, three such answers in ten were sent
+        back as false claims, and the user got the model's reply to the
+        check instead of the answer."""
+        try:
+            from .zero_edit import _reads_as_question
+            return _reads_as_question(getattr(st, "goal", "") or "")
+        except Exception:  # noqa: BLE001 — unsure: keep the check
+            return False
 
     def budget(self, st) -> int:
         return 2
@@ -375,17 +391,22 @@ class FileEditClaimGuard:
         """A chat that changed files in an EARLIER turn is asked a neutral
         question once, and its answer decides; the accusing nudge and the
         "nothing was written" label are for a chat that has never written."""
-        from .base import _check
-        from .zero_edit import _tool_calls
+        from .zero_edit import _says_same, _tool_calls
         text = step.get("text") or ""
         if not self.applies(st):
             return None
         if getattr(st, "recap_checked", False):
             return self._after_recap_check(st, step, text)
+        saved = getattr(st, "edit_claim_answer", "")
+        if saved and _says_same(text.strip()):
+            # ``SAME`` to the firm nudge: the model's own answer is sent, under
+            # the note that nothing was written in this turn.
+            step["text"] = _EDIT_CLAIM_NOTE + saved
+            return None
         if not _claims_file_edits(text) or self.evidence(st):
             return None
         if not chat_wrote_before(getattr(st, "session_id", None)):
-            return (yield from _check(self, st, step))
+            return (yield from self._firm_check(st, step, text))
         st.recap_checked = True
         st.recap_answer = text
         # This check asks what the zero-edit check asks; it is not sent twice.
@@ -398,6 +419,16 @@ class FileEditClaimGuard:
         st.convo.append({"role": "user", "content": recap_check(
             getattr(st, "goal", ""))})
         return "continue"
+
+    def _firm_check(self, st, step, text):
+        """The shared nudge-then-label loop; the answer is kept so that
+        ``SAME`` can send it."""
+        from .base import _check
+        before = getattr(st, self.counter, 0)
+        sig = yield from _check(self, st, step)
+        if getattr(st, self.counter, 0) > before:
+            st.edit_claim_answer = text
+        return sig
 
     def _after_recap_check(self, st, step, text):
         """``SAME``: the answer written for the user is sent as it was, and the

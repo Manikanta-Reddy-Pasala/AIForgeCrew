@@ -142,6 +142,17 @@ def _bulleted_asks(t: str) -> list:
     return bullets if len(bullets) >= 2 else []
 
 
+#: "Do not edit the tests", "don't install anything", "never push": a rule for
+#: HOW the work is done, not a part of it. As a checklist item it can never be
+#: worked on, only "verified" — live, each one cost a context reset and a round
+#: of commands re-proving that nothing was touched (a 3-bug fix took 27 model
+#: requests instead of 5). The sentence stays in the user's message, which the
+#: model has in full.
+_CONSTRAINT_LEAD_RE = re.compile(
+    r"^(?:(?:and|but|also|please|just)\s+)*(?:do\s+not|don[’']?t|never|without)\b",
+    re.IGNORECASE)
+
+
 def _sentence_asks(t: str) -> list:
     """Sentence segments that look like a question or an imperative, also
     splitting on "also" / "and then" style connectors."""
@@ -175,7 +186,8 @@ def _split_asks(text: str, cap: int = 8) -> list[str]:
     # their asks, those ARE the asks — but only their OWN list, not the
     # sequence items of a config file they pasted (see _is_ask_bullet).
     parts = _bulleted_asks(t) or _sentence_asks(t)
-    parts = [p[:160] for p in parts if p.strip()][:cap]
+    parts = [p[:160] for p in parts
+             if p.strip() and not _CONSTRAINT_LEAD_RE.match(p.strip())][:cap]
     return parts if len(parts) >= 2 else []
 
 

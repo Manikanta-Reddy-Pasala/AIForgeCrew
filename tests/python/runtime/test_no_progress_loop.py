@@ -138,6 +138,51 @@ def test_reading_many_different_files_is_progress(tmp_path):
         assert _feed(st, "grep", {"pattern": f"name{i}"}, {"ok": True}) == ""
 
 
+_WORDS = ("alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo "
+          "lima mike november oscar papa quebec romeo sierra tango uniform "
+          "victor whiskey xray yankee zulu").split()
+
+
+def test_reading_the_rest_of_the_machine_is_not_progress(tmp_path):
+    """Live: a run that could not make a test pass read other projects'
+    folders and ``.git`` internals for forty steps. Every path was new, so
+    every read reset the count and no rule fired in 39 minutes."""
+    def probes(st, path_of):
+        return [_feed(st, "run_command", {"cmd": f"cat {path_of(i)}"},
+                      {"ok": True, "stdout": " ".join(_WORDS[i % 26:] + _WORDS[:i % 26])})
+                for i in range(60)]
+    outside = probes(_st(cwd=str(tmp_path)), lambda i: f"/srv/other/repo{i}/notes.txt")
+    assert outside.index("nudge") == 24 and "stop" in outside   # 25 idle steps
+    git_internals = probes(_st(cwd=str(tmp_path)), lambda i: f".git/refs/r{i}")
+    assert "nudge" in git_internals and "stop" in git_internals
+    # The task's own files, and a folder the user named, are still progress.
+    assert set(probes(_st(cwd=str(tmp_path)), lambda i: f"src/g{i}.py")) == {""}
+    named = _st(cwd=str(tmp_path), user_roots=["/srv/other"])
+    assert set(probes(named, lambda i: f"/srv/other/repo{i}/notes.txt")) == {""}
+
+
+def test_the_same_lines_under_another_range_are_not_a_new_read():
+    """Live: 75 reads of one six-line file, asking for lines 1-7, 1-8 … 1-71.
+    Each call had new arguments, so each was "progress", for 14 minutes."""
+    text = "import pytest\n\n\n@pytest.fixture\ndef order():\n    return {}\n"
+    st = _st()
+    got = [_feed(st, "read_lines", {"path": "conftest.py", "start": 1, "end": 6 + i},
+                 {"ok": True, "path": "conftest.py", "start": 1, "end": 6,
+                  "total_lines": 6, "text": text}) for i in range(60)]
+    assert got[0] == "" and got.index("nudge") == 25 and "stop" in got
+    # A part of what was already read is not news either.
+    assert _idle_steps.read_is_news(st, {"ok": True, "text": "def order():\n"}) is False
+
+
+def test_a_long_file_read_in_chunks_is_progress_every_time():
+    st = _st()
+    for i in range(60):
+        chunk = "".join(f"line {n} of the module\n" for n in range(i * 50, i * 50 + 50))
+        assert _feed(st, "read_lines", {"path": "big.py", "start": i * 50 + 1,
+                                        "end": i * 50 + 50},
+                     {"ok": True, "path": "big.py", "text": chunk}) == ""
+
+
 def test_edit_then_test_cycles_are_progress(tmp_path):
     st = _st()
     f = tmp_path / "a.py"

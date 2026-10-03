@@ -240,6 +240,26 @@ def test_a_local_doer_answer_is_read_from_state():
                                    "", None) == "I added the cache"
 
 
+def test_the_doers_closing_json_is_answered_as_prose():
+    """Live: a Team run that added the function and passed its tests answered
+    the user with the Doer's stage contract, verbatim JSON."""
+    outcome = ('{"file_diffs": [{"path": "calc.py", "action": "patch"}, '
+               '{"path": "test_calc.py", "action": "patch"}], '
+               '"compile_status": "skipped", "test_status": "green", '
+               '"turn_log": "Added multiply(a,b); pytest 5 passed."}')
+    want = ("Added multiply(a,b); pytest 5 passed.\n\n"
+            "Files changed: `calc.py`, `test_calc.py`\n\nChecks: tests green.")
+    assert cp._promote_team_answer({"doer": outcome}, {}, "", None) == want
+    assert cp._promote_team_answer({"doer": "```json\n" + outcome + "\n```"},
+                                   {}, "", None) == want
+    import json
+    assert cp._promote_team_answer({}, {"doer_outcome": json.loads(outcome)},
+                                   "", None) == want
+    # Other JSON, and prose that merely contains braces, are left alone.
+    assert cp._promote_team_answer({"doer": '{"answer": 42}'}, {}, "", None) \
+        == '{"answer": 42}'
+
+
 def test_the_researcher_is_the_next_fallback():
     assert cp._promote_team_answer({"researcher": "found things"}, {}, "", None) \
         == "found things"

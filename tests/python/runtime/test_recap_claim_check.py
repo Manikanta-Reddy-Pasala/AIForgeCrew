@@ -13,7 +13,7 @@ CLAIM = "Yes. I updated calc.py and added tests/test_calc.py."
 
 def _st(session_id=7):
     return SimpleNamespace(convo=[], edits_made=0, edit_claim_nudges=0,
-                           session_id=session_id, goal="did you change the code")
+                           session_id=session_id, goal="ok continue with the rest")
 
 
 def _run(st, text, monkeypatch, wrote=True):
@@ -33,7 +33,7 @@ def test_a_recap_is_asked_about_once_and_same_keeps_the_answer(monkeypatch):
     st = _st()
     sig, _step, _ev = _run(st, CLAIM, monkeypatch)
     sent = st.convo[-1]["content"]
-    assert sig == "continue" and '"did you change the code"' in sent
+    assert sig == "continue" and '"ok continue with the rest"' in sent
     assert "SAME" in sent and st.edit_claim_nudges == 0
     assert st.zero_edit_checked and st.zero_edit_answer == CLAIM
     sig, step, _ev = _run(st, "SAME", monkeypatch)

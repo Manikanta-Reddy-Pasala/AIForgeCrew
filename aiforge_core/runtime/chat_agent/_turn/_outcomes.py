@@ -216,4 +216,19 @@ def _verify_fix(st, step, cwd, plan_mode, builder):
            "text": f"⚠ tests still failing ({_fails}) after "
                    f"{st.verify_rounds} fix rounds — stopping with "
                    "the honest state."}
+    # The state is only honest if the ANSWER says so. Live: the run stopped
+    # here with one test failing and the answer sent was "Done. pytest →
+    # 1 passed". The harness ran the checks itself, so it says what it saw.
+    step["text"] = still_failing_note(_fails, _vout) + (step.get("text") or "")
     return None
+
+
+def still_failing_note(fails, output: str) -> str:
+    """The line put in front of an answer when the project's own checks, run
+    by the harness as the turn ends, still fail."""
+    rows = [ln.strip() for ln in str(output or "").splitlines() if ln.strip()]
+    detail = (rows[-1].strip("= ")[:160] if rows
+              else (f"{fails} failing" if fails else ""))
+    return ("⚠ The project's checks still FAIL as this turn ends"
+            + (f" ({detail})" if detail else "")
+            + ". What follows is not a verified result.\n\n")

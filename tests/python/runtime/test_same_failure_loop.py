@@ -241,6 +241,35 @@ def test_editing_after_a_green_run_makes_final_verify_again(repo, monkeypatch):
     assert ran == [str(repo)]
 
 
+def test_a_final_accepted_with_failing_checks_says_so_in_the_answer(repo, monkeypatch):
+    """Live: the verify loop gave up with one test failing and the answer sent
+    was "Done. pytest → 1 passed". The harness ran the checks; it says so."""
+    st = SimpleNamespace(last_green_fp=None, edits_made=1, verify_rounds=0,
+                         verify_prev_fails=1, verify_stalls=1, convo=[],
+                         same_fail={}, state_fp="", tree_pending=False)
+    red = "F\ntest_pricing.py:7: AssertionError\n===== 1 failed in 0.01s ====="
+    monkeypatch.setattr(_outcomes, "_run_project_verify", lambda cwd: (False, red))
+    step = {"text": "Done. `pytest` → 1 passed"}
+    events = list(_outcomes._verify_on_final(st, step, str(repo), False, ""))
+    assert events[-1]["text"].startswith("⚠ tests still failing (1)")
+    assert st.convo == []                                # not sent back again
+    assert step["text"] == (
+        "⚠ The project's checks still FAIL as this turn ends (1 failed in "
+        "0.01s). What follows is not a verified result.\n\n"
+        "Done. `pytest` → 1 passed")
+
+
+def test_a_fix_round_does_not_label_the_answer(repo, monkeypatch):
+    st = SimpleNamespace(last_green_fp=None, edits_made=1, verify_rounds=0,
+                         verify_prev_fails=None, verify_stalls=0, convo=[],
+                         same_fail={}, state_fp="", tree_pending=False)
+    monkeypatch.setattr(_outcomes, "_run_project_verify",
+                        lambda cwd: (False, "1 failed in 0.01s"))
+    step = {"text": "Done."}
+    list(_outcomes._verify_on_final(st, step, str(repo), False, ""))
+    assert step["text"] == "Done." and len(st.convo) == 1
+
+
 # ── the older guards: no refill that a loop can earn ─────────────────────
 
 def _loop_state(**kw):

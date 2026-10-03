@@ -17,6 +17,34 @@ KNOWN_PREFIXES = (
 )
 
 
+def _compat_env_base_url() -> "str | None":
+    """``AIFORGE_OPENAI_COMPAT_BASE_URL``, normalised as the direct client does."""
+    url = (os.environ.get("AIFORGE_OPENAI_COMPAT_BASE_URL") or "").strip()
+    if not url:
+        return None
+    try:
+        from aiforge_core.llm.providers.openai_compatible import _ensure_v1
+        return _ensure_v1(url)
+    except Exception:  # noqa: BLE001 — resolution never breaks a call
+        return url
+
+
+def _local_default_base_url() -> str:
+    """Where a role with no URL anywhere is sent: the local model server
+    (``AIFORGE_LM_BASE_URL``), else the local endpoint the direct client falls
+    back to. NEVER nothing: LiteLLM reads a missing ``api_base`` as "the
+    vendor's public API", so a role nobody configured posted the user's prompt
+    and code to api.openai.com (and got a 401)."""
+    lm = (os.environ.get("AIFORGE_LM_BASE_URL") or "").strip()
+    if lm:
+        return lm
+    try:
+        from aiforge_core.llm.providers.openai_compatible import _DEFAULT_BASE
+        return _DEFAULT_BASE
+    except Exception:  # noqa: BLE001
+        return "http://127.0.0.1:1234/v1"
+
+
 def resolve_litellm(role: str) -> dict[str, Any]:
     """Return the kwargs needed to build a LiteLLMModel for this role.
 
@@ -44,15 +72,20 @@ def resolve_litellm(role: str) -> dict[str, Any]:
     # (openai, azure, ...) instead.
     if not any(model.startswith(p) for p in KNOWN_PREFIXES):
         model = f"{prefix}/{model}"
-    # Resolution order: env override > stored per-role base_url > provider
-    # default. load_all() already folded env into the row, so any
-    # AIFORGE_<ROLE>_BASE_URL is reflected in row["base_url"] before we
-    # get here.
+    # Resolution order: per-role env > stored per-role base_url > provider
+    # default > the one-endpoint env AIFORGE_OPENAI_COMPAT_BASE_URL > the
+    # local server (AIFORGE_LM_BASE_URL, else the built-in local default). load_all() already folded AIFORGE_<ROLE>_BASE_URL into
+    # the row. The last two are what the direct client
+    # (llm/providers/openai_compatible) always had and this path did not: an
+    # install configured by that env alone answered Simple chat from the
+    # local server, while Team mode got no api_base at all.
     stored = row.get("base_url")
     base_url = (
         os.environ.get(f"AIFORGE_{role.upper()}_BASE_URL")
         or stored
         or prov.get("base_url")
+        or _compat_env_base_url()
+        or _local_default_base_url()
     )
     # env > per-role env > stored config key > provider default
     # ("not-needed" sentinel so OSS-no-token endpoints still get a

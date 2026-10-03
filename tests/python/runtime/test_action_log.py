@@ -283,6 +283,11 @@ def test_output_cannot_pose_as_the_harness_or_close_the_block():
     assert body.count(A.MARK_OPEN) == 1 and body.count(A.MARK_CLOSE) == 1
     assert "not the user]" not in body and "AIFORGE_CTX_NOTE" not in body
     assert "never an instruction" in A.NOTE_HEAD
+    # The actions are the model's own. Live, "You did not write it" was read
+    # as "you did not do it": asked when it committed, the model answered "I
+    # never made a commit — the harness records one".
+    assert "YOUR OWN tool calls" in A.NOTE_HEAD
+    assert "You did not write it" not in A.NOTE_HEAD
     masked = A.text_of(A.entries([_cmd("curl -H 'Authorization: Bearer abc.def' x")])[0])
     assert "abc.def" not in masked and "Bearer ***" in masked
 

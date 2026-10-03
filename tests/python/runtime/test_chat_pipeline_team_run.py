@@ -55,6 +55,27 @@ def test_an_agents_text_is_badged_with_which_agent_said_it():
     assert evs == [{"type": "thought", "role": "planner", "text": "the plan"}]
 
 
+def test_streamed_reasoning_is_one_step_and_not_the_agents_text():
+    """Live: a streamed planner's reasoning came back as one part per chunk —
+    6,157 one-word steps in the stored turn (368 KB for one message)."""
+    chunks = [pytypes.SimpleNamespace(text=w, thought=True, function_call=None,
+                                      function_response=None)
+              for w in ("The ", "request ", "is ", "small.")]
+    event = _event("planner", chunks + [_part(text="1. add multiply")])
+    evs = P.map_event(event)
+    assert evs == [
+        {"type": "thought", "role": "planner", "text": "The request is small.",
+         "phase": "thinking"},
+        {"type": "thought", "role": "planner", "text": "1. add multiply"}]
+    assert P._event_text(event) == "1. add multiply"
+    # The reasoning never becomes what the role "said" (the answer source).
+    import queue
+    by_role, steps = {}, []
+    P._fold_team_event(_event("doer", [chunks[0]]), queue.Queue(), steps,
+                       by_role, {"emitted_subtasks": False, "sub_items": None})
+    assert by_role == {} and len(steps) == 1
+
+
 def test_a_tool_call_carries_its_name_and_arguments():
     fc = pytypes.SimpleNamespace(name="file_write", args={"path": "a.py"})
     evs = P.map_event(_event("doer", [_part(fc=fc)]))
