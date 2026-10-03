@@ -269,10 +269,82 @@ def _credible_action(out: str):
     return None
 
 
+_NARRATED_RE = re.compile(r"^\s*(?:\W{0,3})Called\s+([A-Za-z_]\w*)\s*\(", re.S)
+
+
+def _balanced(text: str, start: int) -> int:
+    """Index just past the brace/bracket group that opens at ``start``, or -1.
+    Quotes are respected so a brace inside a string does not count."""
+    depth, quote, esc = 0, "", False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if quote:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == quote:
+                quote = ""
+            continue
+        if ch in "\"'":
+            quote = ch
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return -1
+
+
+def narrated_call(text: str) -> "tuple[str, dict] | None":
+    """A reply that WRITES a tool call as prose — ``Called run_command({"cmd": …})``
+    — instead of making it. That is how earlier calls look in the history when a
+    server could not take the native replay (``flatten_tool_messages``), and the
+    model copies the shape: the turn then ended with that line as its "answer"
+    and the command never ran. Returns ``(tool, args)`` for the first such call
+    when the tool exists and the arguments parse (JSON, or a Python-style dict),
+    else None."""
+    m = _NARRATED_RE.match(text or "")
+    if not m:
+        return None
+    name = m.group(1)
+    try:
+        from ._registry import TOOLS
+        if name not in TOOLS:
+            return None
+    except Exception:  # noqa: BLE001 — unknown registry: do not guess
+        return None
+    at = m.end()
+    while at < len(text) and text[at] in " \t\n":
+        at += 1
+    if at >= len(text) or text[at] != "{":
+        return None
+    end = _balanced(text, at)
+    if end < 0:
+        return None
+    raw = text[at:end]
+    try:
+        args = json.loads(raw)
+    except ValueError:
+        try:
+            import ast
+            args = ast.literal_eval(raw)
+        except (ValueError, SyntaxError):
+            return None
+    return (name, args) if isinstance(args, dict) else None
+
+
 def _parse(out: str) -> dict:
     """Parse a model turn into {kind, ...}. Tolerant of code fences,
     pretty-printed JSON, and stray markdown around the protocol."""
     act = _credible_action(out)
+    if not act:
+        # "Called run_command({...})" written as prose: run it, do not publish it.
+        told = narrated_call(out)
+        if told is not None:
+            return _parse(f"ACTION: {told[0]}\nARGS_JSON: "
+                          f"{json.dumps(told[1], ensure_ascii=False)}")
     # Prefer ACTION when present (models sometimes mention "final" in prose).
     if act:
         name = act.group(1).strip()
