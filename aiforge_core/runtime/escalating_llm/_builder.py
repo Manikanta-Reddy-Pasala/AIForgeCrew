@@ -91,8 +91,13 @@ def _resolve_timeout():
         return read_to
 
 
-def _build_one(cfg: dict[str, Any], role: str = "") -> BaseLlm:
+def _build_one(cfg: dict[str, Any], role: str = "",
+               reasoning: bool = True) -> BaseLlm:
     """Construct a BaseLlm from a resolve_litellm-shaped dict.
+
+    ``reasoning=False`` builds the same model with its reasoning phase
+    switched off whatever the role (the twin a reasoning role falls back to
+    when its thinking overruns — see ``_streaming``).
 
     Recognised cfg keys (besides ``model_id``/``api_base``/``api_key``):
 
@@ -131,15 +136,35 @@ def _build_one(cfg: dict[str, Any], role: str = "") -> BaseLlm:
     # EscalatingLlm._stamp_request.
     from aiforge_core.llm import reasoning as _reasoning
     _body: dict = {}
-    if _reasoning.reasoning_off(cfg["model_id"], api_base, role):
-        _body.update(_reasoning.NO_THINK_KWARGS)
-    _body.update(_reasoning.effort_extras(cfg["model_id"], api_base, role))
+    if not reasoning:
+        _body.update(_reasoning.off_extras(cfg["model_id"], api_base))
+    else:
+        if _reasoning.reasoning_off(cfg["model_id"], api_base, role):
+            _body.update(_reasoning.NO_THINK_KWARGS)
+        _body.update(_reasoning.effort_extras(cfg["model_id"], api_base, role))
     if _body:
         kwargs["extra_body"] = _body
-    # model_wait's liveness probe of this model goes the same way.
-    from aiforge_core.llm import _model_probe
-    _model_probe.register_send(api_base, cfg["model_id"], kwargs)
+    if reasoning:
+        # model_wait's liveness probe of this model goes the same way.
+        from aiforge_core.llm import _model_probe
+        _model_probe.register_send(api_base, cfg["model_id"], kwargs)
     return LiteLlm(**kwargs)
+
+
+def _build_plain_twin(cfg: dict[str, Any], role: str) -> "BaseLlm | None":
+    """The primary with reasoning off — only for a request that would reason,
+    and only while a reasoning budget is set. None otherwise."""
+    try:
+        from aiforge_core.llm import reasoning as _reasoning
+        if _reasoning.budget_tokens() <= 0:
+            return None
+        if _reasoning.reasoning_off(cfg["model_id"], cfg.get("api_base") or "",
+                                    role):
+            return None
+        return _build_one(cfg, role, reasoning=False)
+    except Exception as exc:  # noqa: BLE001 — the twin is a fallback, never a blocker
+        log.debug("plain twin not built for role=%s: %s", role, exc)
+        return None
 
 
 def _lf_request_messages(llm_request: LlmRequest) -> list[dict]:
