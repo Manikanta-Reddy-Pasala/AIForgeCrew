@@ -71,6 +71,29 @@ def test_multi_sentence_asks_still_split():
     assert len(parts) >= 2
 
 
+def test_a_prohibition_is_a_rule_not_a_part_of_the_work():
+    # Live: "Do not edit the tests" became board item part-2; the agent spent
+    # a context reset and a dozen git commands "completing" it.
+    text = ("There are bugs in stats.py. Fix them until `python3 -m pytest -q` "
+            "passes. Do not edit the tests. Commit when done.")
+    assert _split_asks(text) == []          # one real ask: no checklist
+    text = ("Create a scratch file notes.txt containing hello. Then start the "
+            "dev server in the background. Don't install anything. And never "
+            "push to main.")
+    assert _split_asks(text) == [
+        "Create a scratch file notes.txt containing hello",
+        "Then start the dev server in the background"]
+    text = ("- fix the login redirect\n- do not touch the session store\n"
+            "- add a regression test for it\n")
+    assert _split_asks(text) == ["fix the login redirect",
+                                 "add a regression test for it"]
+
+
+def test_a_question_that_opens_with_do_is_still_an_ask():
+    parts = _split_asks("do the retries back off? also fix the timeout in client.py")
+    assert parts == ["do the retries back off?", "also fix the timeout in client.py"]
+
+
 def test_a_bare_value_list_is_not_asks():
     # Flat (unindented) but every item is a single token — a pasted column of
     # values, not a request.

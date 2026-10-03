@@ -23,7 +23,7 @@ from ._approval import (
 )
 from ._stuck.detect import bump_identical, detect, identical_repeats, note_identical
 from ._stuck.ladder import Pause, finish_stuck, nudge
-from ._idle_steps import note_step
+from ._idle_steps import note_step, read_is_news
 from ._outcomes import _note_green_tests, note_failure
 from ._progress import (
     count_key,
@@ -408,7 +408,11 @@ def _record_read(st, name, sig, result, _long_chain_help):
         # NUDGE, and must not silently delete half the progress signal with
         # it (a read-only research turn would never extend on that box).
         if sig not in st.read_sigs_ever:
-            st.reads_new += 1        # real progress: knowledge it did not have
+            # Real progress is knowledge it did not have: a call it had not
+            # made that returns lines it had not seen. New ARGUMENTS alone
+            # (the same file, another line range) are not.
+            if read_is_news(st, result):
+                st.reads_new += 1
             st.read_sigs_ever[sig] = True
             while len(st.read_sigs_ever) > _ACTION_SIG_MAX:
                 st.read_sigs_ever.popitem(last=False)
