@@ -36,16 +36,27 @@ NUDGE = ("[harness — not the user] The user ALREADY told you to go ahead. Do n
          "checked, and do not describe what you would do. Take step 1 NOW: make "
          "the edit with a tool call, then run the check, then continue with the "
          "next step. Only FINAL when the work is done (say what changed) or when "
-         "something concrete blocks you (say exactly what).")
+         "something concrete blocks you (say exactly what). 'Everything is "
+         "already clean' is not a result for a request to continue: name the "
+         "single most valuable next change (the largest or most tangled file) "
+         "and make it.")
+
+
+#: "its ok continue simplifying…", "fine, go ahead", "alright keep going": the
+#: go-ahead word after a few words of filler.
+_CUE_EARLY = re.compile(
+    r"\b(?:continue|proceed|go\s+ahead|carry\s+on|keep\s+going|go\s+on|resume|do\s+it)\b",
+    re.I)
+_EARLY_CHARS = 60
 
 
 def is_go_ahead(text: str) -> bool:
-    """A short 'yes / continue / do it / go ahead' message (optionally followed by
-    a few words), not a question."""
+    """A short 'yes / continue / do it / go ahead' message (optionally after a few
+    words of filler and followed by a few more), not a question."""
     t = (text or "").strip()
     if not t or len(t) > _MAX_GO_AHEAD_CHARS or _QUESTION.search(t):
         return False
-    return bool(_OPENER.match(t))
+    return bool(_OPENER.match(t) or _CUE_EARLY.search(t[:_EARLY_CHARS]))
 
 
 def asks_permission(text: str) -> bool:

@@ -98,9 +98,17 @@ def regex_build_fallback(p: str) -> bool:
 # path" has no build noun, which is how the build regex let it through.
 _CHANGE_VERB_RE = re.compile(
     r"(?<!not )(?<!n't )(?<!never )(?<!without )(?<!no need to )"
-    r"\b(?:implement|build|add|fix|change|migrate|port|refactor|rewrite|replace"
-    r"|modify|optimi[sz]e|speed up|develop|introduce|remove|delete|rename"
-    r"|upgrade|integrate|convert|patch)\b", re.IGNORECASE)
+    # The imperative and the -ing form ("continue simplifying", "keep refactoring");
+    # past forms are left out ("what changed?" is not a request).
+    r"\b(?:implement(?:ing)?|build(?:ing)?|add(?:ing)?|fix(?:ing)?|chang(?:e|ing)"
+    r"|migrat(?:e|ing)|port(?:ing)?|refactor(?:ing)?|rewrit(?:e|ing)|replac(?:e|ing)"
+    r"|modif(?:y|ying)|optimi[sz](?:e|ing)|speed(?:ing)? up|develop(?:ing)?"
+    r"|introduc(?:e|ing)|remov(?:e|ing)|delet(?:e|ing)|renam(?:e|ing)"
+    r"|upgrad(?:e|ing)|integrat(?:e|ing)|convert(?:ing)?|patch(?:ing)?"
+    r"|simplif(?:y|ying)|split(?:ting)?|clean(?:ing)? up|restructur(?:e|ing)"
+    r"|reorgani[sz](?:e|ing)|extract(?:ing)?|creat(?:e|ing)|updat(?:e|ing)"
+    r"|merg(?:e|ing)|separat(?:e|ing)|decoupl(?:e|ing)|dedup(?:licat(?:e|ing))?"
+    r"|tidy(?:ing)?(?: up)?)\b", re.IGNORECASE)
 _POLITE_RE = re.compile(
     r"^\W*(?:(?:please|pls|kindly)\s+)?(?:(?:can|could|would|will) you\s+"
     r"(?:please\s+)?|i (?:want|need|'d like|would like) you to\s+|let'?s\s+"

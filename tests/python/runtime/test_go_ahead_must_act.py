@@ -10,6 +10,8 @@ from aiforge_core.runtime.chat_agent._turn import _goahead as G
 @pytest.mark.parametrize("text,yes", [
     ("yes continue", True), ("continue", True), ("do it", True), ("Yes, go ahead", True),
     ("ok proceed", True), ("start", True), ("yes use new branch", True),
+    ("its ok continue simplfying all files .. use kiss and seperation of ceoncers..", True),
+    ("fine, go ahead", True), ("alright keep going", True),
     ("yes, but what about the tests?", False), ("why did it fail?", False),
     ("rewrite the poller into config.rs and read.rs", False), ("", False),
 ])
@@ -103,3 +105,43 @@ def test_a_fresh_question_is_not_treated_as_a_go_ahead(tmp_path):
         complete_fn=lambda r, c: "FINAL: It is an empty main()."))
     msgs = [e["text"] for e in evs if e.get("type") == "message"]
     assert msgs == ["It is an empty main()."]
+
+
+@pytest.mark.parametrize("text,yes", [
+    ("continue simplifying all files", True), ("keep refactoring the writer", True),
+    ("split database.py into two modules", True), ("clean up the imports", True),
+    ("what changed in the last commit?", False), ("how is the refactoring going?", False),
+    ("last commit is 47 minutes ago, when did you commit", False),
+])
+def test_change_requests_include_the_ing_form_and_more_verbs(text, yes):
+    from aiforge_core.runtime.chat_router import wants_changes
+    assert wants_changes(text) is yes
+
+
+def test_the_live_message_that_stalled_is_sent_back_to_work(tmp_path):
+    from aiforge_core.runtime import chat_agent as ca
+    cwd = _repo(tmp_path)
+    history = [
+        {"role": "user", "content": "rewrite the python modules using kiss and separation of concern"},
+        {"role": "assistant", "content": "Split cluster_handling.py. Pushed to rewrite/kafka-path."},
+        {"role": "user", "content": "its ok continue simplfying all files .. use kiss and seperation of ceoncers.."},
+    ]
+    stall = ("Nothing was written this turn. I only ran read-only checks (git status, "
+             "git diff --stat). No file edits, no new commit, no push.\n\n"
+             "What is actually on disk (re-verified): pipeline.py 142 clean")
+    nudged = {"n": 0}
+
+    def fn(role, convo):
+        last = str(convo[-1].get("content"))
+        if "ALREADY told you to go ahead" in last:
+            nudged["n"] += 1
+            return ('ACTION: file_write\nARGS_JSON: {"path": "db_queries.py", '
+                    '"content": "def q():\\n    return 1\\n"}')
+        if "OBSERVATION" in last and "db_queries.py" in last:
+            return "FINAL: Split the query helpers out of database.py into db_queries.py."
+        return "FINAL: " + stall
+
+    evs = list(ca.run_chat_agent(history, cwd=cwd, complete_fn=fn))
+    msgs = [e["text"] for e in evs if e.get("type") == "message"]
+    assert nudged["n"] == 1 and (tmp_path / "db_queries.py").exists()
+    assert msgs and msgs[-1].startswith("Split the query helpers")
