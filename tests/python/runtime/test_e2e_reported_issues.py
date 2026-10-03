@@ -681,6 +681,14 @@ def api(monkeypatch, tmp_path):
 
     monkeypatch.setattr(runners, "Runner", _Runner)
     yield a
+    # Session ids restart at 1 with every fresh db, so a run (or cancel token)
+    # still registered under id 1 would answer the NEXT scenario's first message
+    # with 409 "a run is already in progress". End whatever this one left.
+    from aiforge_core.runtime import chat_runs
+    chat_cancel.cancel_all()
+    for _sid in chat_runs.finish_all():
+        a.settle(_sid, timeout=10.0)
+    chat_runs._RUNS.clear()
     chat_store.reset_backend_for_tests()
 
 

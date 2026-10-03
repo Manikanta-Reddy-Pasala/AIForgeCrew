@@ -234,10 +234,12 @@ def _dedupe(items: list[str]) -> list[str]:
 
 
 def result_text(result) -> str:
-    """The text a tool result carries: stdout, stderr, output and error."""
+    """The text a tool result carries: stdout, stderr, output and error — and
+    ``new_output``, which is where a command handed back as a job (it printed an
+    error before it exited) keeps what it printed."""
     if not isinstance(result, dict):
         return str(result or "")
-    parts = [result.get(k) for k in ("stdout", "stderr", "output", "error", "detail")]
+    parts = [result.get(k) for k in ("stdout", "stderr", "output", "new_output", "error", "detail")]
     return "\n".join(str(p) for p in parts if isinstance(p, str) and p)
 
 

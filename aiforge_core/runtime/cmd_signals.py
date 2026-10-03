@@ -45,6 +45,11 @@ def failure_in(text: str) -> str | None:
     return None
 
 
+def is_failure_reason(why: str) -> bool:
+    """True when ``why`` is a :func:`failure_in` reason ("FAILED: ...")."""
+    return any(why.startswith(kind + ":") for kind, _rx in _FAILURES)
+
+
 def waiting_for_input(tail: str) -> str | None:
     """The last line, when the output stops on a prompt with no newline."""
     if not tail or tail.endswith("\n"):
@@ -104,7 +109,7 @@ def bounded(text: str, limit: int) -> str:
             + text[-(limit - head):])
 
 
-__all__ = ["SCAN_BYTES", "bounded", "clean", "failure_in", "file_size", "job_hint",
+__all__ = ["SCAN_BYTES", "bounded", "clean", "failure_in", "file_size", "is_failure_reason", "job_hint",
            "read_range", "signal_in", "waiting_for_input"]
 
 
@@ -123,7 +128,7 @@ def job_hint(key, alive: bool, why: str | None = None, cmd: str = "") -> str:
                 f"that shows nothing until it ends, so progress and errors "
                 f"are hidden. command_kill(id='{key}') and run it again "
                 f"without the pipe — the tool already keeps just the tail.")
-    if why and any(why.startswith(kind + ":") for kind, _rx in _FAILURES):
+    if why and is_failure_reason(why):
         # Live: the model was told only "command_wait to wait for more" and
         # waited 45 s on a build it had already seen fail.
         return (f"an error appeared while it is still running. If it means "
