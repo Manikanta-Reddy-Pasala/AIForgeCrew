@@ -19,7 +19,7 @@ from aiforge_core.runtime.chat_agent._turn import _finish
 def _st(**kw):
     base = dict(convo=[], board_used=False, board={}, edits_made=0,
                 readonly_mode=False, continue_nudges=0, action_counts={},
-                edit_claim_nudges=0, verify_rounds=99, goal="explain how it works",
+                edit_claim_nudges=0, verify_rounds=99, goal="the retry settings",
                 no_change_nudges=0)
     base.update(kw)
     return types.SimpleNamespace(**base)
@@ -145,6 +145,40 @@ def test_an_unbacked_edit_claim_is_nudged_twice_then_labelled(final):
                          "nothing was written to disk.\n\n" + _EDIT}
     assert events[-1] == {"type": "done"}
     assert st.edit_claim_nudges == 2
+
+
+def test_same_after_the_edit_claim_nudge_sends_the_answer_that_was_written(final):
+    """Live ("when did you commit"): the answer read as an edit claim, and the
+    reply to the nudge replaced it, so the commit time never reached the user."""
+    answer = ("The commit `c692e2f` was made at 20:39:30.\n"
+              "- 20:37:30 — session start (worktree created; `stats.py` mtime)")
+    st = _st()
+    step = {"type": "final", "text": answer}
+    assert final(st, step)[1] == "continue"
+    assert st.convo[-1]["content"].endswith(
+        "reply with the single word SAME: it is then sent as you wrote it.")
+    events, sig = final(st, {"type": "final", "text": "SAME"})
+    assert sig == "return"
+    assert events[0] == {"type": "message", "text":
+                         "⚠ Note: no file changes were recorded this turn — "
+                         "nothing was written to disk.\n\n" + answer}
+    assert st.edit_claim_nudges == 1
+
+
+@pytest.mark.parametrize("question", [
+    "when did you commit", "how would you add a multiply function?",
+    "explain how it works"])
+def test_the_answer_to_a_plain_question_is_not_checked_for_edit_claims(final, question):
+    st = _st(goal=question)
+    step = {"type": "final", "text": _EDIT}
+    events, sig = final(st, step)
+    assert sig == "return" and st.convo == [] and st.edit_claim_nudges == 0
+    assert events[0] == {"type": "message", "text": _EDIT}
+
+
+def test_a_question_that_asks_for_a_change_is_still_checked(final):
+    st = _st(goal="can you update the timeout in config.yaml?")
+    assert final(st, {"type": "final", "text": _EDIT})[1] == "continue"
 
 
 def test_an_edit_claim_is_left_alone_in_read_only_mode(final):
