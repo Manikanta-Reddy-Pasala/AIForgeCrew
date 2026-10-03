@@ -302,24 +302,124 @@ def test_a_steer_about_the_same_goal_resumes():
     assert "[HANDOFF" in brief
 
 
-def test_a_fresh_unrelated_request_does_not_inherit_and_clears():
+_MODEL_DECIDES = ("If the new message continues this work, keep what is done, do "
+                  "not repeat what failed, and carry on from NEXT; if it is about "
+                  "something else, ignore this block.")
+_REFERENCE = ("The user's new message, above, is the request for this turn: do what "
+              "it asks. If it continues or changes this earlier work, carry on from "
+              "NEXT (keep what is done, do not repeat what failed). If it is about "
+              "something else, ignore this block: do not resume the earlier work on "
+              "your own")
+
+
+@pytest.mark.parametrize("text", [
+    "write a haiku about autumn rain",                  # unrelated
+    "new task: refactor the billing parser",            # an explicit new task
+    "why did the benchmark fail?",                      # a question
+    "also make the cache size configurable in settings.py",
+])
+def test_the_model_is_given_the_handoff_and_decides_whether_it_applies(text):
+    """No word rule sorts the next message into continue / question / new task
+    any more. The record is handed over as reference with one plain line, and
+    the model, which reads the message with the conversation, decides."""
     sid = _unfinished_chat()
-    brief, history = _next(sid, "write a haiku about autumn rain")
-    assert brief == "" and "HANDOFF" not in history[-1]["content"]
-    assert H.load(sid) is None
+    brief, history = _next(sid, text)
+    assert brief.startswith("[HANDOFF — for reference only.") and _REFERENCE in brief
+    assert "EARLIER GOAL: refactor the parser and add the cache" in brief
+    assert "NEXT (only if the new message continues this work): add the index" in brief
+    last = history[-1]["content"]
+    assert last.startswith(text + "\n\n---\n[HANDOFF")       # the user's words first
+    # the message names its own task: the run's goal is the message, not the
+    # old request (nothing is quoted as "the original request")
+    from aiforge_core.runtime.chat_agent._turn._state import _turn_goal
+    assert "ORIGINAL REQUEST" not in last and _turn_goal(history) == text
+    assert H.is_unfinished(H.load(sid))                       # nothing was dropped
 
 
-def test_an_explicit_new_task_clears_even_with_shared_words():
+@pytest.mark.parametrize("text", [
+    "continue", "yes continue", "do it", "ok go ahead",
+    "its ok continue simplfying all files .. use kiss and seperation of ceoncers..",
+])
+def test_a_bare_go_ahead_keeps_the_saved_goal_as_the_runs_request(text):
     sid = _unfinished_chat()
-    brief, _ = _next(sid, "new task: refactor the billing parser")
-    assert brief == "" and H.load(sid) is None
+    brief, history = _next(sid, text)
+    assert _MODEL_DECIDES in brief and "\nNEXT: add the index" in brief
+    assert history[-1]["content"].startswith(text + "\n\n---\n[HANDOFF")
+    from aiforge_core.runtime.chat_agent._turn._state import _turn_goal
+    assert _turn_goal(history) == "refactor the parser and add the cache"
 
 
-def test_a_question_neither_resumes_nor_loses_the_work():
+def _answer(sid, tmp_path, history, reply, edits=False):
+    from aiforge_core.runtime import chat_agent as ca
+    outs = (['ACTION: file_write\nARGS_JSON: {"path": "cache.py", "content": "x = 1\\n"}']
+            if edits else []) + ["FINAL: " + reply]
+    seen = []
+
+    def fn(role, messages, **kw):
+        seen.append(str(messages[-1].get("content")))
+        return outs.pop(0) if outs else "FINAL: " + reply
+    evs = list(ca.run_chat_agent(history, cwd=str(tmp_path), complete_fn=fn,
+                                 session_id=sid))
+    from aiforge_core.runtime import chat_interject
+    chat_interject.clear(sid)             # the loop marked the chat steerable
+    return evs, seen
+
+
+def test_an_unrelated_message_ignores_the_handoff_and_the_work_stays_resumable(tmp_path):
+    """The scripted model answers the unrelated message and touches nothing.
+    The unfinished work is still on record, and a later "continue" gets it."""
     sid = _unfinished_chat()
-    brief, _ = _next(sid, "why did the benchmark fail?")
+    _, history = _next(sid, "what is the capital of France?")
+    evs, seen = _answer(sid, tmp_path, history, "Paris.")
+    assert [e["text"] for e in evs if e.get("type") == "message"] == ["Paris."]
+    assert len(seen) == 1                                 # no extra model step
+    assert "ignore this block: do not resume the earlier work" in seen[0]
+    chat_store.add_message(sid, "assistant", "Paris.")
+    got = H.load(sid)
+    assert H.is_unfinished(got) and got["status"] == "stopped"
+    assert got["goal"] == "refactor the parser and add the cache"
+    assert got["failed"] == ["python bench.py -> ValueError: bad shape"]
+    brief, history = _next(sid, "continue")
+    assert "NEXT: add the index" in brief and "ALREADY TRIED AND FAILED" in brief
+
+
+def test_the_parts_of_a_reference_handoff_are_not_asks_of_the_new_message(tmp_path):
+    """Live: the handoff's lines ("NEXT: add the index") were split into the
+    message's ask checklist, so "what is the capital of France?" came with a
+    second item the model had to finish — the unfinished refactor."""
+    from aiforge_core.runtime.chat_agent._turn._convo import _build_convo
+    sid = _unfinished_chat()
+    _, history = _next(sid, "what is the capital of France? and of Spain?")
+    convo, _b, asks, _d = _build_convo(
+        history, str(tmp_path), "chat", readonly_mode=False, plan_mode=False,
+        analyze_mode=False, builder="", strict_finish=False, session_id=None)
+    assert not any("index" in a or "parser" in a or "HANDOFF" in a for a in asks), asks
+    assert all("capital" in a.lower() or "spain" in a.lower() for a in asks), asks
+
+
+def test_the_handoff_is_not_offered_forever(tmp_path):
+    sid = _unfinished_chat()
+    for n, text in enumerate(["what is the capital of France?", "and of Spain?"]):
+        brief, history = _next(sid, text)
+        assert "[HANDOFF" in brief
+        _answer(sid, tmp_path, history, "A city.")
+        chat_store.add_message(sid, "assistant", "A city.")
+    assert H.load(sid) is None                            # offered twice, then dropped
+    brief, _ = _next(sid, "and of Italy?")
     assert brief == ""
-    assert H.load(sid) is not None
+
+
+def test_a_turn_that_does_the_work_and_finishes_clears_the_record(tmp_path):
+    import subprocess
+    run = lambda *a: subprocess.run(["git", *a], cwd=tmp_path, capture_output=True, check=True)
+    run("init", "-q"); run("config", "user.email", "t@t"); run("config", "user.name", "t")
+    (tmp_path / "a.py").write_text("a = 1\n")
+    run("add", "-A"); run("commit", "-q", "-m", "init")
+    sid = _unfinished_chat()
+    _, history = _next(sid, "continue")
+    _answer(sid, tmp_path, history, "Added the cache in cache.py.", edits=True)
+    assert (tmp_path / "cache.py").exists()
+    assert H.load(sid) is None
 
 
 def test_a_clean_rerun_drops_it():

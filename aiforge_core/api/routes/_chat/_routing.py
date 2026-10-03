@@ -42,27 +42,6 @@ def _first_team_turn(rows, current_msg_id=None) -> bool:
         return False
 
 
-def _maybe_downgrade_team(team, prompt, history, cwd, session_id,
-                          first_team_turn=False):
-    """Auto-route a small team follow-up down to simple mode. Run HERE (off the
-    response-open path) so a slow/unreachable classify LLM never delays the
-    StreamingResponse. Returns ``(team, auto_downgraded)``; routing must never
-    block a turn. The first Team turn of a chat is never downgraded (the
-    router checks ``first_team_turn``)."""
-    if not team:
-        return team, False
-    try:
-        from aiforge_core.runtime import turn_router as _tr
-        if _tr.should_downgrade_team(prompt, history, cwd,
-                                     first_team_turn=first_team_turn):
-            _af_log.info("chat: team turn auto-downgraded to simple "
-                         "(small follow-up) session=%s", session_id)
-            return False, True
-    except Exception as exc:  # noqa: BLE001
-        _af_log.debug("turn_router skipped: %s", exc)
-    return team, False
-
-
 def _pipeline_route(_pp, prompt, cwd, session_id, history, _with_resume, _path,
                     _turn_t0, _pctx):
     """The 3-agent orchestrator route (enhancer → architect → planner). A spec
@@ -250,12 +229,17 @@ def _should_skip_enhance(auto_downgraded, route_pipeline, is_build_task,
     2048-token budget; this gate only covers the single-agent path.
     ``is_build_task`` stays in the signature so callers that already
     computed it don't have to change; a short non-build ignores it."""
-    # A downgrade off the pipeline does not by itself skip the restatement.
     # A long prompt and a real build still enhance; only a short non-build
     # (direct_reply) does. The pipeline enhances on its own at 2048 tokens.
-    del history, is_build_task, auto_downgraded
+    del is_build_task, auto_downgraded
     if route_pipeline:
         return False
+    # "continue", "yes do it", "ok go ahead and build it": a short message in
+    # an existing chat that points at the turns before it. The working model
+    # has those turns; a helper model's restatement of such a message is a
+    # guess at what it refers to. The user's words go through unchanged.
+    if _refers_to_earlier_turns(history, prompt):
+        return True
     # The classifier read this request as a question or a review/analysis:
     # nothing is built, so the long prompt goes to the agent unrestated —
     # unless the prompt itself asks to change code. The label is one word
@@ -270,6 +254,18 @@ def _should_skip_enhance(auto_downgraded, route_pipeline, is_build_task,
         return False
     from aiforge_core.runtime.chat_router import direct_reply
     return direct_reply(prompt or "")
+
+
+def _refers_to_earlier_turns(history, prompt) -> bool:
+    """A short go-ahead in a chat that has already answered once."""
+    try:
+        from aiforge_core.runtime import turn_router
+        from aiforge_core.runtime.chat_agent._turn._goahead import is_go_ahead
+        from aiforge_core.runtime.chat_router import is_short_prompt
+        return bool(is_short_prompt(prompt or "") and is_go_ahead(prompt or "")
+                    and turn_router.is_followup(history))
+    except Exception:  # noqa: BLE001 — unsure: the usual rules decide
+        return False
 
 
 def _answer_skip_enabled() -> bool:

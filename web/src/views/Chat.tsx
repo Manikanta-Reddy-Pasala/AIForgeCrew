@@ -1731,9 +1731,9 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   // While a run is streaming, the Enter/Send action injects guidance into the
   // LIVE run (queued + folded in at the agent's next step) instead of opening
   // a new turn. The server echoes a role:'steer' thought when it's applied.
-  // A message typed while the run is going is either a correction of it (a
-  // steer) or a task of its own. `auto` lets the server tell which; the
-  // "Side task" button forces a second agent run beside this one.
+  // A message typed while the run is going goes to that run: the agent reads
+  // it at its next step and decides what it means. The "Side task" button is
+  // the explicit action that starts a second agent run beside this one.
   async function steer(as: 'auto' | 'task' | 'steer' = 'auto') {
     const q = input.trim();
     // FE2: never steer a gated run (resolve the approval first).
@@ -1938,7 +1938,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
       if (awaitingReply) { send(); return; }   // FE1: reply, not steer
       if (busy) {
         if (pendingApproval) return;            // FE2: resolve the gate first
-        if (canSteer) steer('auto');            // steers, or starts a side task
+        if (canSteer) steer('auto');            // goes to the running agent
       } else {
         send();
       }
@@ -2587,7 +2587,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                   </button>
                   <button type="button" className="ghost" onClick={() => steer('task')}
                           disabled={!input.trim() || steering}
-                          title="Run this as a separate task beside the running one. Enter decides by itself: a correction steers, a new request becomes a side task."
+                          title="Run this as a separate task beside the running one. Enter sends the message to the running agent."
                           style={{ whiteSpace: 'nowrap' }}>
                     ＋ Side task
                   </button>

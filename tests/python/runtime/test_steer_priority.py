@@ -1,9 +1,8 @@
-"""A message sent mid-run is the user's LATEST instruction, and must read that
-way to the model.
+"""A message sent mid-run reaches the running model as the user's own words,
+under a short header that says they arrived while it was working.
 
-The fold used to be a bare "[steer] …" tag, which a local model treated as a
-footnote to the request already in its context: it kept answering the previous
-question. The text is the whole fix, so the text is what these pin.
+The model working on the task decides what the message means; the wrapper does
+not classify it. These pin the wrapper and that it reaches the model.
 """
 from aiforge_core.runtime import chat_agent as ca
 from aiforge_core.runtime import chat_interject, chat_steer
@@ -11,25 +10,17 @@ from aiforge_core.runtime import chat_interject, chat_steer
 _SID = 771_004
 
 
-def test_the_directive_states_priority_and_both_readings():
+def test_the_directive_is_a_light_wrapper_around_the_users_words():
+    """The running model reads the message and decides what it means. The
+    wrapper says where the words come from and that the task goes on unless
+    they say otherwise — it does not tell the model how to classify them."""
     d = chat_steer.steer_directive("use postgres instead")
+    assert d.startswith("[NEW MESSAGE FROM THE USER — sent while you were working.]")
     assert "use postgres instead" in d
-    assert "PRIORITY" in d
-    # Both readings are named, so the model has to choose rather than default
-    # to the plan already in its context.
-    assert "REPLACES" in d
-    assert "ADDS" in d
-
-
-def test_anything_but_an_explicit_stop_means_continue_the_task():
-    """The agent took "answer these questions" as a replacement: it answered
-    them as its final reply and never finished the work it was doing."""
-    d = chat_steer.steer_directive("answer these 4 questions about the schema")
-    assert "CONTINUE the task you were on" in d
-    assert "Do NOT end the turn" in d and "do NOT drop steps" in d
-    assert "together with the result of the original task" in d
-    # a replacement still has to be asked for in so many words
-    assert "stop, cancel, drop it, or do something else INSTEAD" in d
+    assert "continue with the task you were on unless it says otherwise" in d
+    assert len(d.splitlines()) == 3 and len(d) < 220
+    # no instruction on how to read it
+    assert "REPLACES" not in d and "ADDS" not in d and "PRIORITY" not in d
 
 
 def test_a_mid_run_message_reaches_the_model_as_that_directive(tmp_path):
@@ -51,7 +42,7 @@ def test_a_mid_run_message_reaches_the_model_as_that_directive(tmp_path):
     folded = "\n".join(m.get("content") or "" for m in seen[-1]
                        if m.get("role") == "user")
     assert "stop that, answer this instead" in folded
-    assert "takes PRIORITY" in folded
+    assert "sent while you were working" in folded
     chat_interject.clear(_SID)
 
 
@@ -60,9 +51,10 @@ def test_several_steers_drain_as_one_ordered_block():
     most recent instruction, with no ordering signal — "use postgres" and the
     "actually no, sqlite" a second later arrived as equals."""
     block = chat_steer.steer_block(["use postgres", "actually no, sqlite"])
-    assert block.count("takes PRIORITY") == 1
+    assert block.count("NEW MESSAGE FROM THE USER") == 1
+    assert "1. use postgres" in block and "2. actually no, sqlite" in block
     assert block.index("use postgres") < block.index("actually no, sqlite")
-    assert "latest" in block
+    assert block.splitlines()[2].endswith("the latest")
 
 
 def test_a_rejection_is_not_a_steer():
@@ -73,14 +65,6 @@ def test_a_rejection_is_not_a_steer():
     assert "CONTINUE the current task" in note
     assert "abandon" not in note.lower()
     assert "PRIORITY" not in note
-
-
-def test_the_directive_does_not_invite_a_prose_reply():
-    """A bare line of prose is parsed as an implicit FINAL in interactive chat,
-    so asking the model to announce its choice could end the turn with a
-    comment where the work should have been."""
-    d = chat_steer.steer_directive("do the other thing")
-    assert "do NOT reply with a sentence" in d
 
 
 def test_a_steer_does_not_splat_into_a_multimodal_turn(tmp_path):

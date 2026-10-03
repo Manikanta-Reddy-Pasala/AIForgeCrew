@@ -1,10 +1,12 @@
 """Side tasks: a second agent run beside the one a chat is on.
 
-A chat session holds one run, so an independent request that arrives mid-run
-becomes a child chat with its own run. These tests pin the decisions: what
-steers and what becomes a task, what starts now and what waits, and that a
-finished task reports back into the parent chat without cutting into a turn
-that is still running.
+A chat session holds one run. A message typed while it is going is handed to
+that run: the model working on the task reads it and decides what it means. A
+side task (a child chat with its own run) is made only on the user's explicit
+action (``as: "task"``) or an explicit cue in the message ("another agent",
+"in parallel", "meanwhile"). These tests pin that, what starts now and what
+waits, and that a finished task reports back into the parent chat without
+cutting into a turn that is still running.
 """
 from __future__ import annotations
 
@@ -73,9 +75,12 @@ def _state(env, child_id):
     ("make the button blue", "steer"),
     ("run another agent to check the logs for errors", "task"),
     ("meanwhile summarise the README", "task"),
-    ("what does the retry helper do?", "task"),
-    ("new task: list the open TODOs", "task"),
+    # A question or a new request is NOT guessed into a side task from its
+    # wording: the running model reads it.
+    ("what does the retry helper do?", "steer"),
+    ("new task: list the open TODOs", "steer"),
     ("in parallel, count the lines of python", "task"),
+    ("start a side task: lint the docs", "task"),
 ])
 def test_steer_or_task(env, text, want):
     assert env.st.classify(text) == want
@@ -165,10 +170,16 @@ def test_route_send_when_idle_steer_and_task_when_busy(env, monkeypatch):
     r = env.client.post(f"/api/chat/sessions/{pid}/side",
                         json={"content": "also handle the empty list case"})
     assert r.json()["action"] == "steer" and r.json()["queued"] is True
-    chat_interject.clear(pid)
-
+    # a question goes to the running model too — it is not spun off
     r = env.client.post(f"/api/chat/sessions/{pid}/side",
                         json={"content": "what does the retry helper do?"})
+    assert r.json()["action"] == "steer" and r.json()["queued"] is True
+    assert env.started == []
+    chat_interject.clear(pid)
+
+    # an explicit cue the user typed starts a side task
+    r = env.client.post(f"/api/chat/sessions/{pid}/side",
+                        json={"content": "run another agent to check what the retry helper does"})
     assert r.json()["action"] == "task" and r.json()["task"]["state"] == "running"
 
     # the user can force either way
@@ -186,6 +197,8 @@ def test_route_send_when_idle_steer_and_task_when_busy(env, monkeypatch):
 
 def test_an_unsteerable_run_gets_a_task_instead_of_a_lost_message(env):
     pid = env.parent()                                   # not marked steerable
+    from aiforge_core.runtime import chat_interject
+    chat_interject.clear(pid)          # (ids repeat across tests: no stale mark)
     r = env.client.post(f"/api/chat/sessions/{pid}/side",
                         json={"content": "also handle the empty list case"})
     assert r.json()["action"] == "task"
@@ -309,7 +322,7 @@ def test_a_finished_task_carries_its_whole_answer_for_the_chat_to_show(env):
     assert len(d["preview"]) <= 240
 
 
-# ── a request for information is its own task; a correction steers ────────────
+# ── nothing is guessed from the wording: every message goes to the run ────────
 
 @pytest.mark.parametrize("text", [
     "Answer these 2 questions: 1. what port does the shop API listen on 2. what is the first line of the README",
@@ -323,9 +336,12 @@ def test_a_finished_task_carries_its_whole_answer_for_the_chat_to_show(env):
     "what thresholds it uses, where those thresholds come from, and how they were tuned "
     "against the 50k run so I can explain it in tomorrow's review meeting with the team",
 ])
-def test_a_request_for_information_is_its_own_task(text):
-    assert __import__("aiforge_core.api.routes._chat._side_tasks",
-                      fromlist=["x"]).classify(text) == "task"
+def test_a_request_for_information_goes_to_the_running_model(text):
+    """A '?', a list, an opening "explain", a long paragraph: none of it makes
+    a side task. The model that is doing the work reads the message."""
+    st = __import__("aiforge_core.api.routes._chat._side_tasks", fromlist=["x"])
+    assert st.classify(text) == "steer"
+    assert st.classify(text, "team") == "steer"
 
 
 @pytest.mark.parametrize("text", [
@@ -367,15 +383,63 @@ def test_a_team_run_steers_by_default(text):
 
 
 @pytest.mark.parametrize("text", [
-    "what does the retry helper do?",
-    "explain how the retry works",
     "run another agent to check the logs",
     "meanwhile summarise the README",
-    "do we have a working AI interface",
+    "in parallel, count the lines of python",
+    "spin off a side task for the docs",
 ])
-def test_a_team_run_still_spins_off_real_side_requests(text):
+def test_an_explicit_side_cue_is_the_only_wording_that_makes_a_task(text):
     from aiforge_core.api.routes._chat import _side_tasks as st
     assert st.classify(text, "team") == "task"
+    assert st.classify(text, "simple") == "task"
+
+
+_LIVE_MESSAGES = [
+    "its ok continue simplfying all files .. use kiss and seperation of ceoncers..",
+    "we can't run python application right ? we have rewritten rust and go "
+    "based solution use ours",
+    "yes continue",
+    "last commit is 47 minutes ago, when did you commit",
+]
+
+
+@pytest.mark.parametrize("mode", ["simple", "team"])
+@pytest.mark.parametrize("text", _LIVE_MESSAGES)
+def test_the_live_messages_steer(text, mode):
+    from aiforge_core.api.routes._chat import _side_tasks as st
+    assert st.classify(text, mode) == "steer"
+
+
+@pytest.mark.parametrize("text", _LIVE_MESSAGES)
+def test_the_side_route_hands_the_live_messages_to_the_run(env, monkeypatch, text):
+    pid = env.parent(prompt="simplify all the modules", mode="team")
+    seen = {}
+
+    def _steer(sid, body):
+        seen["text"] = body.content
+        return {"queued": True}
+
+    from aiforge_core.api.routes._chat import _message
+    monkeypatch.setattr(_message, "chat_session_steer", _steer)
+    r = env.client.post(f"/api/chat/sessions/{pid}/side", json={"content": text}).json()
+    assert r["action"] == "steer" and seen["text"] == text
+    assert env.started == [] and env.store.child_sessions(pid) == []
+
+
+def test_a_mid_run_message_is_never_sent_to_a_classifier(env, monkeypatch):
+    """No model call decides where a mid-run message goes: it goes to the run."""
+    from aiforge_core.llm import client
+    from aiforge_core.runtime import chat_interject
+
+    def boom(*a, **k):
+        raise AssertionError("a mid-run message must not be classified")
+    monkeypatch.setattr(client, "complete", boom)
+    pid = env.parent()
+    chat_interject.set_steerable(pid, True)
+    r = env.client.post(f"/api/chat/sessions/{pid}/side",
+                        json={"content": "what does the retry helper do?"}).json()
+    assert r["action"] == "steer" and r["queued"] is True
+    chat_interject.clear(pid)
 
 
 def test_the_side_route_steers_a_directive_into_a_team_run(env, monkeypatch):

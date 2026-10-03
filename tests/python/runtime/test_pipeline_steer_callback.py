@@ -129,7 +129,7 @@ def test_steer_pushed_mid_run_reaches_next_executor_call(_stub_pipeline, monkeyp
     # doer's FIRST call was already in flight (barrier-held) before the push
     # — it must never see it.
     assert STEER_MARK not in " ".join(doer_contents[0])
-    assert "takes PRIORITY" in " ".join(refiner_contents[0])
+    assert "sent while you were working" in " ".join(refiner_contents[0])
     # refiner runs immediately after doer1 completes — the very next model
     # call after the push — so it's the one that actually drains it.
     assert STEER_MARK in " ".join(refiner_contents[0])

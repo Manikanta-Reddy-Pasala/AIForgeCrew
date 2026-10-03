@@ -126,7 +126,6 @@ from ._chat._producer import (  # noqa: F401
 from ._chat._routing import (  # noqa: F401
     _decide_chat_route,
     _doc_task_route,
-    _maybe_downgrade_team,
     _pipeline_route,
     _plan_mode_route,
     _quick_step_cap,

@@ -289,8 +289,8 @@ export function chatKillAll(): Promise<{ killed: number[]; count: number; team_l
 
 // Steer the IN-FLIGHT run without stopping it (Gap A — mid-run steering).
 // The message is queued and folded into the agent's context at its next step.
-/** A message typed while the chat is busy. The server steers the running turn
- *  or starts a side task; `as` forces one. */
+/** A message typed while the chat is busy. It goes to the running turn (the
+ *  agent reads it at its next step); `as: 'task'` starts a side task instead. */
 export function chatSideMessage(id: number, content: string, mode: string,
                                 as: 'auto' | 'task' | 'steer' = 'auto'): Promise<SideAction> {
   return j<SideAction>(`/chat/sessions/${id}/side`, {

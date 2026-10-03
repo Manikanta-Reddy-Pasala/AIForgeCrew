@@ -13,10 +13,16 @@ or a new message started again from raw history. This module keeps it:
 * **Resume**: the next turn of the same chat reads it. A turn that ended
   unfinished (Stop, crash, give-up summary, open board items) is seeded with
   the handoff instead of a replay of its raw history; the raw text is saved
-  under an offload id (``memory_lookup {"id": ...}``). A message that is a
-  continuation (a "continue", the same words, a steer, or about the same goal)
-  resumes; a question keeps the record for later; anything else is a new task
-  and clears it, so stale state is never inherited.
+  under an offload id (``memory_lookup {"id": ...}``). Whether the next
+  message continues that work is the MODEL's call: the record is always handed
+  over, saying "if the new message continues this work carry on from NEXT, if
+  it is about something else ignore this block". Under a bare go-ahead
+  ("continue") it is the turn's starting point; under a message that names a
+  task of its own it is marked as reference only (see
+  ``handoff.REFERENCE_HEAD``). Only the user's explicit clean rerun and the
+  TTL drop it unread. A turn that then changes
+  nothing (a question, an unrelated remark) leaves the record for the next
+  message; it is offered :data:`_MAX_OFFERS` times at most.
 * **Pipeline**: ``failed_approaches`` and ``doer_handoff`` of a ticket or team
   run are kept in the ticket metadata (or the chat's record) so a resumed run
   and a retry after a node failure start from them.
@@ -28,7 +34,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import threading
 import time
 
@@ -98,6 +103,9 @@ def bound(h: dict) -> dict:
         "reason": _clip(h.get("reason"), 60),
         "steps": int(h.get("steps") or 0),
         "offload": str(h.get("offload") or "")[:40] or None,
+        # Times it was handed to a next turn, and its status before that.
+        "offers": int(h.get("offers") or 0),
+        "was": str(h.get("was") or "")[:20] or None,
         "updated_at": float(h.get("updated_at") or time.time()),
     }
     if isinstance(h.get("pipeline"), dict):
@@ -197,24 +205,11 @@ def on_stop(session_id) -> None:
         save(session_id, {**h, "status": "stopped", "reason": "stop"})
 
 
-# ── deciding whether the next message continues the work ────────────────────
+# ── the next message of a chat with unfinished work ─────────────────────────
 
-_CUE = re.compile(
-    r"^\s*(?:and\b|also\b|but\b|instead\b|actually\b|now\b|then\b|next\b|still\b|"
-    r"make\s+sure\b|don'?t\b|do\s+not\b|keep\b|just\b|only\b|rather\b|wait\b|"
-    r"use\b|try\b|why\s+did\b)", re.I)
-_TOKEN = re.compile(r"[a-z0-9_]{4,}")
-#: Words every request has; sharing them says nothing about being the same task.
-_COMMON = frozenset((
-    "this that with from have will would could should please about into then "
-    "them they there their what when where which your make build create write "
-    "update change add fix implement need want like also some more other code "
-    "file files test tests work working project using used does done "
-    "thing things just only into over after before again still keep").split())
-
-
-def _sig(text: str) -> set:
-    return {t for t in _TOKEN.findall((text or "").lower()) if t not in _COMMON}
+#: Times the record is offered to a turn that then changes nothing, before it
+#: is dropped (a chat that moved on is not followed by its old handoff forever).
+_MAX_OFFERS = 2
 
 
 def _norm(text: str) -> str:
@@ -222,8 +217,14 @@ def _norm(text: str) -> str:
 
 
 def decide(h: "dict | None", prompt: str, *, forced: "bool | None" = None) -> str:
-    """``"resume"``, ``"keep"`` (leave the record, do not seed) or ``"clear"``
-    (a new task: drop the record) for the next message of a chat."""
+    """``"resume"`` (hand the record to the next turn), ``"keep"`` or
+    ``"clear"`` for the next message of a chat.
+
+    Whether the message CONTINUES the unfinished work is not decided here: the
+    record is handed over as reference and the model, which reads the message
+    with the conversation, decides (see ``handoff.RESUME_HEAD``). Only what
+    needs no reading of the message is decided: nothing unfinished, a record
+    past its TTL, and the user's explicit clean rerun."""
     if not is_unfinished(h):
         return "clear" if h else "keep"
     if _ttl_s() and time.time() - float(h.get("updated_at") or 0) > _ttl_s():
@@ -232,29 +233,22 @@ def decide(h: "dict | None", prompt: str, *, forced: "bool | None" = None) -> st
         return "clear"                      # the user asked for a clean rerun
     if forced is True:
         return "resume"
+    return "resume" if (prompt or "").strip() else "keep"
+
+
+def _names_no_task(prompt: str, h: dict) -> bool:
+    """The message itself says nothing about the task ("continue", "yes do
+    it", or the same words again): the run then keeps the saved goal as its
+    request. Only this bookkeeping uses a word rule; whether the work is
+    continued is the model's call."""
+    if _norm(prompt) in (_norm(h.get("turn_prompt")), _norm(h.get("goal"))):
+        return False                        # the same words ARE the task
+    from aiforge_core.runtime.chat_agent._turn._goahead import is_go_ahead
     from aiforge_core.runtime.chat_resume import _CONTINUE_RE
+    from aiforge_core.runtime.chat_router import wants_changes
     text = (prompt or "").strip()
-    if not text:
-        return "keep"
-    if _CONTINUE_RE.match(text):
-        return "resume"
-    if _norm(text) in (_norm(h.get("turn_prompt")), _norm(h.get("goal"))):
-        return "resume"                     # Retry re-sends the same words
-    try:
-        from aiforge_core.api.routes._chat._sched_fold import (
-            _NEW_TOPIC_RE, _is_new_request)
-        if _NEW_TOPIC_RE.match(text):
-            return "clear"
-        if _is_new_request(text):
-            return "keep"                   # a question: answer it, keep the work
-    except Exception:  # noqa: BLE001
-        pass
-    if _CUE.match(text):
-        return "resume"
-    about = " ".join([str(h.get("goal") or ""), *(h.get("open") or []),
-                      *(h.get("done") or []),
-                      *(os.path.basename(f) for f in (h.get("files") or []))])
-    return "resume" if _sig(text) & _sig(about) else "clear"
+    return bool(_CONTINUE_RE.match(text)
+                or (is_go_ahead(text) and not wants_changes(text)))
 
 
 # ── seeding the next turn ───────────────────────────────────────────────────
@@ -305,10 +299,13 @@ def seed_next_turn(session_id, rows: list, prompt: str, history: list,
         oid = context_offload.save(context_offload.render(dropped)) if dropped else None
         if oid:
             h["offload"] = oid
-        text = handoff.render(h, resumed=True)
+        # How the record is PRESENTED depends on whether the message names a
+        # task of its own; whether the work is continued stays the model's call.
         same = _norm(prompt) in (_norm(h.get("turn_prompt")), _norm(h.get("goal")))
-        if not same and h.get("goal"):
-            # The new message may say nothing about the task ("continue"):
+        bare = forced is True or _names_no_task(prompt, h)
+        text = handoff.render(h, resumed=True, reference=not (same or bare))
+        if h.get("goal") and bare and not same:
+            # The new message says nothing about the task ("continue"):
             # quote the goal so the run, and every condense, still knows it.
             from aiforge_core.runtime.chat_resume import REQUEST_CLOSE, REQUEST_OPEN
             text = f"{text}\n{REQUEST_OPEN}\n{h['goal'][:4000]}\n{REQUEST_CLOSE}"
@@ -320,7 +317,10 @@ def seed_next_turn(session_id, rows: list, prompt: str, history: list,
         else:
             prefix.append(new)
         history[:] = prefix
-        save(session_id, {**h, "status": "running", "reason": "resumed"})
+        save(session_id, {**h, "status": "running", "reason": "resumed",
+                          "was": h.get("status") if h.get("status") != "running"
+                          else h.get("was") or "interrupted",
+                          "offers": int(h.get("offers") or 0) + 1})
         return text
     except Exception as exc:  # noqa: BLE001 — never break a turn over this
         log.debug("handoff seed skipped: %s", exc)
@@ -345,6 +345,7 @@ class Recorder:
         self.outcome = None
         self.offload = None
         self.prior: dict = {}
+        self.prior_status = "interrupted"
         self.last_error = ""
         self._closed = self._closed_count() if self.active else -1
         self._green = None
@@ -367,6 +368,8 @@ class Recorder:
             return
         prior = load(self.sid) or {}
         self.prior = prior
+        # seed_next_turn marked it running; this is what it was before.
+        self.prior_status = prior.get("was") or "interrupted"
         self.offload = prior.get("offload")
         self.last_error = prior.get("error") or ""
         for t in prior.get("failed") or []:
@@ -402,6 +405,12 @@ class Recorder:
             return False
 
     # -- the loop's events --
+
+    def _left_untouched(self) -> bool:
+        """This turn was seeded with unfinished work and landed no edit."""
+        return bool(self.prior and is_unfinished(self.prior)
+                    and int(self.prior.get("offers") or 0) < _MAX_OFFERS
+                    and not getattr(self.st, "edits_made", 0))
 
     def _closed_count(self) -> int:
         board = getattr(self.st, "board", None) or {}
@@ -481,6 +490,11 @@ class Recorder:
             left = open_planned(board)
             if left:
                 self.save("turn_end", status="open")
+            elif outcome == "final" and self._left_untouched():
+                # The turn was handed unfinished work and changed nothing (it
+                # answered a question, or was about something else): the work
+                # is still unfinished, and the next message is offered it.
+                save(self.sid, {**self.prior, "status": self.prior_status})
             elif outcome == "final":
                 clear(self.sid)             # finished: nothing to resume
             elif open_items(board):

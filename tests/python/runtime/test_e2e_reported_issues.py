@@ -804,14 +804,42 @@ def test_5_when_no_doer_ran_and_nothing_changes_the_message_says_so(api):
 
 
 def test_5_an_implement_request_in_simple_mode_never_ends_as_research_text(api):
+    """A plan with no edit is put to the working model once, in its own
+    context ("you changed no file: did the message ask for work?"). A model
+    that then says the change was not made has its answer labelled, so a plan
+    is not read as the implementation."""
     sid = api.session()
-    api.agent = lambda n, role, convo: (
-        "FINAL: Bottom line: the real work is (a) (b) (c)."
-        if n < 3 else "FINAL: still only a plan.")
+    seen = []
+
+    def agent(n, role, convo):
+        seen.append(str(convo[-1].get("content")))
+        if seen[-1].startswith("[harness — not the user] A routine check"):
+            return "FINAL: NOT DONE: I only worked out the plan: (a) (b) (c)."
+        return "FINAL: Bottom line: the real work is (a) (b) (c)."
+    api.agent = agent
     evs = api.send(sid, ASK5, mode="simple")
     msgs = [e["text"] for e in evs if e.get("type") == "message"]
+    assert sum(s.startswith("[harness — not the user] A routine check")
+               for s in seen) == 1                      # asked once
     assert msgs and msgs[-1].startswith("(No file was changed in this turn")
     assert "analysis or a plan, not an implementation" in msgs[-1]
+    assert msgs[-1].endswith("I only worked out the plan: (a) (b) (c).")
+
+
+def test_5_a_model_sent_back_by_the_check_does_the_work(api):
+    sid = api.session()
+
+    def agent(n, role, convo):
+        last = str(convo[-1].get("content"))
+        if last.startswith("[harness — not the user] A routine check"):
+            return _write("read_path.rs", "// parallel read path\n")
+        if "OBSERVATION" in last and "read_path.rs" in last:
+            return "FINAL: implemented the read path in read_path.rs."
+        return "FINAL: Bottom line: the real work is (a) (b) (c)."
+    api.agent = agent
+    evs = api.send(sid, ASK5, mode="simple")
+    msgs = [e["text"] for e in evs if e.get("type") == "message"]
+    assert msgs and msgs[-1] == "implemented the read path in read_path.rs."
 
 
 
@@ -874,10 +902,10 @@ def test_6_directive_steers_the_team_run_and_reaches_the_doer(api):
 
 
 @pytest.mark.parametrize("text", [
-    "what does the retry helper do?",
     "run another agent to check the logs for errors",
+    "meanwhile check the logs for errors",
 ])
-def test_6_question_or_another_agent_becomes_a_side_task(api, monkeypatch, text):
+def test_6_an_explicit_ask_for_another_agent_becomes_a_side_task(api, monkeypatch, text):
     monkeypatch.setenv("AIFORGE_CHAT_SIDE_TASKS_MAX", "3")
     sid = api.session()
     t, release, out, seen = _start_team_run_that_blocks(api, sid)
@@ -923,7 +951,9 @@ def test_6_classification_matrix_by_mode():
     assert classify(DIRECTIVE, "team") == "steer"
     assert classify(DIRECTIVE, "simple") == "steer"
     assert classify("use postgres instead", "team") == "steer"
-    assert classify("what does the retry helper do?", "team") == "task"
+    # a question is not guessed into a side task: the running model reads it
+    assert classify("what does the retry helper do?", "team") == "steer"
+    assert classify("what does the retry helper do?", "simple") == "steer"
     assert classify("run another agent to check the logs", "team") == "task"
     assert classify("in parallel, count the lines of python", "team") == "task"
     assert classify("stop", "team") == "steer"
@@ -1142,7 +1172,11 @@ def test_9_stop_then_continue_resumes_from_the_saved_handoff(api):
     assert not h2["unfinished"], h2
 
 
-def test_9_an_unrelated_new_request_starts_clean(api):
+def test_9_an_unrelated_new_request_is_the_turns_request_and_the_model_decides(api):
+    """No rule sorts the next message into "continues" or "new task". The
+    unfinished work is handed over as REFERENCE under the user's message, and
+    the model — which reads the message — decides whether it applies. A turn
+    that then leaves the old work alone does not lose it."""
     sid = api.session()
     _stop_after_two_items(api, sid)
     _wait_assistant_turns(api.store, sid, 1)
@@ -1151,14 +1185,22 @@ def test_9_an_unrelated_new_request_starts_clean(api):
 
     def agent(n, role, convo):
         seen_first.setdefault("convo", [dict(m) for m in convo])
-        return "FINAL: renamed the helper."
+        return "FINAL: there is no tax_rate helper in billing; nothing to rename."
     api.agent = agent
-    evs = api.send(sid, "rename the helper tax_rate to vat_rate in billing", mode="simple")
-    flat = _flat(seen_first["convo"])
-    assert "HANDOFF" not in flat and "[RESUME" not in flat
-    assert "gamma.txt" not in flat.split("rename the helper")[-1]
+    ask = "rename the helper tax_rate to vat_rate in billing"
+    evs = api.send(sid, ask, mode="simple")
+    last_user = next(str(m.get("content")) for m in reversed(seen_first["convo"])
+                     if m.get("role") == "user")
+    assert last_user.startswith(ask)                       # the user's words lead
+    assert "[HANDOFF — for reference only." in last_user and "[RESUME" not in last_user
+    assert "The user's new message, above, is the request for this turn" in last_user
+    assert "do not resume the earlier work on your own" in last_user
+    assert "ORIGINAL REQUEST" not in last_user             # the goal is the new message
+    msgs = [e["text"] for e in evs if e.get("type") == "message"]
+    assert msgs and "nothing to rename" in msgs[-1]
+    # the earlier work was not touched and is still there for a later "continue"
     h = api.client.get(f"/api/chat/sessions/{sid}/handoff").json()
-    assert not h["unfinished"], h                  # stale state was dropped, not inherited
+    assert h["unfinished"], h
 
 
 def test_9_a_crash_mid_run_leaves_a_resumable_record(api):
