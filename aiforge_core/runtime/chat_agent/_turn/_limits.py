@@ -24,8 +24,9 @@ from ._batch import (
 from ._convo import (
     _append_directive,
 )
-from ._escalate import escalate, give_up_message, pause_on_stuck
+from ._escalate import pause_on_stuck
 from ._progress import may_recover, note_monologue, reset_monologue
+from ._stuck.ladder import Pause, change_approach, finish_stuck, nudge
 from ._shared import (
     _THE_FINALIZE_TOOL,
 )
@@ -283,36 +284,26 @@ def _stuck_output_guard(st, out):
         if may_recover(st):
             st.recent_outputs.clear()          # fresh slate for the recovered plan
             _recap = _progress_recap(st.convo)
-            yield {"type": "thought", "role": "system",
-                   "text": "↺ repeated output — recap + nudge to continue"}
-            # Append the repeated assistant turn BEFORE the nudge — else two
+            # The repeated assistant turn goes in BEFORE the nudge — else two
             # consecutive user turns (the prior OBSERVATION + this nudge)
             # break providers like claude_local.
-            st.convo.append({"role": "assistant", "content": out})
-            st.convo.append({"role": "user", "content":
+            yield from nudge(
+                st, "↺ repeated output — recap + nudge to continue",
                 "[loop guard — not the user] You repeated the SAME output — "
                 "that makes no progress. "
                 + (_recap + ". " if _recap else "")
                 + "Take the NEXT, DIFFERENT step now: act on something not yet "
                 "done (e.g. the next unread file), or output `FINAL: <answer>` "
-                "if the task is fully complete. Do NOT repeat a previous action."})
+                "if the task is fully complete. Do NOT repeat a previous action.",
+                reply=out)
             return "continue"
-        if not pause_on_stuck():
-            st.recent_outputs.clear()
-            st.convo.append({"role": "assistant", "content": out})
-            _r = yield from escalate(st, "You keep sending the same reply.")
-            if _r == "continue":
-                return "continue"
-            yield {"type": "message", "text": give_up_message(st)}
-            yield {"type": "done"}
-            return "return"
-        yield {"type": "message", "awaiting_input": True,
-               "text": "I seem to be going in circles on this. Could you "
-                       "clarify what you'd like me to do, or give a bit "
-                       "more detail? (I stopped rather than keep retrying "
-                       "the same thing.)"}
-        yield {"type": "done"}
-        return "return"
+        return (yield from finish_stuck(
+            st, "You keep sending the same reply.",
+            Pause("I seem to be going in circles on this. Could you "
+                  "clarify what you'd like me to do, or give a bit "
+                  "more detail? (I stopped rather than keep retrying "
+                  "the same thing.)"),
+            reply=out, prepare=st.recent_outputs.clear))
 
     return None
 
@@ -341,38 +332,24 @@ def _idle_reply_guard(st):
         # a monologue. Change approach now; do not wait for eight.
         st.idle_replies = 0
         reset_monologue(st)
-        _r = yield from escalate(st, "You keep saying the same thing "
-                                     "without acting.")
-        if _r == "continue":
-            return "continue"
-        yield {"type": "message", "text": give_up_message(st)}
-        yield {"type": "done"}
-        return "return"
+        return (yield from change_approach(
+            st, "You keep saying the same thing without acting."))
     if st.idle_replies < _IDLE_REPLIES:
         return "continue"
     st.idle_replies = 0
     st.idle_trips = getattr(st, "idle_trips", 0) + 1
     if st.idle_trips == 1:
-        yield {"type": "thought", "role": "system",
-               "text": "↺ replying without acting — nudge to act or finish"}
-        st.convo.append({"role": "user", "content":
+        yield from nudge(
+            st, "↺ replying without acting — nudge to act or finish",
             "[loop guard — not the user] Your last replies ran no tool and "
             "did not finish. Either take the next ACTION now, or answer with "
             "`FINAL: <answer>` — or, if you need something from the user, "
-            "ask ONE clear question."})
+            "ask ONE clear question.")
         return "continue"
-    if not pause_on_stuck():
-        _r = yield from escalate(st, "You keep replying without acting.")
-        if _r == "continue":
-            return "continue"
-        yield {"type": "message", "text": give_up_message(st)}
-        yield {"type": "done"}
-        return "return"
-    yield {"type": "message", "awaiting_input": True,
-           "text": "I keep replying without making progress. I've paused — "
-                   "could you tell me what you'd like me to do next?"}
-    yield {"type": "done"}
-    return "return"
+    return (yield from finish_stuck(
+        st, "You keep replying without acting.",
+        Pause("I keep replying without making progress. I've paused — "
+              "could you tell me what you'd like me to do next?")))
 
 
 def _builder_nudge(st, builder, n):

@@ -20,10 +20,8 @@ def _stuck_recovery_max() -> int:
     re-reading a file) — a recap of what's done + 'do the NEXT step' recovers
     them, where a hard bail lost all the work. 0 restores the old hard-abort.
     Tune with AIFORGE_CHAT_STUCK_RECOVERIES (default 3)."""
-    try:
-        return max(0, int(os.environ.get("AIFORGE_CHAT_STUCK_RECOVERIES", "3")))
-    except ValueError:
-        return 3
+    from aiforge_core.runtime.stuck_policy import Policy
+    return Policy.load().stuck_recoveries
 
 
 import re as _re

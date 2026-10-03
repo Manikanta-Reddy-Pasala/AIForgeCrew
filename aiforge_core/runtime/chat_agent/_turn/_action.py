@@ -19,7 +19,9 @@ from .._shell import _MAX_OBS, _MAX_OBS_READ, _READ_OBS_TOOLS
 from ._approval import (
     _handle_rejection,
 )
-from ._escalate import escalate, give_up_message, pause_on_stuck
+from aiforge_core.runtime.stuck_policy import Policy
+
+from ._stuck.ladder import Pause, finish_stuck, nudge
 from ._idle_steps import note_step
 from ._outcomes import _note_green_tests, note_failure
 from ._progress import (
@@ -27,7 +29,6 @@ from ._progress import (
     forgive,
     may_recover,
     bump_identical,
-    identical_limit,
     identical_repeats,
     note_command,
     note_identical,
@@ -76,18 +77,17 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
                  and sig in st.read_sigs_seen)
     looping = strike(st, sig, per_state=not duplicate)
     _ident = identical_repeats(st, sig)
-    if not looping and not duplicate and (_ident >= identical_limit() or ping_pong(st, sig)):
+    if not looping and not duplicate and (_ident >= Policy.load().identical_repeats or ping_pong(st, sig)):
         looping = "same"
     if duplicate and not looping:
         _recap = _progress_recap(st.convo)
-        yield {"type": "thought", "role": "system",
-               "text": f"⏭ duplicate read skipped ({name})"}
-        st.convo.append({"role": "user", "content":
+        yield from nudge(
+            st, f"⏭ duplicate read skipped ({name})",
             "OBSERVATION: [skipped — duplicate] You ALREADY ran this exact "
             "read; its result is above and re-reading wastes a step. "
             + (_recap + ". " if _recap else "")
             + "Read a DIFFERENT file you have not read yet, or if you have "
-            "enough, WRITE your output now (file_write) or emit FINAL."})
+            "enough, WRITE your output now (file_write) or emit FINAL.")
         return "continue"
     if looping:
         # A local model on a long chain re-issues an action it already ran —
@@ -101,32 +101,24 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
         # workspace fingerprint can refill forever: a call that has returned the
         # same thing this many times in a row goes straight to a change of
         # approach (the budget of those is bounded).
-        _bump = identical_repeats(st, sig) >= identical_limit()
+        _ident_limit = Policy.load().identical_repeats
+        _bump = identical_repeats(st, sig) >= _ident_limit
         if _bump:
             bump_identical(st, sig)
-        if identical_repeats(st, sig) < 2 * identical_limit() and may_recover(st):
+        if identical_repeats(st, sig) < 2 * _ident_limit and may_recover(st):
             forgive(st, sig)
-            _recap = _progress_recap(st.convo)
-            yield {"type": "thought", "role": "system",
-                   "text": f"↺ repeated `{name}` — recap + nudge to continue"}
-            st.convo.append({"role": "user", "content": _loop_nudge(
-                name, looping, _recap)})
+            yield from nudge(
+                st, f"↺ repeated `{name}` — recap + nudge to continue",
+                _loop_nudge(name, looping, _progress_recap(st.convo)))
             return "continue"
-        if not pause_on_stuck():
-            _r = yield from escalate(
-                st, f"You keep repeating `{name}` without progress.")
-            if _r == "continue":
-                forgive(st, sig)
-                return "continue"
-            yield {"type": "message", "text": give_up_message(st)}
-            yield {"type": "done"}
-            return "return"
-        yield {"type": "message", "awaiting_input": True,
-               "text": f"I keep trying the same step (`{name}`) without "
-                       "progress. I've paused — could you clarify or tell "
-                       "me how you'd like me to proceed?"}
-        yield {"type": "done"}
-        return "return"
+        _r = yield from finish_stuck(
+            st, f"You keep repeating `{name}` without progress.",
+            Pause(f"I keep trying the same step (`{name}`) without "
+                  "progress. I've paused — could you clarify or tell "
+                  "me how you'd like me to proceed?"))
+        if _r == "continue":
+            forgive(st, sig)
+        return _r
     return None
 
 
@@ -500,19 +492,10 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     seen = seen or idle
     if seen and seen[0] == "stop":
         st.convo.append({"role": "user", "content": f"OBSERVATION: {obs}"})
-        if not pause_on_stuck():
-            _r = yield from escalate(
-                st, "No progress after the warning: " + str(seen[1])[:300])
-            if _r == "continue":
-                return None
-            yield {"type": "message", "text": give_up_message(st)}
-            yield {"type": "done"}
-            return "return"
-        yield {"type": "thought", "role": "system",
-               "text": "⛔ no progress after the warning — pausing"}
-        yield {"type": "message", "awaiting_input": True, "text": seen[1]}
-        yield {"type": "done"}
-        return "return"
+        _r = yield from finish_stuck(
+            st, "No progress after the warning: " + str(seen[1])[:300],
+            Pause(seen[1], "⛔ no progress after the warning — pausing"))
+        return None if _r == "continue" else _r
     if seen:
         yield {"type": "thought", "role": "system",
                "text": "↺ going round without progress — asking why before "

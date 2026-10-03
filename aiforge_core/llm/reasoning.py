@@ -64,10 +64,8 @@ def boosted() -> bool:
 def boost_steps() -> int:
     """How many model calls a stall turns reasoning on for
     (``AIFORGE_STUCK_REASON_STEPS``, default 6; 0 never boosts)."""
-    try:
-        return max(0, int(os.environ.get("AIFORGE_STUCK_REASON_STEPS", "6")))
-    except ValueError:
-        return 6
+    from aiforge_core.runtime.stuck_policy import Policy
+    return Policy.load().reason_steps
 
 
 def role_reasons(role: str = "") -> bool:

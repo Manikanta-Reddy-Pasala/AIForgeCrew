@@ -261,8 +261,8 @@ _GOAL_LOOP_RE = re.compile(
 def wants_goal_loop(text: str) -> bool:
     """The message gives a target and asks to keep going until it is met.
     ``AIFORGE_CHAT_GOAL_LOOP=0`` turns the rule off."""
-    if os.environ.get("AIFORGE_CHAT_GOAL_LOOP", "1").strip().lower() in (
-            "0", "false", "no", "off"):
+    from aiforge_core.runtime.stuck_policy import Policy
+    if not Policy.load().goal_loop:
         return False
     return bool(_GOAL_LOOP_RE.search(text or ""))
 

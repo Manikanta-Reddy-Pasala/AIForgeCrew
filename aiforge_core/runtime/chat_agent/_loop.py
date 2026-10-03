@@ -100,6 +100,7 @@ from ._turn._limits import (  # noqa: F401
     _stuck_output_guard,
 )
 
+from ._turn._stuck.state import reset as reset_stuck
 from ._turn._shared import (  # noqa: F401
     _ACTION_SIG_MAX,
     _THE_FINALIZE_TOOL,
@@ -342,10 +343,7 @@ def _dispatch_step(st, out, n, cwd, role, _complete_fn, session_id, builder,
             return "return"
         if _sig == "continue":
             return (yield from _idle_reply_guard(st))
-    st.continue_nudges = 0   # a real action resets the narration guard
-    st.idle_replies = st.idle_trips = 0
-    if getattr(st, "monologue", None):
-        st.monologue.clear()          # a tool ran: not a monologue
+    reset_stuck(st, "action")   # a tool ran: not narration, idling or a monologue
     return (yield from _run_action_path(st, step, n, cwd, session_id))
 
 

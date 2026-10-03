@@ -3,7 +3,6 @@ the loop state."""
 from __future__ import annotations
 
 import time
-import types
 import uuid
 
 from .._context import (
@@ -21,6 +20,7 @@ from ._convo import (
     _build_convo,
 )
 from ._progress import progress_fields
+from ._stuck.state import LoopState
 from ._items import ensure_started, item_fields
 from ._tasks import seed_board
 
@@ -279,7 +279,7 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
 
 
 
-    st = types.SimpleNamespace(
+    st = LoopState(
         convo=convo, safety=safety, turn_deadline=_turn_deadline,
         condensed_notified=condensed_notified, continue_nudges=continue_nudges,
         stuck_recoveries=stuck_recoveries, extensions_used=_extensions_used,

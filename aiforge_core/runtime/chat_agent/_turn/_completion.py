@@ -362,8 +362,8 @@ def _persist_until_answer(complete_fn, role, convo, session_id, last,
 
 
 def _overflow_restart_enabled() -> bool:
-    return os.environ.get("AIFORGE_CHAT_CONTEXT_ERROR_RESTART", "1").strip() \
-        .lower() not in ("0", "false", "no", "off")
+    from aiforge_core.runtime.stuck_policy import Policy
+    return Policy.load().context_error_restart
 
 
 def _is_overflow(exc) -> bool:

@@ -25,6 +25,7 @@ from .._registry import (
     _BUILDER_FINALIZE_TOOL,
 )
 from ._escalate import pause_on_stuck
+from ._stuck.ladder import change_approach
 from ._outcomes import _verify_on_final
 from ._shared import (
     _THE_FINALIZE_TOOL,
@@ -499,16 +500,11 @@ def _handle_continue_step(st, step, builder, cwd):
     if st.continue_nudges > 2 and not pause_on_stuck():
         # It keeps not delivering: change approach and carry on (the guard
         # ends the turn with a summary only after many tries).
-        from ._escalate import escalate as _escalate
-        from ._escalate import give_up_message as _gum
-        _r = yield from _escalate(
+        _r = yield from change_approach(
             st, "You keep saying what you will do without doing it.")
         if _r == "continue":
             st.continue_nudges = 0
-            return "continue"
-        yield {"type": "message", "text": _gum(st)}
-        yield {"type": "done"}
-        return "return"
+        return _r
     if st.continue_nudges > 2:
         # It keeps not delivering — stop cleanly rather than loop to
         # the safety cap.

@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 from collections import Counter
 
@@ -52,11 +51,8 @@ _SPACE = re.compile(r"\s+")
 def no_progress_steps() -> int:
     """Steps in a row with no progress of any kind before the run is told
     to step back (``AIFORGE_NO_PROGRESS_STEPS``, default 25, at least 8)."""
-    try:
-        val = int(os.environ.get("AIFORGE_NO_PROGRESS_STEPS", "25"))
-    except ValueError:
-        return 25
-    return max(_WINDOW, val)
+    from aiforge_core.runtime.stuck_policy import Policy
+    return Policy.load().no_progress_steps
 
 
 def command_template(name: str, args) -> str:

@@ -12,26 +12,19 @@ never) — with a written summary of what is done and what remains.
 """
 from __future__ import annotations
 
-import os
+from aiforge_core.runtime.stuck_policy import Policy
+
+from ._stuck.state import reset
 
 
 def arm_reasoning(st) -> None:
     """A stuck step is the one that needs thinking: turn reasoning on for the
     next few model calls (see llm.reasoning.boost)."""
-    from aiforge_core.llm import reasoning
-    st.reason_boost = max(getattr(st, "reason_boost", 0), reasoning.boost_steps())
+    st.reason_boost = max(getattr(st, "reason_boost", 0), Policy.load().reason_steps)
 
 
 def pause_on_stuck() -> bool:
-    return os.environ.get("AIFORGE_CHAT_PAUSE_ON_STUCK", "").strip().lower() \
-        in ("1", "true", "yes", "on")
-
-
-def _limit() -> int:
-    try:
-        return max(0, int(os.environ.get("AIFORGE_CHAT_STUCK_ESCALATIONS", "20")))
-    except ValueError:
-        return 20
+    return Policy.load().pause_on_stuck
 
 
 _TIERS = (
@@ -58,13 +51,13 @@ def escalate(st, why: str):
     n = getattr(st, "stuck_escalations", 0) + 1
     st.stuck_escalations = n
     arm_reasoning(st)
-    limit = _limit()
+    pol = Policy.load()
+    limit = pol.stuck_escalations
     wrapping = bool(limit) and n > limit
     _remember_failure(st, why)
-    from ._progress import clear_call_history
-    clear_call_history(st)
+    reset(st, "escalation")
     restarted = False
-    if n % 2 == 0 and _restart_enabled():
+    if n % 2 == 0 and pol.stuck_restart:
         restarted = restart_with_handoff(st)
     elif n % 2 == 1:
         _condense(st)
@@ -82,11 +75,6 @@ def escalate(st, why: str):
            "text": f"↺ {why.rstrip('.')} — changing approach (try {n}), "
                    "the task continues"}
     return "wrap_up" if wrapping and n > limit + 1 else "continue"
-
-
-def _restart_enabled() -> bool:
-    return os.environ.get("AIFORGE_CHAT_STUCK_RESTART", "1").strip().lower() \
-        not in ("0", "false", "no", "off")
 
 
 def _remember_failure(st, why: str) -> None:
@@ -130,12 +118,10 @@ def restart_with_handoff(st) -> bool:
                            {"role": "user", "content": handoff.render(h, oid)}]
         if getattr(st, "board", None):
             pin_board(st.convo, st.board)
-        for name in ("read_sigs_seen", "recent_outputs"):
-            seen = getattr(st, name, None)
-            if hasattr(seen, "clear"):
-                seen.clear()
-        from ._progress import clear_call_history
-        clear_call_history(st, identical=True)
+        seen = getattr(st, "read_sigs_seen", None)
+        if hasattr(seen, "clear"):
+            seen.clear()
+        reset(st, "restart")
         st.restarts = getattr(st, "restarts", 0) + 1
         rec = getattr(st, "handoff_rec", None)
         if rec is not None:

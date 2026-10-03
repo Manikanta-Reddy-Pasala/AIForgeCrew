@@ -9,6 +9,10 @@ from __future__ import annotations
 import os
 import re
 
+from aiforge_core.runtime.stuck_policy import Policy
+
+_POLICY = Policy.load()   # read once at import, like every constant below
+
 # Route label constants — keep in sync with the edge wiring in pipeline.py.
 ROUTE_TRIVIAL = "trivial"
 ROUTE_FULL = "full"
@@ -66,16 +70,16 @@ _NUMBERED_LINE_RE = re.compile(r"^\s*\d+[.)]\s+\S", re.MULTILINE)
 # valve). 0 = off. When set, the loop exits with a ``partial`` verdict once
 # elapsed exceeds this many seconds — so a model grinding unproductively for
 # minutes ships its partial diff instead of looping until the LLM-call cap.
-DOER_MAX_WALL_S = _int_env("AIFORGE_LOOP_MAX_WALL_S", 0)
+DOER_MAX_WALL_S = _POLICY.loop_max_wall_s
 # Replan cap (was GraphPipeline.max_replans=1).
 MAX_REPLANS = 1
 # A Doer loop that stalls (same failure, no progress, plateau) is re-planned with
 # a different approach this many times before partial work ships for review.
 # Finishing the task comes first; 0 restores ship-the-partial at the first stall.
-PLATEAU_REPLANS = _int_env("AIFORGE_PLATEAU_REPLANS", 2)
+PLATEAU_REPLANS = _POLICY.plateau_replans
 # Consecutive Doer iterations that change no file before the loop counts as
 # stalled (re-planned or shipped). 0 turns the rule off.
-NO_EDIT_ITERS = _int_env("AIFORGE_NO_EDIT_ITERS", 2) or 10**9
+NO_EDIT_ITERS = _POLICY.no_edit_iters or 10**9
 # Verifier-reject → re-plan cap (bounded inner loop).
 MAX_VERIFY_REPLANS = 1
 # Research-gap → re-search cap (bounded research-completeness loop).

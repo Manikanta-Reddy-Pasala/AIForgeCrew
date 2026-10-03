@@ -16,16 +16,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 
 log = logging.getLogger("aiforge.repeat_guard")
 
 
 def make_repeat_guard_callback():
-    try:
-        limit = int(os.environ.get("AIFORGE_TOOL_REPEAT_LIMIT", "4"))
-    except ValueError:
-        limit = 4
+    from aiforge_core.runtime.stuck_policy import Policy
+    limit = Policy.load().tool_repeat_limit
     if limit <= 0:
         return None
 

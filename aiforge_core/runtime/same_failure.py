@@ -18,7 +18,6 @@ its session state.
 """
 from __future__ import annotations
 
-import os
 
 from aiforge_core.runtime.failure_signature import Failure
 
@@ -32,11 +31,8 @@ STOP = "stop"
 def same_failure_limit() -> int:
     """Distinct workspace states one failure may survive
     (``AIFORGE_SAME_FAILURE_LIMIT``, default 3, at least 2)."""
-    try:
-        val = int(os.environ.get("AIFORGE_SAME_FAILURE_LIMIT", "3"))
-    except ValueError:
-        return 3
-    return max(2, val)
+    from aiforge_core.runtime.stuck_policy import Policy
+    return Policy.load().same_failure_limit
 
 
 def observe(track: dict, fail: Failure, state_key: str, limit: int | None = None) -> str:

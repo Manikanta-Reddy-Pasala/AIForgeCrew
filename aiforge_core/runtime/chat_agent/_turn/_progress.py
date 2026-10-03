@@ -23,7 +23,10 @@ import os
 
 from aiforge_core.runtime.tools.mutating import writes_files
 
-from .._context import _LOOP_REPEAT, _stuck_recovery_max
+from aiforge_core.runtime.stuck_policy import Policy
+
+from .._context import _LOOP_REPEAT
+from ._stuck.state import StuckState, reset
 
 #: Paths, states and strike keys kept per run; the oldest are forgotten.
 _MAX_TRACKED = 20_000
@@ -33,37 +36,17 @@ _NO_FILE = "-"
 _SHELL_TOOLS = frozenset({"run_command", "bash", "shell", "run", "run_shell"})
 
 
-def _int_env(name: str, default: int) -> int:
-    try:
-        val = int(os.environ.get(name, default))
-    except ValueError:
-        return default
-    return val if val > 0 else default
-
-
-def loop_backstop() -> int:
-    """Repeats of one action since the last new workspace state that count
-    as a loop anyway (``AIFORGE_CHAT_LOOP_BACKSTOP``, default 30); three
-    times as many in the whole run always do."""
-    return _int_env("AIFORGE_CHAT_LOOP_BACKSTOP", 30)
-
-
-def max_recoveries() -> int:
-    """Stuck recoveries one run may use between two task-board items marked
-    done (``AIFORGE_CHAT_MAX_RECOVERIES``, default 30)."""
-    return _int_env("AIFORGE_CHAT_MAX_RECOVERIES", 30)
-
-
 def progress_fields() -> dict:
     """The loop-state fields this module keeps."""
+    own = StuckState()
     return {
         "file_hashes": collections.OrderedDict(),
         "state_fp": "",
         "states_seen": collections.OrderedDict({"": True}),
         "paths_read": collections.OrderedDict(),
-        "strikes": collections.OrderedDict(),
-        "backstop": collections.OrderedDict(),
-        "lifetime": collections.OrderedDict(),
+        "strikes": own.strikes,
+        "backstop": own.backstop,
+        "lifetime": own.lifetime,
         "tree_pending": False,
         "tree_hashes": {},
         "tree_cache": collections.OrderedDict(),
@@ -72,13 +55,10 @@ def progress_fields() -> dict:
         "git_off": False,
         "new_states": 0,
         "new_files": 0,
-        "recoveries_total": 0,
-        "recovery_mark": None,
-        # actions whose lifetime count a recovery already reset once
-        "lifetime_forgiven": collections.OrderedDict(),
-        # the same-failure rule's tracker (see same_failure): lives here, not
-        # in the conversation, so a condense cannot reset it
-        "same_fail": {},
+        "recoveries_total": own.recoveries_total,
+        "recovery_mark": own.recovery_mark,
+        "lifetime_forgiven": own.lifetime_forgiven,
+        "same_fail": own.same_fail,
     }
 
 
@@ -321,20 +301,22 @@ def strike(st, sig, per_state: bool = True) -> str:
 def _over(st, sig, per_state, extra=0) -> bool:
     if per_state and st.strikes.get(f"{sig}@{st.state_fp}", 0) + extra >= _LOOP_REPEAT:
         return True
-    return (st.backstop.get(sig, 0) >= loop_backstop()
-            or st.lifetime.get(sig, 0) >= 3 * loop_backstop())
+    backstop = Policy.load().backstop
+    return (st.backstop.get(sig, 0) >= backstop
+            or st.lifetime.get(sig, 0) >= 3 * backstop)
 
 
 def forgive(st, sig) -> None:
     """After a recovery nudge, give this action a fresh count. The lifetime
     count is reset once per action: a second reset would make the ceiling
     one that nothing holds."""
-    clear_call_history(st)
+    reset(st, "recovery")
     sig = _short(sig)
+    backstop = Policy.load().backstop
     st.strikes[f"{sig}@{st.state_fp}"] = 0
-    if st.backstop.get(sig, 0) >= loop_backstop():
+    if st.backstop.get(sig, 0) >= backstop:
         st.backstop[sig] = 0
-    if (st.lifetime.get(sig, 0) >= 3 * loop_backstop()
+    if (st.lifetime.get(sig, 0) >= 3 * backstop
             and sig not in st.lifetime_forgiven):
         _remember(st.lifetime_forgiven, sig)
         st.lifetime[sig] = 0
@@ -360,22 +342,20 @@ def may_recover(st) -> bool:
         st.stuck_recoveries = 0
     st.recovery_mark = mark
     closed = _closed_items(st)
-    if closed > getattr(st, "recoveries_closed_mark", closed):
+    mark = getattr(st, "recoveries_closed_mark", None)
+    if mark is not None and closed > mark:
         st.recoveries_total = 0       # a newly finished task is real progress
-    st.recoveries_closed_mark = max(closed, getattr(st, "recoveries_closed_mark", 0))
-    if (st.stuck_recoveries >= _stuck_recovery_max()
-            or st.recoveries_total >= max_recoveries()):
+    st.recoveries_closed_mark = max(closed, mark or 0)
+    pol = Policy.load()
+    if (st.stuck_recoveries >= pol.stuck_recoveries
+            or st.recoveries_total >= pol.max_recoveries):
         return False
     st.stuck_recoveries += 1
     st.recoveries_total += 1
     return True
 
 #: Consecutive identical calls with identical results that count as a loop,
-#: whatever the workspace did (``AIFORGE_CHAT_IDENTICAL_REPEATS``, default 5).
-def identical_limit() -> int:
-    return _int_env("AIFORGE_CHAT_IDENTICAL_REPEATS", 5)
-
-
+#: whatever the workspace did: ``Policy.identical_repeats`` (default 5).
 _RESULT_KEYS = ("ok", "code", "exit_code", "stdout", "stderr", "error", "content",
                 "text", "output")
 
@@ -431,39 +411,10 @@ def ping_pong(st, sig=None) -> bool:
     return sig is None or _short(sig) in (a[0], b[0])
 
 
-def clear_call_history(st, identical: bool = False) -> None:
-    """Forget the recent calls: after a recovery or an escalation the run starts
-    a new pattern, and a stale window must not re-trip at once. The identical-run
-    COUNT is kept (a refused repeat keeps raising it until the change of
-    approach); a restart into a fresh context clears it too (``identical``)."""
-    recent = getattr(st, "recent_calls", None)
-    if hasattr(recent, "clear"):
-        recent.clear()
-    if identical:
-        st.identical_run = None
-
-
 # ── assistant monologue ────────────────────────────────────────────────────
 # OpenHands' third stuck pattern: the model answers three times in a row, runs
 # no tool, and says essentially the same thing each time. Word-for-word
 # repeats are the stuck-output guard's; this catches the reworded ones.
-
-def monologue_limit() -> int:
-    """Replies in a row that count as a monologue
-    (``AIFORGE_CHAT_MONOLOGUE_REPEATS``, default 3; 0 turns the check off)."""
-    try:
-        return max(0, int(os.environ.get("AIFORGE_CHAT_MONOLOGUE_REPEATS", "3")))
-    except ValueError:
-        return 3
-
-
-def _similarity_floor() -> float:
-    try:
-        return min(1.0, max(0.5, float(
-            os.environ.get("AIFORGE_CHAT_MONOLOGUE_SIMILARITY", "0.85"))))
-    except ValueError:
-        return 0.85
-
 
 def _normalised(text: str) -> str:
     """Case, punctuation, digits and spacing removed: two replies that differ
@@ -480,15 +431,15 @@ def similar_text(a: str, b: str) -> bool:
         return True
     import difflib
     sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
-    floor = _similarity_floor()
+    floor = Policy.load().monologue_similarity
     return sm.real_quick_ratio() >= floor and sm.quick_ratio() >= floor \
         and sm.ratio() >= floor
 
 
 def note_monologue(st, text: str) -> bool:
     """Record one reply that ran no tool. True when the last N such replies
-    (N = :func:`monologue_limit`) all say essentially the same thing."""
-    n = monologue_limit()
+    (N = ``Policy.monologue_repeats``) all say essentially the same thing."""
+    n = Policy.load().monologue_repeats
     if n <= 0:
         return False
     recent = getattr(st, "monologue", None)
