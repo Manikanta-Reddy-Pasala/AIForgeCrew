@@ -123,3 +123,17 @@ def test_files_the_harness_wrote_are_not_the_turns_work(repo, log):
     (cwd / ".codegraph").mkdir()
     (cwd / ".codegraph" / ".gitignore").write_text("*\n")
     assert facts.suffix(1, str(cwd), head) == ""
+
+
+def test_a_file_left_uncommitted_before_the_turn_is_not_this_turns_change(repo, log):
+    cwd, head = repo
+    (cwd / "old.py").write_text("1\n")
+    dirty0 = subprocess.run(["git", "status", "--porcelain"], cwd=cwd,
+                            capture_output=True, text=True).stdout
+    log["earlier"] = [_step("file_write", path="old.py")]
+    out = facts.suffix(1, str(cwd), head, dirty0)
+    assert "no file changed in this turn" in out
+    (cwd / "calc.py").write_text("x = 7\n")
+    log["live"] = [_step("file_write", path="old.py")]      # written again
+    out = facts.suffix(1, str(cwd), head, dirty0)
+    assert "files changed in this turn: `calc.py`, `old.py`" in out

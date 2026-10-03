@@ -369,7 +369,7 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
         # answer is taken out before the measured one goes in.
         step["text"] = _facts.strip_copied(step.get("text") or "")
         _bg_note = _facts.suffix(getattr(st, "session_id", None), cwd,
-                                 getattr(st, "head0", None)) + _bg_note
+                                 getattr(st, "head0", None), _wt_fp0 or "") + _bg_note
     try:
         yield {"type": "message",
                "text": _strip_reasoning_prefix(step["text"]) + _bg_note}

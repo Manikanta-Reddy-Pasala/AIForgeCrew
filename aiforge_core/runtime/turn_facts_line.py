@@ -45,10 +45,38 @@ def _own(path: str) -> bool:
     return any(path.startswith(p) or f"/{p}" in path for p in _OWN)
 
 
-def _changed(cwd, head0) -> "set | None":
-    from aiforge_core.runtime.chat_agent._guards.turn_facts import changed_files
+def _dirty_lines(porcelain: str) -> dict:
+    out = {}
+    for ln in (porcelain or "").splitlines():
+        path = ln[3:].strip().strip('"')
+        if path:
+            out[path.split(" -> ")[-1].strip().strip('"')] = ln[:2]
+    return out
+
+
+def _written(session_id, cwd) -> set:
+    """Paths this turn's own write calls named."""
+    from aiforge_core.runtime import action_log
+    return set(_write_paths(action_log.live_steps(session_id), cwd))
+
+
+def _changed(cwd, head0, session_id=None, dirty0: str = "") -> "set | None":
+    """Files that differ from the turn's first commit — without the harness's
+    own files, and without a file that was already uncommitted when the turn
+    began, is in the same state now, and that no write call of the turn named."""
+    from aiforge_core.runtime.chat_agent._guards.turn_facts import _git, changed_files
     found = changed_files(cwd, head0)
-    return None if found is None else {p for p in found if not _own(p)}
+    if found is None:
+        return None
+    found = {p for p in found if not _own(p)}
+    before = _dirty_lines(dirty0)
+    if before:
+        now = _dirty_lines(_git(cwd, "status", "--porcelain",
+                                "--untracked-files=all") or "")
+        written = _written(session_id, cwd)
+        found = {p for p in found
+                 if p in written or before.get(p) is None or before.get(p) != now.get(p)}
+    return found
 
 
 def _commits(cwd, head0) -> list:
@@ -72,23 +100,30 @@ def _commands(session_id) -> "tuple[int, int, str]":
     return worked, len(failed), last.lstrip("✗ ").strip()
 
 
-def _earlier_files(session_id, cwd) -> list:
-    """Files the earlier turns of this chat wrote (their write calls that did
-    not fail), newest last, as the calls named them."""
+def _write_paths(steps, cwd) -> list:
+    """The paths the write calls in ``steps`` named (calls that did not fail),
+    relative to ``cwd``, in order."""
     from aiforge_core.runtime import action_log
     from aiforge_core.runtime.tools.mutating import writes_files
     out: list = []
-    for s in action_log._stored_steps(session_id):
+    root = str(cwd).rstrip("/") + "/" if cwd else ""
+    for s in steps or []:
         name = str(s.get("name") or "")
         args = s.get("args") if isinstance(s.get("args"), dict) else {}
         if not writes_files(name, args) or action_log._ok(s.get("result")) is False:
             continue
         path = str(args.get("path") or args.get("file") or args.get("file_path") or "")
-        if cwd and path.startswith(str(cwd).rstrip("/") + "/"):
-            path = path[len(str(cwd).rstrip("/")) + 1:]
+        if root and path.startswith(root):
+            path = path[len(root):]
         if path and path not in out:
             out.append(path)
     return out
+
+
+def _earlier_files(session_id, cwd) -> list:
+    """Files the earlier turns of this chat wrote."""
+    from aiforge_core.runtime import action_log
+    return _write_paths(action_log._stored_steps(session_id), cwd)
 
 
 def _repo_state(cwd) -> str:
@@ -112,10 +147,11 @@ def _repo_state(cwd) -> str:
     return f"last commit `{last}`" + (f", {pushed}" if pushed else "")
 
 
-def parts(session_id, cwd, head0) -> list:
-    """The facts as short phrases, in reading order. Empty: nothing to show."""
+def parts(session_id, cwd, head0, dirty0: str = "") -> list:
+    """The facts as short phrases, in reading order. Empty: nothing to show.
+    ``dirty0``: ``git status --porcelain`` as the turn began."""
     out: list = []
-    changed = _changed(cwd, head0)
+    changed = _changed(cwd, head0, session_id, dirty0)
     worked, failed, last = _commands(session_id)
     if changed:
         out.append(f"files changed in this turn: {_names(sorted(changed))}")
@@ -143,12 +179,12 @@ def parts(session_id, cwd, head0) -> list:
     return out
 
 
-def suffix(session_id, cwd, head0) -> str:
+def suffix(session_id, cwd, head0, dirty0: str = "") -> str:
     """The block for the end of a final answer, or ""."""
     if session_id is None or not enabled():
         return ""
     try:
-        found = parts(session_id, cwd, head0)
+        found = parts(session_id, cwd, head0, dirty0)
     except Exception as exc:  # noqa: BLE001 — the block never blocks an answer
         log.debug("facts line skipped: %s", exc)
         return ""
