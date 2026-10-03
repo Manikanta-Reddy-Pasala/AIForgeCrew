@@ -312,7 +312,8 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
         return "continue"
     _sig = yield from run_guards(st, step, [
         FileEditClaimGuard(cwd, readonly_mode, builder, _wt_fp0),
-        ZeroEditGuard(cwd, readonly_mode, builder, plan_mode, _asks, _wt_fp0)])
+        ZeroEditGuard(cwd, readonly_mode, builder, plan_mode, _asks, _wt_fp0,
+                      strict=strict_finish)])
     if _sig == "continue":
         return "continue"
     _sig = yield from _verify_on_final(st, step, cwd, plan_mode, builder)

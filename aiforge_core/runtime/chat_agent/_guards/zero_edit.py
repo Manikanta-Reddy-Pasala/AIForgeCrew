@@ -66,12 +66,37 @@ CHECK = (
 #: what a model wraps around a one-word reply, or closing a line of reasoning
 #: ("…that was a question, nothing was left undone. SAME").
 _SAME_END = re.compile(r"(?:^|[\s.:;—-])SAME[\s.!*_`'\")\]]*\Z")
+#: The reply is the word in any case, alone (with what a model wraps around a
+#: one-word reply) …
+_SAME_WHOLE = re.compile(
+    r"\A[\s*_`'\"(\[]*(?:final\s*:\s*)?same[\s.!*_`'\")\]]*\Z", re.I)
+#: … or it OPENS with the word exactly as the check asks for it, in capitals,
+#: then explains ("SAME — it was a question."). "Same-origin policy blocks…" and
+#: "Same: the function returns…" are answers that merely begin with the word.
 _SAME_START = re.compile(
-    r"\A[\s*_`'\"(\[]*(?:final\s*:\s*)?same(?:\s*\Z|\s*[.!:,;—\-*_`'\")\]])", re.I)
+    r"\A[\s*_`'\"(\[]*(?:(?:FINAL|Final|final)\s*:\s*)?SAME(?:\s*\Z|\s*[.!:,;—\-*_`'\")\]])")
+
+
+_ABOUT_THE_USER = re.compile(
+    r"\bthe\s+user(?:'s)?\b|\buser's\s+(?:message|request|question|last)\b"
+    r"|\bthe\s+(?:request|message|question)\s+(?:was|is|only|did|does)\b", re.I)
+
+
+def _to_the_harness(text: str) -> bool:
+    """A reply that talks ABOUT the user rather than TO them."""
+    return bool(_ABOUT_THE_USER.search(text or ""))
+
+
+def _tool_calls(st) -> int:
+    try:
+        return sum(int(v or 0) for v in (getattr(st, "action_counts", None) or {}).values())
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def _says_same(text: str) -> bool:
-    return bool(_SAME_START.match(text) or _SAME_END.search(text))
+    return bool(_SAME_WHOLE.match(text) or _SAME_START.match(text)
+                or _SAME_END.search(text))
 
 
 _NOT_DONE = re.compile(r"^[\s*_#>`]*not\s+done\b[\s*_:`—-]*", re.I)
@@ -130,14 +155,20 @@ def _small_talk(goal: str) -> bool:
 class ZeroEditGuard:
     counter = "no_change_nudges"
 
-    def __init__(self, cwd, readonly_mode, builder, plan_mode, asks, wt_fp0):
+    def __init__(self, cwd, readonly_mode, builder, plan_mode, asks, wt_fp0,
+                 strict: bool = False):
         self.cwd, self.readonly_mode = cwd, readonly_mode
         self.builder, self.plan_mode = builder, plan_mode
         self.asks, self.wt_fp0 = asks, wt_fp0
+        self.strict = strict
 
     def applies(self, st) -> bool:
-        """An act-mode turn that has landed no edit."""
-        return not (self.readonly_mode or self.plan_mode or self.builder
+        """An act-mode turn of a CHAT that has landed no edit. Not a work-producing
+        run (the pipeline Doer, a subtask, a scheduled job): its "user message" is
+        a seed the harness wrote, its finals are refused unless explicit (a bare
+        SAME would cost two more rounds), and the pipeline has its own no-edit
+        rule."""
+        return not (self.strict or self.readonly_mode or self.plan_mode or self.builder
                     or st.edits_made != 0 or not _no_change_guard_enabled())
 
     def evidence(self, st) -> bool:
@@ -208,6 +239,7 @@ class ZeroEditGuard:
                 return None
             st.zero_edit_checked = True
             st.zero_edit_answer = step.get("text") or ""     # sent on "SAME"
+            st.zero_edit_tools = _tool_calls(st)
             return (yield from self._send_back(
                 st, step, "↻ no file was changed — checking that against what "
                           "you asked…", CHECK, echo=False))
@@ -223,7 +255,17 @@ class ZeroEditGuard:
             step["text"] = DISCLAIMER + _NOT_DONE.sub("", text, count=1).strip()
             return None
         elif not self._stalled(st, text):
-            return None                       # the model's new answer stands
+            # The model's new answer stands (a correction, or "nothing needs to
+            # change, because …") — except a reply that ANSWERS THE CHECK: no tool
+            # ran since, and it speaks ABOUT the user in the third person ("the
+            # user only asked to run the tests; no file changes were needed").
+            # That is addressed to the harness; the answer written for the user
+            # is the one from before the check.
+            before = (getattr(st, "zero_edit_answer", "") or "").strip()
+            if (before and not text.endswith("?") and _to_the_harness(text)
+                    and _tool_calls(st) == getattr(st, "zero_edit_tools", -1)):
+                step["text"] = before
+            return None
         sent = getattr(st, self.counter, 0)
         if sent < _GO_AHEAD_NUDGES:
             setattr(st, self.counter, sent + 1)

@@ -208,4 +208,18 @@ def _with_resume(pc, text):
     them as mere conversation context the planner is free to ignore. A
     brief that only rides in `history` is a resume that works in one mode.
     """
-    return f"{text}\n\n---\n{pc._resume_brief}" if pc._resume_brief else text
+    brief = pc._resume_brief
+    if not brief or _reference_only(brief):
+        # A handoff offered "for reference only" belongs to the working model's
+        # context (it decides whether the new message continues that work); it
+        # is not part of a NEW request's planner spec.
+        return text
+    return f"{text}\n\n---\n{brief}"
+
+
+def _reference_only(brief: str) -> bool:
+    try:
+        from aiforge_core.runtime import handoff
+        return handoff.REFERENCE_MARK in (brief or "")
+    except Exception:  # noqa: BLE001
+        return False

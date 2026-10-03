@@ -87,6 +87,39 @@ def load(session_id) -> dict:
     return _load_state(session_id)["entries"]
 
 
+_PENDING_CMD_MAX = 2000
+#: Most entries of one kind kept: a chat that touched hundreds of files must not
+#: push its packages, branches and stashes off the end of the list for good
+#: (steps are replayed once, so what is cut here is never found again).
+_PER_KIND_MAX = {"file": 30, "temp": 15}
+
+
+def _pending_safe(pending: dict) -> dict:
+    """The commands of jobs still running, as they are stored: masked and bounded
+    (they outlive a rewind that deleted the messages they came from)."""
+    out = {}
+    for k, v in list((pending or {}).items())[-40:]:
+        row = list(v) if isinstance(v, (list, tuple)) else [v]
+        if row:
+            row[0] = _safe(row[0])[:_PENDING_CMD_MAX]
+        out[str(k)] = row
+    return out
+
+
+def _cap_kinds(entries: list) -> list:
+    seen: dict = {}
+    out = []
+    for e in entries:
+        kind = e.get("kind")
+        cap = _PER_KIND_MAX.get(kind)
+        if cap is not None:
+            seen[kind] = seen.get(kind, 0) + 1
+            if seen[kind] > cap:
+                continue
+        out.append(e)
+    return out
+
+
 def save(session_id, entries: list, *, seen: "int | None" = None,
          mark: "str | None" = None, pending: "dict | None" = None) -> bool:
     """Write the chat's list. ``seen`` / ``mark`` / ``pending`` are the replay
@@ -104,7 +137,7 @@ def save(session_id, entries: list, *, seen: "int | None" = None,
         if entries or seen or pending:
             body = json.dumps({"v": _VERSION, "entries": entries[:MAX_ENTRIES],
                                "seen": int(seen), "mark": mark,
-                               "pending": dict(list(pending.items())[-40:]),
+                               "pending": _pending_safe(pending),
                                "updated_at": time.time()},
                               ensure_ascii=False, default=str)
         return bool(chat_store.set_session_cleanup(int(session_id), body))
@@ -579,7 +612,7 @@ def collect(session_id, steps: "list | None" = None, cwd: "str | None" = None,
         entries = list(jobs.values()) + _verify(merged, session_id, cwd)
         entries = [_near(e, cwd) for e in entries]
         entries.sort(key=lambda e: _ORDER.get(e.get("kind"), 9))
-        entries = entries[:MAX_ENTRIES]
+        entries = _cap_kinds(entries)[:MAX_ENTRIES]
         mark = _mark(steps[-1]) if steps else ""
         if persist and (_signature(entries) != _signature(list(stored.values()))
                         or len(steps) != state["seen"] or mark != state["mark"]

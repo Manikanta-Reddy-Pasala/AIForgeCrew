@@ -159,7 +159,8 @@ def _prelude_notices(resume_brief, cmd_expanded):
     """Small user-facing notices before the agent runs: a resume marker (so a
     retry doesn't look identical to the failed run) and a command-expansion note
     (so the user sees WHY their "/deploy …" became a longer prompt)."""
-    if resume_brief:
+    from ._prep import _reference_only
+    if resume_brief and not _reference_only(resume_brief):
         yield {"type": "thought", "role": "system",
                "text": "↻ Resuming the stopped turn — carrying over what already "
                        "landed and finishing only what is pending."}
