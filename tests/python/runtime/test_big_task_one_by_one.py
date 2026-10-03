@@ -196,6 +196,75 @@ def test_a_green_test_run_is_evidence_even_without_edits(tmp_path):
     assert "12 passed" in st.board["a"]["note"]
 
 
+def test_a_command_that_succeeded_is_evidence_and_the_note_names_it(tmp_path):
+    st = _st(tmp_path)
+    _items.ensure_started(st)
+    _items.note_evidence(st, "run_command", {"cmd": "curl -sf localhost:8000/health"},
+                         {"ok": True, "code": 0, "stdout": "200"})
+    result, _ = _close(st, "a")
+    assert result["ok"] and st.board["a"]["status"] == "done"
+    assert "ran ok: run_command(curl -sf localhost:8000/health)" in st.board["a"]["note"]
+    assert "UNVERIFIED" not in st.board["a"]["note"]
+
+
+def test_an_external_tool_call_that_returned_ok_is_evidence(tmp_path):
+    st = _st(tmp_path)
+    _items.ensure_started(st)
+    _items.note_evidence(st, "jira_comment", {"key": "ONE-1"}, {"ok": True, "id": 7})
+    result, _ = _close(st, "a")
+    assert result["ok"] and "ran ok: jira_comment(ONE-1)" in st.board["a"]["note"]
+
+
+def test_a_failed_command_is_not_evidence(tmp_path):
+    st = _st(tmp_path)
+    _items.ensure_started(st)
+    _items.note_evidence(st, "run_command", {"cmd": "git push origin feat"},
+                         {"ok": False, "code": 1, "stderr": "fatal: rejected"})
+    _items.note_evidence(st, "jira_comment", {"key": "ONE-1"},
+                         {"ok": False, "error": "401"})
+    result, _ = _close(st, "a")
+    assert result["ok"] is False and "nothing shows" in result["error"]
+    assert st.board["a"]["status"] == "running"
+
+
+@pytest.mark.parametrize("name,args", [
+    ("file_read", {"path": "a.py"}),
+    ("grep", {"pattern": "x"}),
+    ("editor", {"command": "view", "path": "a.py"}),
+    ("run_command", {"cmd": "cat a.py"}),
+    ("run_command", {"cmd": "git status"}),
+])
+def test_reads_alone_are_not_evidence(tmp_path, name, args):
+    st = _st(tmp_path)
+    _items.ensure_started(st)
+    _items.note_evidence(st, name, args, {"ok": True, "code": 0, "stdout": "x"})
+    result, _ = _close(st, "a")
+    assert result["ok"] is False and "nothing shows" in result["error"]
+
+
+def test_a_running_command_and_a_write_that_changed_nothing_are_not_evidence(
+        tmp_path):
+    st = _st(tmp_path)
+    _items.ensure_started(st)
+    _items.note_evidence(st, "run_command", {"cmd": "npm run dev"},
+                         {"ok": True, "running": True, "id": "bg-1"})
+    _items.note_evidence(st, "file_write", {"path": "a.py"}, {"ok": True})
+    result, _ = _close(st, "a")
+    assert result["ok"] is False and "nothing shows" in result["error"]
+
+
+def test_a_command_before_the_item_started_is_not_its_evidence(tmp_path):
+    st = _st(tmp_path)
+    _items.ensure_started(st)
+    _items.note_evidence(st, "run_command", {"cmd": "make deploy"},
+                         {"ok": True, "code": 0})
+    assert _close(st, "a")[0]["ok"]
+    st.item_fresh_close = False                  # a new model step began
+    _items.note_evidence(st, "file_read", {"path": "a.py"}, {"ok": True})
+    result, _ = _close(st, "b")
+    assert result["ok"] is False and "nothing shows" in result["error"]
+
+
 def test_several_items_closed_in_one_reply_share_the_evidence(tmp_path):
     st = _st(tmp_path)
     _items.ensure_started(st)

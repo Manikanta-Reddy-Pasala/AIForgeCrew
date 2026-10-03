@@ -5,7 +5,9 @@ what makes the board an execution plan instead of a checklist:
 
 * **Evidence.** Every tool call is logged as it lands: files that really
   changed (content hashes, not the model's say-so), test runs and their runner
-  summary, and green build/lint/check commands. An item marked ``done`` is
+  summary, green build/lint/check commands, and any other non-read action
+  that succeeded (a command that exited 0, an external tool call that returned
+  ok). A failed action and a read prove nothing. An item marked ``done`` is
   accepted only with evidence in its window. Without it the item goes back to
   ``running`` with a different-approach hint (bounded by
   ``AIFORGE_CHAT_ITEM_RETRIES``); out of retries, an item whose last test run
@@ -130,6 +132,26 @@ def _test_summary(result) -> str:
     return " ".join(line.split())[:120]
 
 
+def _acted(name, args, result) -> str:
+    """The call as ``tool(arg)`` when it is an action that SUCCEEDED, else "".
+    Reads (read tools, ``ls``/``cat``/``git status`` in a shell) and failed
+    calls are not actions; file writes are judged by content hash, not here."""
+    from aiforge_core.runtime import action_log
+    from aiforge_core.runtime.tools.mutating import writes_files
+
+    from .._native import _readonly_command
+    args = args if isinstance(args, dict) else {}
+    if writes_files(name, args) or _readonly_command(
+            args.get("cmd") or args.get("command")):
+        return ""
+    done = [e for e in action_log.entries(
+        [{"type": "tool", "name": name, "args": args, "result": result}])
+        if e.get("ok") is True and not e.get("read") and not e.get("running")]
+    if not done:
+        return ""
+    return f"{done[0]['tool']}({done[0]['arg']})" if done[0].get("arg") else done[0]["tool"]
+
+
 def note_evidence(st, name, args, result) -> None:
     """Log what one finished tool call proved. Called after every tool call;
     does nothing until a big board started the log."""
@@ -157,6 +179,10 @@ def note_evidence(st, name, args, result) -> None:
             cmd = str((rargs or {}).get("cmd") or (rargs or {}).get("command") or "")
             if cmd and _CHECK_CMD.search(cmd):
                 st.item_log.append(("check", " ".join(cmd.split())[:80]))
+            else:
+                call = _acted(rname, rargs, rres)
+                if call:
+                    st.item_log.append(("action", call))
     except Exception:  # noqa: BLE001 — bookkeeping never breaks a turn
         pass
 
@@ -188,8 +214,9 @@ def _facts(st, evs) -> dict:
     edited = list(dict.fromkeys(edited))
     tests = [e for e in evs if e[0] == "test"]
     checks = list(dict.fromkeys(e[1] for e in evs if e[0] == "check"))
+    actions = list(dict.fromkeys(e[1] for e in evs if e[0] == "action"))
     return {"edited": edited, "test": tests[-1] if tests else None,
-            "checks": checks}
+            "checks": checks, "actions": actions}
 
 
 def _note(facts: dict, status: str, suffix: str = "") -> str:
@@ -203,6 +230,8 @@ def _note(facts: dict, status: str, suffix: str = "") -> str:
         bits.append(f"tests {state}" + (f" ({line})" if line else ""))
     if facts["checks"]:
         bits.append("checks ok: " + "; ".join(facts["checks"][:3]))
+    if facts.get("actions"):
+        bits.append("ran ok: " + "; ".join(facts["actions"][:3]))
     if not bits:
         bits.append("no file changes or checks recorded")
     head = {"done": "done", "failed": "FAILED", "skipped": "skipped"}.get(
@@ -222,8 +251,11 @@ def _verdict(facts: dict):
         return True, "files changed"
     if facts["checks"]:
         return True, "check green"
+    if facts.get("actions"):
+        return True, "action succeeded"
     return False, ("nothing shows this item was done: no file changed and no "
-                   "test or build ran since the previous item")
+                   "test, build or other command succeeded since the previous "
+                   "item")
 
 
 def review_progress(st, result: dict, events: list):
