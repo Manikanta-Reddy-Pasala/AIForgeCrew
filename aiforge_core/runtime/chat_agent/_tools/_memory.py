@@ -56,6 +56,21 @@ def _t_search_chat_sessions(args: dict, _cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def _t_session_actions(args: dict, cwd: str) -> dict:
+    """What THIS chat did (each action with its outcome) and what it left to
+    clean up — the harness's own record, more of it than the action-log note
+    shows. Read-only; no model call."""
+    try:
+        from aiforge_core.runtime import action_log, chat_cancel
+        failed = args.get("failed_only")
+        if isinstance(failed, str):
+            failed = failed.strip().lower() in ("1", "true", "yes", "on")
+        return action_log.view(chat_cancel.active(), failed_only=bool(failed),
+                               limit=_coerce_int(args.get("limit"), 50), cwd=cwd)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+
 def _t_memory_write(args: dict, cwd: str) -> dict:
     """Persist a durable fact/decision into the knowledge memory so future
     chats + tickets recall it. repo defaults to the working dir's name."""

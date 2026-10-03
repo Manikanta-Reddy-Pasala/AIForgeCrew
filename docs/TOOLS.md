@@ -213,6 +213,7 @@ in chat and in the Doer alike — the query string was unfiltered outbound data.
 | `context_gather` | `{kind: jira\|confluence, key}` | parallel cross-entity dossier (entity + linked pages/tickets/images), cached in the work folder | RO |
 | `resolve_repo` | `{name}` | loose repo/service name → local path | RO |
 | `search_chat_sessions` | `{query, limit}` | recall past chat sessions | RO |
+| `session_actions` | `{failed_only, limit}` | what THIS chat ran (each action with its outcome) + the cleanup inventory (running jobs, new files, packages, containers, branches, with how to undo each) | RO |
 | `list_repos` | `{}` | configured base folder + per-repo paths | RO |
 | `set_repo_folder` / `set_repo_root` | `{repo, path}` / `{path}` | persist repo → folder mapping | allow |
 | `set_integration_default` | `{tool, value}` | persist default Jira project / Confluence space | allow |

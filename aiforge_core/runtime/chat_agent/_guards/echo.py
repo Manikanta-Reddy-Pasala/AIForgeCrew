@@ -1,19 +1,27 @@
 """A reply that only repeats the system's action log is not an answer.
 
-Each earlier assistant turn is stored with a ``[did: file_read(a)✓, …]`` line the
-SYSTEM adds, so the next turn remembers what was done. In a long chat the model
-copies that format into its own reply ("Honest re-check — … [did: …]") and the
-turn ends with a log where the result should be. The user sees a list of calls
-and no work.
+Each earlier assistant turn used to be stored with a ``[did: file_read(a)✓, …]``
+line the SYSTEM added, so the next turn remembered what was done. In a long chat
+the model copied that format into its own reply ("Honest re-check — … [did: …]")
+and the turn ended with a log where the result should be. The user saw a list of
+calls and no work.
+
+That line is gone from the history: what was done now lives in the session
+action log, a harness note the model reads but does not own
+(``runtime/action_log.py``). This guard stays as the safety net, for the old
+format and for a reply that copies the new note.
 """
 from __future__ import annotations
 
 import re
 
-_LOG = re.compile(r"\[did:.*", re.S)
+# The old per-turn digest, and the session action log's own markers and
+# placeholder (runtime/action_log.py): a reply never carries any of them.
+_LOG = re.compile(r"\[did:.*|<<AIFORGE_ACTION_LOG>>.*|\[action log — not the user\].*"
+                  r"|\(This turn ended without a written reply\.\).*", re.S)
 
 NUDGE = ("[loop guard — not the user] Your reply was only a log of earlier "
-         "actions. The `[did: …]` line is added by the system; never write it. "
+         "actions. The action log is written by the system; never write one. "
          "Do the work now: take the next action, or write the actual result "
          "for the user (what you found, what you changed, what the numbers "
          "are).")

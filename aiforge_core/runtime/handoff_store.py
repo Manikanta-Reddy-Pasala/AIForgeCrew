@@ -102,6 +102,9 @@ def bound(h: dict) -> dict:
     }
     if isinstance(h.get("pipeline"), dict):
         out["pipeline"] = _pipeline_part(h["pipeline"])
+    if h.get("cleanup"):
+        # The cleanup inventory at the time of the record (runtime/action_log).
+        out["cleanup"] = _strs(h.get("cleanup"), 12, 260)
     for key, cap in (("done", 4), ("files", 4), ("failed", 3), ("open", 4)):
         while len(json.dumps(out, default=str)) > MAX_BYTES and len(out[key]) > cap:
             out[key] = out[key][1:] if key != "open" else out[key][:-1]

@@ -166,6 +166,10 @@ CATALOG: dict = {
                      ("text",)),
     "search_chat_sessions": ("Find things discussed in PAST chat sessions.",
                              {"query": "s", "limit": "i"}, ("query",)),
+    "session_actions": ("What THIS chat ran, with each outcome, and what it left "
+                        "to clean up (running jobs, new files, packages, "
+                        "containers, branches) with how to undo each.",
+                        {"failed_only": "b", "limit": "i"}, ()),
     "remember_rule": ("Persist a user rule for every session.",
                       {"text": "s", "description": "s", "scope": "s",
                        "triggers": "arrs"}, ("text",)),
@@ -457,12 +461,13 @@ _CORE_ACT = frozenset({
     "command_wait", "command_output", "command_kill",
     "memory_lookup", "memory_write",
     "git_status", "git_diff", "repo_map",
+    "session_actions",
 })
 _CORE_READ = frozenset({
     "plan_progress", "tool_help",
     "file_read", "read_files", "read_lines", "list_dir", "find", "grep",
     "memory_lookup", "git_status", "git_diff", "repo_map",
-    "search_chat_sessions",
+    "search_chat_sessions", "session_actions",
 })
 _TOOL_HELP = {"type": "function", "function": {
     "name": "tool_help",

@@ -76,6 +76,7 @@ from ._tools import (
     _chat_repo_key,
     _t_memory_lookup,
     _t_search_chat_sessions,
+    _t_session_actions,
     _t_memory_write,
     _t_create_job_script,
     _SKIP_DIRS,

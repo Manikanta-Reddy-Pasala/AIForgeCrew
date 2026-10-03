@@ -99,6 +99,7 @@ Tool arguments:
 - memory_lookup{{"query": "..."}}                        (recall from knowledge memory)
 - memory_lookup{{"id": "off:...", "offset": 0}}          (restore the saved full text of messages a context note says it condensed; offset pages)
 - search_chat_sessions {{"query": "...", "limit": 6}}     (find things you discussed with the user in PAST chat sessions)
+- session_actions {{"failed_only": false, "limit": 50}}   (what THIS chat ran, each with its outcome, and what it left to clean up: running jobs, new files, installed packages, containers, branches — with how to undo each)
 - memory_write {{"text": "the durable fact", "kind": "note|gotcha|decision", "decision": false, "tags": ["tool:jira"], "scope": "global"}}
                 (scope defaults to THIS ticket/page/repo; scope:"global" = a lesson recalled across ALL tickets/repos — use for general knowledge, keep ticket-specifics unscoped)
                 (save a learning/decision for future recall; tag TOOL learnings "tool:jira|confluence|git|email|gitlab" so they resurface for that tool)

@@ -117,8 +117,32 @@ def _dur(seconds: float) -> str:
     return f"{h}h {m:02d}m"
 
 
+def leftover_jobs(session_id, shown: "list | None" = None) -> list:
+    """What this chat left running (background commands, services, containers)
+    as short lines, from the cleanup inventory. ``shown`` are the job ids a
+    status answer already lists. Read-only; never raises."""
+    try:
+        from aiforge_core.runtime import action_log, cleanup_inventory
+        if session_id is None or not action_log.enabled():
+            return []
+        seen = {str(j.get("id")) for j in (shown or []) if isinstance(j, dict)}
+        return [cleanup_inventory.line(e)[:200]
+                for e in cleanup_inventory.running(session_id)
+                if str(e.get("job")) not in seen][:6]
+    except Exception:  # noqa: BLE001 — a status read never breaks anything
+        return []
+
+
+def leftover_text(lines: list) -> str:
+    """The status line for what is left running ("" when nothing is)."""
+    if not lines:
+        return ""
+    return "- **Left running by this chat:** " + "; ".join(lines)
+
+
 def snapshot(run, *, pending_steers: int = 0, side_tasks: "list | None" = None,
-             jobs: "list | None" = None, handoff: "dict | None" = None) -> dict:
+             jobs: "list | None" = None, handoff: "dict | None" = None,
+             leftovers: "list | None" = None) -> dict:
     """The facts about a live run, as plain data."""
     now = time.time()
     open_calls = sorted(run.open_tools.values(), key=lambda c: c["at"])
@@ -140,6 +164,7 @@ def snapshot(run, *, pending_steers: int = 0, side_tasks: "list | None" = None,
         "commands": jobs or [],
         "answered": bool(getattr(run, "answered", False)),
         "handoff": handoff or None,
+        "leftovers": list(leftovers or []),
     }
 
 
@@ -203,6 +228,8 @@ def render(snap: dict) -> str:
         lines.append(f"- **Changes so far:** {ch['files']} file{'s' if ch['files'] != 1 else ''}"
                      f" (+{ch.get('additions', 0)} −{ch.get('deletions', 0)})")
     lines += handoff_lines(snap.get("handoff"))
+    if snap.get("leftovers"):
+        lines.append(leftover_text(snap["leftovers"]))
     quiet = snap["quiet_s"]
     if quiet >= 20:
         lines.append(f"- No new output for {_dur(quiet)} — "

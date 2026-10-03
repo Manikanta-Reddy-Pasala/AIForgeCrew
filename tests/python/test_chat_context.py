@@ -17,8 +17,9 @@ def test_step_digest_summarises_tools():
     assert "run_command(pytest)✗" in d
 
 
-def test_history_folds_digest_and_keeps_stepful_blank_turn():
+def test_history_keeps_stepful_blank_turn_without_a_digest(monkeypatch):
     from aiforge_core.api.api import _chat_history_for_agent
+    monkeypatch.delenv("AIFORGE_CHAT_ACTION_LOG", raising=False)
     rows = [
         {"role": "user", "content": "build X"},
         # did work but produced no final text — must NOT be dropped.
@@ -28,9 +29,11 @@ def test_history_folds_digest_and_keeps_stepful_blank_turn():
         {"role": "user", "content": "now test it"},
     ]
     h = _chat_history_for_agent(rows)
-    # The stepful blank assistant turn survives as a digest line.
-    assert any(m["role"] == "assistant" and "did:" in m["content"] for m in h)
-    assert "editor(x.py)" in h[1]["content"]
+    # The stepful blank assistant turn survives (as a placeholder). What it
+    # did is in the session action log, not in the assistant's own turn.
+    assert [m["role"] for m in h] == ["user", "assistant", "user"]
+    assert h[1]["content"] and "did:" not in h[1]["content"]
+    assert "editor(x.py)" not in h[1]["content"]
     # No two consecutive same-role turns.
     for a, b in zip(h, h[1:]):
         assert a["role"] != b["role"]

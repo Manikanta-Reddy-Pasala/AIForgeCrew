@@ -67,7 +67,17 @@ def _build_team_prompt(cwd, prompt, history, session_id, resume_brief):
             img_ctx = chat_media.context_block(session_id)
         except Exception:  # noqa: BLE001
             img_ctx = ""
-    parts = [p for p in (*bundle.blocks(), img_ctx, convo) if p]
+    # What the chat already ran and what it left behind: the history above
+    # carries only what was SAID (see runtime/action_log.py).
+    actions = ""
+    if session_id is not None:
+        try:
+            from aiforge_core.runtime import action_log
+            body = action_log.block(session_id, cwd)
+            actions = f"{action_log.NOTE_HEAD}\n{body}" if body else ""
+        except Exception:  # noqa: BLE001
+            actions = ""
+    parts = [p for p in (*bundle.blocks(), img_ctx, convo, actions) if p]
     prompt = ("\n\n".join(parts) + f"\n\nCURRENT REQUEST:\n{prompt}"
               if parts else prompt)
     if _wants:

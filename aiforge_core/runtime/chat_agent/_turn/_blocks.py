@@ -40,9 +40,14 @@ def _append_session_blocks(add, cwd, messages, session_id, role):
             _img_blocks = []
         # EXECUTION LEDGER: what this session ALREADY ran (exact commands + files
         # + outcomes) so a follow-up doesn't redo completed work.
+        # With the session ACTION LOG on (the default) this is not sent: the
+        # log is a harness note next to the newest message (see
+        # ``_convo._build_convo``), so the system prompt keeps the same bytes
+        # from turn to turn instead of growing a line per command.
         try:
-            from aiforge_core.runtime import session_ledger
-            add("executed", session_ledger.ledger_block(session_id))
+            from aiforge_core.runtime import action_log, session_ledger
+            if not action_log.enabled():
+                add("executed", session_ledger.ledger_block(session_id))
         except Exception:  # noqa: BLE001 — ledger must never break a turn
             pass
     # OKR-DAG: surgical goal context for the ACTIVE Key Result — the separate

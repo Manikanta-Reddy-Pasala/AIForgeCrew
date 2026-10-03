@@ -87,7 +87,17 @@ def build_chat(st) -> dict:
     open_ = [_title(i) for i in board if i.get("status") not in ("done", "failed", "skipped")]
     files = list((getattr(st, "file_hashes", {}) or {}).keys())
     err = last_attempt(getattr(st, "convo", []))
+    # What the chat created or started and has not undone (files, running
+    # commands, packages, containers, branches): facts, from the inventory.
+    cleanup: list = []
+    try:
+        from aiforge_core.runtime import action_log
+        cleanup = action_log.cleanup_lines(getattr(st, "session_id", None),
+                                           getattr(st, "cwd", None))
+    except Exception:  # noqa: BLE001 — a handoff is still built without it
+        cleanup = []
     return {
+        **({"cleanup": cleanup} if cleanup else {}),
         "goal": str(getattr(st, "goal", "") or "").strip()[:1200],
         "done": done[-12:],
         "open": open_[:12],
@@ -122,6 +132,10 @@ def render(h: dict, offload_id: "str | None" = None,
     if h.get("failed"):
         lines.append("ALREADY TRIED AND FAILED — choose something different:\n"
                      + render_failed(h["failed"]))
+    if h.get("cleanup"):
+        lines.append("LEFT BY THIS CHAT, TO CLEAN UP WHEN THE WORK IS DONE "
+                     "(what → how to undo):\n"
+                     + "\n".join(f"- {t}" for t in h["cleanup"]))
     if h.get("green"):
         lines.append("TESTS: the last full test run was green.")
     if h.get("error"):

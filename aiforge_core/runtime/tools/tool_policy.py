@@ -86,6 +86,8 @@ _READONLY_ALWAYS_ALLOW = {
     # Looking at a command the agent already started (its approval was the
     # run_command call).
     "command_wait", "command_output",
+    # The harness's own record of what this chat did.
+    "session_actions",
 }
 
 _DEFAULT_ASK = {"confluence_create", "confluence_update",

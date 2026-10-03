@@ -33,6 +33,7 @@ from ._grep import (
 from ._memory import (
     _t_memory_lookup,
     _t_search_chat_sessions,
+    _t_session_actions,
     _t_memory_write,
     _t_remember_rule,
     _BULLET_TRIGGERS_RE,

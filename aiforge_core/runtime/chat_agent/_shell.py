@@ -240,10 +240,14 @@ def _t_file_write(args: dict, cwd: str) -> dict:
     if bad:
         return {"ok": False, "error": "syntax_invalid", "detail": bad,
                 "hint": "fix the syntax, or pass force:true to write anyway"}
+    # Whether this call MADE the file: the cleanup inventory offers to delete
+    # only what a result says was created (runtime/cleanup_detect.py).
+    existed = p.exists()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
     return attach_oversize(
-        {"ok": True, "path": str(p), "bytes": len(content)}, str(p), content)
+        {"ok": True, "path": str(p), "bytes": len(content),
+         **({} if existed else {"created": True})}, str(p), content)
 
 
 def _t_file_patch(args: dict, cwd: str) -> dict:

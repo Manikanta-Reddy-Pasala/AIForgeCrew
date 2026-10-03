@@ -127,6 +127,9 @@ class _SqliteChatStore:
             # The unfinished-work handoff (runtime/handoff_store.py): one JSON
             # blob per chat, rewritten whole by a single UPDATE.
             _add_column_if_missing(c, "chat_sessions", "handoff", "TEXT")
+            # The cleanup inventory (runtime/cleanup_inventory.py): what the
+            # chat created or started and has not undone. One JSON blob.
+            _add_column_if_missing(c, "chat_sessions", "cleanup", "TEXT")
             yield c
             c.commit()
         finally:
@@ -181,6 +184,20 @@ class _SqliteChatStore:
             r = c.execute("SELECT handoff FROM chat_sessions WHERE id=?",
                           (session_id,)).fetchone()
         return r["handoff"] if r else None
+
+    def set_session_cleanup(self, session_id, text):
+        """Replace the chat's cleanup inventory (None clears it). One UPDATE;
+        ``updated_at`` is left alone, as for the handoff."""
+        with self._conn() as c:
+            cur = c.execute("UPDATE chat_sessions SET cleanup=? WHERE id=?",
+                            (text, session_id))
+            return cur.rowcount > 0
+
+    def get_session_cleanup(self, session_id):
+        with self._conn() as c:
+            r = c.execute("SELECT cleanup FROM chat_sessions WHERE id=?",
+                          (session_id,)).fetchone()
+        return r["cleanup"] if r else None
 
     def child_sessions(self, parent_id) -> list[dict]:
         with self._conn() as c:

@@ -2,9 +2,11 @@
 
 Two amnesia bugs shape this code. Persisted ``steps`` were never fed back into
 context, so any work the model did not transcribe into its final prose simply
-vanished from the next turn — hence the ``[did: …]`` digest folded into each
-assistant row, and hence keeping an assistant turn that did work but produced
-no text (dropping it also broke user/assistant alternation). And deleting a
+vanished from the next turn — hence the session action log (a harness note
+built from the steps; the older ``[did: …]`` digest folded into each assistant
+row is what ``AIFORGE_CHAT_ACTION_LOG=0`` brings back), and hence keeping an
+assistant turn that did work but produced no text (dropping it also broke
+user/assistant alternation). And deleting a
 chat used to discard everything worked out in it, so a delete folds the
 session into memory FIRST.
 
@@ -396,18 +398,33 @@ def test_a_turn_with_no_tools_has_no_digest():
     assert ch._step_digest("not a list") == ""
 
 
-def test_an_assistant_turn_carries_what_it_did(monkeypatch):
-    """Persisted steps were never fed back, so work the model did not
-    transcribe into its prose vanished from the next turn."""
+def test_an_assistant_turn_carries_only_what_it_said(monkeypatch):
+    """What a turn DID is in the session action log (a harness note), not in
+    the assistant's own turn, where the model copied it as its answer."""
+    monkeypatch.delenv("AIFORGE_CHAT_ACTION_LOG", raising=False)
+    row = {"content": "Done.", "steps": [{"type": "tool", "name": "file_write",
+                                          "result": {"ok": True}}]}
+    assert ch._history_row_content(row, "assistant") == "Done."
+
+
+def test_a_silent_assistant_turn_is_still_represented(monkeypatch):
+    from aiforge_core.runtime import action_log
+    monkeypatch.delenv("AIFORGE_CHAT_ACTION_LOG", raising=False)
+    row = {"content": "", "steps": [{"type": "tool", "name": "grep",
+                                     "result": {"ok": True}}]}
+    assert ch._history_row_content(row, "assistant") == action_log.NO_REPLY
+    assert "[did:" not in action_log.NO_REPLY
+
+
+def test_the_digest_comes_back_when_the_action_log_is_off(monkeypatch):
+    """``AIFORGE_CHAT_ACTION_LOG=0`` restores the old history shape."""
+    monkeypatch.setenv("AIFORGE_CHAT_ACTION_LOG", "0")
     row = {"content": "Done.", "steps": [{"type": "tool", "name": "file_write",
                                           "result": {"ok": True}}]}
     assert ch._history_row_content(row, "assistant") == "Done.\n[did: file_write✓]"
-
-
-def test_a_silent_assistant_turn_is_still_represented():
-    row = {"content": "", "steps": [{"type": "tool", "name": "grep",
-                                     "result": {"ok": True}}]}
-    assert ch._history_row_content(row, "assistant") == "[did: grep✓]"
+    silent = {"content": "", "steps": [{"type": "tool", "name": "grep",
+                                        "result": {"ok": True}}]}
+    assert ch._history_row_content(silent, "assistant") == "[did: grep✓]"
 
 
 def test_a_user_turn_is_verbatim():

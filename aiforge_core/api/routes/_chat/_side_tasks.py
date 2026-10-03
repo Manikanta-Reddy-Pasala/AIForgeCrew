@@ -473,7 +473,8 @@ def status_of(session_id: int, run) -> dict:
     except Exception:  # noqa: BLE001
         ho = None
     snap = chat_status.snapshot(run, pending_steers=pending, side_tasks=tasks,
-                                jobs=jobs, handoff=ho)
+                                jobs=jobs, handoff=ho,
+                                leftovers=chat_status.leftover_jobs(session_id, jobs))
     return {"text": chat_status.render(snap), "snapshot": snap}
 
 
@@ -487,6 +488,13 @@ def chat_run_status(session_id: int) -> dict:
     run = chat_runs.get(session_id)
     if run is None or run.done:
         text = "**Status** — nothing is running in this chat."
+        try:
+            from aiforge_core.runtime import chat_status as _cs
+            left = _cs.leftover_text(_cs.leftover_jobs(session_id))
+            if left:
+                text = ("**Status** — no turn is running in this chat.\n" + left)
+        except Exception:  # noqa: BLE001
+            pass
         try:
             from aiforge_core.runtime import chat_status, handoff_store
             v = handoff_store.view(session_id)

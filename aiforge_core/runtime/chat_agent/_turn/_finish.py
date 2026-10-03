@@ -341,7 +341,18 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
     # Still-running handed-off jobs outlive this answer as background jobs
     # (end_turn would otherwise kill what the answer calls "still running").
     from aiforge_core.runtime import cmd_jobs_promote as _promote
-    _bg_note = _promote.answer_suffix(_promote.promote_turn_jobs())
+    _promoted = _promote.promote_turn_jobs()
+    _bg_note = _promote.answer_suffix(_promoted)
+    # One factual line about what this turn leaves behind (commands still
+    # running, uncommitted files, temp paths): from the cleanup inventory,
+    # never from the model. Empty when nothing is left.
+    try:
+        from aiforge_core.runtime import action_log as _alog
+        _bg_note += _alog.final_suffix(
+            getattr(st, "session_id", None), cwd,
+            skip_jobs=[getattr(j, "key", "") for j in _promoted[:4]])
+    except Exception:  # noqa: BLE001 — the line never blocks an answer
+        pass
     try:
         yield {"type": "message",
                "text": _strip_reasoning_prefix(step["text"]) + _bg_note}

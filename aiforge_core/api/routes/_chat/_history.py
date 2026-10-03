@@ -71,13 +71,36 @@ def _step_digest(steps: list) -> str:
     return digest
 
 
+def _action_log_on() -> bool:
+    try:
+        from aiforge_core.runtime import action_log
+        return action_log.enabled()
+    except Exception:  # noqa: BLE001 — unsure: keep the digest
+        return False
+
+
 def _history_row_content(m: dict, role: str) -> str:
-    """The content for one persisted row, folding an assistant turn's tool DIGEST
-    into it so the agent remembers its own prior actions. "" for a row with
-    nothing to say (which the caller then skips)."""
+    """The content for one persisted row. "" for a row with nothing to say
+    (which the caller then skips).
+
+    An assistant turn carries only what the assistant SAID. What it did is in
+    the session action log (``runtime/action_log.py``), a harness note the
+    model does not mistake for its own words. A turn that ran tools and wrote
+    no reply keeps a one-line placeholder, so the turn is not dropped and
+    roles keep alternating.
+
+    With ``AIFORGE_CHAT_ACTION_LOG=0`` the old behaviour is back: the turn's
+    tool DIGEST (``[did: …]``) is folded into its content."""
     content = (m.get("content") or "").strip()
     if role != "assistant":
         return content
+    if _action_log_on():
+        if content:
+            return content
+        from aiforge_core.runtime.action_log import NO_REPLY
+        ran = any(isinstance(s, dict) and s.get("type") == "tool"
+                  for s in (m.get("steps") or []))
+        return NO_REPLY if ran else ""
     digest = _step_digest(m.get("steps") or [])
     if not digest:
         return content
@@ -87,11 +110,11 @@ def _history_row_content(m: dict, role: str) -> str:
 def _chat_history_for_agent(rows: list) -> list[dict]:
     """Build the agent's conversation history from persisted messages.
 
-    Unlike a naive role+content copy, this (1) folds each assistant turn's tool
-    DIGEST into its content so the agent remembers its own prior actions, (2)
-    keeps assistant turns that did work but produced no final text (don't drop
-    them — that left a gap AND broke user/assistant alternation), and (3) merges
-    consecutive same-role turns (some providers reject two in a row)."""
+    Unlike a naive role+content copy, this (1) keeps assistant turns that did
+    work but produced no final text (don't drop them — that left a gap AND
+    broke user/assistant alternation), and (2) merges consecutive same-role
+    turns (some providers reject two in a row). What each turn DID is not in
+    here: the session action log carries it (see ``_history_row_content``)."""
     out: list[dict] = []
     for m in rows:
         role = m.get("role")

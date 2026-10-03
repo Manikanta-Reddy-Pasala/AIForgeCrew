@@ -37,6 +37,8 @@ from ._api import (
     child_sessions,
     get_session_handoff,
     set_session_handoff,
+    get_session_cleanup,
+    set_session_cleanup,
     session_learns,
     set_session_cwd,
     set_session_learn,

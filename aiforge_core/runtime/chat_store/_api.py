@@ -66,6 +66,14 @@ def get_session_handoff(session_id: int) -> "str | None":
     return _backend().get_session_handoff(session_id)
 
 
+def set_session_cleanup(session_id: int, text: "str | None") -> bool:
+    return _backend().set_session_cleanup(session_id, text)
+
+
+def get_session_cleanup(session_id: int) -> "str | None":
+    return _backend().get_session_cleanup(session_id)
+
+
 def child_sessions(parent_id: int) -> list[dict]:
     return _backend().child_sessions(parent_id)
 

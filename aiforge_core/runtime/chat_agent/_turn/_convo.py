@@ -247,6 +247,16 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
     sys_msg = _cap_system_prompt(sys_msg, _sys_cap, protect=_sys_core_len)
     sys_msg = _compress_prompt(sys_msg)   # trim whitespace bloat (caveman-style)
     convo = _history_to_convo(sys_msg, messages, _img_blocks)
+    # The session ACTION LOG (what was run, what worked, what failed, what is
+    # left to clean up): a harness note right before the newest message. Not
+    # in the system message and not in the earlier turns, so both keep their
+    # bytes and a prefix-keyed prompt cache survives from turn to turn.
+    if session_id is not None:
+        try:
+            from aiforge_core.runtime import action_log
+            action_log.insert_note(convo, session_id, cwd)
+        except Exception:  # noqa: BLE001 — the log never breaks a turn
+            pass
     return convo, _bundle, _asks, _dropped_playbooks
 
 

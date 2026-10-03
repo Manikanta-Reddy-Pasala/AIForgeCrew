@@ -297,6 +297,22 @@ def chat_session_handoff(session_id: int) -> dict:
     return {"session_id": session_id, **handoff_store.view(session_id)}
 
 
+@router.get("/api/chat/sessions/{session_id}/actions",
+            responses={404: {"description": "Not found"}})
+def chat_session_actions(session_id: int, failed_only: bool = False,
+                         limit: int = 100) -> dict:
+    """What this chat did and what it left behind: the action log (each tool
+    action with its outcome, newest last) and the cleanup inventory (files,
+    running commands, packages, containers, branches — what, where, how to
+    undo). Built from the stored tool steps and the live job table. No model."""
+    from aiforge_core.runtime import action_log, chat_store
+    if not chat_store.get_session(session_id):
+        raise HTTPException(404, f"session {session_id} not found")
+    out = action_log.view(session_id, failed_only=failed_only, limit=limit)
+    out.pop("ok", None)
+    return {"session_id": session_id, **out}
+
+
 @router.post("/api/chat/kill-all")
 def chat_kill_all() -> dict:
     """Force-reset ALL in-flight chat state — the 'kill all' escape hatch.

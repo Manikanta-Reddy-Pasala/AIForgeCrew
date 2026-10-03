@@ -368,6 +368,13 @@ def run_chat_agent(
     """
     from aiforge_core.runtime.context_seen import reset_seen_bodies
     reset_seen_bodies()
+    # The session action log collects this turn's tool steps from here on.
+    action_log = _action_log()
+    _alog_run = None
+    try:
+        _alog_run = action_log.begin_run(session_id)
+    except Exception:  # noqa: BLE001 — the log never breaks a turn
+        pass
     st = _build_loop_state(
         messages, cwd, role, max_steps, complete_fn, session_id, mode,
         scope_globs, builder, strict_finish)
@@ -387,17 +394,49 @@ def run_chat_agent(
     inner = _drive(st, cwd, role, complete_fn, session_id, builder, strict_finish)
     try:
         for ev in inner:
+            action_log.observe(_alog_run, ev)
             rec.observe(ev)
             yield ev
     finally:
         inner.close()
         rec.finish()
+        action_log.end_run(_alog_run)
+
+
+class _NoActionLog:
+    """Stands in when the action log cannot even be imported: a turn runs
+    without it rather than not at all."""
+
+    @staticmethod
+    def begin_run(_session_id):
+        return None
+
+    @staticmethod
+    def observe(_run, _ev) -> None:
+        return None
+
+    @staticmethod
+    def end_run(_run) -> None:
+        return None
+
+    @staticmethod
+    def ensure_pinned(_st) -> bool:
+        return False
+
+
+def _action_log():
+    try:
+        from aiforge_core.runtime import action_log
+        return action_log
+    except Exception:  # noqa: BLE001 — the log never breaks a turn
+        return _NoActionLog
 
 
 def _drive(st, cwd, role, complete_fn, session_id, builder, strict_finish):
     """The loop proper: steps until the turn ends (see ``run_chat_agent``)."""
     n = 0
     from aiforge_core.runtime import cmd_jobs
+    action_log = _action_log()
     _jobs_turn = None
     try:
         # Inside the try: a prelude that raises (or a closed stream) still
@@ -406,6 +445,9 @@ def _drive(st, cwd, role, complete_fn, session_id, builder, strict_finish):
         yield from _emit_loop_prelude(st)
         while True:
             n += 1
+            # A condense or a restart rebuilt the context: the action log goes
+            # back into the context note (one cheap look per step otherwise).
+            action_log.ensure_pinned(st)
             # A batch of reads from the last reply runs without asking the model
             # again; each still passes every gate in _dispatch_step. When the
             # first call was batchable, those reads already started beside it.

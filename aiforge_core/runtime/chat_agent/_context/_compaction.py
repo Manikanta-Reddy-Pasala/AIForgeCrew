@@ -278,6 +278,7 @@ def _middle_signals(middle: list[dict]) -> tuple[list[str], list[str], list[str]
             if mt:
                 tools.append(mt.group(1))
             elif (content and "ACTION:" not in content
+                    and content != _note.ACK_TEXT
                     and not _claims_file_edits(content)):
                 finals.append(content.replace("\n", " ")[:160])
         elif role == "user" and content and not _is_harness_note(content):
@@ -420,7 +421,8 @@ def _pin_goal(sys_text: str, convo: list[dict], pin: "str | None" = None) -> str
         return sys_text
     goal = next((_text_of(m).strip() for m in convo[1:]
                  if m.get("role") == "user" and _text_of(m).strip()
-                 and not _text_of(m).strip().startswith("OBSERVATION:")), "")
+                 and not _text_of(m).strip().startswith("OBSERVATION:")
+                 and not _text_of(m).strip().startswith("[action log")), "")
     goal = goal.split("\n\n---\n[Interpreted request")[0].strip() or goal
     if not goal:
         return sys_text

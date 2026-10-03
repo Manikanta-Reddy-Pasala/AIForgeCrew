@@ -297,7 +297,7 @@ BATCHABLE_READS = CONCURRENT_READS | {
     # These share a connection or a cache, so they join a batch but run one
     # after another on the calling thread.
     "memory_lookup", "search_chat_sessions", "skill_search", "workflow_search",
-    "resolve_repo", "list_services",
+    "resolve_repo", "list_services", "session_actions",
 }
 #: Bookkeeping the loop handles itself; safe to run inside a batch of reads.
 _BATCHABLE = BATCHABLE_READS | {"plan_progress"}
