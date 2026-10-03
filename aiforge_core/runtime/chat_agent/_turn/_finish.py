@@ -73,6 +73,8 @@ def _claim_guard(st, step, cwd, readonly_mode, builder, _wt_fp0):
 
 #: Reminders a zero-edit FINAL gets for a change request (see _no_change_guard).
 _NO_CHANGE_NUDGES = 1
+#: A go-ahead ("yes continue") already gave the permission: three firm reminders.
+_GO_AHEAD_NUDGES = 3
 
 
 def _no_change_guard_enabled() -> bool:
@@ -109,28 +111,47 @@ def _no_change_guard(st, step, cwd, readonly_mode, builder, plan_mode, _asks,
             or not _no_change_guard_enabled()):
         return None
     from aiforge_core.runtime.chat_router import wants_changes
-    if not wants_changes(getattr(st, "goal", "") or ""):
-        return None
+
+    from . import _goahead
+    goal = getattr(st, "goal", "") or ""
+    go_ahead = _goahead.is_go_ahead(goal) and _goahead.had_earlier_assistant_turn(st)
     text = (step.get("text") or "").strip()
-    if not text or text.endswith("?"):
+    # "yes continue" refers to the request before it: hold the turn to that one.
+    wants = wants_changes(_goahead.effective_goal(st) if go_ahead else goal)
+    if not (wants or go_ahead):
+        return None
+    # A request for changes whose answer admits that nothing was done, or that
+    # the work comes "next turn", is a stall like a go-ahead that gets no work.
+    pushed_off = wants and _goahead.admits_no_work(text)
+    # A final that asks the user a question is left alone — except one that asks
+    # for the go-ahead the user has just given.
+    if not text or (text.endswith("?") and not ((go_ahead or pushed_off)
+                                                 and _goahead.asks_permission(text))):
         return None                       # asking the user, or nothing to label
     _wt_now = _worktree_fingerprint(cwd)
     if _wt_now == "" or _wt_now != _wt_fp0:
         return None                       # no git signal, or a change landed
-    if (_bigger_task(st, _asks)
-            and getattr(st, "no_change_nudges", 0) < _NO_CHANGE_NUDGES):
+    forced = go_ahead or pushed_off
+    limit = _GO_AHEAD_NUDGES if forced else _NO_CHANGE_NUDGES
+    if ((forced or _bigger_task(st, _asks))
+            and getattr(st, "no_change_nudges", 0) < limit):
         st.no_change_nudges = getattr(st, "no_change_nudges", 0) + 1
         yield {"type": "thought", "text": step["text"]}
         yield {"type": "thought", "role": "system",
-               "text": "⚠ this request asks for changes but no file has been "
-                       "edited — doing the work…"}
-        st.convo.append({"role": "user", "content":
+               "text": ("⚠ you were told to go ahead but no file has been edited "
+                        "— doing the work…" if forced else
+                        "⚠ this request asks for changes but no file has been "
+                        "edited — doing the work…")}
+        if forced:
+            from ._escalate import arm_reasoning
+            arm_reasoning(st)             # a stalled step is the one worth thinking about
+        st.convo.append({"role": "user", "content": _goahead.NUDGE if forced else (
             "[harness — not the user] The request asks for CHANGES, and you "
             "have edited NO file. A plan, review or list of what remains is "
             "not the result. Implement it now: make the edits, run the "
             "checks, then give a FINAL that says what changed. If you have "
             "verified that nothing needs to change, say so with the "
-            "evidence (the file and line that already does it)."})
+            "evidence (the file and line that already does it).")})
         return "continue"
     step["text"] = ("(No file was changed in this turn — what follows is "
                     "analysis or a plan, not an implementation.)\n\n" + text)
