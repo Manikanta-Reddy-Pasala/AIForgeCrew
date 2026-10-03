@@ -130,3 +130,20 @@ def test_a_runbook_that_ran_is_work_done_for_the_zero_edit_check(monkeypatch):
     guard = ZeroEditGuard("", False, "", False, [], "")
     monkeypatch.setattr(action_log, "live_steps", lambda _sid: [ok])
     assert guard.evidence(st) is True
+
+
+def test_the_tool_is_on_the_native_list_only_when_a_script_exists(lib, monkeypatch):
+    from aiforge_core.runtime import cleanup_inventory
+    from aiforge_core.runtime.chat_agent import _native_select as ns
+    monkeypatch.setattr(cleanup_inventory, "session_cwd", lambda _sid: "")
+    convo = [{"role": "user", "content": "deploy it"}]
+
+    def names():
+        ns._SCRIPTED.clear()
+        return {(s.get("function") or {}).get("name")
+                for s in ns.select_native_tools(convo, session_id=4)}
+    assert "workflow_run" not in names()
+    lib("Notes only", None)
+    assert "workflow_run" not in names()
+    lib("Deploy QA", [{"name": "run.sh", "content": "#!/bin/bash\necho ok\n"}])
+    assert "workflow_run" in names()
