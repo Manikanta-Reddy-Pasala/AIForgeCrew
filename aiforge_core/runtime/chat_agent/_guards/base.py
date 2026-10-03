@@ -68,6 +68,9 @@ def _check(guard, st, step):
         note = guard.notice(claims)
         if note:
             yield {"type": "thought", "role": "system", "text": note}
+        hook = getattr(guard, "on_nudge", None)
+        if hook is not None:
+            hook(st)                      # e.g. turn reasoning on for the retry
         st.convo.append({"role": "user", "content": guard.nudge(claims)})
         return "continue"
     step["text"] = guard.disclaimer(claims) + (text.strip() if guard.strip_body
