@@ -255,8 +255,18 @@ class _SqliteChatStore:
             ).fetchall()
         return [_message_out(dict(r)) for r in rows]
 
-    def _search_candidates(self, toks, exclude_session) -> list[dict]:
+    def _session_cwds(self) -> dict:
+        """``{session_id: cwd}`` for every session — the stored fact a search
+        is scoped to a project by."""
+        with self._conn() as c:
+            return {r["id"]: r["cwd"] for r in
+                    c.execute("SELECT id, cwd FROM chat_sessions").fetchall()}
+
+    def _search_candidates(self, toks, exclude_session,
+                           only_sessions=None) -> list[dict]:
         if not toks:                       # empty tokens → invalid SQL (WHERE ())
+            return []
+        if only_sessions is not None and not only_sessions:
             return []
         where = " OR ".join(["instr(lower(m.content), ?)"] * len(toks))
         params: list = list(toks)
@@ -270,6 +280,11 @@ class _SqliteChatStore:
         if exclude_session is not None:
             sql += " AND m.session_id <> ?"
             params.append(exclude_session)
+        if only_sessions is not None:
+            # Ids, not text: scoped IN the query so the 500-row window is spent
+            # on this project's messages, not on everyone's newest.
+            ids = ",".join(str(int(i)) for i in only_sessions)
+            sql += f" AND m.session_id IN ({ids})"
         sql += " ORDER BY m.id DESC LIMIT 500"
         with self._conn() as c:
             return [dict(r) for r in c.execute(sql, params).fetchall()]

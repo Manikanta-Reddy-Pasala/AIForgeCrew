@@ -39,19 +39,10 @@ def _git_toplevel(cwd: str | None) -> str | None:
 
 
 def _chat_repo_key(cwd: str | None) -> str:
-    """Repo key for chat recall — resolves the GIT-TOPLEVEL basename (so a
-    subdir recalls the same repo as the root), falling back to the raw cwd
-    basename, then ``AIFORGE_AFM_REPO``, then the literal ``"repo"`` (gap M3).
-    Note ``repo_key`` is always truthy for a real path, so its ``or env``
-    fallback was dead — we chain the env explicitly here."""
-    from aiforge_core.runtime import repo_ident as _ri
-    # A chat that was not opened on a project runs in its own scratch folder.
-    # Keying memory by that folder ("session-12") filed every such chat's
-    # learnings under a scope no later chat reads; they share one bucket.
-    if _ri.is_chat_scratch(cwd):
-        from aiforge_core.memory.projects import GENERAL
-        return GENERAL
-    return _ri.repo_name(cwd, sentinel="repo")
+    """Repo key for chat recall — see :func:`chat_scope.project_key` (the one
+    place a chat's project is decided; gap M3)."""
+    from aiforge_core.runtime import chat_scope
+    return chat_scope.project_key(cwd)
 
 
 # Elaboration prompts — turn a user's rough input into a well-structured

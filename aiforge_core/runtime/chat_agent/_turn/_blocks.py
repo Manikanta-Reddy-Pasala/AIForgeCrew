@@ -136,7 +136,7 @@ def _append_learning_recall(add, bundle, last_user, session_id, proactive,
                     _drop = None
             add("chat-recall", _chat_session_recall(
                 last_user, session_id, limit=4,
-                drop_session=_drop))
+                drop_session=_drop, cwd=cwd))
     elif _ctx_on("recall"):
         # LITE (default): don't pre-dump on follow-ups — but the SESSION-START
         # turn still gets the one-time recall keyed to the opening request.

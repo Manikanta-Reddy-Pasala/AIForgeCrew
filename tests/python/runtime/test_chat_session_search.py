@@ -17,18 +17,18 @@ def store(monkeypatch, tmp_path):
     return cs
 
 
-def _seed(cs):
-    """Three sessions with distinct topics."""
-    s_kafka = cs.create_session(title="Kafka retries")["id"]
+def _seed(cs, cwd=None):
+    """Three sessions with distinct topics (all in the project at ``cwd``)."""
+    s_kafka = cs.create_session(title="Kafka retries", cwd=cwd)["id"]
     cs.add_message(s_kafka, "user", "how do we handle kafka consumer retries?")
     cs.add_message(s_kafka, "assistant",
                    "Use a dead-letter topic and exponential backoff for kafka retries.")
 
-    s_redis = cs.create_session(title="Redis cache")["id"]
+    s_redis = cs.create_session(title="Redis cache", cwd=cwd)["id"]
     cs.add_message(s_redis, "user", "what redis eviction policy should we use?")
     cs.add_message(s_redis, "assistant", "allkeys-lru works well for a cache.")
 
-    s_cur = cs.create_session(title="Current chat")["id"]
+    s_cur = cs.create_session(title="Current chat", cwd=cwd)["id"]
     cs.add_message(s_cur, "user", "unrelated current-session message")
     return s_kafka, s_redis, s_cur
 
@@ -147,7 +147,7 @@ def test_recall_excludes_current_session(store):
 # ── search_chat_sessions tool ──────────────────────────────────────────────
 
 def test_search_chat_sessions_tool(store):
-    _seed(store)
+    _seed(store, cwd=".")
     from aiforge_core.runtime import chat_agent
     assert "search_chat_sessions" in chat_agent.TOOLS
     out = chat_agent.TOOLS["search_chat_sessions"]({"query": "kafka", "limit": 5}, ".")
@@ -157,7 +157,7 @@ def test_search_chat_sessions_tool(store):
 
 
 def test_search_chat_sessions_tool_accepts_q_alias(store):
-    _seed(store)
+    _seed(store, cwd=".")
     from aiforge_core.runtime import chat_agent
     out = chat_agent.TOOLS["search_chat_sessions"]({"q": "redis"}, ".")
     assert out["ok"] is True

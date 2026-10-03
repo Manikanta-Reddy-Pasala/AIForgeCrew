@@ -164,8 +164,11 @@ CATALOG: dict = {
     "memory_write": ("Persist a durable fact/decision.",
                      {"text": "s", "kind": "s", "scope": "s", "tags": "arrs"},
                      ("text",)),
-    "search_chat_sessions": ("Find things discussed in PAST chat sessions.",
-                             {"query": "s", "limit": "i"}, ("query",)),
+    "search_chat_sessions": ("Find things discussed in PAST chat sessions of "
+                             "this project (all_projects=true: every "
+                             "project, each hit labelled).",
+                             {"query": "s", "limit": "i", "all_projects": "b"},
+                             ("query",)),
     "session_actions": ("What THIS chat ran, with each outcome, and what it left "
                         "to clean up (running jobs, new files, packages, "
                         "containers, branches) with how to undo each.",

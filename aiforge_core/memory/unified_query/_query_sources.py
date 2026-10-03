@@ -334,46 +334,27 @@ def _src_cross_project(ctx: "_RecallCtx") -> None:
         ctx.errors.append(f"cross: {exc}")
 
 
-def _same_project_first(ctx: "_RecallCtx", rows: list) -> list:
-    """Prior-chat hits reordered so sessions of THIS project come first. The
-    rows keep their rank-descending scores, reassigned in the new order."""
-    if not (_cross_project_on(ctx) and rows):
-        return rows
-    try:
-        from aiforge_core.runtime import chat_store
-        from aiforge_core.runtime.chat_agent import _chat_repo_key
-        own = ctx._repo_or_env()
-        cache: dict = {}
-
-        def _mine(r: dict) -> bool:
-            sid = str(r.get("group") or "").partition(":")[2]
-            if sid not in cache:
-                sess = chat_store.get_session(int(sid)) if sid.isdigit() else None
-                cwd = (sess or {}).get("cwd")
-                cache[sid] = bool(cwd) and _chat_repo_key(cwd) == own
-            return cache[sid]
-
-        ordered = [r for r in rows if _mine(r)] + [r for r in rows if not _mine(r)]
-        n = len(ordered)
-        return [{**r, "score": 1.0 - (i / max(1, n))}
-                for i, r in enumerate(ordered)]
-    except Exception:  # noqa: BLE001 — ordering is a nicety, never a failure
-        return rows
-
-
 def _src_chat(ctx: "_RecallCtx") -> None:
     """9) Prior chat-session content (gap F3). Chat messages live in their own
     chat_store silo the pipeline never read. Surface as a low-weight source so it
     informs without dominating. ON for scoped calls too (default) — disable with
-    AIFORGE_UMEM_CHAT_SCOPED=0 (or AIFORGE_UMEM_CHAT=0 entirely)."""
+    AIFORGE_UMEM_CHAT_SCOPED=0 (or AIFORGE_UMEM_CHAT=0 entirely).
+
+    A recall that has a project reads only THAT project's chats. What another
+    chat did in another repo ("Fixed, 1 passed", the files it edited) is that
+    repo's outcome: recalled here it reads as this repo's, and the agent goes
+    looking for those files. Durable knowledge from elsewhere still arrives
+    through the memory sources, which carry a scope. A repo-less search, and a
+    recall with AIFORGE_UMEM_CROSS_TASK=1, read every chat as before."""
     chat_scoped_ok = (ctx.repo is None or ctx.cross_task
                       or os.environ.get("AIFORGE_UMEM_CHAT_SCOPED", "1") == "1")
     if not (chat_scoped_ok and os.environ.get("AIFORGE_UMEM_CHAT", "1") == "1"):
         return
     try:
-        rows = ctx.pkg._chat_sessions(ctx.text, limit=ctx.limit,
-                                      exclude_session=ctx.exclude_session)
-        rows = _same_project_first(ctx, rows or [])
+        project = None if ctx.cross_task else ctx._repo_or_env()
+        rows = ctx.pkg._chat_sessions(
+            ctx.text, limit=ctx.limit, exclude_session=ctx.exclude_session,
+            **({"project": project} if project else {}))
         if rows:
             ctx.used.append("chat")
             ctx.raw_hits.extend(ctx.pkg._tag(rows, source="chat",

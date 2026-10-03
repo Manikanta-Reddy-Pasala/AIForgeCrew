@@ -132,5 +132,6 @@ def test_project_label_reaches_the_prompt():
     out = _ranked_lines([{"text": "billing retries five times",
                           "source": "doer", "project": "billing"},
                          {"text": "shop retries three times", "source": "doer"}], 5)
-    assert "(from project billing, doer)" in out
+    assert "(project billing: from another project" in out
+    assert "do not apply to this one, doer)" in out
     assert "shop retries three times  (doer)" in out
