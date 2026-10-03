@@ -579,7 +579,9 @@ def test_no_line_when_nothing_is_left_or_the_turn_only_answered(repo, monkeypatc
     chat_store.add_message(sid, "assistant", "Wrote them.", steps=[
         _tool("file_write", {"path": "notes.md"}, ok=True)])
     text, _ = _run(sid, repo, ["FINAL: It has 3 sections."], prompt="what is in the notes?")
-    assert text == "It has 3 sections."
+    answer, _, block = text.partition("\n\n---\n")
+    assert answer == "It has 3 sections."     # no leftover line; the facts block
+    assert "no file changed in this turn" not in block or "notes.md" in block
     # the switch
     monkeypatch.setenv("AIFORGE_CHAT_LEFTOVER_LINE", "0")
     text, _ = _run(sid, repo, [_write_step("more.md"), "FINAL: Wrote more."])

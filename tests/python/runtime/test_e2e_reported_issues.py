@@ -839,7 +839,10 @@ def test_5_a_model_sent_back_by_the_check_does_the_work(api):
     api.agent = agent
     evs = api.send(sid, ASK5, mode="simple")
     msgs = [e["text"] for e in evs if e.get("type") == "message"]
-    assert msgs and msgs[-1] == "implemented the read path in read_path.rs."
+    assert msgs
+    answer, _, block = msgs[-1].partition("\n\n---\n")
+    assert answer == "implemented the read path in read_path.rs."
+    assert "files changed in this turn: `read_path.rs`" in block
 
 
 

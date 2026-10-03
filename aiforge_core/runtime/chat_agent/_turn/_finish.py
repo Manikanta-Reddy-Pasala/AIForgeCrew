@@ -361,6 +361,15 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
             skip_jobs=[getattr(j, "key", "") for j in _promoted[:4]])
     except Exception:  # noqa: BLE001 — the line never blocks an answer
         pass
+    # What the harness measured in this turn (files, commits, commands), so
+    # "done" / "already done" / "nothing changed" can be read against it.
+    if not (strict_finish or builder or plan_mode):
+        from aiforge_core.runtime import turn_facts_line as _facts
+        # The block is the harness's: one the model copied from an earlier
+        # answer is taken out before the measured one goes in.
+        step["text"] = _facts.strip_copied(step.get("text") or "")
+        _bg_note = _facts.suffix(getattr(st, "session_id", None), cwd,
+                                 getattr(st, "head0", None)) + _bg_note
     try:
         yield {"type": "message",
                "text": _strip_reasoning_prefix(step["text"]) + _bg_note}
