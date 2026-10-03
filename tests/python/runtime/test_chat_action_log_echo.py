@@ -2,7 +2,7 @@
 message with a target and 'keep going' gets the goal-loop rule."""
 import pytest
 
-from aiforge_core.runtime.chat_agent._turn import _echo as E
+from aiforge_core.runtime.chat_agent._guards import echo as E
 from aiforge_core.runtime.chat_agent._turn._convo import wants_goal_loop
 
 

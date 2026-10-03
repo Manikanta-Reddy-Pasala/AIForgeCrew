@@ -188,7 +188,7 @@ def test_bug1_claim_guard_flags_first_person_edit_after_nonedit_verb():
     """Bug1 — the r12 first-person guard: a genuine 'I …ran… and updated X.py'
     claim must be flagged even though a non-edit verb ('ran') precedes the edit
     verb (the r11 per-verb rewrite briefly let this escape)."""
-    from aiforge_core.runtime.chat_agent._context._claim_guard import (
+    from aiforge_core.runtime.chat_agent._guards.file_edit import (
         _claims_file_edits,
     )
     task = "I ran the migration script and updated schema.sql to add an audit column."

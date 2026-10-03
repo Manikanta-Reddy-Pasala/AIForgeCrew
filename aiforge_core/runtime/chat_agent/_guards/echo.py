@@ -29,3 +29,27 @@ def strip_action_log(text: str) -> "tuple[str, bool]":
         return text, False
     clean = text[:m.start()].rstrip()
     return clean, (not clean) or clean.endswith(":") or len(clean) < 25
+
+
+class EchoGuard:
+    """Strip the log from the final; if nothing else is left, send the model
+    back (three times), then say plainly that no result came. Not a claim
+    check, so it runs itself (see ``base.run_guards``)."""
+
+    def check(self, st, step):
+        _clean, _echo_only = strip_action_log(step.get("text") or "")
+        if _clean != (step.get("text") or ""):
+            step["text"] = _clean
+            if _echo_only:
+                st.echo_nudges = getattr(st, "echo_nudges", 0) + 1
+                if st.echo_nudges <= 3:
+                    yield {"type": "thought", "role": "system",
+                           "text": "↺ the reply was only an action log — asking for "
+                                   "the actual result"}
+                    st.convo.append({"role": "user", "content": NUDGE})
+                    return "continue"
+                step["text"] = ("(I could not produce a result for this: I kept "
+                                "listing actions instead of finishing. Say "
+                                "\"continue\" and I will pick it up, or tell me what "
+                                "to change.)")
+        return None

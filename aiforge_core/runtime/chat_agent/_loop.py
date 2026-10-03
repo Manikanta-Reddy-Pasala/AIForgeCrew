@@ -76,7 +76,6 @@ from ._turn._convo import (  # noqa: F401
     _seed_prompt,
 )
 from ._turn._finish import (  # noqa: F401
-    _claim_guard,
     _emit_suggestion,
     _final_nudges,
     _handle_continue_step,

@@ -451,7 +451,7 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
         _safely(note_read, st, args, result, cwd)
     _safely(note_command, st, name, result, cwd)
     _safely(note_identical, st, sig, result)
-    from ._external_claim import note_external
+    from .._guards.external import note_external
     _safely(note_external, st, name, result)
     yield from _record_edit(st, name, args, result, cwd)
     # Builder finalize: a successful create_job_script / learn_skill /

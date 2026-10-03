@@ -1,7 +1,7 @@
 """Bug1 — claim-vs-reality guard: detect hallucinated file-edit claims."""
 from __future__ import annotations
 
-from aiforge_core.runtime.chat_agent._context._claim_guard import (
+from aiforge_core.runtime.chat_agent._guards.file_edit import (
     _claims_file_edits,
     _edit_claim_disclaimer,
 )

@@ -1,7 +1,7 @@
 """'I created the Confluence page' must be backed by a successful tool call."""
 import pytest
 
-from aiforge_core.runtime.chat_agent._turn import _external_claim as X
+from aiforge_core.runtime.chat_agent._guards import external as X
 
 
 @pytest.mark.parametrize("text,done,missing", [

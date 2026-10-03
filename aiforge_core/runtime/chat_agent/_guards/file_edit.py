@@ -9,9 +9,10 @@ the detection half:
 * :func:`_claims_file_edits` — does a final answer ASSERT it edited a file?
 * :func:`_worktree_fingerprint` — did the working tree actually change?
 
-The loop combines the two (claim asserted + zero landed edits + tree unchanged
-→ nudge, then annotate) — see ``_handle_final`` in ``_turn/_finish.py``. Kept
-separate from ``_verify.py`` (test/build gate) by concern.
+:class:`FileEditClaimGuard` combines the two (claim asserted + zero landed
+edits + tree unchanged → nudge, then annotate); ``_handle_final`` in
+``_turn/_finish.py`` runs it. Kept separate from ``_context/_verify.py``
+(test/build gate) by concern.
 """
 from __future__ import annotations
 
@@ -263,9 +264,57 @@ def _edit_claim_nudge() -> str:
         "Re-read the file first if unsure.")
 
 
+_EDIT_CLAIM_NOTE = ("⚠ Note: no file changes were recorded this turn — "
+                    "nothing was written to disk.\n\n")
+
+
 def _edit_claim_disclaimer(text: str) -> str:
     """Prepend an honest note when the model still asserts an un-backed edit
     after the nudge budget is spent — so the user is never told a change landed
     that didn't."""
-    return ("⚠ Note: no file changes were recorded this turn — nothing was "
-            "written to disk.\n\n" + (text or ""))
+    return _EDIT_CLAIM_NOTE + (text or "")
+
+
+class FileEditClaimGuard:
+    """The model says it edited files but landed zero edits AND the working
+    tree is unchanged (checked against every tool + any on-disk write, not just
+    counted ones) — a hallucinated tool-use surfaced as prose. Nudge it to
+    write (bounded); if it still won't, say so in front of the answer.
+    Opt out: AIFORGE_CHAT_EDIT_CLAIM_GUARD=0.
+
+    Disk cross-check: ``""`` = no git signal (NOT "clean"), so in a non-git
+    workspace this relies on ``edits_made == 0`` alone; with git it fires only
+    when the tree is UNCHANGED (an incidental dirty tree suppressing the guard
+    is an accepted conservative miss)."""
+
+    counter = "edit_claim_nudges"
+    strip_body = False
+    echo_text = True
+
+    def __init__(self, cwd, readonly_mode, builder, wt_fp0):
+        self.cwd, self.readonly_mode = cwd, readonly_mode
+        self.builder, self.wt_fp0 = builder, wt_fp0
+
+    def applies(self, st) -> bool:
+        return (not self.readonly_mode and not self.builder
+                and st.edits_made == 0 and _edit_claim_guard_enabled())
+
+    def budget(self, st) -> int:
+        return 2
+
+    def detect(self, text: str) -> list:
+        return [text] if _claims_file_edits(text) else []
+
+    def evidence(self, st) -> bool:
+        now = _worktree_fingerprint(self.cwd)
+        return not (now == "" or now == self.wt_fp0)    # a write landed
+
+    def notice(self, claims) -> str:
+        return ("⚠ you described file edits but no write ran and nothing "
+                "changed on disk — applying for real…")
+
+    def nudge(self, claims) -> str:
+        return _edit_claim_nudge()
+
+    def disclaimer(self, claims) -> str:
+        return _EDIT_CLAIM_NOTE
