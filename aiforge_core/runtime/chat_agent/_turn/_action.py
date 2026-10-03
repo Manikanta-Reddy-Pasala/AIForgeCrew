@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 
+from aiforge_core.runtime.stuck_policy import Policy
+
 from .._context import (
     _post_edit_syntax_error,
     _progress_recap,
@@ -19,9 +21,7 @@ from .._shell import _MAX_OBS, _MAX_OBS_READ, _READ_OBS_TOOLS
 from ._approval import (
     _handle_rejection,
 )
-from aiforge_core.runtime.stuck_policy import Policy
-
-from ._stuck.detect import detect
+from ._stuck.detect import bump_identical, detect, identical_repeats, note_identical
 from ._stuck.ladder import Pause, finish_stuck, nudge
 from ._idle_steps import note_step
 from ._outcomes import _note_green_tests, note_failure
@@ -29,10 +29,7 @@ from ._progress import (
     count_key,
     forgive,
     may_recover,
-    bump_identical,
-    identical_repeats,
     note_command,
-    note_identical,
     note_read,
     note_write,
     strike,

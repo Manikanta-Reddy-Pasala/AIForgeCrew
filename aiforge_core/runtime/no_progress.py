@@ -38,7 +38,8 @@ _STREAK = 6
 _TEMPLATE_LINES = 2
 _TEMPLATE_CHARS = 120
 _OUTPUT_CHARS = 400
-_SHELL_TOOLS = frozenset({"run_command", "bash", "shell", "run", "run_shell"})
+SHELL_TOOLS = frozenset({"run_command", "bash", "shell", "run", "run_shell"})
+_SHELL_TOOLS = SHELL_TOOLS
 
 NUDGE = "nudge"
 STOP = "stop"

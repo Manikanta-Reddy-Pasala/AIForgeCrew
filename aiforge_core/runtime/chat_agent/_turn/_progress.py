@@ -23,17 +23,16 @@ import os
 
 from aiforge_core.runtime.tools.mutating import writes_files
 
+from aiforge_core.runtime import no_progress
 from aiforge_core.runtime.stuck_policy import Policy
 
 from .._context import _LOOP_REPEAT
 from ._stuck.detect import (  # noqa: F401  # re-exported: tests and callers import them from here
-    bump_identical,
     identical_repeats,
     note_identical,
     note_monologue,
     ping_pong,
     reset_monologue,
-    similar_text,
 )
 from ._stuck.signal import short_key as _short
 from ._stuck.state import StuckState, reset
@@ -43,7 +42,7 @@ _MAX_TRACKED = 20_000
 _PATH_KEYS = ("path", "file", "file_path", "target", "dest", "new_path")
 _PATH_LIST_KEYS = ("paths", "files")
 _NO_FILE = "-"
-_SHELL_TOOLS = frozenset({"run_command", "bash", "shell", "run", "run_shell"})
+_SHELL_TOOLS = no_progress.SHELL_TOOLS
 
 
 def progress_fields() -> dict:
