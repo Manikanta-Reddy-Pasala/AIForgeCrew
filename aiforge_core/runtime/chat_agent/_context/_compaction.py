@@ -11,6 +11,14 @@ from ._window import _ctx_budget_chars
 
 _CONDENSE_OPEN = "<<AIFORGE_CTX_CONDENSED>>"
 _CONDENSE_CLOSE = "<</AIFORGE_CTX_CONDENSED>>"
+
+
+def condense_block(body: str) -> str:
+    """``body`` inside the condense sentinel, the one form every restart and
+    condense note uses so the next condense can find and strip it."""
+    return f"{_CONDENSE_OPEN}\n{body}\n{_CONDENSE_CLOSE}"
+
+
 # E: pinned-goal markers — kept OUTSIDE the condense sentinel so a repeated
 # condense strips the rolling summary but NEVER the original task.
 _GOAL_PIN_OPEN = "<<AIFORGE_PINNED_GOAL>>"
@@ -58,6 +66,8 @@ _SUM_RE = re.compile(re.escape(_SUM_OPEN) + r"(.*?)" + re.escape(_SUM_CLOSE), re
 _GEN_RE = re.compile(r"\(condense #(\d+)\)")
 _BLOCK_RE = re.compile(re.escape(_CONDENSE_OPEN) + r"(.*?)"
                        + re.escape(_CONDENSE_CLOSE), re.S)
+_STRIP_BLOCK_RE = re.compile(r"\s*" + re.escape(_CONDENSE_OPEN) + r".*?"
+                             + re.escape(_CONDENSE_CLOSE), re.S)
 #: A summary longer than this is cut: it must stay smaller than the history
 #: it replaces.
 _SUMMARY_MAX_CHARS = 4000
@@ -322,8 +332,7 @@ def _middle_facts(middle: list[dict]) -> tuple[list[str], list[str], list[str]]:
 def _carry_prior_facts(prior: str) -> tuple[list[str], list[str], list[str]]:
     """The ``(edited, read, errors)`` lists a PRIOR condense wrote into its note,
     so a second condense keeps them instead of starting over."""
-    block = re.search(re.escape(_CONDENSE_OPEN) + r"(.*?)"
-                      + re.escape(_CONDENSE_CLOSE), prior or "", flags=re.S)
+    block = _BLOCK_RE.search(prior or "")
     text = _SUM_RE.sub("", block.group(1)) if block else ""
     out = []
     for label in ("Files edited", "Files read", "Errors seen"):
@@ -335,8 +344,7 @@ def _carry_prior_facts(prior: str) -> tuple[list[str], list[str], list[str]]:
 def _carry_prior_thread(prior: str, user_asks: list, finals: list) -> tuple[list, list]:
     """ROLLING summary: carry forward asks/outcomes from the PRIOR breadcrumb so
     a second+ condense doesn't drop the original thread."""
-    block = re.search(re.escape(_CONDENSE_OPEN) + r"(.*?)"
-                      + re.escape(_CONDENSE_CLOSE), prior or "", flags=re.S)
+    block = _BLOCK_RE.search(prior or "")
     if not block:
         return user_asks, finals
     text = _SUM_RE.sub("", block.group(1))    # the model summary is not asks
@@ -391,7 +399,7 @@ def _breadcrumb(middle: list, used: str, summary: str, llm_summary: str,
     body = ("[earlier conversation auto-condensed to fit the context window "
             f"(condense #{gen}) — {len(middle)} messages omitted. Work done so "
             f"far: {used}.{llm}{summary}\n{more}]")
-    return f"{_CONDENSE_OPEN}\n{body}\n{_CONDENSE_CLOSE}"
+    return condense_block(body)
 
 
 def _pin_goal(sys_text: str, convo: list[dict], pin: "str | None" = None) -> str:
@@ -424,8 +432,7 @@ def _pin_goal(sys_text: str, convo: list[dict], pin: "str | None" = None) -> str
 def _stripped_system(convo: list[dict]) -> str:
     """The system message without any prior sentinel block, so it can't grow
     unbounded across repeated condenses."""
-    return re.sub(r"\s*" + re.escape(_CONDENSE_OPEN) + r".*?" + re.escape(_CONDENSE_CLOSE),
-                  "", convo[0].get("content") or "", flags=re.S).rstrip()
+    return _STRIP_BLOCK_RE.sub("", convo[0].get("content") or "").rstrip()
 
 
 def _hist_chars(msgs: list[dict]) -> int:
@@ -458,8 +465,7 @@ def _clean_system(msg: dict) -> dict:
             or "<<AIFORGE_TASK_BOARD>>" in text):
         return msg
     text = _board_re().sub("", _GOAL_RE.sub("", text))
-    text = re.sub(r"\s*" + re.escape(_CONDENSE_OPEN) + r".*?"
-                  + re.escape(_CONDENSE_CLOSE), "", text, flags=re.S).rstrip()
+    text = _STRIP_BLOCK_RE.sub("", text).rstrip()
     return {**msg, "content": text}
 
 
@@ -480,7 +486,7 @@ def _restart_block(st, middle, tail_text: str, carried: str, gen: int,
                 f"instead of stacking another summary; {len(middle)} older "
                 "messages omitted. Do not repeat what failed.]")
         body = handoff.render(h, saved, header=head)
-        block = f"{_CONDENSE_OPEN}\n{body}{tail_text}\n{_CONDENSE_CLOSE}"
+        block = condense_block(body + tail_text)
         return _with_summary(block, carried) if carried else block
     except Exception:  # noqa: BLE001 — a failed restart is the usual breadcrumb
         return None
