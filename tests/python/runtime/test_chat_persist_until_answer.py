@@ -3,6 +3,7 @@ answers — the task finishes. Only Stop, a typed message, an explicit bound or 
 configuration error ends it."""
 import pytest
 
+from aiforge_core.llm import retry_policy
 from aiforge_core.runtime import run_interrupt
 from aiforge_core.runtime.chat_agent._turn import _completion as C
 
@@ -12,7 +13,7 @@ def _fast(monkeypatch):
     monkeypatch.setenv("AIFORGE_CHAT_LLM_RETRIES", "0")
     monkeypatch.setenv("AIFORGE_CHAT_PERSIST_S", "0")
     monkeypatch.setattr(run_interrupt, "pause", lambda *a, **k: None)
-    monkeypatch.setattr(C, "_PERSIST_GAPS", (0.0,))
+    monkeypatch.setattr(retry_policy, "PERSIST_GAPS", (0.0,))
 
 
 def _drive(gen):
@@ -62,7 +63,7 @@ def test_the_old_stop_is_one_setting_away(monkeypatch):
 
 def test_a_bound_ends_it(monkeypatch):
     monkeypatch.setenv("AIFORGE_CHAT_PERSIST_S", "0.0001")
-    monkeypatch.setattr(C, "_PERSIST_GAPS", (1.0,))
+    monkeypatch.setattr(retry_policy, "PERSIST_GAPS", (1.0,))
     fn, _ = _failing_then(99)
     events, out = _run(fn)
     assert out is C._RETRY_STOP

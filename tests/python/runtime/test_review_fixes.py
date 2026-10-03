@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from aiforge_core.llm import reasoning
+from aiforge_core.llm import reasoning, retry_policy
 from aiforge_core.runtime import context_offload
 from aiforge_core.runtime.chat_agent import _native
 from aiforge_core.runtime.chat_agent._context import _aging as A
@@ -73,16 +73,20 @@ def test_an_aged_read_may_be_read_again():
 
 # 4. persist rounds are bounded by failure kind and honour a worker stop -----------
 
+def _caps(verdict, exc, mo):
+    return retry_policy.persist_caps(retry_policy.RetryPolicy.from_env(), verdict, exc, mo)
+
+
 def test_caps_by_failure_kind(monkeypatch):
     from aiforge_core.llm import model_outage as mo
     monkeypatch.setattr(mo, "issue", lambda e: None)
-    assert C._persist_caps(mo.OUTAGE, None, mo) == (10 ** 9, 0.0)       # an outage waits
-    assert C._persist_caps(mo.CONFIG, None, mo) == (C._CONFIG_ROUNDS, 0.0)
-    assert C._persist_caps(mo.SHIPPED, None, mo) == (2, 0.0)            # may still be generating
+    assert _caps(mo.OUTAGE, None, mo) == (10 ** 9, 0.0)       # an outage waits
+    assert _caps(mo.CONFIG, None, mo) == (retry_policy.CONFIG_ROUNDS, 0.0)
+    assert _caps(mo.SHIPPED, None, mo) == (2, 0.0)            # may still be generating
     monkeypatch.setenv("AIFORGE_CHAT_PERSIST_OTHER_S", "77")
-    assert C._persist_caps(mo.OTHER, None, mo) == (10 ** 9, 77.0)       # time-bounded
+    assert _caps(mo.OTHER, None, mo) == (10 ** 9, 77.0)       # time-bounded
     monkeypatch.setattr(mo, "issue", lambda e: object())
-    assert C._persist_caps(mo.OTHER, None, mo) == (6, 0.0)
+    assert _caps(mo.OTHER, None, mo) == (6, 0.0)
 
 
 def test_a_worker_stop_ends_the_persist_loop(monkeypatch):
@@ -90,14 +94,15 @@ def test_a_worker_stop_ends_the_persist_loop(monkeypatch):
     from aiforge_core.runtime import run_interrupt
     monkeypatch.setattr(model_wait, "cancel_reason", lambda: "stop")
     monkeypatch.setattr(run_interrupt, "pause", lambda *a, **k: None)
-    monkeypatch.setattr(C, "_PERSIST_GAPS", (0.0,))
-    gen = C._persist_until_answer(lambda r, c: "x", "doer", [], None,
-                                  RuntimeError("HTTP 500"), 0.0)
+    monkeypatch.setattr(retry_policy, "PERSIST_GAPS", (0.0,))
+    gen = retry_policy.persist_until_answer(
+        C._hooks(lambda r, c: "x", "doer", [], None),
+        retry_policy.RetryPolicy.from_env(), RuntimeError("HTTP 500"), 0.0)
     try:
         while True:
             next(gen)
     except StopIteration as stop:
-        assert stop.value[0] is C._CANCELLED
+        assert stop.value[0].kind == retry_policy.STOPPED
 
 
 # 5. reasoning boost reserve ---------------------------------------------------
