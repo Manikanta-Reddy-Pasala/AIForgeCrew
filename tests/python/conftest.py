@@ -51,6 +51,9 @@ os.environ.setdefault("AIFORGE_LLM_WAIT_MAX_S", "0.01")
 # A chat step that keeps failing now retries (smaller prompt, capped backoff)
 # until the user presses Stop. Tests of the old stop-and-report path keep it.
 os.environ.setdefault("AIFORGE_CHAT_PERSIST_S", "-1")
+# The "say what you will change" step costs a scripted model one extra reply;
+# the tests of that step turn it on themselves.
+os.environ.setdefault("AIFORGE_CHAT_SAY_PLAN", "0")
 # Stuck guards now change approach and carry on; the tests of the old
 # pause-and-ask path keep it.
 os.environ.setdefault("AIFORGE_CHAT_PAUSE_ON_STUCK", "1")

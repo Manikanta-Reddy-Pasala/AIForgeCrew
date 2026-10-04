@@ -309,6 +309,10 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
     nudge, task-board gate, claim-vs-reality guard, and the
     progress-gated verify→fix loop — then accept (fire stop + emit the answer).
     Returns "continue"/"return"."""
+    from . import _plan_first
+    _sig = yield from _plan_first.on_text(st, step)
+    if _sig == "continue":
+        return "continue"
     _sig = yield from _final_nudges(st, step, builder, strict_finish, _asks)
     if _sig == "continue":
         return "continue"

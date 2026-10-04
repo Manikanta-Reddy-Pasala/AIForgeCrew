@@ -247,6 +247,10 @@ def _gated_action(st, step, name, args, sig, n, cwd, session_id):
         return "return"
     if _sig == "continue":
         return "repeat" if repeat else "continue"
+    from ._turn import _plan_first
+    _sig = yield from _plan_first.gate(st, step, name, args)
+    if _sig == "continue":
+        return "continue"
     if step.get("thought"):
         yield {"type": "thought", "text": step["thought"]}
     _sig = yield from _pre_dispatch_gates(st, name, args, st.readonly_mode,
