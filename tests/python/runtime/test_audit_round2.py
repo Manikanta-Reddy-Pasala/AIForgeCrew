@@ -42,6 +42,7 @@ def test_context_filter_trims_long_single_invocation_run(monkeypatch) -> None:
     """A Workflow run has ONE user message; the old invocation-keep trim
     never fired. The content-tail filter must trim anyway."""
     monkeypatch.setenv("AIFORGE_CONTEXT_MAX_CONTENTS", "20")
+    monkeypatch.setenv("AIFORGE_CONTEXT_TRIM_STEP", "1")   # exact tail size
     monkeypatch.delenv("AIFORGE_CONDENSER_STRATEGY", raising=False)
     from aiforge_core.runtime.adk_runner import _build_context_plugins
     plugins = _build_context_plugins()

@@ -119,6 +119,41 @@ def effort_extras(model: str, base_url: str = "", role: str = "") -> dict:
     return {EFFORT_FIELD: eff}
 
 
+def off_extras(model: str, base_url: str = "") -> dict:
+    """The request-body switches that turn reasoning OFF for one request,
+    whatever its role: the chat-template kwarg, and ``reasoning_effort: none``
+    unless the server already refused that field."""
+    body = dict(NO_THINK_KWARGS)
+    try:
+        from aiforge_core.llm import fast_reasoning
+        if not fast_reasoning.rejected(base_url, model):
+            body[EFFORT_FIELD] = "none"
+    except Exception:  # noqa: BLE001
+        body[EFFORT_FIELD] = "none"
+    return body
+
+
+def budget_tokens() -> int:
+    """How long a reasoning phase may run before the answer is asked for
+    without it (``AIFORGE_REASONING_BUDGET_TOKENS``; 0 = no limit).
+
+    Reasoning and the answer share one reply cap. A phase that runs to the cap
+    leaves no answer at all — and takes minutes to get there. Default: a
+    quarter of the reply cap; what was reasoned by then is kept as notes for
+    the answer, so the cut costs little."""
+    raw = os.environ.get("AIFORGE_REASONING_BUDGET_TOKENS", "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass
+    try:
+        from aiforge_core.config import runtime_settings
+        return max(0, int(runtime_settings.get("max_output_tokens")) // 4)
+    except Exception:  # noqa: BLE001
+        return 2048
+
+
 def no_think_request(llm_request):
     """An ADK LlmRequest whose last user text ends with ``/no_think`` (a copy;
     the original is untouched). Unchanged when there is no user text."""
@@ -140,7 +175,8 @@ def no_think_request(llm_request):
 
 __all__ = ["reasoning_off", "no_think_request", "NO_THINK_KWARGS", "EFFORT_FIELD",
            "effort_for", "effort_extras", "role_reasons", "reasoning_roles",
-           "boost", "boosted", "boost_steps", "boost_reserve_tokens"]
+           "boost", "boosted", "boost_steps", "boost_reserve_tokens",
+           "off_extras", "budget_tokens"]
 
 
 def boost_reserve_tokens(_role: str = "") -> int:

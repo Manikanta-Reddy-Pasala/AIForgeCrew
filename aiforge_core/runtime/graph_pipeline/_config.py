@@ -15,10 +15,17 @@ _POLICY = Policy.load()   # read once at import, like every constant below
 
 # Route label constants — keep in sync with the edge wiring in pipeline.py.
 ROUTE_TRIVIAL = "trivial"
+# A change triage itself sized at a couple of files: straight to the Planner,
+# without the enhancer and the context fan-out in front of it.
+ROUTE_SMALL = "small"
 ROUTE_FULL = "full"
 ROUTE_LOOP = "loop"
 ROUTE_EXIT = "exit"
 ROUTE_REPLAN = "replan"
+# The Validator asked for changes on a run with no plan (the trivial
+# fast-path) or a plan of one small step: back to the Doer with what it asked
+# for, not to the Planner.
+ROUTE_REDO = "redo"
 ROUTE_DONE = "done"
 ROUTE_VERIFY_PASS = "verify_pass"
 ROUTE_VERIFY_REPLAN = "verify_replan"

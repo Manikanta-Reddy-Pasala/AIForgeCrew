@@ -457,14 +457,14 @@ def test_the_pipeline_loop_scoped_keys_are_declared_once():
         "_repeat_counts", "_iter_fail"}
     assert set(G._scoped("verify")) == {
         "verifier_verdict", "verify_correctness", "verify_scope",
-        "verify_risk", "scope_allowlist_globs"}
+        "verify_risk", "scope_allowlist_globs", "plan_small"}
     assert set(G._scoped("replan")) == {
         "feedback_verdict", "loop_budget_kill", "loop_budget_reason",
         "doer_loop_started_at", "doer_incomplete", "_repeat_counts",
         "_idle_iters", "loc_history", "loc_first_seen", "doer_outcome",
         "verifier_verdict", "verify_correctness", "verify_scope",
         "verify_risk", "verify_replan_count", "tests_ok", "typecheck_ok",
-        "lint_ok", "scope_allowlist_globs"}
+        "lint_ok", "scope_allowlist_globs", "plan_small"}
     assert len({k for k, _ in G.LOOP_SCOPED_KEYS}) == len(G.LOOP_SCOPED_KEYS)
 
 

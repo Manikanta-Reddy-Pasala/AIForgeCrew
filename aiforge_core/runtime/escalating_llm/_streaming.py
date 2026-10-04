@@ -22,8 +22,57 @@ def _pkg():
     return package
 
 
+def _thought_text(resp) -> str:
+    """The reasoning in one streamed chunk."""
+    parts = getattr(getattr(resp, "content", None), "parts", None) or []
+    return "".join(getattr(p, "text", "") or "" for p in parts
+                   if getattr(p, "thought", None) is True)
+
+
+#: Said after the notes when a cut reasoning phase is asked for its answer.
+WRAP_UP = ("[Your thinking time is up. The notes above are your own reasoning "
+           "so far. Do not think further: write the final answer now, complete, "
+           "in exactly the format your instructions require.]")
+
+
+def _has_answer(resp) -> bool:
+    """Real content: text that is not reasoning, or a tool call."""
+    if _pkg()._is_empty(resp):
+        return False
+    parts = getattr(getattr(resp, "content", None), "parts", None) or []
+    return any(getattr(p, "thought", None) is not True
+               and (getattr(p, "text", None) or getattr(p, "function_call", None))
+               for p in parts)
+
+
+def _reasoning_budget_chars() -> int:
+    """The reasoning budget as characters of streamed thought (~4 per token)."""
+    try:
+        from aiforge_core.llm import reasoning
+        return reasoning.budget_tokens() * 4
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 class _StreamMixin:
     """Streaming helpers for :class:`EscalatingLlm`."""
+
+    def _plain_retry(self, llm_request: LlmRequest, notes: str = ""):
+        """``(model, request)`` for asking again WITHOUT reasoning. The
+        reasoning done so far is not thrown away: it goes back in as the
+        model's own notes, and the answer is written from them."""
+        from aiforge_core.llm import reasoning
+        model = self.plain_model
+        req = self._stamp_request(llm_request, model)
+        if notes.strip():
+            from google.genai import types
+            req = req.model_copy(update={"contents": [
+                *(req.contents or []),
+                types.Content(role="model", parts=[
+                    types.Part.from_text(text="My notes so far:\n" + notes.strip())]),
+                types.Content(role="user", parts=[
+                    types.Part.from_text(text=WRAP_UP)])]})
+        return model, reasoning.no_think_request(req)
 
     def _stream_retry_ok(self, emitted: bool, attempt: int, tries: int,
                          exc: BaseException) -> bool:
@@ -70,18 +119,30 @@ class _StreamMixin:
         tries = _attempt_retries()
         waiter = None
         attempt = -1
+        # A role that reasons has a twin with reasoning off. Its reasoning is
+        # BOUNDED: past the budget — or when the stream ends with thoughts and
+        # no answer (the reply cap ran out mid-thought) — the same request is
+        # asked again without reasoning, once, so the stage always answers.
+        # The finished (non-partial) responses are held back until then: a
+        # think-only one must not reach the agent as its reply.
+        budget = (_reasoning_budget_chars()
+                  if getattr(self, "plain_model", None) is not None else 0)
         while True:
             attempt += 1
             emitted = False          # has the consumer seen ANY chunk yet?
             answered = False         # has it seen any real CONTENT?
             buffered: list = []
+            held: list = []          # finished responses, while the guard is on
+            notes: list = []         # the reasoning streamed so far
+            thought, overrun = 0, False
             try:
                 await pkg._throttle_global(self.role)
             except Exception:  # noqa: BLE001 — nothing here may break a stream
                 pass
             tok = pkg._meter_record(self.role, target)
             try:
-                async for r in model.generate_content_async(req, stream=True):
+                stream = model.generate_content_async(req, stream=True)
+                async for r in stream:
                     emitted = True
                     # Track CONTENT, not chunk count: `_is_empty` strips
                     # <think> blocks, so a reasoning model that streams a
@@ -90,10 +151,28 @@ class _StreamMixin:
                     # local-model failure this codebase documents as the common
                     # one — read healthy here while the non-streaming path
                     # called the identical reply `empty`.
-                    if not answered and not pkg._is_empty(r):
+                    if not answered and not pkg._is_empty(r) and (
+                            not budget or _has_answer(r)):
                         answered = True
                     buffered.append(r)
+                    if not budget:
+                        yield r
+                        continue
+                    if not getattr(r, "partial", False):
+                        held.append(r)
+                        continue
+                    if not answered:
+                        notes.append(_thought_text(r))
+                        thought += len(notes[-1])
+                        if thought > budget:
+                            overrun = True
+                            break
                     yield r
+                if overrun:
+                    try:                # stop the server generating
+                        await stream.aclose()
+                    except Exception:  # noqa: BLE001
+                        pass
             except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001
                 # NOT bare BaseException: a consumer that stops iterating throws
                 # GeneratorExit in here, and abandoning a stream the model
@@ -115,5 +194,19 @@ class _StreamMixin:
                 continue
             if waiter is not None:
                 waiter.recovered()
+            if budget and not answered:
+                log.warning("llm.reasoning_cut role=%s reason=%s thought_chars=%d "
+                            "budget_chars=%d — asking again without reasoning",
+                            self.role, "over_budget" if overrun else "no_answer",
+                            thought, budget)
+                pkg._meter_fail(tok, reason="reasoning_overrun")
+                # the newest reasoning is the most settled: keep its tail
+                model, req = self._plain_retry(
+                    llm_request, "".join(notes)[-budget:])
+                target = getattr(model, "model", None)
+                budget, attempt = 0, -1
+                continue
+            for r in held:
+                yield r
             self._settle_stream(tok, target, answered, buffered)
             return

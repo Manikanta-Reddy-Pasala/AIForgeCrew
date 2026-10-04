@@ -74,6 +74,7 @@ _EDGES: list[dict] = [
     {"from": "START", "to": "triage", "label": ""},
     {"from": "triage", "to": "triage_gate", "label": ""},
     {"from": "triage_gate", "to": "doer", "label": "trivial"},
+    {"from": "triage_gate", "to": "planner", "label": "small"},
     {"from": "triage_gate", "to": "enhancer", "label": "full"},
     # parallel context fan-out
     {"from": "enhancer", "to": "researcher", "label": ""},
@@ -102,6 +103,7 @@ _EDGES: list[dict] = [
     # validate + replan/done
     {"from": "validator", "to": "validator_gate", "label": ""},
     {"from": "validator_gate", "to": "planner", "label": "replan"},
+    {"from": "validator_gate", "to": "doer", "label": "redo"},
     {"from": "validator_gate", "to": "learner", "label": "done"},
 ]
 

@@ -119,11 +119,13 @@ def _attach_agent_callbacks(*, doer, refiner, learner, planner, enhancer,
 
 def _entry_edges(edge_cls, start, n) -> list:
     """Entry + the cheap fast-path switch."""
-    from .graph_pipeline import ROUTE_FULL, ROUTE_TRIVIAL
+    from .graph_pipeline import ROUTE_FULL, ROUTE_SMALL, ROUTE_TRIVIAL
     return [edge_cls(from_node=start, to_node=n["triage"]),
             edge_cls(from_node=n["triage"], to_node=n["triage_gate"]),
             edge_cls(from_node=n["triage_gate"], to_node=n["doer"],
                      route=ROUTE_TRIVIAL),
+            edge_cls(from_node=n["triage_gate"], to_node=n["planner"],
+                     route=ROUTE_SMALL),
             edge_cls(from_node=n["triage_gate"], to_node=n["enhancer"],
                      route=ROUTE_FULL)]
 
@@ -180,8 +182,15 @@ def _plan_edges(edge_cls, n) -> list:
 
 def _loop_edges(edge_cls, n) -> list:
     """doer → refiner → feedback → loop_gate ⟲, then validator → replan back
-    to the planner, or done → learner."""
-    from .graph_pipeline import ROUTE_DONE, ROUTE_EXIT, ROUTE_LOOP, ROUTE_REPLAN
+    to the planner (redo: straight back to the doer when the run had no
+    plan), or done → learner."""
+    from .graph_pipeline import (
+        ROUTE_DONE,
+        ROUTE_EXIT,
+        ROUTE_LOOP,
+        ROUTE_REDO,
+        ROUTE_REPLAN,
+    )
     return [
         edge_cls(from_node=n["doer"], to_node=n["refiner"]),
         edge_cls(from_node=n["refiner"], to_node=n["feedback"]),
@@ -191,6 +200,8 @@ def _loop_edges(edge_cls, n) -> list:
         edge_cls(from_node=n["validator"], to_node=n["validator_gate"]),
         edge_cls(from_node=n["validator_gate"], to_node=n["planner"],
                  route=ROUTE_REPLAN),
+        edge_cls(from_node=n["validator_gate"], to_node=n["doer"],
+                 route=ROUTE_REDO),
         edge_cls(from_node=n["validator_gate"], to_node=n["learner"],
                  route=ROUTE_DONE),
     ]

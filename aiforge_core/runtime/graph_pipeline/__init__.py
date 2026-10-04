@@ -8,7 +8,8 @@ deterministic routers that drive the v6 graph; the agents themselves are
 plain ``LlmAgent`` graph nodes (see :mod:`pipeline`).
 
 * **triage_gate** — fast-path switch. ``trivial`` ticket routes straight
-  to the Doer; everything else takes the full enhance→context→plan path.
+  to the Doer; ``small`` (triage sized it at a couple of files) straight to
+  the Planner; everything else takes the full enhance→context→plan path.
 * **loop_gate** — replaces ``LoopAgent``'s internal counter. Reads the
   Feedback verdict + an iteration counter (+ the LOC-plateau kill flag)
   and routes ``loop`` back to the Doer or ``exit`` to the Validator.
@@ -42,9 +43,11 @@ from ._config import (
     ROUTE_EXIT,
     ROUTE_FULL,
     ROUTE_LOOP,
+    ROUTE_REDO,
     ROUTE_REPLAN,
     ROUTE_RESEARCH_GAP,
     ROUTE_RESEARCH_OK,
+    ROUTE_SMALL,
     ROUTE_TRIVIAL,
     ROUTE_VERIFY_PASS,
     ROUTE_VERIFY_REPLAN,
@@ -81,20 +84,24 @@ from ._parsers import (
     _effective_max_iters,
     _feedback_passed,
     _gap_sufficient,
+    _is_small,
     _is_trivial,
     _normalize_complexity,
     _parse_verdict,
+    _plan_is_small,
     _plan_subtask_count,
     _read_complexity,
+    _read_estimated_files,
     _render_gap_brief,
     _triage_strict,
     _validator_failed,
+    small_plan_skip,
 )
 from ._scope import _globs_match_any_repo_file, _repo_root_for_scope
 
 __all__ = [
-    "ROUTE_TRIVIAL", "ROUTE_FULL", "ROUTE_LOOP", "ROUTE_EXIT",
-    "ROUTE_REPLAN", "ROUTE_DONE", "ROUTE_VERIFY_PASS", "ROUTE_VERIFY_REPLAN",
+    "ROUTE_TRIVIAL", "ROUTE_SMALL", "ROUTE_FULL", "ROUTE_LOOP", "ROUTE_EXIT",
+    "ROUTE_REPLAN", "ROUTE_REDO", "ROUTE_DONE", "ROUTE_VERIFY_PASS", "ROUTE_VERIFY_REPLAN",
     "ROUTE_RESEARCH_GAP", "ROUTE_RESEARCH_OK",
     "MAX_DOER_ITERS", "MAX_REPLANS", "MAX_VERIFY_REPLANS", "MAX_GAP_PASSES",
     "make_triage_gate", "make_loop_gate", "make_validator_gate",

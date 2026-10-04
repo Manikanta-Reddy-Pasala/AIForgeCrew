@@ -69,6 +69,46 @@ def soft_wall_callback(role: str, budget_s: float):
     return _cb
 
 
+#: What a tool-less stage reads LAST. Its instruction sits in the system
+#: prompt; the last thing in front of it is the request — which, for a request
+#: that wants changes, ends with "then implement it". A classifier or judge
+#: then started the work (prose, tool calls written out as text) instead of
+#: answering: live, 8 of 12 triage replies were not the JSON verdict, and every
+#: one of those sent a two-file request down the full pipeline.
+TOOLLESS_REMINDER = (
+    "[You have no tools in this step. Do not call a tool and do not start the "
+    "work: reply now, in exactly the format your instructions require.]")
+
+
+def toolless_reminder_callback():
+    """A before_model callback that restates a tool-less stage's task after
+    everything else it reads. Changes only the request, never the session.
+    ``AIFORGE_TOOLLESS_REMINDER=0`` turns it off."""
+    import os
+
+    def _cb(callback_context, llm_request):  # noqa: ARG001 — ADK signature
+        if os.environ.get("AIFORGE_TOOLLESS_REMINDER", "1").strip().lower() in (
+                "0", "false", "no", "off"):
+            return None
+        try:
+            from google.genai import types
+            contents = list(getattr(llm_request, "contents", None) or [])
+            note = types.Part.from_text(text=TOOLLESS_REMINDER)
+            last = contents[-1] if contents else None
+            parts = list(getattr(last, "parts", None) or [])
+            if (last is not None and getattr(last, "role", "") == "user"
+                    and not any(getattr(p, "function_response", None)
+                                for p in parts)):
+                contents[-1] = types.Content(role="user", parts=[*parts, note])
+            else:
+                contents.append(types.Content(role="user", parts=[note]))
+            llm_request.contents = contents
+        except Exception:  # noqa: BLE001 — a reminder never breaks a call
+            pass
+        return None
+    return _cb
+
+
 def build_llm_agent(role: str, instruction: "str | Callable", output_key: str,
                     tools_factory: Callable[[], list] | None,
                     model_factory: ModelFactory):
@@ -110,6 +150,8 @@ def build_llm_agent(role: str, instruction: "str | Callable", output_key: str,
     tools = tools_factory() if tools_factory else None
     if tools:
         kwargs["tools"] = tools
+    elif "before_model_callback" not in kwargs:
+        kwargs["before_model_callback"] = toolless_reminder_callback()
     # Per-archetype stage_start / stage_done events into ticket_events
     # so the UI's audit panel can show pipeline progress at the
     # archetype level (architect → planner → verifier → doer …) instead
@@ -152,4 +194,5 @@ def skip_agent_when(agent, decide):
     return agent
 
 
-__all__ = ["ModelFactory", "contract_for", "build_llm_agent", "skip_agent_when"]
+__all__ = ["ModelFactory", "contract_for", "build_llm_agent", "skip_agent_when",
+           "TOOLLESS_REMINDER", "toolless_reminder_callback"]

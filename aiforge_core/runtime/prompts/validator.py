@@ -83,6 +83,9 @@ DOER OUTCOME (file_diffs + compile/test status):
 
 IN-LOOP FEEDBACK VERDICT:
 {feedback_verdict?}
+
+TRIAGE ROUTE (``trivial`` = the trivial fast-path of rules 6 and 7):
+{graph_route?}
 """
 
 

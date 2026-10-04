@@ -17,7 +17,7 @@ from aiforge_core.llm import endpoint_breaker as _breaker
 from aiforge_core.llm import retry_policy as _retry_policy
 
 from . import _outage
-from ._builder import _build_one, _mirror_to_langfuse
+from ._builder import _build_one, _build_plain_twin, _mirror_to_langfuse
 from ._policy import (
     _api_base_of,
     _attempt_retries,
@@ -207,6 +207,10 @@ class EscalatingLlm(_RescueMixin, _StreamMixin, BaseLlm):
 
     role: str
     primary_model: BaseLlm | None = None
+    # The primary with reasoning off: what a streamed call falls back to when
+    # its reasoning phase overruns the budget or ends without an answer. Only
+    # built for a role that reasons.
+    plain_model: BaseLlm | None = None
     chain_models: list[BaseLlm] = []
     chain_labels: list[str] = []
     primary_demoted: bool = False
@@ -234,6 +238,7 @@ class EscalatingLlm(_RescueMixin, _StreamMixin, BaseLlm):
             model=primary.model,  # required pydantic field on BaseLlm
             role=role,
             primary_model=primary,
+            plain_model=_build_plain_twin(primary_cfg, role),
             chain_models=chain,
             chain_labels=labels,
         )

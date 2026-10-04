@@ -32,11 +32,26 @@ def _already_polished(state):
             "rationale": "already refined on an earlier iteration"}
 
 
+def _small_plan_decide(state):
+    """A plan of one small step produces a diff of a few lines: nothing to
+    polish that Feedback and the Validator do not already read.
+    ``AIFORGE_SMALL_PLAN_SKIP=0`` runs the Refiner on it."""
+    from aiforge_core.runtime.graph_pipeline import small_plan_skip
+    if not small_plan_skip(state):
+        return None
+    return {"refiner_skipped": True, "changes": [],
+            "rationale": "polish skipped: the plan is one small step"}
+
+
+def _skip_decide(state):
+    return _already_polished(state) or _small_plan_decide(state)
+
+
 def build(model_factory: _base.ModelFactory):
     agent = _base.build_llm_agent(
         ROLE, PROMPT, OUTPUT_KEY, TOOLS_FACTORY, model_factory,
     )
-    return _base.skip_agent_when(agent, _already_polished)
+    return _base.skip_agent_when(agent, _skip_decide)
 
 
 __all__ = ["ROLE", "PROMPT", "OUTPUT_KEY", "TOOLS_FACTORY", "build"]

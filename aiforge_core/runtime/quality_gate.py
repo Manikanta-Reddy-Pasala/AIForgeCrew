@@ -31,6 +31,13 @@ from typing import Any
 __all__ = ["evaluate", "gate_verdict", "make_quality_signal_callback",
            "mark_test_gaming"]
 
+# A check that could not START (no runner for this repo, tool not installed)
+# is "did not run" — None, which never fails the gate — not a red result.
+# Recorded as False, `run_tests` on a repo with no project file marked the
+# tests red for good: the Doer's own green `pytest` run through the shell does
+# not write the signal, so Feedback's "pass" was downgraded and the loop ran on.
+_DID_NOT_RUN = frozenset({"no_language", "missing_tool"})
+
 # Doer tool name → session-state signal key the gate reads.
 _TOOL_SIGNAL_KEYS = {
     "run_tests": "tests_ok",
@@ -72,6 +79,8 @@ def make_quality_signal_callback():
             if not key or not isinstance(tool_response, dict):
                 return None
             ok = tool_response.get("ok")
+            if tool_response.get("error") in _DID_NOT_RUN:
+                return None
             if isinstance(ok, bool):
                 state = getattr(tool_context, "state", None)
                 if state is not None:

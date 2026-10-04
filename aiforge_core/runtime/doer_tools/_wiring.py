@@ -160,7 +160,37 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
     alias_ids = {id(fn) for fn in aliases}
     filtered = [t for t in filtered
                 if id(_base_func(t)) not in alias_ids]
+    bound = _role_editor(role)
+    if bound is not None:
+        filtered = [tool_for(bound) if _tool_name(t) == "editor" else t
+                    for t in filtered]
     return _apply_integration_gate(filtered)
+
+
+def _role_editor(role: str):
+    """``editor`` bound to ``role``, for a role whose ``editor_commands`` in
+    agents.yaml restricts it (the gatherers: ``view`` only). None for a role
+    with the full editor.
+
+    The allowlist was checked only when a caller passed ``_agent_role``, and
+    the pipeline never did: a "view-only" Researcher or context gatherer could
+    ``str_replace`` — and, told by the request to make the change, did (live:
+    the files were already edited when the Planner and the Doer got to them,
+    outside the Doer's scope guard and approval gate)."""
+    from aiforge_core.runtime.tools import editor as _ed
+    if _ed._load_editor_commands_for_role(role) is None:
+        return None
+
+    def editor(command: str, path: str = "", file_text: str | None = None,
+               old_str: str | None = None, new_str: str | None = None,
+               insert_line: int | None = None,
+               view_range: list[int] | None = None) -> dict:
+        return _ed.editor(command, path, file_text=file_text, old_str=old_str,
+                          new_str=new_str, insert_line=insert_line,
+                          view_range=view_range, _agent_role=role)
+
+    editor.__doc__ = (_ed.editor.__doc__ or "").split("_agent_role")[0].rstrip()
+    return editor
 
 
 def _base_func(t):

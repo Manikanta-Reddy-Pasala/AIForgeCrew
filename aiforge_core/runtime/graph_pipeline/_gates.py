@@ -24,9 +24,11 @@ from ._config import (
     ROUTE_EXIT,
     ROUTE_FULL,
     ROUTE_LOOP,
+    ROUTE_REDO,
     ROUTE_REPLAN,
     ROUTE_RESEARCH_GAP,
     ROUTE_RESEARCH_OK,
+    ROUTE_SMALL,
     ROUTE_TRIVIAL,
     ROUTE_VERIFY_PASS,
     ROUTE_VERIFY_REPLAN,
@@ -36,8 +38,10 @@ from ._parsers import (
     _effective_max_iters,
     _feedback_passed,
     _gap_sufficient,
+    _is_small,
     _is_trivial,
     _parse_verdict,
+    _plan_is_small,
     _read_complexity,
     _render_gap_brief,
     _validator_failed,
@@ -61,10 +65,17 @@ def _triage_gate(ctx):  # type: ignore[no-untyped-def]
     # Fast-path skips enhancer→research→planner→verifiers straight to the Doer
     # for a 'trivial' ticket. Set AIFORGE_FORCE_FULL_PIPELINE=1 to always take
     # the full path (every agent runs/shows) regardless of triage complexity.
+    # Between the two sits 'small': triage's own estimate is a couple of
+    # files, so the run goes straight to the Planner (plan → do → check)
+    # without the enhancer and the context gatherers.
     if _force_full_pipeline():
         route = ROUTE_FULL
+    elif _is_trivial(complexity):
+        route = ROUTE_TRIVIAL
+    elif _is_small(ctx.state, complexity):
+        route = ROUTE_SMALL
     else:
-        route = ROUTE_TRIVIAL if _is_trivial(complexity) else ROUTE_FULL
+        route = ROUTE_FULL
     ctx.state["graph_route"] = {"complexity": complexity, "route": route}
     ctx.route = route
     _trace(":GraphRoute", {"complexity": complexity, "route": route})
@@ -140,6 +151,9 @@ LOOP_SCOPED_KEYS = (
     # (+ operator seeds) instead of monotonically widening with the rejected
     # plan's globs.
     ("scope_allowlist_globs", ("replan", "verify")),
+    # Whether the CURRENT plan is one small step (plan_promote sets it): a
+    # new plan is judged on its own.
+    ("plan_small", ("replan", "verify")),
 )
 
 
@@ -314,12 +328,27 @@ def _validator_gate(ctx):  # type: ignore[no-untyped-def]
         return
     if _validator_failed(state) and replans < MAX_REPLANS:
         state["replan_count"] = replans + 1
+        why = _validator_rationale(state)
+        redo = _redo_by_doer(state)          # read before the reset clears it
         # Reset ALL loop-scoped state so the re-planned attempt starts
         # clean. Resetting only doer_iters left a stale feedback_verdict
         # / loop_budget_kill from the prior pass — loop_gate would read
         # the old "pass" (or kill flag) and EXIT the Doer loop at zero
         # real iterations, silently wasting the replan.
         _reset_for_replan(state)
+        if redo:
+            # Nothing to re-plan SMALLER: the run had no plan (the trivial
+            # fast-path) or a plan of one small step. The Doer gets the
+            # Validator's request directly. (Live, sending these to the
+            # Planner cost two planner calls and a plan-critic rejection —
+            # five to seven minutes — before the Doer made a small fix.)
+            state["replan_note"] = (
+                f"The Validator asked for changes: {why} The work so far is "
+                "on disk. Fix exactly what it names, re-run the checks, and "
+                "finish.")
+            ctx.route = ROUTE_REDO
+            _trace(":Redo", {"replan": replans + 1})
+            return
         state["replan_note"] = (
             f"Validator requested changes (replan {replans + 1}). The prior "
             "plan did not land cleanly — re-plan SMALLER: split the failing "
@@ -329,6 +358,29 @@ def _validator_gate(ctx):  # type: ignore[no-untyped-def]
         _trace(":Replan", {"replan": replans + 1})
     else:
         ctx.route = ROUTE_DONE
+
+
+def _redo_by_doer(state) -> bool:
+    """A rejected run goes back to the Doer, not the Planner, when there is
+    nothing to re-plan: no plan was made (the trivial fast-path), or the plan
+    is one small step. ``AIFORGE_SMALL_REDO=0`` re-plans these too."""
+    if str(os.environ.get("AIFORGE_SMALL_REDO", "1")).strip().lower() in (
+            "0", "false", "no", "off"):
+        return False
+    if state.get("plan_small"):
+        return True
+    route = state.get("graph_route")
+    return (isinstance(route, dict) and route.get("route") == ROUTE_TRIVIAL
+            and not state.get("plan_md"))
+
+
+def _validator_rationale(state) -> str:
+    """What the Validator asked for, as one line."""
+    raw = state.get("validator_verdict")
+    obj = raw if isinstance(raw, dict) else _plan_object(raw)
+    text = (obj or {}).get("rationale") if isinstance(obj, dict) else None
+    text = str(text or raw or "").strip()
+    return (text[:600] or "no reason given").rstrip(".") + "."
 
 
 def _verifier_gate(ctx):  # type: ignore[no-untyped-def]
@@ -491,6 +543,10 @@ def _plan_promote(ctx):  # type: ignore[no-untyped-def]
         state["tests_declared"] = _tests_declared(obj)
     except Exception:  # noqa: BLE001 — never let this break plan promotion
         pass
+    # A re-plan is never small: the first plan did not land, so its successor
+    # gets the plan critic and the polish whatever its size.
+    state["plan_small"] = bool(
+        _plan_is_small(obj) and not state.get("replan_note"))
     merged = _usable_scope(_merge_seeded(state, _plan_globs(obj)))
     if merged:
         state["scope_allowlist_globs"] = merged
