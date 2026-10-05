@@ -517,6 +517,9 @@ function copyText(t: string) {
  *  folder, and a new chat starts there. */
 export interface ChatProject { name: string; path: string; noRepo?: boolean }
 
+// How tall the message box grows while typing before it scrolls instead.
+const COMPOSER_MAX_LINES = 15;
+
 // A heartbeat reporting at least this much silence is shown as a status line.
 const QUIET_SHOW_S = 15;
 // No bytes at all (not even a heartbeat, which comes every 10 s) for this long
@@ -831,6 +834,26 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
 
   const logRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // The message box grows with what is typed, up to COMPOSER_MAX_LINES; past
+  // that it scrolls. Empty, it goes back to its resting height.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = '';
+    if (!input) { el.style.overflowY = ''; return; }
+    const cs = getComputedStyle(el);
+    const line = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.6;
+    const frame = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)
+      + parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
+    // Never taller than the stylesheet allows (50vh): past that the box is
+    // clamped, and it has to scroll rather than clip.
+    const cssMax = parseFloat(cs.maxHeight);
+    const max = Math.min(line * COMPOSER_MAX_LINES + frame,
+                         cssMax > 0 ? cssMax : Infinity);
+    const want = el.scrollHeight + parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
+    el.style.height = `${Math.min(want, max)}px`;
+    el.style.overflowY = want > max ? 'auto' : 'hidden';
+  }, [input, busy, activeId]);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   // Header overflow menu (secondary session actions).
   const [menuOpen, setMenuOpen] = useState(false);
@@ -1750,7 +1773,9 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
       }
       if (r.action === 'status') {
         // Answered from the run itself, at once; nothing was queued or started.
-        setLiveTurn(prev => prev ? { ...prev, status: { question: q, text: r.text } } : prev);
+        // The server puts the answer in the run's stream and the saved turn
+        // (r.noted); the page holds it itself only when that did not happen.
+        if (!r.noted) setLiveTurn(prev => prev ? { ...prev, status: { question: q, text: r.text } } : prev);
       } else if (r.action === 'task') {
         toast(r.task.state === 'running'
           ? 'Started as a side task — this run keeps going'
@@ -2546,8 +2571,8 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                   ref={textareaRef}
                   onPaste={onPasteMedia}
                   /* Short while a run is active (you're mostly steering/watching,
-                     not composing) — full height when idle. Drag the corner to
-                     expand either way (resize: vertical). */
+                     not composing) — full height when idle. It grows with the
+                     text up to COMPOSER_MAX_LINES, then scrolls. */
                   rows={busy ? 1 : 3}
                   placeholder={(() => {
                     if (pendingApproval) return "Resolve the approval above first (Approve / Reject)…";
@@ -2632,6 +2657,12 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                           }} className="ghost"
                           style={{ whiteSpace: 'nowrap' }}>Dismiss</button>
                   <button type="button" onClick={() => {
+                            // Carrying a plan out is a Simple turn, and so are the
+                            // follow-ups. Say so: a toggle that moved in silence
+                            // had the next "plan this" carried out instead.
+                            if (chatMode !== 'simple') {
+                              toast('Mode is now Simple — the agent carries the plan out. Pick Plan again for the next plan.');
+                            }
                             setChatMode('simple');
                             const plan = (planReady.plan || '').trim();
                             const text = plan

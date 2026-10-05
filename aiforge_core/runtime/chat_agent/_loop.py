@@ -247,7 +247,10 @@ def _gated_action(st, step, name, args, sig, n, cwd, session_id):
         return "return"
     if _sig == "continue":
         return "repeat" if repeat else "continue"
-    from ._turn import _plan_first
+    from ._turn import _plan_first, _steer_reply
+    _sig = yield from _steer_reply.gate(st, step, name, args)
+    if _sig == "continue":
+        return "continue"
     _sig = yield from _plan_first.gate(st, step, name, args)
     if _sig == "continue":
         return "continue"
@@ -311,7 +314,13 @@ def _dispatch_step(st, out, n, cwd, role, _complete_fn, session_id, builder,
         if chat_interject.pending(session_id):
             return "continue"
     step = _parse(out)
+    from ._turn import _steer_reply
     if step["kind"] == "final":
+        # A message the user sent mid-run was asked a reply: this text is it,
+        # and the work goes on.
+        _sig = yield from _steer_reply.on_text(st, step)
+        if _sig == "continue":
+            return "continue"
         _sig = yield from _handle_final(
             st, step, builder, strict_finish, st.plan_mode, st.readonly_mode,
             cwd, st.asks, st.wt_fp0)
@@ -320,6 +329,7 @@ def _dispatch_step(st, out, n, cwd, role, _complete_fn, session_id, builder,
         if _sig == "continue":
             return (yield from _idle_reply_guard(st))
     if step["kind"] == "ask":
+        _steer_reply.on_ask(st)
         # Plan mode gets one question. A second one is an assumption, then
         # the plan. The reads already made are kept for the answer.
         if getattr(st, "plan_mode", False) and getattr(st, "plan_asked", False):
@@ -339,6 +349,7 @@ def _dispatch_step(st, out, n, cwd, role, _complete_fn, session_id, builder,
         yield {"type": "done"}
         return "return"
     if step["kind"] == "continue":
+        yield from _steer_reply.on_narration(st, step)
         _sig = yield from _handle_continue_step(st, step, builder, cwd)
         if _sig == "return":
             return "return"

@@ -170,7 +170,8 @@ def test_a_pending_steer_is_echoed_then_routed(monkeypatch, tmp_path):
     monkeypatch.setattr(st, "_route_steering",
                         lambda text, subs: {"target": "store", "note": ""})
     events = list(st._steering_drain(1, _subs(), str(tmp_path)))
-    assert [e["role"] for e in events] == ["steer", "planner"]
+    # the planner's reading of it is also a reply shown outside the steps
+    assert [e["role"] for e in events] == ["steer", "planner", "reply"]
     assert events[0]["text"] == "use an LRU"
 
 

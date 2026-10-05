@@ -216,7 +216,10 @@ def test_a_steer_is_folded_in_between_events(interject, tmp_path):
     q.put({"type": "subtask_update", "slug": "lexer"})
     q.put(None)
     evs = list(S._drain_run(q, 7, _subs(), str(tmp_path), lambda: False))
-    assert [e["type"] for e in evs] == ["subtask_update", "steer", "thought"]
+    # ... and how it was read is also a reply the user sees outside the steps.
+    assert [e["type"] for e in evs] == ["subtask_update", "steer", "thought",
+                                        "message"]
+    assert evs[-1].get("role") == "reply" and evs[-1]["text"] == evs[-2]["text"]
 
 
 def test_stop_ends_the_stream_immediately(interject, tmp_path):

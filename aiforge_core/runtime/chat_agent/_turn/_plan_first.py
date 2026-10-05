@@ -99,6 +99,8 @@ def gate(st, step, name, args):
         return None
     if getattr(st, "plan_asked_once", False):   # asked once: do not loop on it
         st.plan_said = True
+        # Not waiting for the statement any more: a later FINAL is the answer.
+        st.plan_pending = False
         return None
     st.plan_asked_once = True
     st.plan_pending = True

@@ -39,6 +39,11 @@ function uniqueKeys(steps: AgentStep[]): string[] {
   });
 }
 
+type ReplyStep = Extract<AgentStep, { kind: 'message' }>;
+function isReply(s: AgentStep): s is ReplyStep {
+  return s.kind === 'message' && s.role === 'reply';
+}
+
 function fmtQuiet(seconds: number): string {
   return seconds < 90 ? `${seconds}s` : `${Math.floor(seconds / 60)}m`;
 }
@@ -84,7 +89,10 @@ export function AssistantBubble({
   const changeSteps = steps.filter(s => s.kind === 'changes');
   // A model thought that IS the answer below (a draft a gate set aside and the
   // model then resent) would show the reply twice.
-  const otherSteps = steps.filter(s => s.kind !== 'changes'
+  // The reply to a message the user sent while the run was going is an answer,
+  // not a step: inside the steps list it folded away when the turn ended.
+  const replies = steps.filter(isReply);
+  const otherSteps = steps.filter(s => s.kind !== 'changes' && !isReply(s)
     && !(s.kind === 'thought' && !s.role && text && similarText(s.text, text)));
   const keys = uniqueKeys(otherSteps);
   return (
@@ -112,6 +120,14 @@ export function AssistantBubble({
           )}
         </div>
       )}
+      {replies.map((r, i) => (
+        <div key={`reply-${i}-${r.text.slice(0, 40)}`}
+             style={{ margin: '6px 2px', padding: '8px 12px', borderLeft: '3px solid var(--accent, #2563eb)',
+                      background: 'var(--bg-1)', borderRadius: 6 }}>
+          {r.to && <div className="xs muted" style={{ marginBottom: 4 }}>You said: {r.to}</div>}
+          <MdLite text={r.text} />
+        </div>
+      ))}
       {text && (
         <div className="bubble-body">
           <MdLite text={text} />

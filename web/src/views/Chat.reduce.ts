@@ -20,7 +20,7 @@ function reduceToolEvent(prev: LiveTurn, evt: any): LiveTurn {
 // message replaces the answer text and ends streaming.
 function reduceMessageEvent(prev: LiveTurn, evt: any, onAwaiting: () => void): LiveTurn {
   if (evt.supplementary) {
-    return { ...prev, steps: [...prev.steps, { kind: 'message' as const, text: evt.text, role: evt.role }] };
+    return { ...prev, steps: [...prev.steps, { kind: 'message' as const, text: evt.text, role: evt.role, to: evt.to }] };
   }
   if (evt.awaiting_input) onAwaiting();
   return { ...prev, text: evt.text, streaming: false, awaiting: !!evt.awaiting_input };

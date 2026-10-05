@@ -95,6 +95,31 @@ def steer_event(text: str) -> dict:
     return {"type": "thought", "role": "steer", "text": text}
 
 
+def reply_event(to: "list[str] | str", text: str) -> dict:
+    """Stream event carrying the REPLY to a message the user sent mid-run.
+
+    A supplementary message with role ``reply``: stored with the turn's steps,
+    and shown by the UI as a card of its own ("You asked … / the reply"), not
+    as one more row in the steps list that folds away when the turn ends.
+    ``to`` is what the user wrote."""
+    asked = [to] if isinstance(to, str) else list(to or [])
+    return {"type": "message", "supplementary": True, "role": "reply",
+            "text": text,
+            "to": " / ".join(" ".join(str(q).split())[:300]
+                             for q in asked if str(q).strip())}
+
+
+#: Team runs fold a mid-run message into the work; no agent answers it there.
+TEAM_REPLY = ("Passed to the agent that is working now; it applies to the rest "
+              "of this run. A team run does not answer a question while it "
+              "works: the final report covers it. For an answer now, send it "
+              "with the Side task button.")
+
+#: The run ended before any step could read the message.
+LATE_REPLY = ("This message arrived as the run was ending and was not read. "
+              "Send it again: it starts a new turn.")
+
+
 def applied_event(text: str) -> dict:
     """Stream event acknowledging a steer was folded into the run (the
     sequential team driver's poll-once ack, since its before_model callback has
@@ -105,4 +130,5 @@ def applied_event(text: str) -> dict:
 
 __all__ = ["SYSTEM_NOTES", "user_guidance", "reject_directive",
            "steer_directive", "steer_block", "reject_note",
-           "steer_event", "applied_event"]
+           "steer_event", "applied_event", "reply_event", "TEAM_REPLY",
+           "LATE_REPLY"]

@@ -142,8 +142,11 @@ def _steering_drain(session_id, subs: list, cwd: str):
         # the UI for team mode too — same as the simple/plan loop.
         try:
             yield chat_steer.steer_event(text)
-            yield {"type": "thought", "role": "planner",
-                   "text": _pkg()._apply_steer(text, subs, cwd)}
+            _read_as = _pkg()._apply_steer(text, subs, cwd)
+            yield {"type": "thought", "role": "planner", "text": _read_as}
+            # How the message was read, where the user sees it: a row in the
+            # steps list folds away when the run ends.
+            yield chat_steer.reply_event(text, _read_as)
         except Exception as exc:  # noqa: BLE001
             # Never silent: an instruction the run could not apply has to be
             # visible, or the user waits for a change that will never come.

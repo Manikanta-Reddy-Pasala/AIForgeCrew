@@ -468,7 +468,13 @@ def chat_side_message(session_id: int, body: _SideBody) -> dict:
         if chat_status.is_status_request(body.content):
             run = chat_runs.get(session_id)
             if run is not None and not run.done:
-                return {"action": "status", **status_of(session_id, run)}
+                out = status_of(session_id, run)
+                # Into the run's stream and the turn's stored steps: a card
+                # held only by the open page was gone when the turn ended.
+                from aiforge_core.runtime import chat_steer
+                noted = chat_runs.note(session_id, chat_steer.reply_event(
+                    body.content, out["text"]))
+                return {"action": "status", "noted": noted, **out}
     if want == "auto":
         want = classify(body.content)
     if want == "steer":

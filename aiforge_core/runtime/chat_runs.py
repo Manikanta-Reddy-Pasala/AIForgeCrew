@@ -48,6 +48,9 @@ class _Run:
     def __init__(self, session_id: int) -> None:
         self.session_id = session_id
         self.events: list[dict] = []          # full ordered buffer (replay)
+        # Events that did not come from the run's own producer (an answer
+        # given beside it): shown live, and stored with the turn's steps.
+        self.notes: list[dict] = []
         # Streamed text of the model call in flight, merged per phase. Not in
         # `events`: a long build streams thousands of chunks, and every one is
         # superseded by the step/answer event that settles its call — so only
@@ -109,6 +112,18 @@ class _Run:
                 # A replay needs the row, not an 80 KB read result; an
                 # hours-long run would otherwise hold every one in memory.
                 self.events.append(slim_event(event))
+            for q in self.subscribers:
+                q.put(event)
+
+    def say(self, event: dict) -> None:
+        """Show an event that is NOT the run's own work (an answer given
+        beside it): buffered for replay and sent to every subscriber, with the
+        run's phase, activity clock and tool record left as they are — a
+        ``message`` through :meth:`publish` reads as "finishing up"."""
+        with self.lock:
+            if self.done:
+                return
+            self.events.append(slim_event(event))
             for q in self.subscribers:
                 q.put(event)
 
@@ -420,6 +435,33 @@ def publish(session_id: int, event: dict) -> None:
     run = get(session_id)
     if run is not None:
         run.publish(event)
+
+
+def note(session_id: int, event: dict, *, publish: bool = True) -> bool:
+    """Show ``event`` in the live run and keep it for the turn's stored steps.
+    For what is said BESIDE the run (the answer to "what is the status?"): the
+    producer never yields it, so publishing alone would lose it when the turn
+    is saved. False when no run is going, or its answer is already out (the
+    turn is being saved: a note now would be in neither place).
+    ``publish=False`` only keeps it, for a caller that streams it itself."""
+    run = get(session_id)
+    if run is None or run.done or run.answered:
+        return False
+    with run.lock:
+        run.notes.append(event)
+    if publish:
+        run.say(event)
+    return True
+
+
+def take_notes(session_id: int) -> list[dict]:
+    """The events :func:`note` kept for this session's run, removed."""
+    run = get(session_id)
+    if run is None:
+        return []
+    with run.lock:
+        notes, run.notes = run.notes, []
+    return notes
 
 
 def finish(session_id: int) -> None:

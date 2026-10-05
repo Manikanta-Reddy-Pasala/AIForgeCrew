@@ -164,6 +164,23 @@ def _reset_turn_context(ctx: _TurnResetContext) -> None:
         pass
 
 
+def _keep_side_replies(session_id, steps: list, cancelled) -> None:
+    """What was said beside the run goes into the turn's stored steps: the
+    answers given while it worked, and a line for a message that arrived too
+    late for any step to read (it was dropped without a word)."""
+    try:
+        from aiforge_core.runtime import chat_interject, chat_runs, chat_steer
+        steps.extend(chat_runs.take_notes(session_id))
+        late = [] if cancelled else [
+            t for k, t in chat_interject.drain_items(session_id) if k != "reject"]
+        if late:
+            ev = chat_steer.reply_event(late, chat_steer.LATE_REPLY)
+            steps.append(ev)
+            chat_runs.publish(session_id, ev)     # a no-op once the run is done
+    except Exception as exc:  # noqa: BLE001 — never blocks saving the turn
+        _af_log.warning("side replies not kept (session %s): %s", session_id, exc)
+
+
 def _persist_produce_turn(session_id, cwd, prompt, final_text, steps, awaiting,
                           team, path, turn_mode, turn_t0, cancelled) -> None:
     """Finish the session's cancel/approve/steer gates, persist the turn, and
@@ -173,6 +190,7 @@ def _persist_produce_turn(session_id, cwd, prompt, final_text, steps, awaiting,
 
     from aiforge_core.runtime import chat_approve, chat_cancel, chat_interject, chat_persist
     chat_cancel.finish(session_id)
+    _keep_side_replies(session_id, steps, cancelled)
     chat_interject.clear(session_id)   # no stale steers next turn
     chat_approve.finish(session_id)
     chat_persist.persist_turn(

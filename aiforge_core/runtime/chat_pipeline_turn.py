@@ -181,9 +181,10 @@ def _run_doer_on_plan(q, steps, cwd, session_id, brief: str) -> str:
                              session_id=session_id, mode="act"):
         if ev.get("type") == "done":
             continue
-        if ev.get("type") == "message":
+        _extra = ev.get("type") == "message" and ev.get("supplementary")
+        if ev.get("type") == "message" and not _extra:
             final = ev.get("text") or final
-        if ev.get("type") in ("thought", "tool", "error"):
+        if ev.get("type") in ("thought", "tool", "error") or _extra:
             steps.append(ev)
         q.put(ev)
     return final
@@ -321,6 +322,14 @@ def _close_turn(session_id, cwd, raw_prompt, final_text, steps, sub_items,
         except Exception:  # noqa: BLE001
             pass
         try:
+            # What was said beside the run (a status answer, the reply to a
+            # mid-run message) is stored with the turn.
+            from aiforge_core.runtime import chat_runs as _runs
+            if chat_run is None or _runs.get(session_id) is chat_run:
+                steps.extend(_runs.take_notes(session_id))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
             from aiforge_core.runtime import chat_persist
             chat_persist.persist_turn(
                 session_id=session_id, cwd=cwd, prompt=raw_prompt,
@@ -430,6 +439,11 @@ def _persist_fallback_turn(session_id, cwd, raw_prompt, fb_final, fb_steps,
     from aiforge_core.runtime import chat_cancel as _cc
     from aiforge_core.runtime import chat_persist
     cancelled_fb = _cc.is_cancelled(session_id)
+    try:        # what was said beside the run is stored with the turn
+        from aiforge_core.runtime import chat_runs
+        fb_steps = [*fb_steps, *chat_runs.take_notes(session_id)]
+    except Exception:  # noqa: BLE001
+        pass
     chat_persist.persist_turn(
         session_id=session_id, cwd=cwd, prompt=raw_prompt, final_text=fb_final,
         steps=fb_steps, team=False, cancelled=cancelled_fb, awaiting=False,
@@ -457,9 +471,10 @@ def _run_pipeline_fallback(raw_prompt, cwd, session_id, started_at):
         fb_steps: list[dict] = []
         for ev in run_chat_agent([{"role": "user", "content": raw_prompt}],
                                  cwd=cwd, session_id=session_id):
-            if ev.get("type") == "message":
+            _extra = ev.get("type") == "message" and ev.get("supplementary")
+            if ev.get("type") == "message" and not _extra:
                 fb_final = ev.get("text", "")
-            elif ev.get("type") in ("thought", "tool", "error"):
+            elif ev.get("type") in ("thought", "tool", "error") or _extra:
                 fb_steps.append(ev)
             if ev.get("type") != "done":
                 yield ev
@@ -493,6 +508,13 @@ def _emit_steer_acks(session_id, chat_interject, q) -> None:
     from aiforge_core.runtime import chat_steer
     for applied in chat_interject.pop_applied(session_id):
         q.put(chat_steer.applied_event(applied))
+        reply = chat_steer.reply_event(applied, chat_steer.TEAM_REPLY)
+        q.put(reply)
+        try:        # kept for the stored turn (see _close_turn)
+            from aiforge_core.runtime import chat_runs
+            chat_runs.note(session_id, reply, publish=False)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _turn_epoch():

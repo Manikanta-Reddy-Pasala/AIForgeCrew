@@ -169,6 +169,8 @@ def _drain_steering(st, session_id):
             from aiforge_core.runtime import chat_steer
             _steers = [t for k, t in _items if k != "reject"]
             st.steers.extend(_steers)
+            from . import _steer_reply
+            _steer_reply.on_drain(st, _steers)
             _rejects = [t for k, t in _items if k == "reject"]
             # ONE block for everything that drained together, so three
             # queued messages cannot each claim to be the latest.

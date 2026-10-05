@@ -460,7 +460,7 @@ def _run_agent_job(job: dict, prompt: str) -> None:
         for ev in run_chat_agent([{"role": "user", "content": prompt}],
                                  cwd=cwd, role="chat", session_id=sid):
             etype = ev.get("type")
-            if etype == "message":
+            if etype == "message" and not ev.get("supplementary"):
                 final = ev.get("text") or final
             elif etype == "error":
                 err = ev.get("text")

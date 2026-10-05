@@ -305,7 +305,8 @@ def _plan_mode_route(_pp, _enriched, _enriched_history, cwd, role, session_id,
         if _ev.get("type") in ("error", "stopped") or _ev.get("awaiting_input"):
             _no_plan = True
         if (_ev.get("type") == "message" and _ev.get("text")
-                and not _ev.get("awaiting_input")):
+                and not _ev.get("awaiting_input")
+                and not _ev.get("supplementary")):
             _plan_text = _ev.get("text") or ""
         yield _ev
     if not _no_plan:

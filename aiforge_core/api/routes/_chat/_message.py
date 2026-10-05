@@ -110,6 +110,12 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     # Persist the run mode on the user turn so the UI can badge which mode each
     # turn/session ran in (was composer-only client state, never stored).
     _turn_mode = body.mode if body.mode in ("simple", "plan", "team") else "simple"
+    # "Give me a plan for …" typed with the toggle on Simple is a plan turn:
+    # read-only, ending in a plan to approve (see runtime/plan_request).
+    _plan_ask = _turn_mode == "simple" and (
+        _asks_for_plan(body) or _answers_plan_question(session_id, body))
+    if _plan_ask:
+        _turn_mode = "plan"
     import time as _time
     _turn_t0 = _time.time()   # wall-clock start → per-turn duration (all 3 modes)
     _user_msg_id = chat_store.add_message(session_id, "user", body.content,
@@ -133,7 +139,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     cwd = chat_worktree.workdir_of(session) \
         or session.get("cwd") or _default_cwd()
     team = body.mode == "team"
-    agent_mode = "plan" if body.mode == "plan" else "act"
+    agent_mode = "plan" if (body.mode == "plan" or _plan_ask) else "act"
     prompt = body.content.strip()
 
     # RESUME. A retry after a STOPPED turn used to re-run the request from
@@ -348,6 +354,42 @@ def _stop_commands_for(session_id: int, text: str) -> int:
         return cmd_jobs.stop_for_text(session_id, text)
     except Exception:  # noqa: BLE001 — a steer must still be queued
         return 0
+
+
+def _asks_for_plan(body) -> bool:
+    """A typed message that asks for a plan and not for the work. Never an
+    approved plan being carried out, a resumed turn, or a builder interview."""
+    if (getattr(body, "single_agent", False) or getattr(body, "resume", None)
+            or getattr(body, "builder", None)):
+        return False
+    try:
+        from aiforge_core.runtime import plan_request
+        return plan_request.asks_for_plan_only(body.content)
+    except Exception:  # noqa: BLE001 — unsure: the mode the user chose stands
+        return False
+
+
+def _answers_plan_question(session_id: int, body) -> bool:
+    """The plan agent asked its one question and this message is the answer:
+    the turn is still the plan. Without this the answer ("use Postgres") ran
+    in act mode with the plan request in its history, and was carried out."""
+    if (getattr(body, "single_agent", False) or getattr(body, "builder", None)
+            or getattr(body, "resume", None)):
+        return False
+    try:
+        from aiforge_core.runtime import chat_store, plan_request
+        if not plan_request.enabled() \
+                or plan_request.turns_plan_down(body.content):
+            return False
+        rows = chat_store.get_messages(session_id) or []
+        user = next((m for m in reversed(rows) if m.get("role") == "user"), None)
+        if not rows or rows[-1].get("role") != "assistant" or not user:
+            return False
+        asked = any(s.get("type") == "awaiting" or s.get("awaiting_input")
+                    for s in (rows[-1].get("steps") or []) if isinstance(s, dict))
+        return bool(asked and user.get("mode") == "plan")
+    except Exception:  # noqa: BLE001 — unsure: the mode the user chose stands
+        return False
 
 
 class _SteerBody(BaseModel):

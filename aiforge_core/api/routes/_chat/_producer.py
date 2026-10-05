@@ -251,6 +251,10 @@ def _single_agent_route(pc, _rd, _pp, rctx, cwd, _doc_task, _is_build_task,
         except Exception:  # noqa: BLE001 — recall still runs in the bundle
             pass
     if pc.agent_mode == "plan":
+        if getattr(pc.body, "mode", "plan") != "plan":
+            from aiforge_core.runtime import plan_request
+            yield {"type": "thought", "role": "system",
+                   "text": plan_request.NOTICE}
         yield from _plan_mode_route(_pp, _enriched, _enriched_history, cwd,
                                     pc.role, pc.session_id, pc.body.quick)
         return
