@@ -176,6 +176,11 @@ def _drain_steering(st, session_id):
             # queued messages cannot each claim to be the latest.
             _parts = ([chat_steer.steer_block(_steers)] if _steers else [])
             _parts += [chat_steer.reject_note(g) for g in _rejects]
+            if _steers:
+                # The task list follows the message: the model is shown the
+                # board and updates it before it carries on.
+                from ._tasks import steer_note
+                _parts.append(steer_note(getattr(st, "board", None) or {}))
             _directive = "\n\n".join(p for p in _parts if p)
             _append_directive(st, _directive)
             for _k, _t in _items:

@@ -652,6 +652,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   useEffect(() => { busyRef.current = busy; }, [busy]);
   // Guards the Steer POST against double-fire (FE6).
   const [steering, setSteering] = useState(false);
+  const [dismissedDock, setDismissedDock] = useState('');
   // Mode the CURRENTLY-running turn was launched with (not the live selector,
   // which the user can flip mid-run). All modes are steerable now — used
   // only to word the composer placeholder differently for team.
@@ -1596,6 +1597,9 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
     abortRef.current = null;
     // A fresh run supersedes any pending plan-approval (Gap B).
     setPlanReady(null);
+    // ... and a closed task list: the new turn's list is a new list, even
+    // when its slugs and statuses come to read the same.
+    setDismissedDock('');
     if (overrideContent === undefined) putComposer('');
     const runMode: ChatMode = overrideMode ?? chatMode;
     setActiveRunMode(runMode);   // remember it so canSteer can disable for team
@@ -1898,7 +1902,11 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
 
   // Subtasks for the pinned bottom dock — see pickDockSubtasks: tasks belong to
   // the turn that produced them, so an older request's list never lingers.
-  const dockSubtasks: SubtaskItem[] | undefined = pickDockSubtasks(liveTurn?.subtasks, messages);
+  const pickedSubtasks: SubtaskItem[] | undefined = pickDockSubtasks(liveTurn?.subtasks, messages);
+  // A list the user closed stays closed until the list changes (a new turn's
+  // list, or a status moving): it is keyed by its content.
+  const dockKey = pickedSubtasks ? `${activeId}:${pickedSubtasks.map(s => `${s.slug}=${s.status}`).join(',')}` : '';
+  const dockSubtasks = pickedSubtasks && dockKey !== dismissedDock ? pickedSubtasks : undefined;
 
   // Re-checked when the session changes and whenever the dock appears or the
   // run ends — a team run writes SPEC.md partway through, so a single check at
@@ -2506,7 +2514,8 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                     route. A panel should degrade to a panel. */}
                 <ErrorBoundary fallback={tasksPanelFallback}>
                   <SubtaskList items={dockSubtasks}
-                               onViewSpec={specExists ? openSpec : undefined} />
+                               onViewSpec={specExists ? openSpec : undefined}
+                               onDismiss={busy ? undefined : () => setDismissedDock(dockKey)} />
                 </ErrorBoundary>
               </div>
             )}

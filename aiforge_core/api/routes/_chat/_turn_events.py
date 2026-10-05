@@ -35,6 +35,8 @@ def _drive_produce_stream(_events, st: dict, steps: list, run, session_id,
         _consume_produce_events(_events, st, steps, run, session_id, turn_t0,
                                 turn_mode, clog, emit, chat_cancel)
         _publish_final_usage(run, session_id, steps)
+        if not st.get("awaiting"):       # waiting for the user: still going on
+            _settle_task_list(st, run)
         if st["subtasks"]:
             steps.insert(0, {"type": "subtasks", "items": st["subtasks"]})
         # The UI unblocks on a terminal `done`; a cancelled parallel/best-of-N run
@@ -45,7 +47,30 @@ def _drive_produce_stream(_events, st: dict, steps: list, run, session_id,
             st["emitted_done"] = True
     except Exception as exc:  # noqa: BLE001
         run.publish({"type": "error", "text": str(exc)})
+        try:        # the stream broke: the list still must not look busy
+            _settle_task_list(st, run)
+            if st["subtasks"] and not any(
+                    isinstance(s, dict) and s.get("type") == "subtasks"
+                    for s in steps):
+                steps.insert(0, {"type": "subtasks", "items": st["subtasks"]})
+        except Exception:  # noqa: BLE001
+            pass
         run.publish({"type": "done"})
+
+
+#: A task that is neither finished nor going on: the turn ended first.
+LEFT = "left"
+
+
+def _settle_task_list(st: dict, run) -> None:
+    """The turn is over: no task is "pending" or "running" any more. One the
+    run did not close is shown as not done — a list that still looked busy
+    after the answer read as work going on. ("planned" is a settled state.)"""
+    for row in st.get("subtasks") or []:
+        if row.get("status") in ("pending", "running"):
+            row["status"] = LEFT
+            run.publish({"type": "subtask_update", "slug": row.get("slug"),
+                         "status": LEFT})
 
 
 def _consume_produce_events(_events, st, steps, run, session_id, turn_t0,

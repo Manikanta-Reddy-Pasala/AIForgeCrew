@@ -55,6 +55,24 @@ def seed_board(asks, goal: str = "") -> dict:
             for i, a in enumerate(asks or [])}
 
 
+def steer_note(board: dict) -> str:
+    """What a mid-run message means for the task board: the model is shown
+    the board as it stands and told to bring it in line first. "" when the
+    run has no board."""
+    if not board:
+        return ""
+    lines = "\n".join(f"{_MARK[it['status']]} {s}: {it['title']}"
+                      for s, it in board.items())
+    return ("[task board — not the user] Your task board as it stands:\n"
+            f"{lines}\n"
+            "The user's message above may change this plan. Before you carry "
+            "on, bring the board in line with it using plan_progress: a new "
+            "slug with a title for work it adds, status skipped for work it "
+            "drops, the same slug with a new title for work it changes. The "
+            "user watches this list. If the message changes nothing on it, "
+            "leave it as it is.")
+
+
 def board_items(board: dict) -> list[dict]:
     """The board as the UI's subtasks dock reads it."""
     return [{"slug": s, "goal": it["title"], "title": it["title"],
