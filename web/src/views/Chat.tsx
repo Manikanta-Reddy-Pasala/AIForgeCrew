@@ -2581,7 +2581,9 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                           onClick={() => { setEditingFrom(null); putComposer(''); }}>cancel</button>
                 </div>
               )}
-              <div style={{ display: 'flex', gap: 6 }}>
+              {/* Buttons keep their own height at the foot of the box: stretched
+                  (the flex default) they grew with every line typed. */}
+              <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
                 <textarea
                   ref={textareaRef}
                   onPaste={onPasteMedia}
