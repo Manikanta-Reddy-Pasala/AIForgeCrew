@@ -252,8 +252,11 @@ def _read_meta(wt: str) -> dict:
 
 def _write_meta(wt: str, meta: dict) -> None:
     try:
-        with open(_meta_path(wt), "w", encoding="utf-8") as fh:
+        # Whole or not at all: a reader never meets a half-written file.
+        tmp = f"{_meta_path(wt)}.{uuid.uuid4().hex[:8]}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(meta, fh, indent=2)
+        os.replace(tmp, _meta_path(wt))
     except OSError as exc:
         log.debug("chat worktree meta not written: %s", exc)
 
@@ -351,6 +354,7 @@ def ensure(session_id) -> "dict | None":
 # ── look ─────────────────────────────────────────────────────────────────────
 
 def _changed(wt: str) -> list[str]:
+    held = set(_held(wt))
     try:
         # The same paths a commit would take: caches and the like are not "edits".
         out = _git(["status", "--porcelain", "--", *_tw.seal_pathspecs()], wt).stdout or ""
@@ -359,9 +363,24 @@ def _changed(wt: str) -> list[str]:
     files = []
     for ln in out.splitlines():
         rel = ln[3:].strip().split(" -> ")[-1].strip('"')
+        if ln.startswith("??") and held and _only_held(wt, rel, held):
+            continue                      # left out of the commit on purpose
         if rel and not any(rel == a or rel.startswith(a + "/") for a in _tw._OWN_ARTIFACTS):
             files.append(rel)
     return files
+
+
+def _only_held(wt: str, shown: str, held: set) -> bool:
+    """True when the untracked entry ``shown`` (as ``git status`` prints it: a
+    file, a folder, a quoted name) is nothing but files left out of the commit."""
+    if shown in held:
+        return True
+    try:
+        under = _git(["ls-files", "--others", "--exclude-standard", "-z", "--",
+                      *_tw.seal_pathspecs()], wt).stdout or ""
+    except Exception:  # noqa: BLE001
+        return False
+    return all(p in held for p in under.split("\0") if p)
 
 
 def info(session: "dict | None") -> "dict | None":
@@ -386,21 +405,35 @@ def info(session: "dict | None") -> "dict | None":
             "base_sha": meta.get("base_sha", ""), "ahead": ahead,
             "uncommitted": uncommitted, "main_branch": main_branch,
             "main_moved": moved, "main_dirty": _tw.dirty_files(repo) if repo else [],
-            "dirty_at_start": meta.get("dirty_at_start") or []}
+            "dirty_at_start": meta.get("dirty_at_start") or [],
+            "held_out": _held_now(wt)}
 
 
 # ── commit ───────────────────────────────────────────────────────────────────
 
-def seal(session_or_path, message: str = "") -> list[str]:
+def seal(session_or_path, message: str = "", *, steps=None, prompt: str = "",
+         final_text: str = "", hold: bool = True) -> list[str]:
     """Commit what the chat left uncommitted onto its branch. Returns the files
-    committed. Never raises: a failed commit leaves the files in the worktree."""
+    committed. Never raises: a failed commit leaves the files in the worktree.
+    A new file the chat only ran (:mod:`chat_run_only`) is left out, unless
+    ``hold`` is off (the worktree is about to be removed)."""
     wt = session_or_path if isinstance(session_or_path, str) else workdir_of(session_or_path)
     if not wt or not os.path.isdir(wt) or not is_worktree(wt):
         return []
     try:
         _untrack_own(wt)
-        _git(["add", "-A", "--", *_tw.seal_pathspecs()], wt)
+        specs = _tw.seal_pathspecs()
+        earlier = set(_held(wt))
+        out = _hold(wt, steps, prompt, final_text) if hold else []
+        fresh = [p for p in out if p not in earlier]
+        _stage(wt, specs, out)
+        if fresh and not _out(["diff", "--cached", "--name-only", "--diff-filter=MRT"], wt):
+            # The turn changed no file the project had: its new files, the one
+            # it ran among them, ARE its work. (One left out earlier stays out.)
+            out = [p for p in out if p in earlier]
+            _stage(wt, specs, out)
         names = [n for n in _out(["diff", "--cached", "--name-only"], wt).splitlines() if n]
+        _keep_held(wt, out)
         if not names:
             return []
         msg = " ".join((message or "aiforge: chat edits").split())[:200]
@@ -409,6 +442,47 @@ def seal(session_or_path, message: str = "") -> list[str]:
     except Exception as exc:  # noqa: BLE001
         log.warning("chat worktree seal failed in %s: %s", wt, exc)
         return []
+
+
+def _stage(wt: str, specs, out) -> None:
+    _git(["add", "-A", "--", *specs, *(f":(exclude,literal){p}" for p in out)], wt)
+
+
+def _held(wt: str) -> list[str]:
+    """Files an earlier turn left out of its commit that are still untracked."""
+    kept = _read_meta(wt).get("held_out")
+    return [p for p in kept if isinstance(p, str)] if isinstance(kept, list) else []
+
+
+def _held_now(wt: str) -> list[str]:
+    """The held files that are still there and still not committed."""
+    kept = _held(wt)
+    if not kept:
+        return []
+    try:
+        new = set((_git(["ls-files", "--others", "-z", "--",
+                         *(f":(literal){p}" for p in kept)], wt).stdout or "").split("\0"))
+    except Exception:  # noqa: BLE001
+        return []
+    return [p for p in kept if p in new]
+
+
+def _hold(wt: str, steps, prompt: str, final_text: str) -> list[str]:
+    meta = _read_meta(wt)
+    # Only a chat's own worktree (the one :func:`ensure` made): a team run's
+    # leftovers are sealed whole, as before.
+    if meta.get("session_id") is None or "dirty_at_start" not in meta:
+        return []
+    from . import chat_run_only
+    return chat_run_only.held(wt, steps, prompt, final_text, _tw.seal_pathspecs(),
+                              before=_held(wt))
+
+
+def _keep_held(wt: str, out: list[str]) -> None:
+    meta = _read_meta(wt)
+    if (meta.get("held_out") or []) != out and meta:
+        meta["held_out"] = out
+        _write_meta(wt, meta)
 
 
 #: Written into a workspace by AIForge's own tools; never part of a change.
@@ -436,12 +510,14 @@ def _commit(wt: str, message: str) -> bool:
     return p.returncode == 0
 
 
-def seal_for_session(session_id, prompt: str = "") -> list[str]:
+def seal_for_session(session_id, prompt: str = "", *, steps=None,
+                     final_text: str = "", hold: bool = True) -> list[str]:
     sess = _session(session_id)
     if not sess or not workdir_of(sess) or sess.get("parent_id"):
         return []              # a side task shares its parent's tree; the parent commits it
     first = " ".join((prompt or "").split())[:70]
-    return seal(sess, f"aiforge chat {sess['id']}: {first}" if first else f"aiforge chat {sess['id']}")
+    return seal(sess, f"aiforge chat {sess['id']}: {first}" if first else f"aiforge chat {sess['id']}",
+                steps=steps, prompt=prompt, final_text=final_text, hold=hold)
 
 
 # ── merge back ───────────────────────────────────────────────────────────────
@@ -507,7 +583,7 @@ def remove(session_id) -> dict:
     from aiforge_core.runtime import chat_store
     out = {"removed": False, "branch": ""}
     if os.path.isdir(wt) and is_worktree(wt):
-        seal_for_session(session_id)
+        seal_for_session(session_id, hold=False)   # the folder goes: nothing stays behind
         meta = _read_meta(wt)
         repo = meta.get("repo") or main_repo_of(wt) or ""
         out["branch"] = meta.get("branch", "")

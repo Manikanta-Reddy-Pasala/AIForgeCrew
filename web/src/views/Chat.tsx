@@ -2127,6 +2127,12 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                       {(worktree.ahead ?? 0) > 0 && ` · ${worktree.ahead} commit${worktree.ahead === 1 ? '' : 's'}`}
                       {(worktree.uncommitted ?? 0) > 0 && ' · editing'}
                     </span>
+                    {(worktree.held_out?.length ?? 0) > 0 && (
+                      <span className="chip"
+                            title={`Made only to check the work, so not committed and not merged:\n${worktree.held_out!.join('\n')}\nThe file${worktree.held_out!.length === 1 ? ' is' : 's are'} still in the chat's folder. Name one in a message to have it committed.`}>
+                        {worktree.held_out!.length} helper file{worktree.held_out!.length === 1 ? '' : 's'} not committed
+                      </span>
+                    )}
                     {((worktree.ahead ?? 0) > 0 || (worktree.uncommitted ?? 0) > 0) && (
                       <button type="button" className="ghost sm" disabled={busy || merging}
                               title={`Fast-forward ${worktree.base_branch || 'your branch'} to this chat's commits. Your folder is not touched while the chat works; if it has uncommitted changes the merge waits.`}

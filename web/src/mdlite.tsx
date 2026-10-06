@@ -425,7 +425,7 @@ function paragraphBlock(lines: string[], i: number, k: number): NonNullable<Bloc
   return { node, next: j, k: k + 1 };
 }
 
-export function MdLite({ text }: Readonly<{ text: string }>) {
+function MdLiteImpl({ text }: Readonly<{ text: string }>) {
   if (!text) return null;
   const out: React.ReactNode[] = [];
   const lines = text.split('\n');
@@ -446,3 +446,7 @@ export function MdLite({ text }: Readonly<{ text: string }>) {
   }
   return <>{out}</>;
 }
+
+// One string in, the same tree out: a chat re-renders on every streamed chunk,
+// and without this every earlier message was parsed again each time.
+export const MdLite = React.memo(MdLiteImpl);

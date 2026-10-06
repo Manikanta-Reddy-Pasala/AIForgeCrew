@@ -361,3 +361,239 @@ def test_no_gitignore_or_baseline_commit_of_ours_lands_on_the_chat_branch(env):
     assert _git(wt, "rev-parse", "HEAD").stdout.strip() == head
     assert not os.path.exists(os.path.join(wt, ".gitignore"))
     assert _git(wt, "status", "--porcelain").stdout == ""
+
+
+# ── a file the chat only ran is not part of its commit ───────────────────────
+
+def _ran(cmd):
+    return {"type": "tool", "name": "run_command", "args": {"command": cmd},
+            "result": {"ok": True}}
+
+
+def _helper_turn(env, cmd="python3 check_vat.py", name="check_vat.py"):
+    cw = _cw()
+    sid = env.new_chat()
+    wt = cw.ensure(sid)["path"]
+    open(os.path.join(wt, "src", "cart.py"), "a").write("def vat(x):\n    return x * 0.2\n")
+    open(os.path.join(wt, name), "w").write("from src.tax import vat\nassert vat(10) == 2\n")
+    return cw, sid, wt, [_ran(cmd)]
+
+
+def test_a_script_the_turn_only_ran_stays_out_of_the_commit_and_in_the_worktree(env):
+    cw, sid, wt, steps = _helper_turn(env)
+    assert cw.seal_for_session(sid, "add vat", steps=steps, final_text="Added vat().") == ["src/cart.py"]
+    assert os.path.isfile(os.path.join(wt, "check_vat.py"))          # not moved, not deleted
+    assert "check_vat.py" not in _git(wt, "ls-files").stdout
+    data = cw.info(env.store.get_session(sid))
+    assert data["uncommitted"] == [] and data["held_out"] == ["check_vat.py"]
+    # later seals (next turn, merge, delete) keep it out without being told again
+    open(os.path.join(wt, "README.md"), "a").write("vat\n")
+    assert cw.seal_for_session(sid) == ["README.md"]
+    assert cw.merge(sid)["ok"] is True
+    assert not os.path.exists(os.path.join(str(env.repo), "check_vat.py"))
+
+
+@pytest.mark.parametrize("cmd", [
+    "./check_vat.py", "FOO=1 timeout 30 python3 ./check_vat.py --fast",
+    "python3 -m pytest check_vat.py::test_x -q", "bash -c true && python3 check_vat.py > out.txt",
+])
+def test_the_forms_a_run_takes(env, cmd):
+    cw, sid, _wt, steps = _helper_turn(env, cmd)
+    assert "check_vat.py" not in cw.seal_for_session(sid, "add vat", steps=steps)
+
+
+def test_a_new_file_nobody_ran_is_committed(env):
+    cw, sid, _wt, _steps = _helper_turn(env)
+    assert sorted(cw.seal_for_session(sid, "add vat", steps=[_ran("ls")])) == ["check_vat.py", "src/cart.py"]
+
+
+def test_a_script_the_user_or_the_answer_names_is_committed(env):
+    cw, sid, _wt, steps = _helper_turn(env)
+    assert "check_vat.py" in cw.seal_for_session(sid, "add vat and a check_vat.py script", steps=steps)
+    cw, sid, _wt, steps = _helper_turn(env)
+    assert "check_vat.py" in cw.seal_for_session(
+        sid, "add vat", steps=steps, final_text="Added `check_vat.py` to run the checks.")
+
+
+def test_the_facts_block_naming_the_file_does_not_count_as_the_answer_naming_it(env):
+    from aiforge_core.runtime import turn_facts_line
+    cw, sid, _wt, steps = _helper_turn(env)
+    final = f"Done.\n\n---\n_{turn_facts_line.HEAD}:_ files changed in this turn: `check_vat.py`, `src/cart.py`."
+    assert cw.seal_for_session(sid, "add vat", steps=steps, final_text=final) == ["src/cart.py"]
+
+
+def test_a_script_another_file_refers_to_is_committed(env):
+    cw, sid, wt, steps = _helper_turn(env)
+    open(os.path.join(wt, "README.md"), "a").write("Run `python3 check_vat.py`.\n")
+    assert "check_vat.py" in cw.seal_for_session(sid, "add vat", steps=steps)
+
+
+def test_a_test_in_the_projects_own_test_folder_is_committed(env):
+    os.makedirs(env.repo / "tests")
+    (env.repo / "tests" / "test_cart.py").write_text("def test_a():\n    pass\n")
+    _git(env.repo, "add", "-A")
+    _git(env.repo, "commit", "-q", "-m", "tests")
+    cw = _cw()
+    sid = env.new_chat()
+    wt = cw.ensure(sid)["path"]
+    open(os.path.join(wt, "src", "cart.py"), "a").write("def vat(x):\n    return x * 0.2\n")
+    open(os.path.join(wt, "tests", "test_tax.py"), "w").write("def test_v():\n    pass\n")
+    names = cw.seal_for_session(sid, "add vat", steps=[_ran("pytest tests/test_tax.py -q")])
+    assert sorted(names) == ["src/cart.py", "tests/test_tax.py"]
+
+
+def test_a_turn_whose_only_product_is_the_script_commits_it(env):
+    cw = _cw()
+    sid = env.new_chat()
+    wt = cw.ensure(sid)["path"]
+    open(os.path.join(wt, "primes.py"), "w").write("print(2, 3, 5)\n")
+    assert cw.seal_for_session(sid, "print some primes", steps=[_ran("python3 primes.py")]) == ["primes.py"]
+    assert cw.info(env.store.get_session(sid))["held_out"] == []
+
+
+def test_a_held_script_is_committed_once_something_refers_to_it_or_the_user_names_it(env):
+    cw, sid, wt, steps = _helper_turn(env)
+    cw.seal_for_session(sid, "add vat", steps=steps)
+    assert cw.seal_for_session(sid, "commit check_vat.py too") == ["check_vat.py"]
+    assert cw.info(env.store.get_session(sid))["held_out"] == []
+
+
+def test_a_run_after_cd_or_from_another_folder_holds_nothing(env):
+    cw, sid, _wt, _ = _helper_turn(env)
+    steps = [_ran("cd src && python3 check_vat.py"),
+             {"type": "tool", "name": "run_command",
+              "args": {"command": "python3 check_vat.py", "cwd": "/tmp"}, "result": {}}]
+    assert "check_vat.py" in cw.seal_for_session(sid, "add vat", steps=steps)
+
+
+def test_the_switch_turns_it_off_and_a_team_worktree_is_sealed_whole(env, monkeypatch):
+    cw, sid, _wt, steps = _helper_turn(env)
+    monkeypatch.setenv("AIFORGE_CHAT_HOLD_HELPERS", "0")
+    assert "check_vat.py" in cw.seal_for_session(sid, "add vat", steps=steps)
+
+
+@pytest.mark.parametrize("cmd", [
+    "python3 -m py_compile check_vat.py", "bash -n check_vat.py", "node --check check_vat.py",
+    "npx eslint check_vat.py", "uv run ruff check check_vat.py", "python3 -c 'print(1)' check_vat.py",
+    "cat check_vat.py", "python3 src/cart.py check_vat.py",
+])
+def test_a_file_that_was_only_checked_or_read_is_committed(env, cmd):
+    cw, sid, _wt, steps = _helper_turn(env, cmd)
+    assert "check_vat.py" in cw.seal_for_session(sid, "add vat", steps=steps)
+
+
+def test_a_turn_that_made_only_new_files_commits_the_script_with_its_output(env):
+    cw = _cw()
+    sid = env.new_chat()
+    wt = cw.ensure(sid)["path"]
+    open(os.path.join(wt, "convert.py"), "w").write("open('out.json', 'w').write('[]')\n")
+    open(os.path.join(wt, "out.json"), "w").write("[]")
+    names = cw.seal_for_session(sid, "convert the data", steps=[_ran("python3 convert.py")])
+    assert sorted(names) == ["convert.py", "out.json"]
+
+
+def test_a_new_test_in_a_new_subfolder_is_committed(env):
+    cw, sid, wt, _ = _helper_turn(env)
+    os.makedirs(os.path.join(wt, "src", "billing"))
+    open(os.path.join(wt, "src", "billing", "test_vat.py"), "w").write("def test_v():\n    pass\n")
+    names = cw.seal_for_session(sid, "add vat", steps=[_ran("pytest src/billing/test_vat.py")])
+    assert "src/billing/test_vat.py" in names
+
+
+def test_a_run_file_placed_in_a_folder_is_committed(env):
+    cw, sid, wt, _ = _helper_turn(env)
+    os.remove(os.path.join(wt, "check_vat.py"))
+    os.makedirs(os.path.join(wt, "scripts"))
+    open(os.path.join(wt, "scripts", "probe.py"), "w").write("print(1)\n")
+    names = cw.seal_for_session(sid, "add vat", steps=[_ran("python3 scripts/probe.py")])
+    assert sorted(names) == ["scripts/probe.py", "src/cart.py"]
+
+
+@pytest.mark.parametrize("prompt", [
+    "add vat and a script to check it", "write a migration for vat and run it",
+    "add vat, plus a small CLI tool",
+])
+def test_when_the_user_asked_for_something_to_run_nothing_is_held(env, prompt):
+    cw, sid, _wt, steps = _helper_turn(env)
+    assert "check_vat.py" in cw.seal_for_session(sid, prompt, steps=steps, final_text="Done.")
+
+
+def test_a_top_level_test_is_committed_when_asked_for_or_when_the_project_keeps_them_there(env):
+    cw, sid, _wt, steps = _helper_turn(env, "pytest test_vat.py", "test_vat.py")
+    assert "test_vat.py" in cw.seal_for_session(sid, "add vat and a test for it", steps=steps)
+    cw, sid, _wt, steps = _helper_turn(env, "pytest test_vat.py", "test_vat.py")
+    assert "test_vat.py" not in cw.seal_for_session(sid, "add vat", steps=steps)
+    (env.repo / "test_cart.py").write_text("def test_a():\n    pass\n")
+    _git(env.repo, "add", "-A")
+    _git(env.repo, "commit", "-q", "-m", "flat tests")
+    cw, sid, _wt, steps = _helper_turn(env, "pytest test_vat.py", "test_vat.py")
+    assert "test_vat.py" in cw.seal_for_session(sid, "add vat", steps=steps)
+
+
+@pytest.mark.parametrize("result", [
+    {"ok": False, "error": "denied by the user"}, {"ok": True, "denied": True}, None,
+])
+def test_a_command_that_was_refused_or_never_started_is_not_a_run(env, result):
+    cw, sid, _wt, _ = _helper_turn(env)
+    step = {"type": "tool", "name": "run_command",
+            "args": {"command": "python3 check_vat.py"}, "result": result}
+    assert "check_vat.py" in cw.seal_for_session(sid, "add vat", steps=[step])
+
+
+def test_a_check_that_ran_and_failed_is_still_a_run(env):
+    cw, sid, _wt, _ = _helper_turn(env)
+    step = {"type": "tool", "name": "run_command", "args": {"command": "python3 check_vat.py"},
+            "result": {"ok": False, "exit_code": 1, "output": "AssertionError"}}
+    assert "check_vat.py" not in cw.seal_for_session(sid, "add vat", steps=[step])
+
+
+@pytest.mark.parametrize("step", [
+    {"type": "tool", "name": "file_write", "args": {"path": "./check_vat.py", "content": "x"},
+     "result": {"ok": True}},
+    {"type": "tool", "name": "run_command", "args": {"command": "echo 'print(2)' >> check_vat.py"},
+     "result": {"ok": True}},
+])
+def test_a_held_file_written_again_by_any_route_is_committed(env, step, monkeypatch):
+    from aiforge_core.runtime import shell_writes
+    monkeypatch.setattr(shell_writes, "_is_temp", lambda p: False)   # the test repo is under /tmp
+    cw, sid, wt, steps = _helper_turn(env)
+    cw.seal_for_session(sid, "add vat", steps=steps)
+    open(os.path.join(wt, "check_vat.py"), "a").write("print('ok')\n")
+    assert cw.seal_for_session(sid, "improve that check", steps=[step]) == ["check_vat.py"]
+
+
+def test_a_held_file_another_writer_committed_is_no_longer_listed(env):
+    cw, sid, wt, steps = _helper_turn(env)
+    cw.seal_for_session(sid, "add vat", steps=steps)
+    _git(wt, "add", "check_vat.py")
+    _git(wt, "commit", "-q", "-m", "by a team turn")
+    assert cw.info(env.store.get_session(sid))["held_out"] == []
+
+
+def test_a_held_file_the_agent_writes_again_is_committed(env):
+    cw, sid, wt, steps = _helper_turn(env)
+    cw.seal_for_session(sid, "add vat", steps=steps)
+    open(os.path.join(wt, "check_vat.py"), "a").write("print('ok')\n")
+    wrote = {"type": "tool", "name": "file_write",
+             "args": {"path": "check_vat.py", "content": "x"}, "result": {"ok": True}}
+    assert cw.seal_for_session(sid, "improve that check", steps=[wrote]) == ["check_vat.py"]
+
+
+def test_deleting_the_chat_commits_what_was_held(env):
+    cw, sid, _wt, steps = _helper_turn(env)
+    cw.seal_for_session(sid, "add vat", steps=steps)
+    branch = cw.remove(sid)["branch"]
+    assert "check_vat.py" in _git(env.repo, "ls-tree", "-r", "--name-only", branch).stdout
+
+
+def test_git_not_answering_holds_nothing(env, monkeypatch):
+    from aiforge_core.runtime import chat_run_only
+    cw, sid, _wt, steps = _helper_turn(env)
+    real = chat_run_only._git
+
+    def flaky(args, cwd, timeout=30, ok=(0,)):
+        if args[0] == "grep":
+            raise chat_run_only._GitFailed("timeout")
+        return real(args, cwd, timeout, ok)
+    monkeypatch.setattr(chat_run_only, "_git", flaky)
+    assert "check_vat.py" in cw.seal_for_session(sid, "add vat", steps=steps)

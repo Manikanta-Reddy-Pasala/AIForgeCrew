@@ -26,6 +26,7 @@ export interface ChatWorktree {
   base_branch?: string;
   ahead?: number;           // commits on the chat's branch not yet merged
   uncommitted?: number;     // files changed since the last commit
+  held_out?: string[];      // new files the chat only ran: left out of its commits
   main_branch?: string;
   main_moved?: boolean;
   main_dirty?: number;

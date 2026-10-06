@@ -51,6 +51,8 @@ class _Run:
         # Events that did not come from the run's own producer (an answer
         # given beside it): shown live, and stored with the turn's steps.
         self.notes: list[dict] = []
+        # For each note: how many tool calls the run had finished when it was said.
+        self.note_after: list[int] = []
         # Streamed text of the model call in flight, merged per phase. Not in
         # `events`: a long build streams thousands of chunks, and every one is
         # superseded by the step/answer event that settles its call — so only
@@ -449,6 +451,9 @@ def note(session_id: int, event: dict, *, publish: bool = True) -> bool:
         return False
     with run.lock:
         run.notes.append(event)
+        # Said while a tool runs: its row is already on screen, above the note.
+        run.note_after.append(sum(1 for e in run.events if e.get("type") == "tool")
+                              + (1 if run.open_tools else 0))
     if publish:
         run.say(event)
     return True
@@ -461,7 +466,29 @@ def take_notes(session_id: int) -> list[dict]:
         return []
     with run.lock:
         notes, run.notes = run.notes, []
+        run.note_after = []
     return notes
+
+
+def place_notes(session_id: int, steps: list) -> None:
+    """Put the kept notes into ``steps`` (in place) where they were said: each
+    one before the first tool call that finished after it. At the end of the
+    list they read, after a reload, as if all of them came last."""
+    run = get(session_id)
+    if run is None:
+        return
+    with run.lock:
+        notes, after = run.notes, run.note_after
+        run.notes, run.note_after = [], []
+    if len(after) != len(notes):
+        steps.extend(notes)
+        return
+    tools = [i for i, s in enumerate(steps) if isinstance(s, dict) and s.get("type") == "tool"]
+    at = [tools[k] if k < len(tools) else len(steps) for k in after]
+    # Back to front, so an index found above still points at the same step;
+    # notes said at one point keep their order.
+    for i in sorted(range(len(notes)), key=lambda n: (at[n], n), reverse=True):
+        steps.insert(at[i], notes[i])
 
 
 def finish(session_id: int) -> None:

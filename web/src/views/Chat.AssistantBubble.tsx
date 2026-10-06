@@ -90,44 +90,44 @@ export function AssistantBubble({
   // A model thought that IS the answer below (a draft a gate set aside and the
   // model then resent) would show the reply twice.
   // The reply to a message the user sent while the run was going is an answer,
-  // not a step: inside the steps list it folded away when the turn ended.
-  const replies = steps.filter(isReply);
-  const otherSteps = steps.filter(s => s.kind !== 'changes' && !isReply(s)
+  // not a step: inside the steps list it folded away when the turn ended. It
+  // keeps its place in the timeline though — collected under the steps, three
+  // replies piled up at the bottom while the work they interrupted ran on above.
+  const timeline = steps.filter(s => s.kind !== 'changes'
     && !(s.kind === 'thought' && !s.role && text && similarText(s.text, text)));
-  const keys = uniqueKeys(otherSteps);
+  const stepCount = timeline.filter(s => !isReply(s)).length;
+  const shown = showSteps ? timeline : timeline.filter(isReply);
+  const keys = uniqueKeys(shown);
   return (
     <div>
       {captured?.map(c => <CapturedPill key={c.id} item={c} />)}
       {subtasks && subtasks.length > 0 && <SubtaskList items={subtasks} />}
-      {otherSteps.length > 0 && (
-        <div style={{ marginBottom: text ? 8 : 0 }}>
-          <button type="button"
-            onClick={() => setShowSteps(v => !v)}
-            style={{
-              background: 'transparent', border: '1px solid var(--border-1)',
-              borderRadius: 4, padding: '2px 8px', fontSize: 'var(--fs-xs)',
-              color: 'var(--fg-3)', cursor: 'pointer', marginBottom: showSteps ? 6 : 0,
-            }}
-          >
-            {showSteps ? '▾' : '▸'} {otherSteps.length} agent step{otherSteps.length === 1 ? '' : 's'}
-          </button>
-          {showSteps && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {otherSteps.map((s, i) => (
-                <AgentStepRow key={keys[i]} step={s} />
-              ))}
+      {stepCount > 0 && (
+        <button type="button"
+          onClick={() => setShowSteps(v => !v)}
+          style={{
+            background: 'transparent', border: '1px solid var(--border-1)',
+            borderRadius: 4, padding: '2px 8px', fontSize: 'var(--fs-xs)',
+            color: 'var(--fg-3)', cursor: 'pointer', marginBottom: shown.length > 0 ? 6 : (text ? 8 : 0),
+          }}
+        >
+          {showSteps ? '▾' : '▸'} {stepCount} agent step{stepCount === 1 ? '' : 's'}
+        </button>
+      )}
+      {shown.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: text ? 8 : 0 }}>
+          {shown.map((s, i) => isReply(s) ? (
+            <div key={keys[i]}
+                 style={{ margin: '2px 2px', padding: '8px 12px', borderLeft: '3px solid var(--accent, #2563eb)',
+                          background: 'var(--bg-1)', borderRadius: 6 }}>
+              {s.to && <div className="xs muted" style={{ marginBottom: 4 }}>You said: {s.to}</div>}
+              <MdLite text={s.text} />
             </div>
-          )}
+          ) : (
+            <AgentStepRow key={keys[i]} step={s} />
+          ))}
         </div>
       )}
-      {replies.map((r, i) => (
-        <div key={`reply-${i}-${r.text.slice(0, 40)}`}
-             style={{ margin: '6px 2px', padding: '8px 12px', borderLeft: '3px solid var(--accent, #2563eb)',
-                      background: 'var(--bg-1)', borderRadius: 6 }}>
-          {r.to && <div className="xs muted" style={{ marginBottom: 4 }}>You said: {r.to}</div>}
-          <MdLite text={r.text} />
-        </div>
-      ))}
       {text && (
         <div className="bubble-body">
           <MdLite text={text} />

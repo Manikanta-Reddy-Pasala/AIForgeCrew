@@ -195,7 +195,7 @@ def _keep_side_replies(session_id, steps: list, cancelled) -> None:
     late for any step to read (it was dropped without a word)."""
     try:
         from aiforge_core.runtime import chat_interject, chat_runs, chat_steer
-        steps.extend(chat_runs.take_notes(session_id))
+        chat_runs.place_notes(session_id, steps)
         late = [] if cancelled else [
             t for k, t in chat_interject.drain_items(session_id) if k != "reject"]
         if late:
@@ -226,7 +226,8 @@ def _persist_produce_turn(session_id, cwd, prompt, final_text, steps, awaiting,
     # branch, so they are there to merge (and never lost with the folder).
     try:
         from aiforge_core.runtime import chat_worktree
-        chat_worktree.seal_for_session(session_id, prompt)
+        chat_worktree.seal_for_session(session_id, prompt, steps=steps,
+                                       final_text=final_text or "")
     except Exception as exc:  # noqa: BLE001
         _af_log.warning("chat worktree seal failed (session %s): %s", session_id, exc)
     if not cancelled and not team and not path["parallel"]:

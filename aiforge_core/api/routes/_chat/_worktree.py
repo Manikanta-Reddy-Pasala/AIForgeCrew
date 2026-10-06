@@ -33,7 +33,8 @@ def chat_worktree_info(session_id: int) -> dict:
             "base_branch": data["base_branch"], "ahead": data["ahead"],
             "uncommitted": len(data["uncommitted"]), "main_branch": data["main_branch"],
             "main_moved": data["main_moved"], "main_dirty": len(data["main_dirty"]),
-            "path": data["path"], "repo": data["repo"]}
+            "path": data["path"], "repo": data["repo"],
+            "held_out": data.get("held_out") or []}
 
 
 @router.post("/api/chat/sessions/{session_id}/worktree/merge",

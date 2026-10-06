@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { Icon } from '../icons';
 import { AgentStep, ChangeFile } from './Chat.types';
 import { toText } from '../util';
@@ -239,7 +239,7 @@ function ToolStepRow({ step }: Readonly<{ step: Extract<AgentStep, { kind: 'tool
   );
 }
 
-export function AgentStepRow({ step }: Readonly<{ step: AgentStep }>) {
+function AgentStepRowImpl({ step }: Readonly<{ step: AgentStep }>) {
   if (step.kind === 'changes') {
     return <ChangesView files={step.files} summary={step.summary} />;
   }
@@ -273,3 +273,7 @@ export function AgentStepRow({ step }: Readonly<{ step: AgentStep }>) {
   }
   return null;
 }
+
+// A step object keeps its identity while the turn streams (the reducer only
+// appends), so the rows already shown are not rendered again per chunk.
+export const AgentStepRow = memo(AgentStepRowImpl);
