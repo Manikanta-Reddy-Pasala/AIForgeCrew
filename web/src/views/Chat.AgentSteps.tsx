@@ -4,6 +4,7 @@ import { AgentStep, ChangeFile } from './Chat.types';
 import { toText } from '../util';
 import { MdLite } from '../mdlite';
 import { looksLikeMarkdown } from '../looksLikeMarkdown';
+import { describeStep } from '../stepDescribe';
 
 // ── Agent step row ─────────────────────────────────────────────────────────────
 
@@ -176,8 +177,9 @@ function pretty(v: unknown): string {
   return s.length > DETAIL_CHARS ? s.slice(0, DETAIL_CHARS) + '\n… (truncated)' : s;
 }
 
-// One tool-call step: name(args) → result snippet, tinted by pending/ok/error.
-// Click the row for the full arguments and the full result.
+// One tool-call step: what it is doing in plain words → result snippet, with
+// the raw name(args) under it; tinted by pending/ok/error. Click the row for
+// the full arguments and the full result.
 function ToolStepRow({ step }: Readonly<{ step: Extract<AgentStep, { kind: 'tool' }> }>) {
   const [open, setOpen] = useState(false);
   const res = step.result as any;
@@ -218,10 +220,14 @@ function ToolStepRow({ step }: Readonly<{ step: Extract<AgentStep, { kind: 'tool
         <span style={{ flexShrink: 0, marginTop: 1 }}>{step.pending ? '⏳' : '🔧'}</span>
         <AgentBadge role={step.role} />
         <span style={{ flex: 1, minWidth: 0, wordBreak: 'break-word' }}>
-          <strong>{step.name}</strong>
-          {'('}{argsPreview(step.args as Record<string, unknown>)}{')'}
+          <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 600 }}>
+            {describeStep(step.name, step.args as Record<string, unknown>)}
+          </span>
           {' → '}
           <span style={{ color: arrowColor }}>{snippet}</span>
+          <span style={{ display: 'block', color: 'var(--fg-3)' }}>
+            {step.name}{'('}{argsPreview(step.args as Record<string, unknown>)}{')'}
+          </span>
         </span>
         <span style={{ flexShrink: 0, color: 'var(--fg-3)', transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .1s' }}>▸</span>
       </button>
