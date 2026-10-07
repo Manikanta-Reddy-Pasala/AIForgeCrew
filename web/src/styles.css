@@ -709,6 +709,10 @@ button.voice-btn.recording:hover:not(:disabled) {
   overflow-y: auto;
   padding: var(--s-5) var(--s-5) var(--s-4);
   display: flex; flex-direction: column; gap: var(--s-4);
+  /* The chat decides when the log moves. Left on, the browser shifts the
+     position when something above changes height, which reads as the reader
+     scrolling up and stops the log following. */
+  overflow-anchor: none;
 }
 .chat-composer {
   padding: var(--s-3) var(--s-4);

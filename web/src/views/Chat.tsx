@@ -20,6 +20,7 @@ import { AssistantBubble } from './Chat.AssistantBubble';
 import { VoiceButton } from './Chat.VoiceButton';
 import { applySpokenCorrection, planSpokenInsert, type SpokenAnchor } from '../voicePhrase';
 import { reduceTurn } from './Chat.reduce';
+import { followAfterScroll } from '../chatFollow';
 import { clickable, backdrop } from '../a11y';
 
 // Module-level builder-launch guard: epoch-ms of the last ?builder= launch.
@@ -834,6 +835,10 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   const sendStartRef = useRef<number>(0);
 
   const logRef = useRef<HTMLDivElement | null>(null);
+  // Whether the log follows new text to the end. The reader owns the scroll:
+  // moving up lets go, coming back down to the end follows again.
+  const followRef = useRef<{ stick: boolean; top: number; el: HTMLDivElement | null; sid: number | null }>(
+    { stick: true, top: 0, el: null, sid: null });
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   // The message box grows with what is typed, up to COMPOSER_MAX_LINES; past
   // that it scrolls. Empty, it goes back to its resting height.
@@ -1105,10 +1110,42 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
     try { localStorage.setItem(LS_MODE_KEY, chatMode); } catch { /* ignore */ }
   }, [chatMode]);
 
-  // Auto-scroll on new messages / live turn updates
+  // Follow new messages / live turn updates to the end — only while the
+  // reader has not scrolled up.
+  function noteLogPosition(el: HTMLDivElement) {
+    const f = followRef.current;
+    f.stick = followAfterScroll(f.stick, f.el === el ? f.top : null,
+                                el.scrollTop, el.scrollHeight, el.clientHeight);
+    f.el = el;
+    f.top = el.scrollTop;
+  }
+
   useEffect(() => {
-    logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages, liveTurn]);
+    const f = followRef.current;
+    if (f.sid !== activeId) { f.sid = activeId; f.stick = true; }   // another chat opens at its end
+    const el = logRef.current;
+    if (!el) { f.el = null; return; }   // loading: what comes back counts as rebuilt
+    if (f.el !== el) {
+      // The log was rebuilt (it reloads when a turn ends): put a reader who
+      // had scrolled up back where they were.
+      if (!f.stick) el.scrollTop = f.top;
+      f.el = el;
+      f.top = el.scrollTop;
+    } else {
+      // A move the reader made since the last scroll event still counts.
+      noteLogPosition(el);
+    }
+    // A jump, not a glide: while a glide runs the browser drops the reader's
+    // own scrolling, and text that streams in would restart it without end.
+    if (f.stick) { el.scrollTop = el.scrollHeight; f.top = el.scrollTop; }
+  }, [messages, liveTurn, msgsLoading, activeId]);
+
+  function onLogScroll(e: React.UIEvent<HTMLDivElement>) {
+    if (e.target !== e.currentTarget) return;   // a scrolling block inside the log
+    // Left over from before the log was rebuilt: the effect has not placed it yet.
+    if (followRef.current.el !== e.currentTarget) return;
+    noteLogPosition(e.currentTarget);
+  }
 
   // Focus rename input when rename starts
   useEffect(() => {
@@ -1582,6 +1619,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                       opts?: { resume?: boolean; singleAgent?: boolean }) {
     const q = (overrideContent ?? input).trim();
     if (!q || busy) return;
+    followRef.current.stick = true;   // your own message is shown where it lands
     // A suggestion is about the turn that just ended. Leaving it under a new
     // question is worse than showing none at all.
     setSuggestion(null);
@@ -1767,6 +1805,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
     // FE6: ignore re-entry while a steer POST is already in flight.
     if (!q || !busy || activeId === null || pendingApproval || steering) return;
     setSteering(true);
+    followRef.current.stick = true;   // your own message is shown where it lands
     putComposer('');
     try {
       let r: any;
@@ -2211,7 +2250,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
               <div className="typing"><span /><span /><span /></div>
             </div>
             ) : (
-            <div className="chat-log" ref={logRef}>
+            <div className="chat-log" ref={logRef} onScroll={onLogScroll}>
               {/* Captured auto-approve flags are IGNORED while this mode requires
                   approval, so don't advertise them then — only surface the panel
                   when approvals are OFF and a bypass can actually take effect. */}
