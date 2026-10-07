@@ -213,6 +213,7 @@ def _action_step(out: str, act, name: str) -> dict:
     args included)."""
     m = re.search(r"ARGS_JSON\s*:?", out, re.IGNORECASE)
     args = _balanced_json(out, m.end() if m else act.end())
+    said = _take_description(name, args)
     # Inline-args rescue (dspy A/B finding, verified 6/6 on the NUC): local
     # models sometimes emit `ACTION: tool {"item": "x"}` followed by an EMPTY
     # `ARGS_JSON: {}` — the marker's {} shadowed the good inline object and the
@@ -221,9 +222,42 @@ def _action_step(out: str, act, name: str) -> dict:
     # name, use the inline object.
     if not args and m:
         args = _balanced_json(out, act.end()) or args
+        said = _take_description(name, args) or said
     thought = _THOUGHT_RE.search(out)
-    return {"kind": "action", "tool": name, "args": args,
+    step = {"kind": "action", "tool": name, "args": args,
             "thought": thought.group(1).strip() if thought else ""}
+    if said:
+        step["description"] = said
+    return step
+
+
+def _real_description_arg(name: str) -> bool:
+    """The tool takes ``description`` as an input of its own (``jira_create``'s
+    issue body, a skill's charter) — then it is not words for the user."""
+    try:
+        from ._tools._schemas import CATALOG
+        entry = CATALOG.get(name)
+    except Exception:  # noqa: BLE001
+        return True
+    if not entry:
+        return True              # unknown shape: leave its args alone
+    if name == "run_command":
+        return False
+    return "description" in (entry[1] or {})
+
+
+def _take_description(name: str, args) -> str:
+    """Take the user-facing description off ``args`` (in place) and return it.
+    run_command offers it; a model that adds one to another tool's call gets
+    it taken off too, unless that tool has a real ``description`` input. Off
+    the args, every guard, signature and repeat check sees the call exactly as
+    before; the description only travels with the step event."""
+    if not isinstance(args, dict) or "description" not in args or _real_description_arg(name):
+        return ""
+    said = args.pop("description", None)
+    if not isinstance(said, str):
+        return ""
+    return " ".join(said.split())[:160]
 
 
 def _scaffolding_only(out: str) -> bool:

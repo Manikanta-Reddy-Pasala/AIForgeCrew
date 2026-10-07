@@ -6,14 +6,19 @@ import type { AgentStep, LiveTurn, SubtaskItem } from './Chat.model';
 // call_id), or append when there's no pending row (hook-blocked/rejected path).
 function reduceToolEvent(prev: LiveTurn, evt: any): LiveTurn {
   const idx = evt.call_id !== undefined
-    ? prev.steps.findIndex(s => s.kind === 'tool' && s.pending && s.call_id === evt.call_id)
+    ? prev.steps.findIndex(s => s.kind === 'tool' && s.pending && s.call_id === evt.call_id
+        && (s.role ?? '') === (evt.role ?? '') && s.name === evt.name)
     : -1;
   if (idx !== -1) {
     const steps = [...prev.steps];
-    steps[idx] = { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: evt.result || {}, role: evt.role, call_id: evt.call_id };
+    const was = steps[idx];
+    const startedAt = was.kind === 'tool' ? was.startedAt : undefined;
+    const secs = typeof evt.secs === 'number' ? evt.secs
+      : (startedAt ? (Date.now() - startedAt) / 1000 : undefined);
+    steps[idx] = { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: evt.result || {}, role: evt.role, call_id: evt.call_id, description: evt.description || (was.kind === 'tool' ? was.description : undefined), secs };
     return { ...prev, steps };
   }
-  return { ...prev, steps: [...prev.steps, { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: evt.result || {}, role: evt.role }] };
+  return { ...prev, steps: [...prev.steps, { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: evt.result || {}, role: evt.role, description: evt.description, secs: typeof evt.secs === 'number' ? evt.secs : undefined }] };
 }
 
 // A 'message' event: a supplementary report is an extra step; the primary
@@ -42,7 +47,7 @@ function appendStepFor(prev: LiveTurn, evt: any): LiveTurn | null {
     // Live "it's running" row — flipped to the real result by the matching
     // 'tool' event (matched on call_id) instead of showing nothing while a
     // slow bash/test/build runs.
-    return { ...prev, steps: [...prev.steps, { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: {}, role: evt.role, pending: true, call_id: evt.call_id }] };
+    return { ...prev, steps: [...prev.steps, { kind: 'tool' as const, name: evt.name, args: evt.args || {}, result: {}, role: evt.role, pending: true, call_id: evt.call_id, description: evt.description, startedAt: Date.now() }] };
   }
   if (evt.type === 'changes') {
     return { ...prev, steps: [...prev.steps, { kind: 'changes' as const, files: evt.files || [], summary: evt.summary || { files: (evt.files || []).length, additions: 0, deletions: 0 } }] };

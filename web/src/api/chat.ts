@@ -82,6 +82,8 @@ export interface ChatMsg {
   /** Seconds the turn took, saved with the assistant message. */
   duration_s?: number | null;
   elapsedSec?: number;
+  /** The mode the turn ran in. */
+  mode?: 'simple' | 'plan' | 'team';
 }
 
 export interface ChatTraceAction {

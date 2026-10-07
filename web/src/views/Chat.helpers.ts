@@ -99,7 +99,7 @@ export function toAgentStep(raw: any): AgentStep | null {
     return { kind: 'thought', text: raw.text || '', role: raw.role };
   }
   if (raw.type === 'tool' || raw.kind === 'tool') {
-    return { kind: 'tool', name: raw.name || '', args: raw.args || {}, result: raw.result || {}, role: raw.role };
+    return { kind: 'tool', name: raw.name || '', args: raw.args || {}, result: raw.result || {}, role: raw.role, description: typeof raw.description === 'string' ? raw.description : undefined, secs: typeof raw.secs === 'number' ? raw.secs : undefined };
   }
   if (raw.type === 'message' || raw.kind === 'message') {
     return { kind: 'message', text: raw.text || '', role: raw.role, to: raw.to };

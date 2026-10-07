@@ -21,6 +21,7 @@ import { VoiceButton } from './Chat.VoiceButton';
 import { applySpokenCorrection, planSpokenInsert, type SpokenAnchor } from '../voicePhrase';
 import { reduceTurn } from './Chat.reduce';
 import { followAfterScroll } from '../chatFollow';
+import { planFacts, stages, stopReason, usageLine } from '../turnInfo';
 import { clickable, backdrop } from '../a11y';
 
 // Module-level builder-launch guard: epoch-ms of the last ?builder= launch.
@@ -2286,6 +2287,10 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                           stopped={msg === lastAssistantMsg && lastTurnStopped}
                           onRerunFresh={msg === lastAssistantMsg && !busy && lastTurnStopped
                                           ? rerunFresh : undefined}
+                          mode={msg.mode}
+                          stopNote={stopReason(msg.steps)}
+                          usage={usageLine(msg.steps)}
+                          stageNames={stages(msg.steps)}
                         />
                         {/* FE1: awaiting affordance survives loadSession — shown
                             on the last assistant turn when it ended awaiting. */}
@@ -2338,6 +2343,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                       status={liveTurn.status}
                       /* subtasks render in the pinned bottom dock, not inline */
                       captured={liveTurn.captured}
+                      stageNames={stages(liveTurn.steps as any[])}
                     />
                     {liveTurn.awaiting && (
                       <div style={{
@@ -2700,9 +2706,15 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                               marginTop: 8, padding: '8px 10px',
                               border: '1px solid var(--accent, #6366f1)',
                               borderRadius: 6, background: 'var(--bg-2)' }}>
-                  <span className="small muted" style={{ flex: 1 }}>
-                    Plan ready. Approve and the agent carries it out.
-                  </span>
+                  {(() => {
+                    const pf = planFacts(planReady.plan || planReady.spec);
+                    return (
+                      <span className="small muted" style={{ flex: 1 }}
+                            title={pf.files.length ? `Files the plan names: ${pf.files.join(', ')}` : undefined}>
+                        Plan ready{pf.short ? ` (${pf.short})` : ''}. Approve and the agent carries it out.
+                      </span>
+                    );
+                  })()}
                   <button type="button" onClick={() => {
                             // FE3: remember the dismissal so loadSession (reload /
                             // session switch / Stop) doesn't resurrect the pill.

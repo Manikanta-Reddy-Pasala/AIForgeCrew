@@ -314,6 +314,10 @@ def _dispatch_step(st, out, n, cwd, role, _complete_fn, session_id, builder,
         if chat_interject.pending(session_id):
             return "continue"
     step = _parse(out)
+    # What the model said this call does, for the user: the step's events
+    # carry it (see run_chat_agent).
+    st.step_said = (step.get("tool"), step.get("description")) \
+        if step.get("kind") == "action" else None
     from ._turn import _steer_reply
     if step["kind"] == "final":
         # A message the user sent mid-run was asked a reply: this text is it,
@@ -408,7 +412,21 @@ def run_chat_agent(
     rec = handoff_store.Recorder(st)
     inner = _drive(st, cwd, role, complete_fn, session_id, builder, strict_finish)
     try:
+        _started: dict = {}
         for ev in inner:
+            # How long a tool ran: from its tool_start to its result.
+            if isinstance(ev, dict) and ev.get("call_id") is not None:
+                _key = (ev["call_id"], ev.get("name"))
+                if ev.get("type") == "tool_start":
+                    _started[_key] = time.monotonic()
+                elif ev.get("type") == "tool" and _key in _started:
+                    ev.setdefault("secs", round(time.monotonic() - _started.pop(_key), 1))
+            # The model's own words for a shell call ride on its events.
+            _said = getattr(st, "step_said", None)
+            if (_said and _said[1] and isinstance(ev, dict)
+                    and ev.get("type") in ("tool", "tool_start")
+                    and ev.get("name") == _said[0] and not ev.get("description")):
+                ev["description"] = _said[1]
             action_log.observe(_alog_run, ev)
             rec.observe(ev)
             yield ev

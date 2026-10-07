@@ -5,7 +5,9 @@
  *  "Running the tests", "Reading shopkit/models.py", "Saving the changes as
  *  a commit". It is worked out here, from the call itself — no model call,
  *  nothing to wait for, and it works on chats saved before it existed. A
- *  call it has no words for gets a generic line built from the tool's name. */
+ *  call it has no words for gets a generic line built from the tool's name.
+ *  When the model wrote its own words for a shell call (the optional
+ *  `description` it fills in the same call), the row shows those instead. */
 
 type Args = Record<string, unknown>;
 
@@ -127,7 +129,8 @@ function describeGit(w: string[]): string {
     case 'show': return 'Looking at a commit';
     case 'add': return 'Staging files for the next commit';
     case 'commit': return 'Saving the changes as a commit';
-    case 'push': return 'Sending the commits to the remote';
+    case 'push': return rest.some(x => x === '-f' || x.startsWith('--force'))
+      ? 'Force-pushing to the remote' : 'Sending the commits to the remote';
     case 'pull': return 'Pulling the latest changes';
     case 'fetch': return 'Fetching the latest changes';
     case 'checkout': case 'switch': {
@@ -144,6 +147,7 @@ function describeGit(w: string[]): string {
     case 'rebase': return 'Rebasing the branch';
     case 'stash':
       if (plain[0] === 'pop' || plain[0] === 'apply') return 'Bringing back set-aside changes';
+      if (plain[0] === 'drop' || plain[0] === 'clear') return 'Throwing away set-aside changes';
       if (plain[0] === 'list' || plain[0] === 'show') return 'Looking at set-aside changes';
       return 'Setting changes aside';
     case 'clone': return 'Copying a repository';
@@ -188,6 +192,9 @@ export function describeCommand(cmd: string, depth = 0): string {
     const e = w.indexOf('-e');
     const pat = e >= 0 ? w[e + 1] : firstPlain(w);
     return pat ? `Searching for ${quote(pat)}` : 'Searching the code';
+  }
+  if ((head === 'find' && w.includes('-delete')) || (head === 'xargs' && w.slice(1).some(x => x === 'rm' || x === 'rmdir'))) {
+    return 'Deleting files';
   }
   if (head === 'find' || head === 'fd') return 'Looking for files';
   if (head === 'ls' || head === 'tree') {
@@ -238,6 +245,27 @@ export function describeCommand(cmd: string, depth = 0): string {
   if (head === 'which' || head === 'type' || head === 'command') return 'Checking a tool is installed';
   if (head === 'pwd') return 'Checking the current folder';
   return 'Running a command';
+}
+
+/** Wording that must not be replaced by a friendlier label. */
+const RISKY = /^(Deleting|Throwing away|Sending the commits|Force-pushing)/;
+
+/** The plain words for the riskiest part of a command — any piece of a chain
+ *  that deletes, discards or pushes — or '' when no part does. A chain is read
+ *  piece by piece: `ls build && rm -rf build` is a delete. */
+export function riskyPart(cmd: string): string {
+  const w = words(s(cmd).slice(0, 4000));
+  const pieces: string[][] = [[]];
+  for (const t of w) {
+    if (OPS.has(t)) pieces.push([]);
+    else pieces[pieces.length - 1].push(t);
+  }
+  for (const p of pieces) {
+    if (!p.length) continue;
+    const said = describeCommand(p.map(x => (/[\s"']/.test(x) ? JSON.stringify(x) : x)).join(' '));
+    if (RISKY.test(said)) return said;
+  }
+  return '';
 }
 
 /** The plain-words line for one tool step. */

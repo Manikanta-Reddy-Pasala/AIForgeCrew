@@ -1,10 +1,11 @@
-import { memo, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { Icon } from '../icons';
 import { AgentStep, ChangeFile } from './Chat.types';
 import { toText } from '../util';
 import { MdLite } from '../mdlite';
 import { looksLikeMarkdown } from '../looksLikeMarkdown';
-import { describeStep } from '../stepDescribe';
+import { describeStep, riskyPart } from '../stepDescribe';
+import { fmtSecs } from '../turnInfo';
 
 // ── Agent step row ─────────────────────────────────────────────────────────────
 
@@ -180,12 +181,35 @@ function pretty(v: unknown): string {
 // One tool-call step: what it is doing in plain words → result snippet, with
 // the raw name(args) under it; tinted by pending/ok/error. Click the row for
 // the full arguments and the full result.
+// The model's own words for a call, else ours. When any part of a shell
+// command deletes, discards or pushes, that is said in fixed words, so a
+// friendly label never sits on top of a destructive command.
+function headline(step: Extract<AgentStep, { kind: 'tool' }>): string {
+  const args = (step.args ?? {}) as Record<string, unknown>;
+  const cmd = typeof args.cmd === 'string' ? args.cmd : typeof args.command === 'string' ? args.command : '';
+  const risky = cmd ? riskyPart(cmd) : '';
+  if (risky) return risky;
+  return step.description?.trim() || describeStep(step.name, args);
+}
+
+// Seconds since `from`, ticking once a second while `on`.
+function useRunningSecs(on: boolean, from?: number): number | undefined {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!on || !from) return undefined;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [on, from]);
+  return on && from ? Math.max(0, (now - from) / 1000) : undefined;
+}
+
 function ToolStepRow({ step }: Readonly<{ step: Extract<AgentStep, { kind: 'tool' }> }>) {
   const [open, setOpen] = useState(false);
+  const running = useRunningSecs(!!step.pending, step.startedAt);
   const res = step.result as any;
   const ok = res?.ok !== false && !res?.error;
   let snippet: string;
-  if (step.pending) snippet = 'running…';
+  if (step.pending) snippet = running !== undefined && running >= 2 ? `running · ${fmtSecs(running)}` : 'running…';
   else if (ok) snippet = res?.output ? middle(String(res.output).replace(/\s+/g, ' '), 120) : 'ok';
   else snippet = res?.error ? middle(String(res.error), 120) : 'error';
   const toolTextColor = (step.pending || ok) ? 'var(--fg-1)' : 'var(--err)';
@@ -221,10 +245,13 @@ function ToolStepRow({ step }: Readonly<{ step: Extract<AgentStep, { kind: 'tool
         <AgentBadge role={step.role} />
         <span style={{ flex: 1, minWidth: 0, wordBreak: 'break-word' }}>
           <span style={{ fontFamily: 'var(--font-sans)', fontWeight: 600 }}>
-            {describeStep(step.name, step.args as Record<string, unknown>)}
+            {headline(step)}
           </span>
           {' → '}
           <span style={{ color: arrowColor }}>{snippet}</span>
+          {!step.pending && typeof step.secs === 'number' && step.secs >= 1 && (
+            <span style={{ color: 'var(--fg-3)' }} title="How long this step ran">{' · '}{fmtSecs(step.secs)}</span>
+          )}
           <span style={{ display: 'block', color: 'var(--fg-3)' }}>
             {step.name}{'('}{argsPreview(step.args as Record<string, unknown>)}{')'}
           </span>

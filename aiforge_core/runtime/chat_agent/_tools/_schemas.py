@@ -89,8 +89,10 @@ CATALOG: dict = {
         "Pass timeout SECONDS only to cap it on purpose. "
         "background:true, or a trailing &, returns a handle immediately and "
         "leaves the process running. Several may run at once. The outcome "
-        "is posted in this chat. Stop kills them.",
-        {"cmd": "s", "timeout": "i", "background": "b"}, ("cmd",)),
+        "is posted in this chat. Stop kills them. description: what the "
+        "command does, in 3-8 plain words for the user (e.g. \"Running the "
+        "coupon tests\") — shown next to the command.",
+        {"cmd": "s", "description": "s", "timeout": "i", "background": "b"}, ("cmd",)),
     "command_wait": (
         "Wait on a running command (id from run_command). Returns as soon as "
         "it exits, prints an error or a prompt, or looks stuck; else after "

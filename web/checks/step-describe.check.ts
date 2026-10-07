@@ -1,4 +1,4 @@
-import { describeCommand, describeStep } from '../src/stepDescribe.ts';
+import { describeCommand, describeStep, riskyPart } from '../src/stepDescribe.ts';
 
 function eq(got: string, want: string, msg: string): void {
   if (got !== want) throw new Error(`${msg}: got "${got}", want "${want}"`);
@@ -85,5 +85,16 @@ eq(describeStep('?', {}), 'Working', 'unnamed step');
 eq(describeStep('list_dir', { path: '/' }), 'Listing /', 'root folder');
 eq(describeStep('file_read', { path: 'C:\\work\\repo\\shopkit\\models.py' }), 'Reading …/shopkit/models.py', 'windows path');
 eq(describeCommand('x'.repeat(100000) + ' && pytest'), 'Running a command', 'huge command stays quick');
+
+// Any destructive piece of a chain is found, and said in fixed words.
+eq(riskyPart('ls build && rm -rf build'), 'Deleting files', 'delete after a listing');
+eq(riskyPart('git add -A && git commit -m x && git push --force'), 'Force-pushing to the remote', 'force push at the end');
+eq(riskyPart('git stash drop'), 'Throwing away set-aside changes', 'stash drop');
+eq(riskyPart('find . -name "*.pyc" -delete'), 'Deleting files', 'find -delete');
+eq(riskyPart('ls | xargs rm'), 'Deleting files', 'xargs rm');
+eq(riskyPart('bash -lc "rm -rf dist"'), 'Deleting files', 'rm inside bash -lc');
+eq(riskyPart('git reset --hard HEAD~1'), 'Throwing away changes', 'reset --hard');
+eq(riskyPart('pytest -q && git status'), '', 'nothing risky');
+eq(riskyPart('grep -rn "rm -rf" .'), '', 'quoted text is not a command');
 
 console.log('step-describe ok');

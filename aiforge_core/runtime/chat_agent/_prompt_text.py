@@ -29,8 +29,8 @@ Tool arguments:
 - list_dir     {{"path": "."}}
 - find         {{"name": "controller", "kind": "dir"}}  (fuzzy-locate files/dirs by partial name)
 - grep         {{"pattern": "TODO", "path": "src"}}      (recursive; tolerates a wrong path)
-- run_command  {{"cmd": "ls -la", "timeout": 600}}
-                (timeout is SECONDS, default 600. Don't pass a tiny value. For a
+- run_command  {{"cmd": "ls -la", "description": "Listing the project files", "timeout": 600}}
+                (description: 3-8 plain words for the user on what it does. timeout is SECONDS, default 600. Don't pass a tiny value. For a
                 TEST SUITE run ONE file or case first — e.g. `pytest tests/test_x.py::TestY`
                 — not the whole suite; a full suite often exceeds any limit. A
                 timeout returns PARTIAL output, not a failure — narrow or raise

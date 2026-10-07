@@ -8,7 +8,7 @@ export type AgentStep =
   // `streamed`: reply text the model streamed that the run then set aside
   // (a gate re-prompted it, a tool call followed) — kept, not wiped.
   | { kind: 'thought'; text: string; role?: string; streamed?: boolean }
-  | { kind: 'tool'; name: string; args: object; result: object; role?: string; pending?: boolean; call_id?: number }
+  | { kind: 'tool'; name: string; args: object; result: object; role?: string; pending?: boolean; call_id?: number; description?: string; secs?: number; startedAt?: number }
   | { kind: 'error'; text: string; role?: string }
   // A supplementary report (a team member's extra message) shown inline.
   // role 'reply': the answer to a message the user sent mid-run (`to`).

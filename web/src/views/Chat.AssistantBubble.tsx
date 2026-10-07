@@ -61,6 +61,10 @@ export function AssistantBubble({
   onRegenerate,
   stopped,
   onRerunFresh,
+  mode,
+  stopNote,
+  usage,
+  stageNames,
 }: Readonly<{
   text: string;
   /** muted tail of what the model is writing that is not the answer yet */
@@ -79,6 +83,14 @@ export function AssistantBubble({
   stopped?: boolean;
   /** discard the partial work and run the request again from nothing */
   onRerunFresh?: () => void;
+  /** the mode the turn ran in */
+  mode?: 'simple' | 'plan' | 'team';
+  /** why the turn stopped, in words (see turnInfo.stopReason) */
+  stopNote?: string;
+  /** the turn's request / token line (see turnInfo.usageLine) */
+  usage?: string;
+  /** the team agents that worked, in order (see turnInfo.stages) */
+  stageNames?: string[];
 }>) {
   // Agent steps collapse by default once the turn is done (keeps the chat
   // clean — the plan/subtasks + final answer are what matter); auto-expanded
@@ -94,13 +106,38 @@ export function AssistantBubble({
   // keeps its place in the timeline though — collected under the steps, three
   // replies piled up at the bottom while the work they interrupted ran on above.
   const timeline = steps.filter(s => s.kind !== 'changes'
-    && !(s.kind === 'thought' && !s.role && text && similarText(s.text, text)));
+    && !(s.kind === 'thought' && !s.role && text && similarText(s.text, text))
+    // The request / token line is in the footer.
+    && !(usage && s.kind === 'thought' && /^\s*⚡\s*\d+ LLM request/.test(s.text)));
+  // The agent at work now: the role of the newest step that is a stage.
+  const activeStage = streaming && stageNames && stageNames.length
+    ? [...steps].reverse().map(s => String((s as { role?: string }).role ?? '').trim().toLowerCase())
+        .find(r => !!r && stageNames.includes(r))
+    : undefined;
   const stepCount = timeline.filter(s => !isReply(s)).length;
   const shown = showSteps ? timeline : timeline.filter(isReply);
   const keys = uniqueKeys(shown);
   return (
     <div>
       {captured?.map(c => <CapturedPill key={c.id} item={c} />)}
+      {stageNames && stageNames.length > 0 && (
+        <div className="xs" title="The team agents that worked on this, in order"
+             style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center',
+                      margin: '0 2px 6px', color: 'var(--fg-3)' }}>
+          {stageNames.map((r, i) => {
+            const live = r === activeStage;
+            return (
+              <span key={r} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                {i > 0 && <span aria-hidden>→</span>}
+                <span style={{ color: live ? 'var(--accent, #2563eb)' : 'var(--fg-2, var(--fg-1))',
+                               fontWeight: live ? 600 : 400 }}>
+                  {live ? '● ' : '✓ '}{r}{live ? ' (working)' : ''}
+                </span>
+              </span>
+            );
+          })}
+        </div>
+      )}
       {subtasks && subtasks.length > 0 && <SubtaskList items={subtasks} />}
       {stepCount > 0 && (
         <button type="button"
@@ -171,15 +208,27 @@ export function AssistantBubble({
           <div className="typing" style={{ padding: '4px 0' }}><span /><span /><span /></div>
         </div>
       )}
+      {!streaming && stopNote && (
+        <div className="xs" style={{ margin: '6px 2px 0', color: 'var(--warn)' }}>{stopNote}</div>
+      )}
       {(elapsedSec !== undefined || (!streaming && (text || onRegenerate))) && (
       <div style={{
         marginTop: 6, fontSize: 'var(--fs-xs)', color: 'var(--fg-3)',
         display: 'flex', alignItems: 'center', gap: 8,
         fontVariantNumeric: 'tabular-nums',
       }}>
+        {!streaming && (mode === 'team' || mode === 'plan') && (
+          <span className="muted xs" title="The mode this turn ran in"
+                style={{ border: '1px solid var(--border-1)', borderRadius: 4, padding: '0 5px' }}>
+            {mode === 'team' ? 'Team' : 'Plan'}
+          </span>
+        )}
         {elapsedSec !== undefined && (streaming
           ? <span>⏱ {fmtElapsed(elapsedSec)}</span>
           : <span className="muted xs">· {fmtElapsed(elapsedSec)}</span>)}
+        {!streaming && usage && (
+          <span className="muted xs" title="What this turn asked of the model">· {usage}</span>
+        )}
         {/* M2: copy the assistant's answer */}
         {!streaming && text && (
           <button type="button" className="ghost xs" title="Copy the full answer"
