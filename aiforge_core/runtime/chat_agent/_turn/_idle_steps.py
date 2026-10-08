@@ -4,9 +4,12 @@ what counts as progress for one tool step.
 Progress is anything that moves the run: a new workspace state, a file or
 page read for the first time (by a read tool, or ``cat``/``sed -n`` on a new
 path), a read-only lookup it had not made, a task-board item marked done,
-fewer failing tests (or a suite that turned green), or a running command
-that is still producing output or finished. A step with none of these is
-idle; enough idle steps that look alike, or enough in a row, is a loop.
+fewer failing tests (or a suite that turned green), a running command that
+is still producing output or finished, or a command run again that ends
+differently (it passes now, or fails on an error it had not shown before —
+work on another machine over ssh moves like this and leaves no local
+trace). A step with none of these is idle; enough idle steps that look
+alike, or enough in a row, is a loop.
 """
 from __future__ import annotations
 
@@ -27,6 +30,7 @@ def _fields(st) -> None:
         st.np_mark = (0, 0, 0, 0, 0)
         st.np_seen = collections.OrderedDict()
         st.np_fails = None
+        st.np_outcomes = collections.OrderedDict()
 
 
 def _mark(st) -> tuple:
@@ -76,6 +80,49 @@ def _fails_moved(st, name, args, res) -> bool:
     return moved
 
 
+_OUTCOMES_KEPT = 300
+#: Per command: how often a new error, and how often failing-then-passing,
+#: counts. Enough for a build worked through error by error; not so many
+#: that a script rewritten to die on a new exception each time (one template,
+#: see no_progress.command_template) or a flapping check never reads as idle.
+_NEW_ERRORS_COUNTED = 8
+_PASSES_COUNTED = 3
+
+
+def _outcome_moved(st, name, args, res) -> bool:
+    """The same command again, ending differently: it failed before and
+    passes now, or it fails on an error this command had not shown yet (a
+    remote build that gets past one error to the next). The same error
+    again, or errors it has shown before, are not progress."""
+    if name not in _SHELL_TOOLS or not isinstance(res.get("ok"), bool):
+        return False
+    if res.get("running") or res.get("stopped") or res.get("timed_out"):
+        return False
+    template = no_progress.command_template(name, args)
+    if not template:
+        return False
+    from aiforge_core.runtime.failure_signature import signature
+    outcomes = getattr(st, "np_outcomes", None)
+    if outcomes is None:
+        outcomes = st.np_outcomes = collections.OrderedDict()
+    seen = outcomes.setdefault(template, {"failed": False, "sigs": set(), "new": 0, "passes": 0})
+    outcomes.move_to_end(template)
+    while len(outcomes) > _OUTCOMES_KEPT:
+        outcomes.popitem(last=False)
+    if res["ok"]:
+        moved, seen["failed"] = seen["failed"] and seen["passes"] < _PASSES_COUNTED, False
+        seen["passes"] += bool(moved)
+        return moved
+    sig = signature(result_text(res))
+    first = not seen["failed"] and not seen["sigs"]
+    new = bool(sig) and sig not in seen["sigs"] and seen["new"] < _NEW_ERRORS_COUNTED
+    seen["failed"] = True
+    if new:
+        seen["sigs"].add(sig)
+        seen["new"] += not first
+    return new and not first
+
+
 def _signals(st, name, args, result) -> bool:
     """Progress this step made that the loop state does not count itself."""
     res = result if isinstance(result, dict) else {}
@@ -85,6 +132,7 @@ def _signals(st, name, args, result) -> bool:
         progressed = True             # a build being waited on is moving
     if name in _SHELL_TOOLS:
         progressed = _shell_reads_new_path(st, args) or progressed
+        progressed = _outcome_moved(st, name, args, res) or progressed
     if name in _SHELL_TOOLS or name in _CHECK_INS or name == "run_tests":
         return _fails_moved(st, name, args, res) or progressed
     if name in _READONLY_TOOLS:

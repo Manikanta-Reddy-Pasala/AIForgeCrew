@@ -349,7 +349,8 @@ def test_final_with_open_planned_items_keeps_going(tmp_path):
 def test_the_reminder_is_bounded(tmp_path):
     fn, _ = _scripted([_plan("one", title="never done")] + ["FINAL: gave up"] * 8)
     evs = _run(tmp_path, fn)
-    assert [e for e in evs if e["type"] == "message"][-1]["text"] == "gave up"
+    last = [e for e in evs if e["type"] == "message"][-1]["text"]
+    assert last.startswith("gave up") and "Not done from the task list: never done" in last
     nudges = [e for e in evs if "still open" in str(e.get("text", ""))]
     assert len(nudges) == 2
 
@@ -378,7 +379,8 @@ def test_closing_an_item_gives_the_reminders_back(tmp_path):
     evs = _run(tmp_path, fn)
     nudges = [e for e in evs if "still open" in str(e.get("text", ""))]
     assert len(nudges) == 4
-    assert [e for e in evs if e["type"] == "message"][-1]["text"] == "stop here"
+    last = [e for e in evs if e["type"] == "message"][-1]["text"]
+    assert last.startswith("stop here") and "Not done from the task list: second" in last
 
 
 def test_the_final_text_is_shown_when_a_reminder_holds_it(tmp_path):

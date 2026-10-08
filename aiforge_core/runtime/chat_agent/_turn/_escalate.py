@@ -54,6 +54,8 @@ def escalate(st, why: str):
     pol = Policy.load()
     limit = pol.stuck_escalations
     wrapping = bool(limit) and n > limit
+    if wrapping:
+        st.wrapping_up = True         # "what is done, what remains" is the answer now
     _remember_failure(st, why)
     reset(st, "escalation")
     restarted = False

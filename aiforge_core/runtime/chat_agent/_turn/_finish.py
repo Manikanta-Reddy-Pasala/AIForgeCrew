@@ -147,6 +147,36 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
     return None
 
 
+#: Opens that line (so a copy of it in a later answer can be taken out).
+_OPEN_ITEMS_HEAD = "Not done from the task list:"
+
+
+def _strip_own_notes(text: str) -> str:
+    """``text`` without a copy of the harness's own closing lines (the model
+    sees them in the history and may write them again)."""
+    from ._done_check import UNFINISHED_HEAD
+    heads = "|".join(re.escape(h) for h in (_OPEN_ITEMS_HEAD, UNFINISHED_HEAD))
+    return re.sub(rf"\n*^_(?:{heads})[^\n]*_[ \t]*$", "", text or "", flags=re.M).rstrip()
+
+
+def _open_items_note(st, builder, text: str = "") -> str:
+    """The task-board items an answer leaves open, named in the answer: the
+    board gate reminds a bounded number of times, and after that the turn
+    ended with them open and nothing said."""
+    try:
+        if (builder or getattr(st, "readonly_mode", False) or getattr(st, "plan_mode", False)
+                or str(text or "").rstrip().endswith("?")):
+            return ""               # a plan presents them; a question waits on the user
+        left = open_for_final(st)
+        if not left or not (st.board_used or getattr(st, "board_touched", False)):
+            return ""
+        names = "; ".join(str(st.board[s].get("title") or s) for s in left[:6])
+        more = f" and {len(left) - 6} more" if len(left) > 6 else ""
+        return f"\n\n_{_OPEN_ITEMS_HEAD} {names}{more}._"
+    except Exception:  # noqa: BLE001 — the line never blocks an answer
+        return ""
+
+
 def _is_clean_tree(cwd) -> bool:
     """True only when ``cwd`` IS a git repo AND has nothing uncommitted.
 
@@ -354,7 +384,11 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
     # FINAL accepted on a multi-part turn: close out the tracker so
     # the dock never ends with stale pending items the model forgot
     # to flip.
-    if _asks:
+    from . import _done_check
+    _unfinished = _done_check.unfinished_note(st)
+    # (Not when the check still calls the answer unfinished: the parts it
+    # left stay open and are shown as not done.)
+    if _asks and not _unfinished:
         for _i in range(len(_asks)):
             _slug = f"part-{_i + 1}"
             if st.board.get(_slug, {}).get("status") in ("failed", "skipped"):
@@ -375,7 +409,9 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
     # (end_turn would otherwise kill what the answer calls "still running").
     from aiforge_core.runtime import cmd_jobs_promote as _promote
     _promoted = _promote.promote_turn_jobs()
-    _bg_note = _promote.answer_suffix(_promoted)
+    step["text"] = _strip_own_notes(step.get("text") or "")
+    _bg_note = (_unfinished + _open_items_note(st, builder, step["text"])
+                + _promote.answer_suffix(_promoted))
     # One factual line about what this turn leaves behind (commands still
     # running, uncommitted files, temp paths): from the cleanup inventory,
     # never from the model. Empty when nothing is left.
@@ -420,6 +456,11 @@ _WAITING_RE = re.compile(
 _BG_WAIT_NUDGES = 3
 
 
+def _job_note_holds(st) -> bool:
+    from ._done_check import job_note_holds
+    return job_note_holds(st)
+
+
 def _wait_for_own_jobs(st, step):
     """An answer that defers the work to a command of this chat that is
     still running. Returns "continue" (sent back to wait), else None."""
@@ -429,8 +470,9 @@ def _wait_for_own_jobs(st, step):
     text = str(step.get("text") or "")
     if (getattr(st, "bg_wait_nudges", 0) < _BG_WAIT_NUDGES
             and not getattr(st, "plan_mode", False) and not getattr(st, "readonly_mode", False)
-            # The running-job nudge already told it it may answer now.
-            and not getattr(st, "running_job_nudged", False)
+            # The running-job nudge already told it it may answer now (for
+            # as long as that command runs).
+            and not _job_note_holds(st)
             and _WAITING_RE.search(text)):
         try:
             from aiforge_core.runtime import cmd_jobs
@@ -510,7 +552,7 @@ def _last_sentence(text: str) -> str:
 
 
 #: One kind of send-back, at most this often in a turn.
-_SEND_BACKS_PER_TURN = 8
+_SEND_BACKS_PER_TURN = 20
 
 
 def _acted_mark(st):

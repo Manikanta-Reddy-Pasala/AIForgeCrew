@@ -196,6 +196,17 @@ def _step_prologue(st, n, _cwd, role, complete_fn, session_id, builder):
         pass
     st.step_n = n
     yield from _condense_and_report(st, role, complete_fn, session_id, st.meter)
+    if getattr(st, "ctx_stop", False) and not getattr(st, "ctx_restarted", False):
+        # Once, before stopping: start over from a fresh context holding the
+        # handoff (goal, task board, what was done, what failed).
+        st.ctx_restarted = True
+        from ._turn._escalate import restart_with_handoff
+        if restart_with_handoff(st):
+            st.ctx_stop = False
+            st.shrinks = []
+            yield {"type": "thought", "role": "system",
+                   "text": "↺ the context kept filling up — carrying on from a "
+                           "fresh one with a summary of the work so far"}
     if getattr(st, "ctx_stop", False):
         # Shrunk again and again within a few steps: the work does not fit
         # the model's context the way it is going. Stop clearly rather than
@@ -347,6 +358,14 @@ def _dispatch_step(st, out, n, cwd, role, _complete_fn, session_id, builder,
         if _sig == "continue":
             return (yield from _idle_reply_guard(st))
     if step["kind"] == "ask":
+        if not getattr(st, "plan_mode", False):
+            # A question that only asks leave to do what was asked for
+            # ("want me to fix the rest?") is not a reason to stop. Before
+            # anything records the question as asked: it may not be.
+            from ._turn import _done_check
+            _sig = yield from _done_check.gate(st, step, builder, strict_finish)
+            if _sig == "continue":
+                return (yield from _idle_reply_guard(st))
         _steer_reply.on_ask(st)
         # Plan mode gets one question. A second one is an assumption, then
         # the plan. The reads already made are kept for the answer.

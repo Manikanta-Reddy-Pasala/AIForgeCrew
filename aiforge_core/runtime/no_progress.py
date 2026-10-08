@@ -189,11 +189,11 @@ def _reason(st: dict) -> str:
 def nudge_text(reason: str = "") -> str:
     return ("[loop guard — not the user] You have taken many steps that make "
             "no progress" + (f" ({reason})" if reason else "") + ": nothing "
-            "changed in the workspace, nothing new was read, no test moved. "
-            "Stop and say, in two or three sentences, what you have tried and "
-            "why it is not converging. Then change approach — or, if the goal "
-            "looks impossible as stated (e.g. guessing a value only a hash "
-            "knows), say so plainly and ask the user.")
+            "changed in the workspace, nothing new was read, no test moved, no "
+            "command ended differently. Say, in two or three sentences, what "
+            "you have tried and why it is not converging. Then change approach "
+            "and carry on. Only if the goal is impossible as stated (e.g. "
+            "guessing a value only a hash knows), say so plainly.")
 
 
 def stop_text(reason: str = "") -> str:

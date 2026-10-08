@@ -110,7 +110,10 @@ def test_plan_mode_and_an_earlier_running_job_nudge_skip_the_wait(monkeypatch):
     monkeypatch.setattr(cmd_jobs, "running", lambda: [_Job("bg-9")])
     step = {"text": "Build bg-9 is running; I will report back once it finishes."}
     assert _drain(_finish._wait_for_own_jobs(SimpleNamespace(convo=[], plan_mode=True), step))[1] is None
+    monkeypatch.setattr(cmd_jobs, "turn_running", lambda: [_Job("bg-9")])    # the noted command still runs
     assert _drain(_finish._wait_for_own_jobs(SimpleNamespace(convo=[], running_job_nudged=True), step))[1] is None
+    monkeypatch.setattr(cmd_jobs, "turn_running", lambda: [])                # it ended: the wait applies again
+    assert _drain(_finish._wait_for_own_jobs(SimpleNamespace(convo=[], running_job_nudged=True), step))[1] == "continue"
 
 
 def test_ordinary_answers_do_not_trigger_the_wait(monkeypatch):
