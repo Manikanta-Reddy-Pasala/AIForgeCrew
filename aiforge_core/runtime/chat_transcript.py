@@ -173,11 +173,17 @@ def _working_part(convo) -> list:
         skip_ack = False
         text = _text(m.get("content"))
         if m.get("role") == "user":
-            # The enhancer's restatement and a prompt-block note added at the
-            # end served that message; the user's words stay.
-            for cut in (_ENHANCED, "<<AIFORGE_TURN_CONTEXT>>"):
-                if cut in text:
-                    text = text.split(cut)[0].rstrip()
+            # The prompt-block note and the enhancer's restatement served
+            # that message; the user's words stay, and so does what was added
+            # after the note (a steer, the results a resumed turn started from).
+            try:
+                from aiforge_core.runtime.chat_agent._turn._convo import strip_turn_note
+                text = strip_turn_note(text)
+            except Exception:  # noqa: BLE001
+                text = text.split("<<AIFORGE_TURN_CONTEXT>>")[0]
+            if _ENHANCED in text:
+                text = text.split(_ENHANCED)[0]
+            text = text.rstrip()
         out.append({"role": m.get("role"), "content": text})
     # The conversation opens on the user's side (a condense tail can start on
     # an answer), and turns alternate: a dropped note must not leave two of a

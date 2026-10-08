@@ -111,6 +111,9 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
                 "them) and their result is posted to this chat when they "
                 "finish. Say plainly that they are still running."})
             return "continue"
+    _sig = yield from _not_a_harness_line(st, step)
+    if _sig:
+        return _sig
     _sig = yield from _wait_for_own_jobs(st, step)
     if _sig:
         return _sig
@@ -118,6 +121,12 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
     if _sig:
         return _sig
     _sig = yield from _do_what_you_said(st, step, builder, strict_finish)
+    if _sig:
+        return _sig
+    # The wording rules above are free and catch the plain cases; what they
+    # miss is asked of the model once: is the request done?
+    from . import _done_check
+    _sig = yield from _done_check.gate(st, step, builder, strict_finish)
     if _sig:
         return _sig
     # Task board gate: the model planned items and some are still open. A
@@ -183,7 +192,9 @@ def _last_user_message(st) -> str:
             if isinstance(m, dict) and m.get("role") == "user":
                 # _text_of takes the whole MESSAGE, not its content: it handles
                 # the multimodal list form a vision turn rewrites content into.
-                return _text_of(m)[:2000]
+                # (without the prompt-block note the harness added after them)
+                from ._convo import strip_turn_note
+                return strip_turn_note(_text_of(m)).strip()[:2000]
     except Exception:  # noqa: BLE001 — a malformed convo predicts nothing
         return ""
     return ""
@@ -469,6 +480,7 @@ _DONE_RE = re.compile(
     r"all \d+ tests|here(?:'s| is| are) (?:the|a|what|how)|the (?:cause|problem|issue) "
     r"(?:is|was)|summary|blocked|cannot|can't|need (?:you|your)|"
     r"which (?:one|option)|should I|do you want)\b|\?", re.I)
+#: How often in a row one turn is sent back to do it.
 _INTENT_NUDGES = 2
 #: The LAST sentence says it is about to act ("Let me fix it.", "I'll fix that
 #: now."): the answer explains, then stops where the work should start.
@@ -476,12 +488,17 @@ _TRAILING_INTENT_RE = re.compile(
     r"^(?:so |now |ok(?:ay)?,? )?(?:"
     r"(?:let me|i(?:'ll| will)|i(?:'m| am) going to|next,? i(?:'ll| will)?|now i(?:'ll| will)) "
     r"(?!know\b|keep\b|leave\b|wait\b|stop\b|let you\b|explain\b|describe\b|"
-    r"summari[sz]e\b|clarify\b|note\b|answer\b|use\b|be\b|recap\b|remind\b|mention\b|look forward\b)\w+"
+    r"summari[sz]e\b|clarify\b|note\b|answer\b|use\b|be\b|recap\b|remind\b|mention\b|look forward\b|"
+    r"not\b|skip\b|report\b|share\b|post\b[^.]*\bnext message|follow up\b|"
+    r"have to (?:stop|leave|skip|ask|wait)\b|need (?!to\b))\w+"
     r")\b[^!?]*?[.!]?$", re.I)
 #: "Both fixes will happen." — the sentence ends there.
 _WILL_HAPPEN_RE = re.compile(
     r"^(?:both |all |the |these |those )?(?:\w+ ){0,3}(?:fix(?:es)?|changes?|steps?|parts?) "
     r"will (?:happen|be done|follow)\s*[.!]?$", re.I)
+#: An aside in brackets: "blocked" in "Let me kill this poll (the remote
+#: command is just blocked on the sleep) and check" is not the agent blocked.
+_ASIDE_RE = re.compile(r"\([^()]*\)")
 #: ... unless it is an offer or waits on someone ("I'll push it if you want").
 _CONDITIONAL_RE = re.compile(
     r"\b(?:if|once|when|after|unless|later|tomorrow|approve|approval|confirm|you)\b", re.I)
@@ -492,7 +509,73 @@ def _last_sentence(text: str) -> str:
     return parts[-1] if parts else ""
 
 
-#: How often one turn retries after a reply that came without tools.
+#: One kind of send-back, at most this often in a turn.
+_SEND_BACKS_PER_TURN = 8
+
+
+def _acted_mark(st):
+    """Changes whenever the turn runs another action."""
+    counts = getattr(st, "action_counts", None) or {}
+    try:
+        return (sum(counts.values()), next(reversed(counts), None))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _budget_left(st, name: str, limit: int, take: bool = True) -> bool:
+    """Take one of ``limit`` send-backs counted in ``st.<name>`` (``take=False``
+    only says whether one is left). The count is
+    for send-backs in a row: once the model has run an action since the last
+    one it starts again, so two early in a long turn do not leave the same
+    slip, thirty steps later, accepted as the answer."""
+    mark = _acted_mark(st)
+    used = getattr(st, name, 0)
+    total = getattr(st, name + "_total", 0)
+    if used and mark != getattr(st, name + "_at", mark):
+        used = 0
+    # (the total bounds a model that alternates the slip with a trivial action)
+    if used >= limit or total >= _SEND_BACKS_PER_TURN:
+        return False
+    if not take:
+        return True
+    setattr(st, name, used + 1)
+    setattr(st, name + "_total", total + 1)
+    setattr(st, name + "_at", mark)
+    return True
+
+
+#: Lines the harness writes in the assistant's place after one of its notes.
+_HARNESS_LINES = ("Understood — I will apply that to your next message.",
+                  "Understood. Continuing from the note above.")
+_HARNESS_LINE_NUDGES = 2
+
+
+def _plain(text: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9 ]+", " ", str(text or "").lower()).split())
+
+
+def _not_a_harness_line(st, step):
+    """The answer is, word for word, a line the harness put in the
+    conversation after one of its own notes: the model repeated it instead
+    of answering (live: "why are you giving up" → "Understood — I will apply
+    that to your next message."). Sent back to answer the user (bounded)."""
+    said = _plain(_strip_reasoning_prefix(str(step.get("text") or "")))
+    if not said or said not in {_plain(t) for t in _HARNESS_LINES}:
+        return None
+    if getattr(st, "harness_line_nudges", 0) >= _HARNESS_LINE_NUDGES:
+        return None
+    st.harness_line_nudges = getattr(st, "harness_line_nudges", 0) + 1
+    yield {"type": "thought", "role": "system",
+           "text": "⟳ the reply only repeated a harness note line — asking again"}
+    st.convo.append({"role": "user", "content":
+        "[harness — not the user] That reply is a line from a harness note, "
+        "not an answer: the user would see it and learn nothing. Go back to "
+        "the user's last message and do what it asks now (take the next "
+        "action), or answer it in your own words."})
+    return "continue"
+
+
+#: How often in a row one turn retries after a reply that came without tools.
 _TOOLLESS_RETRIES = 3
 
 
@@ -510,9 +593,8 @@ def _not_from_a_toolless_reply(st, step, builder=None):
     # without the marker (``implicit``) is the model talking without tools.
     if (not was or not step.get("implicit") or builder or getattr(st, "plan_mode", False)
             or getattr(st, "readonly_mode", False)
-            or getattr(st, "toolless_retries", 0) >= _TOOLLESS_RETRIES):
+            or not _budget_left(st, "toolless_retries", _TOOLLESS_RETRIES)):
         return None
-    st.toolless_retries = getattr(st, "toolless_retries", 0) + 1
     yield {"type": "thought", "role": "system",
            "text": "⟳ the model's reply came without tool access (the call was "
                    "refused) — trying the step again with tools"}
@@ -532,9 +614,6 @@ def _do_what_you_said(st, step, builder=None, strict_finish=False):
     text = str(step.get("text") or "").strip()
     if (not text or len(text) > 900 or builder or strict_finish
             or getattr(st, "plan_mode", False) or getattr(st, "readonly_mode", False)
-            # The running-job nudge already said it may answer while jobs run.
-            or getattr(st, "running_job_nudged", False)
-            or getattr(st, "intent_nudges", 0) >= _INTENT_NUDGES
             or "?" in text):
         return None
     announced = _INTENT_RE.search(text) and not _DONE_RE.search(text)
@@ -544,10 +623,13 @@ def _do_what_you_said(st, step, builder=None, strict_finish=False):
     if _CONDITIONAL_RE.search(last):
         return None                  # an offer, or waiting on someone
     about_to_act = (bool(_TRAILING_INTENT_RE.match(last) or _WILL_HAPPEN_RE.match(last))
-                    and not _DONE_RE.search(last))
+                    and not _DONE_RE.search(_ASIDE_RE.sub(" ", last)))
     if not (announced or about_to_act):
         return None
-    st.intent_nudges = getattr(st, "intent_nudges", 0) + 1
+    # (Also after the running-job nudge: that one allows an ANSWER while a
+    # command runs, and "Let me kill this poll and check" is not one.)
+    if not _budget_left(st, "intent_nudges", _INTENT_NUDGES):
+        return None
     yield {"type": "thought", "text": text}
     yield {"type": "thought", "role": "system",
            "text": "▶ the answer only said what is left to do — continuing"}

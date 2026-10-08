@@ -169,12 +169,10 @@ def test_plan_mode_keeps_its_plan():
     assert _drain(_finish._do_what_you_said(st, {"text": text}))[1] is None
 
 
-def test_pipeline_builder_and_after_a_running_job_nudge_are_skipped():
+def test_pipeline_and_builder_are_skipped():
     text = "I need to rebuild it on the VM and run the full test."
     assert _drain(_finish._do_what_you_said(SimpleNamespace(convo=[]), {"text": text}, None, True))[1] is None
     assert _drain(_finish._do_what_you_said(SimpleNamespace(convo=[]), {"text": text}, "skill"))[1] is None
-    st = SimpleNamespace(convo=[], running_job_nudged=True)
-    assert _drain(_finish._do_what_you_said(st, {"text": text}))[1] is None
     assert _drain(_finish._do_what_you_said(SimpleNamespace(convo=[]), {"text": text}))[1] == "continue"
 
 
@@ -257,3 +255,74 @@ def test_polite_endings_are_not_sent_back():
     for text in ("All set. I'll be here if you need more.", "Done. Let me recap: two files changed.",
                  "The remaining steps will follow the same pattern as the first one."):
         assert _drain(_finish._do_what_you_said(SimpleNamespace(convo=[]), {"text": text}))[1] is None, text
+
+
+# ── "Let me kill this poll … and check the progress" ─────────────────────────
+
+def test_an_answer_that_is_one_let_me_sentence_is_sent_back():
+    """The answer the turn ended on in the user's 10-08 screenshot: the aside
+    says "blocked", which is not the agent reporting a blocker."""
+    text = ("Let me kill this poll (the remote command is just blocked on the `sleep`) "
+            "and check the progress with a fresh quick command.")
+    st = SimpleNamespace(convo=[])
+    assert _drain(_finish._do_what_you_said(st, {"text": text}))[1] == "continue"
+    for more in ("The first attempt cannot connect. Let me retry with the right port.",
+                 "Let me look at the log on the VM.",
+                 "I'll kill the stuck job and read its output.",
+                 "I'll have a look at the log.",
+                 "The fixture is stale. I'll have to regenerate it and rerun the suite.",
+                 "I'll need to restart the service and rerun the tests.",
+                 "Let me follow the stack trace into MessageRetryService."):
+        assert _drain(_finish._do_what_you_said(SimpleNamespace(convo=[]), {"text": more}))[1] == "continue", more
+
+
+def test_an_announcement_after_the_running_job_nudge_is_still_sent_back():
+    """The running-job nudge allows an ANSWER while a command runs; "Let me
+    kill this poll and check" is not one."""
+    text = "Let me kill this poll and check the progress with a fresh quick command."
+    st = SimpleNamespace(convo=[], running_job_nudged=True)
+    assert _drain(_finish._do_what_you_said(st, {"text": text}))[1] == "continue"
+    for ok in ("The build is still running (bg-7); the two fixes before it are committed.",
+               "bg-7 is still running; the two fixes are committed. I'll post the test totals in the next message."):
+        assert _drain(_finish._do_what_you_said(st, {"text": ok}))[1] is None, ok
+
+
+def test_a_blocker_report_that_opens_like_an_intention_is_an_answer():
+    for text in ("I will not push: I cannot authenticate to GitHub from this sandbox.",
+                 "The branch is ready locally. I'll have to leave the push: the remote is blocked by branch protection.",
+                 "I'll need the VPN turned on: the VM cannot be reached from here.",
+                 "I'll have to stop here: the sandbox has no network.",
+                 "I'll skip the deploy (it is blocked by branch protection)."):
+        assert _drain(_finish._do_what_you_said(SimpleNamespace(convo=[]), {"text": text}))[1] is None, text
+
+
+def test_the_send_back_budget_starts_again_once_the_model_acted():
+    """Two announcements early in a long turn must not leave the third one,
+    thirty steps later, accepted as the answer."""
+    text = "Let me fix the next error."
+    st = SimpleNamespace(convo=[], action_counts={})
+    assert _drain(_finish._do_what_you_said(st, {"text": text}))[1] == "continue"
+    assert _drain(_finish._do_what_you_said(st, {"text": text}))[1] == "continue"
+    assert _drain(_finish._do_what_you_said(st, {"text": text}))[1] is None      # no action in between
+    st.action_counts["bash|make"] = 1                                            # it acted
+    assert _drain(_finish._do_what_you_said(st, {"text": text}))[1] == "continue"
+    sent = 3
+    for i in range(20):                       # one trivial action per slip: still bounded
+        st.action_counts[f"read|{i}"] = 1
+        sent += _drain(_finish._do_what_you_said(st, {"text": text}))[1] == "continue"
+    assert sent == _finish._SEND_BACKS_PER_TURN
+
+
+def test_a_harness_acknowledgement_is_not_an_answer():
+    """The second answer in the 10-08 screenshot: the line the harness used to
+    put in the assistant's place, given back as the reply to the user."""
+    from aiforge_core.runtime.chat_agent._turn._convo import TURN_NOTE_ACK
+    for text in (TURN_NOTE_ACK, "Understood. Continuing from the note above.",
+                 "Understood - I will apply that to your next message"):
+        assert _drain(_finish._not_a_harness_line(SimpleNamespace(convo=[]), {"text": text}))[1] == "continue", text
+    st = SimpleNamespace(convo=[])
+    sigs = [_drain(_finish._not_a_harness_line(st, {"text": TURN_NOTE_ACK}))[1] for _ in range(4)]
+    assert sigs.count("continue") == _finish._HARNESS_LINE_NUDGES and sigs[-1] is None   # bounded
+    assert "not the user" in st.convo[-1]["content"]
+    fresh = SimpleNamespace(convo=[])
+    assert _drain(_finish._not_a_harness_line(fresh, {"text": "Understood. I renamed f to g; tests pass."}))[1] is None

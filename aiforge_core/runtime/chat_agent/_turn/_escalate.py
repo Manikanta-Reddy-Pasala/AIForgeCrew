@@ -103,7 +103,9 @@ def restart_with_handoff(st) -> bool:
             return False          # never drop the transcript without a saved copy
         h = handoff.build_chat(st)
         if not h["goal"]:
-            h["goal"] = next((C._text_of(m).strip()[:1200] for m in old[1:]
+            from ._convo import strip_turn_note
+            h["goal"] = next((strip_turn_note(C._text_of(m)).strip()[:1200]
+                              for m in old[1:]
                               if m.get("role") == "user"
                               and not C._text_of(m).strip().startswith("OBSERVATION:")
                               and not C._is_harness_note(C._text_of(m).strip())), "")

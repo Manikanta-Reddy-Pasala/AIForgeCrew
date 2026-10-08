@@ -442,13 +442,9 @@ def run_chat_agent(
     # caller's original None.
     complete_fn = st.complete_fn
     # This message's prompt blocks, kept so a condense can pin them back.
-    # (a note of its own, or one added at the end of the newest message)
-    from ._turn._convo import TURN_NOTE_OPEN
-    st.turn_note_text = ""
-    for _m in getattr(st, "convo", None) or []:
-        _c = _m.get("content") if isinstance(_m, dict) else None
-        if isinstance(_c, str) and TURN_NOTE_OPEN in _c:
-            st.turn_note_text = _c[_c.index(TURN_NOTE_OPEN):]
+    # (it sits at the end of the newest message)
+    from ._turn._convo import turn_note_of
+    st.turn_note_text = turn_note_of(getattr(st, "convo", None))
     # The handoff record rides the turn: refreshed at natural points, saved
     # with the chat when the turn ends however it ends (runtime/handoff_store).
     from aiforge_core.runtime import handoff_store

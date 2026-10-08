@@ -360,8 +360,8 @@ def _repin_turn_note(st) -> None:
     if not text:
         return
     from .._context import _note
-    from ._convo import is_turn_note
-    if any(is_turn_note(m) for m in st.convo):
+    from ._convo import has_turn_note
+    if has_turn_note(st.convo):
         return
     at = _note.note_index(st.convo)
     if not at or text in (st.convo[at].get("content") or ""):

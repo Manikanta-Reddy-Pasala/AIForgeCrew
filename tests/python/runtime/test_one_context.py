@@ -103,7 +103,8 @@ def test_prune_stage_runs_only_over_budget(monkeypatch):
 # ── stable system prompt ─────────────────────────────────────────────────────
 
 def test_stable_system_prompt_moves_message_blocks_to_a_note(tmp_path):
-    from aiforge_core.runtime.chat_agent._turn._convo import _build_convo, is_turn_note
+    from aiforge_core.runtime.chat_agent._turn._convo import (
+        TURN_NOTE_ACK, _build_convo, has_turn_note)
     (tmp_path / "a.py").write_text("def f():\n    return 1\n")
 
     def build(text, stable):
@@ -117,7 +118,9 @@ def test_stable_system_prompt_moves_message_blocks_to_a_note(tmp_path):
     a = build("1. add a test\n2. rename f to g\n3. update the docs", True)
     b = build("explain f", True)
     assert a[0]["content"] == b[0]["content"]                 # byte-identical system
-    assert any(is_turn_note(m) for m in a)                    # the checklist moved here
+    assert has_turn_note(a)                                   # the checklist moved here
+    assert [m["role"] for m in a] == ["system", "user", "assistant", "user"]
+    assert not any(m["content"] == TURN_NOTE_ACK for m in a)  # no reply the model never wrote
     assert "MULTI-PART REQUEST" not in a[0]["content"]
     assert a[-1]["content"].startswith("1. add a test")       # the user's message untouched
     old = build("1. add a test\n2. rename f to g\n3. update the docs", False)
@@ -295,6 +298,96 @@ def test_turn_note_after_a_user_turn_goes_at_the_end_and_is_cut_on_save():
     data = json.loads(open(chat_transcript._path(14)).read())
     assert not any("rules here" in m["content"] for m in data["messages"])
     assert any("my words" in m["content"] for m in data["messages"])
+
+
+def test_turn_note_is_never_a_reply_in_the_models_name():
+    """A note of its own needed a made-up assistant line after it; the model
+    gave that line back as its answer. The note rides the user's message."""
+    from aiforge_core.runtime.chat_agent._turn._convo import (
+        TURN_NOTE_ACK, TURN_NOTE_OPEN, _insert_turn_note)
+    convo = [{"role": "system", "content": "s"}, {"role": "user", "content": "first"},
+             {"role": "assistant", "content": "ok"}, {"role": "user", "content": "why are you giving up"}]
+    _insert_turn_note(convo, "RULE: use Decimal")
+    assert [m["role"] for m in convo] == ["system", "user", "assistant", "user"]
+    assert not any(m["content"] == TURN_NOTE_ACK for m in convo)
+    last = convo[-1]["content"]
+    assert last.startswith("why are you giving up") and TURN_NOTE_OPEN in last
+    assert "next message" not in last.split("RULE:")[0]       # nothing to "apply later"
+    first = [{"role": "system", "content": "s"}, {"role": "user", "content": "hello"}]
+    _insert_turn_note(first, "RULE: x")
+    assert len(first) == 2 and first[-1]["content"].startswith("hello")
+
+
+def test_turn_note_at_the_end_of_a_message_is_not_pinned_twice():
+    from aiforge_core.runtime.chat_agent._context import _note
+    from aiforge_core.runtime.chat_agent._turn import _limits
+    note = "<<AIFORGE_TURN_CONTEXT>>\nRULE: use Decimal"
+    st = SimpleNamespace(turn_note_text=note,
+                         convo=[{"role": "system", "content": "s"}, _note.build("goal"), _note.ack(),
+                                {"role": "user", "content": "my words\n\n" + note}])
+    _limits._repin_turn_note(st)
+    assert "RULE: use Decimal" not in st.convo[1]["content"]  # still in the message
+
+
+def test_a_short_message_keeps_its_note_through_a_condense():
+    """The condense lists the earlier asks in one line each; the note after a
+    short message must not ride into that line and pass for the note itself."""
+    from aiforge_core.runtime.chat_agent._context import _compaction, _note
+    from aiforge_core.runtime.chat_agent._turn import _limits
+    from aiforge_core.runtime.chat_agent._turn._convo import _insert_turn_note, turn_note_of
+    convo = [{"role": "system", "content": "s"}, {"role": "user", "content": "why are you giving up"}]
+    _insert_turn_note(convo, "RULE: use Decimal")
+    text = turn_note_of(convo)
+    asks = _compaction._middle_signals(convo[1:])[1]
+    assert asks == ["why are you giving up"]
+    folded = _note.build("goal")
+    folded["content"] += "\nEarlier asks: " + convo[1]["content"].replace("\n", " ")[:120]
+    st = SimpleNamespace(turn_note_text=text, convo=[convo[0], folded, _note.ack(),
+                                                     {"role": "user", "content": "OBSERVATION: x"}])
+    _limits._repin_turn_note(st)
+    assert "RULE: use Decimal" in st.convo[1]["content"]
+
+
+def test_the_note_ends_where_it_ends():
+    """A block the harness adds to the message after the note is not kept as
+    part of it (it would be pinned back at every condense)."""
+    from aiforge_core.runtime.chat_agent._turn._convo import _insert_turn_note, turn_note_of
+    convo = [{"role": "system", "content": "s"}, {"role": "user", "content": "go on"}]
+    _insert_turn_note(convo, "RULE: use Decimal")
+    convo[-1]["content"] += "\n\n---\n[Already read for this task]\nOBSERVATION: " + "x" * 5000
+    text = turn_note_of(convo)
+    assert "RULE: use Decimal" in text and "Already read" not in text and len(text) < 600
+
+
+def test_what_is_added_after_the_note_is_still_read_and_saved(monkeypatch, tmp_path):
+    """A steer merged into the message, or the results a resumed turn starts
+    from, land after the note: tool selection and the saved transcript keep
+    them, without the note."""
+    import json
+    from aiforge_core.runtime.chat_agent import _native_select
+    from aiforge_core.runtime.chat_agent._turn._convo import _insert_turn_note
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    asked = [{"role": "user", "content": "rename f to g"}]
+    convo = [{"role": "system", "content": "s"}, dict(asked[0])]
+    _insert_turn_note(convo, "SKILL: confluence pages")
+    convo[-1]["content"] += ("\n\n[NEW MESSAGE FROM THE USER — act on it]\ncheck the jira ticket too"
+                             "\n\n---\n[Already read for this task]\nOBSERVATION: f is in a.py")
+    seen = _native_select._convo_text(convo)
+    assert "jira" in seen and "confluence" not in seen
+    assert chat_transcript.save(21, asked, convo, answer="done")
+    saved = json.loads(open(chat_transcript._path(21)).read())["messages"][0]["content"]
+    assert saved.startswith("rename f to g") and "f is in a.py" in saved and "jira ticket" in saved
+    assert "confluence" not in saved and "AIFORGE_TURN_CONTEXT" not in saved
+
+
+def test_the_note_does_not_reach_what_reads_the_users_words():
+    from aiforge_core.runtime.chat_agent import _native_select
+    from aiforge_core.runtime.chat_agent._turn import _finish
+    from aiforge_core.runtime.chat_agent._turn._convo import _insert_turn_note
+    convo = [{"role": "system", "content": "s"}, {"role": "user", "content": "rename f to g"}]
+    _insert_turn_note(convo, "SKILL: open the jira ticket at https://example.test")
+    assert "jira" not in _native_select._convo_text(convo)
+    assert _finish._last_user_message(SimpleNamespace(convo=convo)) == "rename f to g"
 
 
 def test_playbooks_need_a_real_match():

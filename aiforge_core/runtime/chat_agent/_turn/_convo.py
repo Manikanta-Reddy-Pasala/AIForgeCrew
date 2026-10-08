@@ -291,29 +291,73 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
 
 #: Opens the note that carries one message's prompt blocks (stable mode).
 TURN_NOTE_OPEN = "<<AIFORGE_TURN_CONTEXT>>"
+#: Closes it: what the harness adds to the message after the note (the
+#: "Already read" block of a resumed turn) is not part of it.
+TURN_NOTE_CLOSE = "<<END_AIFORGE_TURN_CONTEXT>>"
+#: The reply that used to follow the note when it was a message of its own.
+#: No longer written; a conversation saved by an older build may hold it.
 TURN_NOTE_ACK = "Understood — I will apply that to your next message."
 
 
 def is_turn_note(m) -> bool:
+    """A note that is a message of its own (as older builds wrote it)."""
     return (isinstance(m, dict) and m.get("role") == "user"
             and isinstance(m.get("content"), str)
             and m["content"].startswith(TURN_NOTE_OPEN))
 
 
+_TURN_NOTE_RE = re.compile(r"\s*" + re.escape(TURN_NOTE_OPEN) + r".*?(?:"
+                           + re.escape(TURN_NOTE_CLOSE) + r"|\Z)", re.S)
+
+
+def strip_turn_note(text: str) -> str:
+    """``text`` without the note: the user's words, and whatever was added to
+    the message after the note (a steer, the "Already read" block)."""
+    return _TURN_NOTE_RE.sub("", text or "") if TURN_NOTE_OPEN in (text or "") else (text or "")
+
+
+def _texts(m) -> list:
+    c = m.get("content") if isinstance(m, dict) else None
+    if isinstance(c, str):
+        return [c]
+    if isinstance(c, list):
+        return [str(p.get("text") or "") for p in c if isinstance(p, dict)]
+    return []
+
+
+def has_turn_note(convo) -> bool:
+    """The note is still somewhere in ``convo``. The marker on a line of its
+    own: one quoted inside a one-line summary of the message is not the note."""
+    return any(TURN_NOTE_OPEN + "\n" in text for m in convo or () for text in _texts(m))
+
+
+def turn_note_of(convo) -> str:
+    """The note's text as it stands in ``convo`` ("" when there is none)."""
+    found = ""
+    for m in convo or ():
+        for text in _texts(m):
+            if TURN_NOTE_OPEN + "\n" not in text:
+                continue
+            found = text[text.index(TURN_NOTE_OPEN):]
+            end = found.find(TURN_NOTE_CLOSE)
+            if end >= 0:
+                found = found[:end + len(TURN_NOTE_CLOSE)]
+    return found
+
+
 def _insert_turn_note(convo: list, text: str) -> None:
-    """Put ``text`` right before the newest user message, as a harness note
-    plus a one-line acknowledgement (roles keep alternating). When the
-    message before it is a user turn too, the note goes at the END of the
-    newest message instead (the user's words stay first, and the saved
-    transcript cuts it off there)."""
-    body = (f"{TURN_NOTE_OPEN}\n[Context for my next message — rules, skills "
-            f"and memory picked for it by the harness, not written by me:]\n{text}")
+    """Put ``text`` at the END of the newest user message, as a harness note
+    (the user's words stay first, and the saved transcript cuts it off there).
+
+    Never as a message of its own before it: roles alternate, so that needed
+    a one-line reply in the assistant's place ("Understood — I will apply
+    that to your next message."), and the model gave that line back as its
+    answer to a short message."""
+    body = (f"{TURN_NOTE_OPEN}\n[Harness context for the message above — rules, "
+            f"skills and memory picked for it by the harness, not written by me. "
+            f"Do not reply to this block: do what the message above asks.]\n{text}"
+            f"\n{TURN_NOTE_CLOSE}")
     if not convo or convo[-1].get("role") != "user":
-        return
-    at = len(convo) - 1
-    if at >= 1 and convo[at - 1].get("role") != "user":
-        convo[at:at] = [{"role": "user", "content": body},
-                        {"role": "assistant", "content": TURN_NOTE_ACK}]
         return
     last = convo[-1]
     content = last.get("content")

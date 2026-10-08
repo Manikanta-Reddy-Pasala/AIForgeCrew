@@ -282,7 +282,11 @@ def _middle_signals(middle: list[dict]) -> tuple[list[str], list[str], list[str]
                     and not _claims_file_edits(content)):
                 finals.append(content.replace("\n", " ")[:160])
         elif role == "user" and content and not _is_harness_note(content):
-            user_asks.append(content.replace("\n", " ")[:120])
+            # (the user's words, without the prompt-block note after them)
+            from .._turn._convo import strip_turn_note
+            ask = strip_turn_note(content).strip()
+            if ask:
+                user_asks.append(ask.replace("\n", " ")[:120])
     return tools, user_asks, finals
 
 
@@ -424,6 +428,8 @@ def _pin_goal(sys_text: str, convo: list[dict], pin: "str | None" = None) -> str
                  and not _text_of(m).strip().startswith("OBSERVATION:")
                  and not _text_of(m).strip().startswith("[action log")), "")
     goal = goal.split("\n\n---\n[Interpreted request")[0].strip() or goal
+    from .._turn._convo import strip_turn_note
+    goal = strip_turn_note(goal).strip()
     if not goal:
         return sys_text
     return (sys_text + "\n\n" + _GOAL_PIN_OPEN + "\nORIGINAL TASK (stay on this "

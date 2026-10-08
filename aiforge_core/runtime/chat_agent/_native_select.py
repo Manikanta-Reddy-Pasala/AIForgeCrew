@@ -60,7 +60,10 @@ def _convo_text(convo) -> str:
             content = "\n\n".join(
                 str(part.get("text") or "") for part in content
                 if isinstance(part, dict))
-        content = _cue_body(str(content))
+        # (the prompt-block note the harness adds after the words names
+        # skills and rules; a steer merged in after it is still the user)
+        from ._turn._convo import strip_turn_note
+        content = _cue_body(strip_turn_note(str(content)))
         if content.lstrip().startswith("You are AIForge"):
             continue
         dropping = False

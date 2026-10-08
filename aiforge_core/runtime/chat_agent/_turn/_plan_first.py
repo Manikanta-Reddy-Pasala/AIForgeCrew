@@ -13,7 +13,9 @@ the user corrects it by typing (a steer), nothing waits for a go-ahead.
 
 * The model already said it next to the call: that text is shown, no extra step.
 * It said nothing: the call is held once and the model is asked for the
-  statement, then repeats its call. A request that only asks to check or
+  statement, then repeats its call (the statement ends with the word
+  PROCEED, on a line of its own or closing the last line). A request that
+  only asks to check or
   compare, or that does not say which side should change, is to be answered,
   not acted on — the model reads that in the same note and decides.
 * Reads and commands are never held. Plan / analyze / builder and
@@ -24,12 +26,14 @@ the user corrects it by typing (a steer), nothing waits for a go-ahead.
 from __future__ import annotations
 
 import os
+import re
 
 #: A narration shorter than this is "ok" / "editing now", not a statement.
 _MIN_CHARS = 60
 
 #: The line a statement ends with when the changes are to be made now.
 PROCEED = "PROCEED"
+_CLOSES_RE = re.compile(r"[,;:.—–-]\s*[*_`]*" + PROCEED + r"$")
 
 ASK = (
     "[harness — not the user] This call was NOT run. It is the first change "
@@ -124,12 +128,18 @@ def on_text(st, step):
     lines = text.splitlines()
     while lines and not lines[-1].strip():
         lines.pop()
-    if not lines or lines[-1].strip().strip("*_`.").upper() != PROCEED:
+    last = lines[-1].strip().strip("*_`.!") if lines else ""
+    # The word alone on the last line, or closing it as a clause of its own
+    # ("… otherwise, PROCEED") — not "tell me which side and I will PROCEED".
+    if last.upper() != PROCEED and not _CLOSES_RE.search(last):
         # Its own decision, taken with the question in front of it: the
         # zero-edit check would only ask the same thing again.
         st.zero_edit_checked = True
         st.zero_edit_answer = step.get("text") or ""
         return None
+    if last.upper() != PROCEED:
+        lines[-1] = _CLOSES_RE.sub("", last).rstrip(" ,;:—–-*_`")
+        lines.append(PROCEED)
     said = "\n".join(lines[:-1]).strip()
     if said:
         yield {"type": "message", "supplementary": True, "role": "plan",
