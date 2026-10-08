@@ -263,6 +263,23 @@ def carried(session_id, messages) -> "list | None":
         return None              # the history changed since it was saved
     if not _same_words(str(data.get("mark") or ""), _mark(users[-2])):
         return None
+    # What was posted to the chat after the turn (a background command that
+    # finished, a hook note) sits in the history after the answer — merged
+    # into it — and not in the saved transcript: the agent must see it.
+    prev = messages[-2] if len(messages) >= 2 else None
+    if (isinstance(prev, dict) and prev.get("role") == "assistant"
+            and work[-1].get("role") == "assistant"):
+        said = _text(prev.get("content")).strip()
+        answer = str(work[-1].get("content") or "").strip()
+        extra = ""
+        if answer and said.startswith(answer):
+            extra = said[len(answer):]
+        elif answer and answer in said:
+            extra = said.split(answer, 1)[1]
+        if extra.strip():
+            # Only what came after the answer is added; the answer stays as it was.
+            work = [*work[:-1], {"role": "assistant",
+                                 "content": answer + "\n\n" + extra.strip()}]
     return [*work, last]
 
 

@@ -467,6 +467,19 @@ _DONE_RE = re.compile(
     r"(?:is|was)|summary|blocked|cannot|can't|need (?:you|your)|"
     r"which (?:one|option)|should I|do you want)\b|\?", re.I)
 _INTENT_NUDGES = 2
+#: The LAST sentence says it is about to act ("Let me fix it.", "I'll fix that
+#: now."): the answer explains, then stops where the work should start.
+_TRAILING_INTENT_RE = re.compile(
+    r"^(?:so |now |ok(?:ay)?,? )?(?:let me|i(?:'ll| will)|i(?:'m| am) going to|next,? i(?:'ll| will)?|"
+    r"now i(?:'ll| will)) (?:now |next |then |go |quickly )?" + _WORK + r"\b[^!?]*?[.!]?$", re.I)
+#: ... unless it is an offer or waits on someone ("I'll push it if you want").
+_CONDITIONAL_RE = re.compile(
+    r"\b(?:if|once|when|after|unless|later|tomorrow|approve|approval|confirm|you)\b", re.I)
+
+
+def _last_sentence(text: str) -> str:
+    parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", text.strip()) if p.strip()]
+    return parts[-1] if parts else ""
 
 
 def _do_what_you_said(st, step, builder=None, strict_finish=False):
@@ -480,7 +493,16 @@ def _do_what_you_said(st, step, builder=None, strict_finish=False):
             # The running-job nudge already said it may answer while jobs run.
             or getattr(st, "running_job_nudged", False)
             or getattr(st, "intent_nudges", 0) >= _INTENT_NUDGES
-            or not _INTENT_RE.search(text) or _DONE_RE.search(text)):
+            or "?" in text):
+        return None
+    announced = _INTENT_RE.search(text) and not _DONE_RE.search(text)
+    # "The build script has a bug — it copies to /tmp/x without creating it.
+    # Let me fix it." explains the cause, then ends where the fix should start.
+    last = _last_sentence(text)
+    if _CONDITIONAL_RE.search(last):
+        return None                  # an offer, or waiting on someone
+    about_to_act = bool(_TRAILING_INTENT_RE.match(last))
+    if not (announced or about_to_act):
         return None
     st.intent_nudges = getattr(st, "intent_nudges", 0) + 1
     yield {"type": "thought", "text": text}

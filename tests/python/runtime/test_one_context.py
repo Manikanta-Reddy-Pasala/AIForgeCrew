@@ -415,3 +415,30 @@ def test_carried_condense_note_drops_the_old_goal_and_old_rules():
     assert "SUMMARY: edited a.py" in text
     assert "ORIGINAL TASK: fix X" not in text and "old checklist" not in text
     assert "continue the task from here" not in text
+
+
+def test_posts_after_the_turn_reach_the_next_message():
+    """A background command that finished after the answer is posted to the
+    chat; the carried transcript must not hide it from the agent."""
+    asked = [{"role": "user", "content": "rebuild it"}]
+    convo = [{"role": "system", "content": "s"}, asked[0],
+             {"role": "user", "content": "OBSERVATION: started bg-1"},
+             {"role": "assistant", "content": "Started the build (bg-1)."}]
+    assert chat_transcript.save(31, asked, convo, answer="Started the build (bg-1).")
+    merged = ("Started the build (bg-1).\n\nBackground command finished (exit 1): scp — "
+              "cp: target '/tmp/buildsrc/': No such file or directory")
+    nxt = [asked[0], {"role": "assistant", "content": merged}, {"role": "user", "content": "fix it"}]
+    got = chat_transcript.carried(31, nxt)
+    assert got is not None and "No such file or directory" in got[-2]["content"]
+    assert any("OBSERVATION: started bg-1" in m["content"] for m in got)   # the work stays
+
+
+def test_only_the_posts_after_the_answer_are_added():
+    asked = [{"role": "user", "content": "go"}]
+    convo = [{"role": "system", "content": "s"}, asked[0], {"role": "user", "content": "OBSERVATION: x"}]
+    chat_transcript.save(32, asked, convo, answer="Answer text.")
+    same = [asked[0], {"role": "assistant", "content": "Answer text."}, {"role": "user", "content": "next"}]
+    assert chat_transcript.carried(32, same)[-2]["content"] == "Answer text."
+    other = [asked[0], {"role": "assistant", "content": "a different persisted text"},
+             {"role": "user", "content": "next"}]
+    assert chat_transcript.carried(32, other)[-2]["content"] == "Answer text."   # never swapped wholesale

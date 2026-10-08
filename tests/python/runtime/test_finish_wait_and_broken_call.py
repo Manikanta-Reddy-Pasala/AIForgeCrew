@@ -176,3 +176,22 @@ def test_pipeline_builder_and_after_a_running_job_nudge_are_skipped():
     st = SimpleNamespace(convo=[], running_job_nudged=True)
     assert _drain(_finish._do_what_you_said(st, {"text": text}))[1] is None
     assert _drain(_finish._do_what_you_said(SimpleNamespace(convo=[]), {"text": text}))[1] == "continue"
+
+
+def test_an_answer_that_ends_on_let_me_fix_it_is_sent_back():
+    """The answer from the user's third screenshot."""
+    text = ("The build script has a bug — it copies to `/tmp/buildsrc/` without creating "
+            "that directory first. Let me fix it.")
+    assert _drain(_finish._do_what_you_said(SimpleNamespace(convo=[]), {"text": text}))[1] == "continue"
+    for ok in ("The build script had a bug; I fixed it and the build passes. Let me know if you want more.",
+               "Fixed the path. Should I also push it?",
+               "Done: the engine is rebuilt and the E2E run passed.",
+               "The patch is ready. I'll push it if you want.",
+               "Docs drafted. I'll update the index after you review.",
+               "I'll continue once you approve."):
+        assert _drain(_finish._do_what_you_said(SimpleNamespace(convo=[]), {"text": ok}))[1] is None, ok
+
+
+def test_a_last_sentence_with_a_file_name_still_counts():
+    text = "The copy step creates no folder. Let me fix build.sh."
+    assert _drain(_finish._do_what_you_said(SimpleNamespace(convo=[]), {"text": text}))[1] == "continue"
