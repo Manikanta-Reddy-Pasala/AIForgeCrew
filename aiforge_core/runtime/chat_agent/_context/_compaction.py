@@ -248,7 +248,7 @@ def _recent_tail_count(convo: list[dict], budget: int, *,
 
 _HARNESS_NOTE = re.compile(
     r"^(OBSERVATION:|" + re.escape(_note.NOTE_OPEN) + r"|<<AIFORGE_TURN_CONTEXT>>|\[(?:[^\]]*not the user|system reminder)[^\]]*\]"
-    r"|You (?:narrated|signalled|described) )")
+    r"|You (?:narrated|signalled|described) |⟳ A background command finished)")
 
 
 def _is_harness_note(content: str) -> bool:

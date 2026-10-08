@@ -181,8 +181,6 @@ def test_an_answer_the_check_could_not_send_back_again_says_so(monkeypatch):
     _model(monkeypatch, "UNFINISHED")
     _drain(_done_check.gate(st, {"text": "Two errors left."}))
     assert _done_check.unfinished_note(st) != ""
-    _drain(_done_check.gate(st, {"text": "SAME"}))               # not a reply to judge: no stale note
-    assert _done_check.unfinished_note(st) == ""
     done = _st()
     _model(monkeypatch, "DONE")
     _drain(_done_check.gate(done, {"text": "All fixed; make passes."}))
@@ -300,3 +298,67 @@ def test_a_reply_without_the_word_is_still_the_answer():
                  "Awaiting your go-ahead to PROCEED"):
         st = SimpleNamespace(convo=[], plan_pending=True)
         assert _drain(_plan_first.on_text(st, {"text": text}))[1] is None, text
+
+
+# ── a turn that carries on from earlier ones ────────────────────────────────
+
+def test_a_turn_that_carries_on_is_read_with_what_earlier_turns_ran(monkeypatch):
+    """A wake turn that only reports "the build passed" ran nothing itself."""
+    from aiforge_core.runtime import action_log, chat_wake
+    earlier = [{"type": "tool", "name": "run_command", "args": {"cmd": "ssh vm make test"},
+                "result": {"ok": True, "code": 0, "stdout": "12 passed"}}]
+    monkeypatch.setattr(action_log, "live_steps", lambda sid: [])
+    monkeypatch.setattr(action_log, "session_steps", lambda sid: earlier)
+    note = chat_wake.message([("ssh vm cargo build", 0, "Finished release")], "build it and run the tests")
+    seen = []
+    _model(monkeypatch, "DONE", seen)
+    st = _st(goal="build it and run the tests", action_counts={},
+             convo=[{"role": "system", "content": "s"}, {"role": "user", "content": note}])
+    _drain(_done_check.gate(st, {"text": "The build passed; the request is complete."}))
+    asked = seen[0][1][1]["content"]
+    assert "In earlier turns of this chat:" in asked and "ssh vm make test" in asked
+    assert "A command left running finished before this turn: The command 'ssh vm cargo build' finished with exit 0" in asked
+    assert "In this turn: no action." in asked
+
+
+def test_a_continue_after_a_wake_turn_is_judged_against_the_real_request(monkeypatch):
+    from aiforge_core.runtime import chat_wake
+    note = chat_wake.message([("make", 1, "FAILED")], "fix the six build errors one by one")
+    seen = []
+    _model(monkeypatch, "DONE", seen)
+    st = _st(goal="continue", convo=[{"role": "system", "content": "s"},
+                                     {"role": "user", "content": note},
+                                     {"role": "assistant", "content": "Two left."},
+                                     {"role": "user", "content": "continue"}])
+    _drain(_done_check.gate(st, {"text": "All six fixed; make passes."}))
+    asked = seen[0][1][1]["content"]
+    before = asked.split("USER'S REQUEST:")[0]
+    assert "fix the six build errors one by one" in before and "background command" not in before
+
+
+def test_same_keeps_the_verdict_of_the_answer_it_restores(monkeypatch):
+    _model(monkeypatch, "UNFINISHED")
+    st = _st()
+    for _ in range(_done_check._SEND_BACKS + 1):
+        _drain(_done_check.gate(st, {"text": "Two errors left."}))
+    assert _done_check.unfinished_note(st) != ""
+    _drain(_done_check.gate(st, {"text": "SAME"}))               # the guard puts the answer back
+    assert _done_check.unfinished_note(st) != ""
+
+
+def test_the_wake_note_is_harness_text_and_resume_reads_its_request():
+    from aiforge_core.runtime import chat_resume, chat_wake
+    from aiforge_core.runtime.chat_agent._context._compaction import _is_harness_note
+    note = chat_wake.message([("make", 1, "FAILED")], "fix the six build errors")
+    assert _is_harness_note(note)
+    rows = [{"role": "user", "content": "fix the six build errors"},
+            {"role": "user", "content": note}, {"role": "user", "content": "continue"}]
+    assert chat_resume._request_behind(rows) == "fix the six build errors"
+
+
+def test_a_continue_turn_binds_the_request_it_continues():
+    from aiforge_core.api.routes._chat import _message
+    rows = [{"role": "user", "content": "fix the six build errors"},
+            {"role": "assistant", "content": "Two left."}, {"role": "user", "content": "continue"}]
+    assert _message._wake_request("continue", rows) == "fix the six build errors"
+    assert _message._wake_request("now add a README", rows) == "now add a README"

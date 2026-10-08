@@ -191,7 +191,7 @@ def _message_turn_locked(session_id: int, body: _SessionMsgBody,
         import os as _os
         _review = bool(body.review_edits) or _os.environ.get(
             "AIFORGE_CHAT_REVIEW_EDITS", "0") in ("1", "true", "yes", "on")
-        chat_wake.bind_turn(session_id, _user_msg_id, body.content, {
+        chat_wake.bind_turn(session_id, _user_msg_id, _wake_request(body.content, _rows), {
             "review_edits": _review, "context": body.context,
             "quick": bool(body.quick)}, woke_from=wake)
     else:
@@ -481,6 +481,20 @@ def chat_session_approve(session_id: int, body: _ApproveBody) -> dict:
     from aiforge_core.runtime import chat_approve
     ok = chat_approve.resolve(session_id, body.decision, body.note or "", body.id)
     return {"resolved": ok, "decision": body.decision, "session_id": session_id}
+
+
+def _wake_request(content: str, rows: list) -> str:
+    """The request a command left running by this turn belongs to: the
+    message, or — for a bare "continue" / "yes go on" — the request it
+    continues (a later wake note quoting "continue" would say nothing)."""
+    try:
+        from aiforge_core.runtime import chat_resume
+        from aiforge_core.runtime.chat_agent._turn import _goahead
+        if chat_resume._CONTINUE_RE.match(chat_resume._txt(content)) or _goahead.is_go_ahead(content):
+            return chat_resume._request_behind(rows[:-1]) or content
+    except Exception:  # noqa: BLE001
+        pass
+    return content
 
 
 def _start_wake_turn(session_id: int, text: str, ctx: dict) -> None:

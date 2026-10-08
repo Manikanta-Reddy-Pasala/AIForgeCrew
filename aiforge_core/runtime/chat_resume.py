@@ -406,6 +406,10 @@ def _request_behind(rows: list) -> str:
             raw = r.get("content")
             raw = raw if isinstance(raw, str) else _txt(raw)
             if raw.strip() and not _CONTINUE_RE.match(_txt(raw)):
+                # A turn the harness started (runtime/chat_wake) quotes the
+                # request it carries on with: that, not the note around it.
+                if raw.startswith("⟳ A background command finished") and quoted_request(raw):
+                    return quoted_request(raw)
                 return raw.split("\n\n---\n[RESUME]")[0].strip()
     return ""
 

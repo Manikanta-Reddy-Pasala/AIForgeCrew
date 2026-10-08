@@ -1300,7 +1300,9 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
         if (activeIdRef.current !== sid || busyRef.current) return;
         if (st.running) {
           clearInterval(h);
-          loadSession(sid).then(() => attachToRun(sid));
+          loadSession(sid).then(() => {
+            if (activeIdRef.current === sid && !busyRef.current) attachToRun(sid);
+          });
           return;
         }
         if ((st.bg_running ?? 1) > 0) { goneFor = 0; return; }

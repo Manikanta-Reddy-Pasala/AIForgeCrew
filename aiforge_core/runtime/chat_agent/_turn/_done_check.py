@@ -50,8 +50,9 @@ _SEND_BACKS = 3
 
 _SYSTEM = (
     "You check whether an AI coding agent may end its turn. You are given the "
-    "user's request, what the harness measured in this turn (the latest "
-    "actions with their outcome: ✓ worked, ✗ failed, … still running), and "
+    "user's request, what the harness measured (the latest actions of this "
+    "turn, and of earlier turns when this turn carries on from them, with "
+    "their outcome: ✓ worked, ✗ failed, … still running), and "
     "the reply the agent wants to end the turn on. Answer with ONE word:\n"
     "DONE — the reply reports the finished result and the measured actions "
     "bear it out, or it fully answers a question that asked for no work.\n"
@@ -150,6 +151,19 @@ def _measured(st) -> str:
         from aiforge_core.runtime import action_log
         steps = action_log.live_steps(st.session_id)
         items = action_log.entries(steps)
+        # A turn that carries on (a "continue", a turn the harness started
+        # when a command finished) stands on what earlier turns ran: without
+        # it, "the build passed, all done" would read as nothing checked.
+        if len(items) < _ACTIONS_SHOWN:
+            everything = action_log.session_steps(st.session_id)
+            before = action_log.entries(everything[:max(0, len(everything) - len(steps))])
+            shown = before[-(_ACTIONS_SHOWN - len(items)):]
+            if shown:
+                lines.append("In earlier turns of this chat:")
+                lines += [action_log.text_of(e) for e in shown]
+        lines += _finished_before(st)
+        if items:
+            lines.append("In this turn:")
         hidden = max(0, len(items) - _ACTIONS_SHOWN)
         if hidden:
             failed = sum(1 for e in items[:hidden] if e.get("ok") is False and not e.get("fixed"))
@@ -160,10 +174,11 @@ def _measured(st) -> str:
             lines.append(f"FAILED AFTER THE LAST FILE CHANGE, NOT PASSED SINCE: {cmd} — {head}")
     except Exception:  # noqa: BLE001 — the facts never block the check
         pass
-    if not lines:
+    if "In this turn:" not in lines:
         counts = getattr(st, "action_counts", None) or {}
         names = list(dict.fromkeys(str(k).split("|", 1)[0] for k, v in counts.items() if v))
-        lines.append("tools run: " + (", ".join(names[-12:]) or "(none)"))
+        lines.append("In this turn: " + ("tools run: " + ", ".join(names[-12:]) if names
+                                         else "no action."))
     try:
         from ._tasks import open_items
         board = getattr(st, "board", None) or {}
@@ -173,6 +188,24 @@ def _measured(st) -> str:
     except Exception:  # noqa: BLE001
         pass
     return "\n".join(lines)[:4000]
+
+
+def _finished_before(st) -> list:
+    """For a turn the harness started when a command finished: that command
+    and how it ended, from the note the turn started from."""
+    found: list = []
+    try:
+        from aiforge_core.runtime import chat_wake
+        for m in getattr(st, "convo", None) or []:
+            text = m.get("content") if isinstance(m, dict) else None
+            if not isinstance(text, str) or m.get("role") != "user" or chat_wake.WAKE_OPEN not in text:
+                continue
+            note = text[text.index(chat_wake.WAKE_OPEN):]
+            found = [ln.split(". The end of its output")[0].split(". It printed nothing")[0][:260]
+                     for ln in note.splitlines() if ln.startswith("The command '")]
+    except Exception:  # noqa: BLE001
+        return []
+    return ["A command left running finished before this turn: " + ln for ln in found[-4:]]
 
 
 #: A request this short says nothing by itself ("continue", "yes go on").
@@ -192,6 +225,9 @@ def _earlier_request(st, goal: str) -> str:
             if not isinstance(m, dict) or m.get("role") != "user":
                 continue
             text = strip_turn_note(_text_of(m)).strip()
+            if text.startswith("⟳"):          # a turn the harness started quotes its request
+                from aiforge_core.runtime.chat_resume import quoted_request
+                text = quoted_request(text)
             if (text and not text.startswith(("OBSERVATION", "[", "<<", "("))
                     and not _is_harness_note(text)):
                 mine.append(text)
@@ -227,7 +263,7 @@ def verdict(role: str, goal: str, reply: str, ran: str, later: str = "",
            + f"USER'S REQUEST:\n{goal[:2000]}\n\n"
            + (f"LATER MESSAGES FROM THE USER (they override the request):\n"
               f"{later[:1500]}\n\n" if later else "")
-           + f"MEASURED BY THE HARNESS IN THIS TURN:\n{ran}\n\n"
+           + f"MEASURED BY THE HARNESS:\n{ran}\n\n"
            f"REPLY THE AGENT WANTS TO END ON:\n{reply[:3000]}\n\n"
            "One word, in English, exactly as written here: DONE, NEEDS_USER "
            "or UNFINISHED.")
@@ -266,10 +302,13 @@ def gate(st, step, builder=None, strict_finish=False):
     check says the request is unfinished (the model is sent back), else None."""
     text = str(step.get("text") or "").strip()
     goal = str(getattr(st, "goal", "") or "").strip()
+    # A reply to a harness check ("SAME") is not a new answer: the guard that
+    # asked puts the earlier answer back, and its verdict stays with it.
+    if _to_the_harness(text):
+        return None
     # What an earlier verdict said was about an earlier reply.
     st.done_check_unfinished = False
-    if (not text or not goal or _to_the_harness(text)
-            or not _applies(st, builder, strict_finish)):
+    if not text or not goal or not _applies(st, builder, strict_finish):
         return None
     from ._finish import _budget_left
     st.done_check_calls = getattr(st, "done_check_calls", 0) + 1
