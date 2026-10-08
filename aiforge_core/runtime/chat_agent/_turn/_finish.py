@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import os
+import re
 import subprocess
 import threading
 import time
@@ -110,6 +111,12 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
                 "them) and their result is posted to this chat when they "
                 "finish. Say plainly that they are still running."})
             return "continue"
+    _sig = yield from _wait_for_own_jobs(st, step)
+    if _sig:
+        return _sig
+    _sig = yield from _do_what_you_said(st, step, builder, strict_finish)
+    if _sig:
+        return _sig
     # Task board gate: the model planned items and some are still open. A
     # long run must not stop to report half the work; bounded so a model
     # that cannot finish still exits.
@@ -387,6 +394,107 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
     return "return"
 
 
+#: An answer that defers the work to a command still running.
+_WAITING_RE = re.compile(
+    r"\b(?:I(?:'ll| will) )?(?:report back|let you know|keep you posted|get back to you)"
+    r"|\bI(?:'ll| will) (?:report|update you|follow up|poll|continue|proceed|run)\b[^.]{0,60}"
+    r"\b(?:once|when|after|as soon as)\b"
+    r"|\b(?:as soon as|once|when) (?:it|this|that|the \w+) (?:finishes|completes|is done|is ready)"
+    r"[^.]{0,40}\bI(?:'ll| will)\b"
+    r"|\bI(?:'m| am) (?:polling|waiting for)", re.I)
+#: How often one turn is sent back to wait instead of answering.
+_BG_WAIT_NUDGES = 3
+
+
+def _wait_for_own_jobs(st, step):
+    """An answer that defers the work to a command of this chat that is
+    still running. Returns "continue" (sent back to wait), else None."""
+    # "I will report when it finishes" while the job is still running: once
+    # the turn ends nothing wakes the agent when it finishes (its result is
+    # only posted to the chat), so the work stops there. Make it wait.
+    text = str(step.get("text") or "")
+    if (getattr(st, "bg_wait_nudges", 0) < _BG_WAIT_NUDGES
+            and not getattr(st, "plan_mode", False) and not getattr(st, "readonly_mode", False)
+            # The running-job nudge already told it it may answer now.
+            and not getattr(st, "running_job_nudged", False)
+            and _WAITING_RE.search(text)):
+        try:
+            from aiforge_core.runtime import cmd_jobs
+            turn = cmd_jobs._TURN.get()
+            # Background commands only (never a `serve` service, which is
+            # meant to keep running): one this turn started, or one the
+            # answer names.
+            live = [j for j in cmd_jobs.running()
+                    if str(j.key).startswith("bg-")
+                    and (getattr(j, "turn", None) is turn and turn is not None
+                         or re.search(rf"\b{re.escape(str(j.key))}\b", text))]
+        except Exception:  # noqa: BLE001 — never block an answer on this
+            live = []
+        if live:
+            st.bg_wait_nudges = getattr(st, "bg_wait_nudges", 0) + 1
+            ids = ", ".join(str(j.key) for j in live[:4])
+            first = str(live[0].key)
+            if step.get("text"):
+                yield {"type": "thought", "text": step["text"]}
+            yield {"type": "thought", "role": "system",
+                   "text": f"⏳ waiting for {ids} instead of ending the turn"}
+            st.convo.append({"role": "user", "content":
+                f"[harness — not the user] Your answer says you will carry on "
+                f"after {ids} finishes, but if you end the turn now nothing "
+                f"wakes you when it does — the work stops here. Wait for it "
+                f'now: command_wait {{"id": "{first}", "max_s": 600}} (call it '
+                f"again if it is still running), then continue the task. End "
+                f"the turn only when the task is done or you need the user."})
+            return "continue"
+    return None
+
+
+#: An answer that only announces work still to do ("I need to fix X, rebuild
+#: it and run the tests") ...
+_WORK = (r"(?:fix|rebuild|build|run|rerun|re-run|test|check|update|apply|implement|add|"
+         r"write|patch|edit|deploy|commit|push|verify|investigate|debug|create|change|"
+         r"refactor|start|restart|retry|try|install|set up|setup|migrate|clean|remove|"
+         r"delete|move|rename|wire|hook|finish|complete|continue|proceed|work)")
+_INTENT_RE = re.compile(
+    r"^\W{0,3}(?:I(?:'m| am) (?:working through|working on|going to|about to|now going)|"
+    r"I (?:need|still need|have) to\b|"
+    r"(?:I(?:'ll| will)|Next,? I(?:'ll| will)?|Now,? I(?:'ll| will)|Let me) (?:now |next |then |first )?"
+    + _WORK + r"\b)", re.I)
+#: ... and says nothing was finished.
+_DONE_RE = re.compile(
+    r"\b(?:done|completed|finished|fixed|passed|passing|succeeded|works now|"
+    r"all \d+ tests|here(?:'s| is| are) (?:the|a|what|how)|the (?:cause|problem|issue) "
+    r"(?:is|was)|summary|blocked|cannot|can't|need (?:you|your)|"
+    r"which (?:one|option)|should I|do you want)\b|\?", re.I)
+_INTENT_NUDGES = 2
+
+
+def _do_what_you_said(st, step, builder=None, strict_finish=False):
+    """The answer only says what is still to be done — the turn would end
+    with the work announced and not done. Sends the model back to do it
+    (bounded). Not in plan / read-only mode, and not for an answer that
+    reports a result, a cause, a blocker or a question."""
+    text = str(step.get("text") or "").strip()
+    if (not text or len(text) > 900 or builder or strict_finish
+            or getattr(st, "plan_mode", False) or getattr(st, "readonly_mode", False)
+            # The running-job nudge already said it may answer while jobs run.
+            or getattr(st, "running_job_nudged", False)
+            or getattr(st, "intent_nudges", 0) >= _INTENT_NUDGES
+            or not _INTENT_RE.search(text) or _DONE_RE.search(text)):
+        return None
+    st.intent_nudges = getattr(st, "intent_nudges", 0) + 1
+    yield {"type": "thought", "text": text}
+    yield {"type": "thought", "role": "system",
+           "text": "▶ the answer only said what is left to do — continuing"}
+    st.convo.append({"role": "user", "content":
+        "[harness — not the user] Your answer only describes work you still "
+        "have to do; ending the turn now leaves it undone. Do it now: take the "
+        "next action. End the turn when the work is done (say what you did "
+        "and what the result was), or when you are blocked and need the user "
+        "(say exactly what you need)."})
+    return "continue"
+
+
 def _handle_continue_step(st, step, builder, cwd):
     """Handle a continue step (narrated-no-action, or empty_final signalled
     completion with no answer): nudge appropriately (bounded), else stop cleanly.
@@ -442,6 +550,15 @@ def _handle_continue_step(st, step, builder, cwd):
                       f"You signalled you were finished but never called "
                       f"`{_fin}`, so nothing was created. Call `{_fin}` NOW "
                       f"with the values you have collected."})
+    elif step.get("reason") == "broken_call":
+        _tool = step.get("tool") or "the tool"
+        st.convo.append({"role": "user", "content":
+                      f"[harness — not the user] Your last reply wrote a "
+                      f"`{_tool}` call as text, and it was cut off or is not "
+                      f"valid JSON, so it did NOT run. Make the call with the "
+                      f"tool itself, not as text. For a large edit, use "
+                      f"several smaller calls (a few lines of old_text / "
+                      f"new_text each), or file_write for a whole new file."})
     elif _empty_final:
         # The work is done; what is missing is the reply. "Emit an
         # ACTION" is the wrong instruction for that.

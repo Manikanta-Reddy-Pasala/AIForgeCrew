@@ -382,6 +382,45 @@ def narrated_call(text: str) -> "tuple[str, dict] | None":
     return (name, args) if isinstance(args, dict) else None
 
 
+def _broken_narrated_call(text: str) -> str:
+    """The tool name when ``text`` opens with ``Called <tool>(`` for a real
+    tool but is no call that can be run (cut off mid-arguments, invalid
+    JSON), else "". A reply that reports a call and goes on to explain is
+    not this: it has prose after a complete call."""
+    m = _NARRATED_RE.match(text or "")
+    if not m:
+        return ""
+    name = m.group(1)
+    try:
+        from ._registry import TOOLS
+        if name not in TOOLS:
+            return ""
+    except Exception:  # noqa: BLE001
+        return ""
+    at = m.end()
+    while at < len(text) and text[at] in " \t\n":
+        at += 1
+    if at >= len(text) or text[at] != "{":
+        return ""
+    end = _balanced(text, at)
+    if end < 0:
+        return name                  # cut off: the arguments never close
+    rest = text[end:].strip().lstrip(")").strip()
+    if rest and not _NARRATED_TAIL.match(rest) and not rest.startswith(";"):
+        return ""                    # it reports a call and explains: an answer
+    raw = text[at:end]
+    try:
+        json.loads(raw)
+        return ""                    # a complete call (with prose after it)
+    except Exception:  # noqa: BLE001
+        try:
+            import ast
+            ast.literal_eval(raw)
+            return ""
+        except Exception:  # noqa: BLE001
+            return name
+
+
 def _parse(out: str) -> dict:
     """Parse a model turn into {kind, ...}. Tolerant of code fences,
     pretty-printed JSON, and stray markdown around the protocol."""
@@ -392,6 +431,12 @@ def _parse(out: str) -> dict:
         if told is not None:
             return _parse(f"ACTION: {told[0]}\nARGS_JSON: "
                           f"{json.dumps(told[1], ensure_ascii=False)}")
+        broken = _broken_narrated_call(out)
+        if broken:
+            # A call written as text that is cut off or not valid JSON: it did
+            # not run, and it is not an answer either.
+            return {"kind": "continue", "reason": "broken_call", "tool": broken,
+                    "thought": ""}
     # Prefer ACTION when present (models sometimes mention "final" in prose).
     if act:
         name = act.group(1).strip()
