@@ -447,7 +447,17 @@ def chat_side_tasks(session_id: int) -> dict:
     pump(session_id)
     return {"tasks": [_view(c) for c in _children(session_id)],
             "limit": parallel_limit(sess.get("role") or "chat"),
-            "running": _is_running(session_id)}
+            "running": _is_running(session_id),
+            "bg_running": _bg_running(session_id)}
+
+
+def _bg_running(session_id: int) -> int:
+    """How many background commands / watches of the chat are still going."""
+    try:
+        from aiforge_core.runtime import bg_work
+        return len(bg_work._running_for(session_id))
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 @router.post("/api/chat/sessions/{session_id}/side",

@@ -125,6 +125,7 @@ def _wait_command(wid, proc, spool, ev, cmd, session_id, pgid,
         from aiforge_core.runtime.cmd_idle import ProgressClock
         clock = ProgressClock(pgid, spool.size, float(opts["idle_s"]))
     tripped = None
+    wake = None
     try:
         while proc.poll() is None:
             tripped = None if ev.is_set() else _guard_tripped(
@@ -159,6 +160,17 @@ def _wait_command(wid, proc, spool, ev, cmd, session_id, pgid,
         bg._update(wid, status="stopped" if stopped else "done")
         if opts.get("announce", True):
             bg._post(session_id, text)
+        # A command the turn left running (cmd_jobs_promote) and that ended by
+        # itself: the agent is started again to carry on.
+        if opts.get("wake") and not stopped:
+            tail = ""
+            if spool is not None:
+                try:
+                    _out, err = spool.read()
+                    tail = "\n".join(p for p in (_out, err) if p)[-1500:]
+                except Exception:  # noqa: BLE001
+                    pass
+            wake = (cmd, code, tail, opts["wake"])
     finally:
         bg._unbind(wid)
         if spool is not None and opts.get("close_spool", True):
@@ -166,6 +178,9 @@ def _wait_command(wid, proc, spool, ev, cmd, session_id, pgid,
                 spool.close()
             except Exception:  # noqa: BLE001
                 pass
+        if wake is not None:
+            from aiforge_core.runtime import chat_wake
+            chat_wake.job_finished(session_id, *wake)
 
 
 def _reattach_command(row: dict) -> None:

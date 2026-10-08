@@ -399,6 +399,17 @@ def any_active() -> bool:
         return any(not r.done for r in _RUNS.values())
 
 
+_START_LOCKS: dict[int, threading.Lock] = {}
+
+
+def start_lock(session_id: int) -> threading.Lock:
+    """Held from "is a run going?" to :func:`start`, so two starters of one
+    chat (a typed message and a turn the harness starts) cannot both pass the
+    check and replace each other's run."""
+    with _LOCK:
+        return _START_LOCKS.setdefault(session_id, threading.Lock())
+
+
 def start(session_id: int) -> _Run:
     """Register a fresh run for ``session_id``, replacing any prior one."""
     _touch()

@@ -1276,6 +1276,44 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy]);
 
+  // ── A command the last answer left running ────────────────────────────────
+  // When it finishes its result is posted to the chat, and the server may
+  // start a turn by itself (the agent carries on). Nobody sent anything from
+  // this page, so while the last answer says a command is still running the
+  // page looks for both: a run to attach to, and the post to show. It stops a
+  // little after the command is gone, and after an hour at most.
+  const lastText = messages.length ? String(messages[messages.length - 1].content || '') : '';
+  const leftRunning = !busy && activeId !== null
+    && lastText.includes('Still running in the background');
+  useEffect(() => {
+    if (!leftRunning) return;
+    const sid = activeIdRef.current;
+    const until = Date.now() + 60 * 60 * 1000;
+    let asking = false;
+    let goneFor = 0;                  // polls since the command was last seen
+    const h = setInterval(async () => {
+      if (Date.now() > until) { clearInterval(h); return; }
+      if (asking || sid === null || activeIdRef.current !== sid || busyRef.current) return;
+      asking = true;
+      try {
+        const st = await chatSideTasks(sid);
+        if (activeIdRef.current !== sid || busyRef.current) return;
+        if (st.running) {
+          clearInterval(h);
+          loadSession(sid).then(() => attachToRun(sid));
+          return;
+        }
+        if ((st.bg_running ?? 1) > 0) { goneFor = 0; return; }
+        goneFor += 1;
+        // Gone and no run after a few looks: show what was posted, and stop.
+        if (goneFor >= 4) { clearInterval(h); loadSession(sid); }
+      } catch { /* a failed poll: try again at the next one */ }
+      finally { asking = false; }
+    }, 5000);
+    return () => clearInterval(h);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leftRunning, activeId]);
+
   // ── Lost-signal check ─────────────────────────────────────────────────────
   // The server sends a heartbeat every 10 s even when the run is silent. If
   // NOTHING arrives for LOST_SIGNAL_S the stream itself is dead (proxy drop,

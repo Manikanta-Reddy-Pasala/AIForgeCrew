@@ -6,7 +6,8 @@ later. When the model answers anyway, the still-running jobs are PROMOTED to
 explicit background jobs instead: they outlive the turn, Stop still ends them
 (a ``bg_work`` row), and their outcome is posted to the chat when they finish
 — the same as a command started with ``background: true``. The answer gets a
-line saying so (:func:`answer_suffix`).
+line saying so (:func:`answer_suffix`). When one finishes by itself and no
+turn is running, the agent is started again to carry on (``chat_wake``).
 
 A promoted pane (tmux) command is watched here: an input prompt ("[y/N]",
 "Password:") is posted to the chat once, and a command with no output and no
@@ -57,9 +58,20 @@ def promote(job) -> bool:
         # A spooled command already has a bg_work row and watcher: it only
         # stayed quiet because the agent was watching it. Now it reports.
         opts["announce"] = True
+        opts["wake"] = _turn_ctx(job)
         return True
+    job.wake_ctx = _turn_ctx(job)
     _watch_in_background(job)
     return True
+
+
+def _turn_ctx(job):
+    """The chat turn that leaves ``job`` running (None: nobody to wake)."""
+    try:
+        from aiforge_core.runtime import chat_wake
+        return chat_wake.turn_ctx(job.session_id)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _watch_in_background(job) -> None:
@@ -102,6 +114,7 @@ def _watch(job, wid: int, ev: threading.Event) -> None:
     short = (job.cmd or "").strip().replace("\n", " ")[:80]
     clock = _idle_clock(job)
     asked = None
+    wake = None
     try:
         while job.alive():
             if ev.is_set():
@@ -120,6 +133,11 @@ def _watch(job, wid: int, ev: threading.Event) -> None:
             time.sleep(_POLL_S)
         code = getattr(job.proc, "returncode", None)
         stopped = ev.is_set() or bool(job.killed)
+        if not stopped and getattr(job, "wake_ctx", None):
+            try:
+                wake = (job.cmd, code, job._tail(), job.wake_ctx)
+            except Exception:  # noqa: BLE001
+                wake = (job.cmd, code, "", job.wake_ctx)
         bg_work._update(wid, status="stopped" if stopped else "done")
         text = (f"Background command stopped: {short}" if stopped else
                 f"Background command finished (exit {code}): {short}")
@@ -135,6 +153,10 @@ def _watch(job, wid: int, ev: threading.Event) -> None:
             cmd_jobs._forget(job)       # closes it: frees the pane, the spool
         except Exception:  # noqa: BLE001
             log.debug("forget promoted job failed", exc_info=True)
+        if wake is not None:
+            # After the pane is free: the turn this starts may need it.
+            from aiforge_core.runtime import chat_wake
+            chat_wake.job_finished(job.session_id, *wake)
 
 
 def answer_suffix(jobs: list) -> str:

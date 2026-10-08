@@ -230,7 +230,10 @@ def _persist_produce_turn(session_id, cwd, prompt, final_text, steps, awaiting,
                                        final_text=final_text or "")
     except Exception as exc:  # noqa: BLE001
         _af_log.warning("chat worktree seal failed (session %s): %s", session_id, exc)
-    if not cancelled and not team and not path["parallel"]:
+    # (A wake turn starts from a harness note with command output in it:
+    # nothing of the user's to learn from.)
+    from aiforge_core.runtime import chat_wake as _chat_wake
+    if not cancelled and not team and not path["parallel"] and not _chat_wake.is_wake(prompt):
         from functools import partial as _partial
 
         from aiforge_core.runtime import background as _bg
@@ -331,6 +334,14 @@ def _finalize_produce_turn(session_id, cwd, prompt, final_text, steps, awaiting,
     # (LLM calls and rate-limit budget) while the team was still calling tools.
     # chat_pipeline._drive_teardown finishes it, in the driver's own finally,
     # so a crash still wakes every subscriber.
+    # The turn is over: a command a later run of another kind leaves running
+    # in this chat (a scheduled agent) is not this turn's (runtime/chat_wake;
+    # what this turn left running already carries its own copy).
+    try:
+        from aiforge_core.runtime import chat_wake
+        chat_wake.unbind_turn(session_id)
+    except Exception:  # noqa: BLE001
+        pass
     if not path["driver"]:
         run.finish()
     elif path.get("handed_off"):

@@ -59,6 +59,23 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     stream every step as SSE, and persist the assistant reply + steps.
     Auto-titles a fresh session. The model is the session's role
     (model picker)."""
+    return _message_turn(session_id, body)
+
+
+def _message_turn(session_id: int, body: _SessionMsgBody,
+                  wake: dict | None = None) -> StreamingResponse:
+    """Start the turn. ``wake``: the harness starts it (``runtime/chat_wake``)
+    to carry on after a command the earlier turn left running; the text is a
+    harness note, so nothing reads it as the user's words."""
+    from aiforge_core.runtime import chat_runs
+    # One starter at a time per chat, from the check for a run in flight to
+    # the start of the new one.
+    with chat_runs.start_lock(session_id):
+        return _message_turn_locked(session_id, body, wake)
+
+
+def _message_turn_locked(session_id: int, body: _SessionMsgBody,
+                         wake: dict | None) -> StreamingResponse:
     from aiforge_core.runtime import chat_store
     try:
         from aiforge_core.llm.interactive_gate import note_interactive
@@ -84,10 +101,11 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     # explicit stop ends it; an extra detail steers it. A question, a new
     # request, per-turn options, or a run that is already ending fall through
     # to a normal turn, so no message is swallowed.
-    _cut_background_watches(session_id, body.content)
-    folded = _fold_into_scheduled_agent(session_id, body.content, body)
-    if folded is not None:
-        return folded
+    if wake is None:
+        _cut_background_watches(session_id, body.content)
+        folded = _fold_into_scheduled_agent(session_id, body.content, body)
+        if folded is not None:
+            return folded
 
     role = body.role or session.get("role") or "chat"
     if body.role and body.role != session.get("role"):
@@ -115,7 +133,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     _turn_mode = body.mode if body.mode in ("simple", "plan", "team") else "simple"
     # "Give me a plan for …" typed with the toggle on Simple is a plan turn:
     # read-only, ending in a plan to approve (see runtime/plan_request).
-    _plan_ask = _turn_mode == "simple" and (
+    _plan_ask = wake is None and _turn_mode == "simple" and (
         _asks_for_plan(body) or _answers_plan_question(session_id, body))
     if _plan_ask:
         _turn_mode = "plan"
@@ -162,7 +180,22 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
     # the SHARED ~/.aiforge/work/<kind>/<key>/ folder — so that ticket's images,
     # pages and scratch persist across every session that touches it. A session
     # already pinned to a context or to a real repo the user chose is left as-is.
-    cwd = _rehome_context_workspace(cwd, prompt, session_id)
+    if wake is None:
+        cwd = _rehome_context_workspace(cwd, prompt, session_id)
+    # A command this turn leaves running wakes the agent when it finishes —
+    # for an ordinary turn only (runtime/chat_wake).
+    from aiforge_core.runtime import chat_wake
+    # (Not a side task: its answer is already posted to the parent chat.)
+    if (not team and agent_mode == "act" and not body.builder
+            and not session.get("parent_id")):
+        import os as _os
+        _review = bool(body.review_edits) or _os.environ.get(
+            "AIFORGE_CHAT_REVIEW_EDITS", "0") in ("1", "true", "yes", "on")
+        chat_wake.bind_turn(session_id, _user_msg_id, body.content, {
+            "review_edits": _review, "context": body.context,
+            "quick": bool(body.quick)}, woke_from=wake)
+    else:
+        chat_wake.unbind_turn(session_id)
     # A Team turn runs the team: the mode is the user's pick for this message
     # and no classifier downgrades it to the single agent.
     _auto_downgraded = False
@@ -214,6 +247,7 @@ def chat_session_message(session_id: int, body: _SessionMsgBody) -> StreamingRes
         _cmd_expanded=_cmd_expanded, prompt=prompt, _turn_t0=_turn_t0, team=team,
         _auto_downgraded=_auto_downgraded, _parallel_team=_parallel_team,
         _path=_path, agent_mode=agent_mode, _turn_mode=_turn_mode, run=run,
+        _wake=wake is not None,
         _user_msg_id=_user_msg_id,
         _first_team_turn=bool(team and _first_team_turn(_rows, _user_msg_id)))
 
@@ -447,3 +481,23 @@ def chat_session_approve(session_id: int, body: _ApproveBody) -> dict:
     from aiforge_core.runtime import chat_approve
     ok = chat_approve.resolve(session_id, body.decision, body.note or "", body.id)
     return {"resolved": ok, "decision": body.decision, "session_id": session_id}
+
+
+def _start_wake_turn(session_id: int, text: str, ctx: dict) -> None:
+    """A turn started by the harness (``runtime/chat_wake``): the same road a
+    typed message takes, with the options of the turn it continues. The
+    producer runs on its own thread, so the response is not read here; an
+    open page attaches to the run."""
+    opts = (ctx or {}).get("opts") or {}
+    # single_agent: the note is not a request to size up for the team.
+    body = _SessionMsgBody(content=text, context=opts.get("context"),
+                           single_agent=True, quick=bool(opts.get("quick")))
+    _message_turn(session_id, body, wake=ctx)
+
+
+def _register_wake() -> None:
+    from aiforge_core.runtime import chat_wake
+    chat_wake.set_starter(_start_wake_turn)
+
+
+_register_wake()

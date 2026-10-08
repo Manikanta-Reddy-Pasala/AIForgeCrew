@@ -306,7 +306,7 @@ export function chatSideMessage(id: number, content: string, mode: string,
   });
 }
 
-export function chatSideTasks(id: number): Promise<{ tasks: SideTask[]; limit: number; running: boolean }> {
+export function chatSideTasks(id: number): Promise<{ tasks: SideTask[]; limit: number; running: boolean; bg_running?: number }> {
   return j(`/chat/sessions/${id}/tasks`);
 }
 

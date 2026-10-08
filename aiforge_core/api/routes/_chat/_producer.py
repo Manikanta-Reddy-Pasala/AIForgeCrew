@@ -132,7 +132,9 @@ def _events(pc):
     # A long message carries its own task, so it is never a pure capture: its
     # classify runs in the background and never holds up routing.
     pctx = {"done": False}
-    if _capture_bg.inline_needed(pc.prompt):
+    if getattr(pc, "_wake", False):
+        pass        # a harness note with command output in it: no rule of the user's
+    elif _capture_bg.inline_needed(pc.prompt):
         yield from _rule_capture_pass(pc.prompt, pc.cwd, pc.session_id, pctx)
     else:
         _capture_bg.begin(pc)
@@ -222,6 +224,10 @@ def _single_agent_route(pc, _rd, _pp, rctx, cwd, _doc_task, _is_build_task,
     # again would restate the original ask and drop the plan.
     from aiforge_core.runtime.chat_agent._native_prompt import is_plan_execution
     if is_plan_execution(pc.prompt):
+        _skip_enhance = True
+    # A wake turn starts from a harness note that quotes the request: there
+    # is nothing of the user's to restate.
+    if getattr(pc, "_wake", False):
         _skip_enhance = True
     if rctx.get("spec") is not None:
         # The build route already enhanced this exact prompt (same history,
