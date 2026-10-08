@@ -302,7 +302,7 @@ def _complete_raw_once(role: str, messages: list[dict], *,
             _perf_record("LLM", role, _t0)
             raise exc
     _perf_record("LLM", role, _t0)
-    _record_usage(role, body, _meter_tok[0])
+    _record_usage(role, body, _meter_tok[0], messages)
     try:
         choice = body["choices"][0]
         msg = choice["message"]

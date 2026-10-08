@@ -54,7 +54,7 @@ _SPEC: dict[str, tuple[str, int]] = {
     "cave_mode": ("AIFORGE_CAVE_MODE", 1),
     # 0/1: summarise the dropped middle with the model (code-aware) on condense,
     # instead of the cheap heuristic breadcrumb. Swappable model: AIFORGE_COMPACT_ROLE.
-    "compact_llm": ("AIFORGE_COMPACT_LLM", 0),
+    "compact_llm": ("AIFORGE_COMPACT_LLM", 1),
     # Dynamic-context injection knobs — each 0/1 DISABLE flag (default 0 = the
     # block is injected every turn). Modelled as disable-flags historically,
     # when a stored 0 was discarded as "unset"; `get()` has honoured an

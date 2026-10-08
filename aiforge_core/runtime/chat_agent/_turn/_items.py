@@ -56,8 +56,11 @@ def _flag(name: str, default: str = "1") -> bool:
 
 
 def reset_enabled() -> bool:
-    """Context reset between board items (``AIFORGE_CHAT_ITEM_CONTEXT_RESET``)."""
-    return _flag("AIFORGE_CHAT_ITEM_CONTEXT_RESET")
+    """Context reset between board items (``AIFORGE_CHAT_ITEM_CONTEXT_RESET=1``).
+    Off by default: one context runs the whole task, the board stays pinned,
+    and the history shrinks only when it reaches the condense point — a wipe
+    per item made the model read the same files again for the next item."""
+    return _flag("AIFORGE_CHAT_ITEM_CONTEXT_RESET", "0")
 
 
 def verify_enabled() -> bool:

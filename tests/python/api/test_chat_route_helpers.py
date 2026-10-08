@@ -514,9 +514,12 @@ def _decide(pp, **kw):
     args = {"agent_mode": "chat", "team": False, "parallel_team": False,
             "cwd": "/repo", "history": [], "prompt": "build it"}
     args.update(kw)
+    # These cases are about escalation, which only a chat in Split mode does
+    # (one context, the default, never splits a request).
     return C._decide_chat_route(pp["ns"], args.pop("prompt"), args["agent_mode"],
                                 args["team"], args["parallel_team"],
-                                args["cwd"], args["history"])
+                                args["cwd"], args["history"],
+                                context=args.get("context", "split"))
 
 
 def test_the_gathered_inputs_reach_the_pure_router(pp, decide, monkeypatch):
@@ -796,5 +799,6 @@ def test_a_quick_turn_is_never_escalated_into_the_build_pipeline(pp, decide, mon
     monkeypatch.delenv("AIFORGE_AUTO_ESCALATE", raising=False)
     C._decide_chat_route(pp["ns"], "explain", "simple", False, False, "/repo", [], quick=True)
     assert decide["auto_escalate"] is False
-    C._decide_chat_route(pp["ns"], "build it", "simple", False, False, "/repo", [])
+    C._decide_chat_route(pp["ns"], "build it", "simple", False, False, "/repo", [],
+                         context="split")
     assert decide["auto_escalate"] is True

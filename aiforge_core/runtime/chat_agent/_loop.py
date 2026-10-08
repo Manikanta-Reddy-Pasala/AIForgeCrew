@@ -194,7 +194,21 @@ def _step_prologue(st, n, _cwd, role, complete_fn, session_id, builder):
                forget=getattr(st, "read_sigs_seen", None)).reduce(st.convo)
     except Exception:  # noqa: BLE001 — ageing never blocks a step
         pass
+    st.step_n = n
     yield from _condense_and_report(st, role, complete_fn, session_id, st.meter)
+    if getattr(st, "ctx_stop", False):
+        # Shrunk again and again within a few steps: the work does not fit
+        # the model's context the way it is going. Stop clearly rather than
+        # loop; what is on disk stays, and "continue" picks it up.
+        yield {"type": "message", "text": (
+            "(stopped: the context kept filling up — the history had to be "
+            "condensed 5 times within 10 steps, so I was losing track faster "
+            "than I made progress. What I changed is on disk. Say \"continue\" "
+            "and I pick up from the files as they are now, with a fresh "
+            "context, or split the request into smaller messages.)")}
+        yield {"type": "stopped", "reason": "context_thrash"}
+        yield {"type": "done"}
+        return None, "return"
     out = yield from _run_completion(st, role, complete_fn, session_id, st.meter)
     st.batch_unread = False        # the model has now read the last batch
     if out is _RETRY_STOP:
@@ -376,6 +390,9 @@ def run_chat_agent(
     strict_finish: bool = False,    # work-producing run (doer): an IMPLICIT
     #                                 bare-prose final is premature narration →
     #                                 nudge to act, don't quit with no work done
+    context: str | None = None,     # chat_context_mode: 'one' | 'split'
+    carry: bool = False,            # the chat route's own turn: keep the
+    #                                 working transcript across messages
 ) -> Iterator[dict]:
     """Drive the ReAct loop until the agent finishes or a stuck loop is
     detected (NOT a step count). Yields SSE-ready event dicts:
@@ -394,9 +411,27 @@ def run_chat_agent(
         _alog_run = action_log.begin_run(session_id)
     except Exception:  # noqa: BLE001 — the log never breaks a turn
         pass
+    # The chat's working transcript from its last message, when it is kept
+    # (runtime/chat_transcript): the earlier turns arrive with what they read
+    # and ran, not only with what they said.
+    # Only the chat route's own turn carries (``carry``): a pipeline Doer, a
+    # scheduled job or a subtask passes the same session id and must not
+    # overwrite the chat's transcript. ``context`` only decides whether a
+    # build is split into subtasks; a turn that runs here keeps its context.
+    from aiforge_core.llm import ctx_ratio
+    from aiforge_core.runtime import chat_transcript
+    _ratio_tok = ctx_ratio.bind(session_id)
+    _carry_on = carry and mode == "act" and not builder and not strict_finish
+    _asked = messages
+    if _carry_on:
+        messages = chat_transcript.carried(session_id, messages) or messages
+        if messages is not _asked:
+            ctx_ratio.seed(role, chat_transcript.saved_ratio(session_id))
     st = _build_loop_state(
         messages, cwd, role, max_steps, complete_fn, session_id, mode,
-        scope_globs, builder, strict_finish)
+        scope_globs, builder, strict_finish,
+        asked=_asked if messages is not _asked else None,
+        stable_system=_carry_on and chat_transcript.enabled())
     # _build_loop_state RESOLVES the completion fn (injects native tool-calling
     # when the caller passed none, as chat does) into st.complete_fn. The loop
     # below still threads a `complete_fn` local into _step_prologue/_run_completion
@@ -406,11 +441,21 @@ def run_chat_agent(
     # decomposition: the resolve moved into the helper but the local kept the
     # caller's original None.
     complete_fn = st.complete_fn
+    # This message's prompt blocks, kept so a condense can pin them back.
+    # (a note of its own, or one added at the end of the newest message)
+    from ._turn._convo import TURN_NOTE_OPEN
+    st.turn_note_text = ""
+    for _m in getattr(st, "convo", None) or []:
+        _c = _m.get("content") if isinstance(_m, dict) else None
+        if isinstance(_c, str) and TURN_NOTE_OPEN in _c:
+            st.turn_note_text = _c[_c.index(TURN_NOTE_OPEN):]
     # The handoff record rides the turn: refreshed at natural points, saved
     # with the chat when the turn ends however it ends (runtime/handoff_store).
     from aiforge_core.runtime import handoff_store
     rec = handoff_store.Recorder(st)
     inner = _drive(st, cwd, role, complete_fn, session_id, builder, strict_finish)
+    _answer = None
+    _unfinished = False
     try:
         _started: dict = {}
         for ev in inner:
@@ -429,11 +474,29 @@ def run_chat_agent(
                 ev["description"] = _said[1]
             action_log.observe(_alog_run, ev)
             rec.observe(ev)
+            if isinstance(ev, dict):
+                if ev.get("type") == "message" and not ev.get("supplementary"):
+                    _answer = ev.get("text")
+                    # A question back to the user, a stop, a give-up or a
+                    # failed model call is not an answer to carry on from;
+                    # the turn's LAST message decides.
+                    _unfinished = bool(ev.get("awaiting_input")) or str(
+                        _answer or "").lstrip().startswith(("(stopped", "⚠"))
+                elif ev.get("type") == "stopped":
+                    _unfinished = True
             yield ev
     finally:
         inner.close()
         rec.finish()
         action_log.end_run(_alog_run)
+        if _carry_on:
+            try:
+                chat_transcript.save(session_id, _asked, st.convo,
+                                     answer=None if _unfinished else _answer,
+                                     role=role)
+            except Exception:  # noqa: BLE001 — keeping it never breaks a turn
+                pass
+        ctx_ratio.unbind(_ratio_tok)
 
 
 class _NoActionLog:

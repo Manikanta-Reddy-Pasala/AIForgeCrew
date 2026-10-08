@@ -699,6 +699,9 @@ button.voice-btn.recording:hover:not(:disabled) {
 }
 .chat-topbar {
   display: flex; align-items: center; justify-content: space-between;
+  /* When the controls do not fit beside the title they go to the next line,
+     instead of squeezing the title to nothing and sliding over it. */
+  flex-wrap: wrap; gap: var(--s-2);
   padding: var(--s-3) var(--s-4);
   border-bottom: 1px solid var(--border-0);
   background: var(--bg-1);

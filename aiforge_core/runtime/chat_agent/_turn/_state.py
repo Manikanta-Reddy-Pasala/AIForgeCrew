@@ -137,7 +137,8 @@ def _writable_roots(messages, session_id, cwd=None) -> list:
 
 
 def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
-                      session_id, mode, scope_globs, builder, strict_finish):
+                      session_id, mode, scope_globs, builder, strict_finish,
+                      asked=None, stable_system=False):
     """Assemble everything the ReAct loop needs (native detection, mode/read-only
     flags, scope allowlist, budget-capped convo, cap/deadline/extension budgets,
     the request meter and every per-turn counter) into one st namespace."""
@@ -185,7 +186,10 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     # with an "[Interpreted request …]" enhancer block; key off the user's RAW
     # words (split that marker off) so recall/skills/mentions aren't diluted by
     # the boilerplate + restatement.
-    _user_roots = _writable_roots(messages, session_id, cwd)
+    # ``asked`` is the chat's own history when ``messages`` carries a saved
+    # transcript: its tool output is not the user naming a folder.
+    _user_roots = _writable_roots(messages if asked is None else asked,
+                                  session_id, cwd)
 
     _unlimited = not _capped and _turn_budget_s <= 0
     from ._approval import new_turn as _approvals_new_turn
@@ -194,7 +198,8 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         messages, cwd, role, readonly_mode=readonly_mode,
         plan_mode=plan_mode, analyze_mode=analyze_mode, builder=builder,
         strict_finish=strict_finish, session_id=session_id, native=_native_on,
-        unlimited=_unlimited)
+        unlimited=_unlimited, stable_system=stable_system,
+        carried=asked is not None)
     from .._native_prompt import is_plan_execution
     from .._pause import inject as _inject_pause
     from .._pause import take as _take_pause

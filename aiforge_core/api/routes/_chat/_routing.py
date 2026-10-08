@@ -327,9 +327,15 @@ def _classify_needed(_cr, prompt: str) -> bool:
                 and not _cr.is_small_task(prompt))
 
 
+def _context_split(context) -> bool:
+    from aiforge_core.runtime import chat_context_mode
+    return chat_context_mode.is_split(context)
+
+
 def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
                        history, quick=False, session_id=None,
-                       single_agent=False, first_team_turn=False):
+                       single_agent=False, first_team_turn=False,
+                       context=None):
     """Gather the (side-effecting) inputs to the task-type router and return its
     decision. The heavy which-path decision is a PURE function in chat_router;
     here we only probe parallel capability, greenfield-ness, follow-up-ness, the
@@ -391,7 +397,10 @@ def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
         # A QUICK turn is one doer with a step cap by request — never escalated
         # into the build pipeline because its text (e.g. a diff to explain)
         # happens to read like "create the user through the api".
+        # One context (the default) never splits a request into subtasks:
+        # subtasks start fresh and edit files they have not seen.
         auto_escalate=(not quick) and (not single_agent)
+        and _context_split(context)
         and os.environ.get("AIFORGE_AUTO_ESCALATE", "1") not in ("0", "false"))
 
 

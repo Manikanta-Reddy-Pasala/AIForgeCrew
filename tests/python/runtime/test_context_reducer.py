@@ -24,14 +24,16 @@ def _convo(body="x" * 6000, tail=12):
     return msgs
 
 
-def test_age_old_is_the_aging_function():
+def test_age_old_is_the_aging_function(monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_AGE_OBS", "1")      # per-step ageing is opt-in
     a, b = _convo(), _convo()
     assert A.age_observations(a) == 1
     assert R.AgeOld().reduce(b) is b
     assert a == b and "[aged:" in b[2]["content"]
 
 
-def test_age_old_passes_protect_and_forget_through():
+def test_age_old_passes_protect_and_forget_through(monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_AGE_OBS", "1")      # per-step ageing is opt-in
     convo = _convo()
     forget = {"file_read|{}"}
     R.AgeOld(protect_from=1, forget=forget).reduce(convo)

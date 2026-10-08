@@ -157,7 +157,7 @@ def _own_words(last_user: str) -> str:
 
 def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
                  analyze_mode, builder, strict_finish, session_id, native=False,
-                 unlimited=False):
+                 unlimited=False, stable_system=False, carried=False):
     """Build the ReAct conversation: assemble the budget-capped system prompt
     (rules, prefs, banners, catalog/codegraph gates, multi-ask checklist, and
     every dynamic context block via the shared bundle), fold history + vision
@@ -165,6 +165,7 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
     ``(convo, bundle, asks, dropped_playbooks)``."""
     last_user, cave, rules, prefs, sys_msg = _seed_prompt(
         messages, cwd, readonly_mode, native=native, plan_mode=plan_mode)
+    _core = sys_msg              # the same for every message of the chat
     # Multi-part message (simple mode has no enhancer/spec, so nothing else
     # tracks the parts): derive an ASK CHECKLIST and pin it HIGH in the
     # system prompt — the model must cover every part, not answer #1 and stop.
@@ -184,6 +185,9 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
     _lang = _language_directive(role)
     if _lang:
         sys_msg += "\n\n" + _lang
+    # Where the per-message blocks start and end around the core (stable mode).
+    _pre_len = len(sys_msg) - len(_core) - (len(_lang) + 2 if _lang else 0)
+    _core_end = len(sys_msg)
     # C2: budget the (un-condensable) system prompt. The CORE prompt + rules
     # above are ALWAYS kept; each optional block below is appended via a
     # budget-aware helper that truncates/drops it (lowest priority = appended
@@ -252,22 +256,71 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
     # user procedure (e.g. branch-then-MR) — surface that to the USER instead
     # of failing silently inside the prompt.
     _dropped_playbooks = [b for b in ("workflows", "skills") if b in _sys_dropped]
-    # Final backstop: guarantee the system prompt is under the cap (keeps the
-    # core + rules at the front; truncates the injected tail).
-    sys_msg = _cap_system_prompt(sys_msg, _sys_cap, protect=_sys_core_len)
-    sys_msg = _compress_prompt(sys_msg)   # trim whitespace bloat (caveman-style)
+    _turn_text = ""
+    if stable_system and _pre_len >= 0 and sys_msg[_pre_len:_core_end].startswith(_core):
+        # One rolling context: the system message stays byte-identical from
+        # message to message, so the model server keeps reusing the whole
+        # conversation it already processed. What this message picked (rules,
+        # skills, workflows, recall, the checklist) rides in a note next to it.
+        _turn_text = (sys_msg[:_pre_len] + sys_msg[_core_end:]).strip()
+        sys_msg = sys_msg[_pre_len:_core_end]
+        _turn_text = _turn_text[:max(0, _sys_cap - len(sys_msg))]
+        sys_msg = _compress_prompt(sys_msg)
+        _turn_text = _compress_prompt(_turn_text) if _turn_text else ""
+    else:
+        # Final backstop: guarantee the system prompt is under the cap (keeps
+        # the core + rules at the front; truncates the injected tail).
+        sys_msg = _cap_system_prompt(sys_msg, _sys_cap, protect=_sys_core_len)
+        sys_msg = _compress_prompt(sys_msg)   # trim whitespace bloat (caveman-style)
     convo = _history_to_convo(sys_msg, messages, _img_blocks)
+    if _turn_text:
+        _insert_turn_note(convo, _turn_text)
     # The session ACTION LOG (what was run, what worked, what failed, what is
     # left to clean up): a harness note right before the newest message. Not
     # in the system message and not in the earlier turns, so both keep their
     # bytes and a prefix-keyed prompt cache survives from turn to turn.
-    if session_id is not None:
+    # A carried transcript already holds what was run: no second account of it.
+    if session_id is not None and not carried:
         try:
             from aiforge_core.runtime import action_log
             action_log.insert_note(convo, session_id, cwd)
         except Exception:  # noqa: BLE001 — the log never breaks a turn
             pass
     return convo, _bundle, _asks, _dropped_playbooks
+
+
+#: Opens the note that carries one message's prompt blocks (stable mode).
+TURN_NOTE_OPEN = "<<AIFORGE_TURN_CONTEXT>>"
+TURN_NOTE_ACK = "Understood — I will apply that to your next message."
+
+
+def is_turn_note(m) -> bool:
+    return (isinstance(m, dict) and m.get("role") == "user"
+            and isinstance(m.get("content"), str)
+            and m["content"].startswith(TURN_NOTE_OPEN))
+
+
+def _insert_turn_note(convo: list, text: str) -> None:
+    """Put ``text`` right before the newest user message, as a harness note
+    plus a one-line acknowledgement (roles keep alternating). When the
+    message before it is a user turn too, the note goes at the END of the
+    newest message instead (the user's words stay first, and the saved
+    transcript cuts it off there)."""
+    body = (f"{TURN_NOTE_OPEN}\n[Context for my next message — rules, skills "
+            f"and memory picked for it by the harness, not written by me:]\n{text}")
+    if not convo or convo[-1].get("role") != "user":
+        return
+    at = len(convo) - 1
+    if at >= 1 and convo[at - 1].get("role") != "user":
+        convo[at:at] = [{"role": "user", "content": body},
+                        {"role": "assistant", "content": TURN_NOTE_ACK}]
+        return
+    last = convo[-1]
+    content = last.get("content")
+    if isinstance(content, str):
+        last["content"] = content + "\n\n" + body
+    elif isinstance(content, list):
+        last["content"] = [*content, {"type": "text", "text": body}]
 
 
 _GOAL_LOOP_RE = re.compile(

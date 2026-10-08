@@ -20,6 +20,13 @@ from aiforge_core.runtime.chat_agent._turn import _items, _tasks
 from aiforge_core.runtime.parallel_subtasks import _items as sub_items
 
 
+@pytest.fixture(autouse=True)
+def _item_reset_on(monkeypatch):
+    """The per-item context reset is opt-in now (one context runs the whole
+    task); these cases are about the reset, so they switch it on."""
+    monkeypatch.setenv("AIFORGE_CHAT_ITEM_CONTEXT_RESET", "1")
+
+
 def _scripted(outputs):
     seq = list(outputs)
     calls = []

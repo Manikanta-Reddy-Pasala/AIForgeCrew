@@ -47,9 +47,50 @@ _POINTER_RE = re.compile(
     r"same text is above; not repeated\]")
 
 
+# The last full text of each file this turn sent the model, so a read of a
+# file that changed since gets only what changed (see _changed_since).
+_FILES_SENT: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
+    "aiforge_files_sent", default=None)
+
+
 def reset_seen_bodies() -> None:
     """Drop the previous turn's bodies. Call once at the start of a turn."""
     _SEEN_BODIES.set({})
+    _FILES_SENT.set({})
+
+
+def _files_sent() -> dict[str, str]:
+    sent = _FILES_SENT.get()
+    if sent is None:
+        sent = {}
+        _FILES_SENT.set(sent)
+    return sent
+
+
+#: A change bigger than this share of the file is sent whole.
+_DIFF_MAX_SHARE = 0.5
+_DIFF_MIN_FILE = 1500
+
+
+def _changed_since(messages, path: str, content: str) -> str | None:
+    """The file read again after it changed: when its earlier full text is
+    still in the conversation (not pruned, not condensed away), a unified diff
+    from that text, else None (send it whole). Small files and big changes are
+    sent whole too: a diff is only worth it when most of the file is the same."""
+    import difflib
+    old = _files_sent().get(path)
+    new = content.replace("\r\n", "\n")
+    if not old or old == new or len(new) < _DIFF_MIN_FILE:
+        return None
+    if not any(old.strip() in t.replace("\r\n", "\n") for t in _texts(messages)):
+        return None
+    diff = "\n".join(difflib.unified_diff(
+        old.splitlines(), new.splitlines(), fromfile=f"{path} (your earlier read)",
+        tofile=f"{path} (now)", lineterm="", n=2))
+    if not diff or len(diff) > len(new) * _DIFF_MAX_SHARE:
+        return None
+    return (f"[{path} changed since your earlier read above — only the changes "
+            f"are shown; every other line is as in that read]\n{diff}")
 
 
 def _bag() -> dict[str, str]:
@@ -569,6 +610,12 @@ def _dedupe_read(messages, name: str, args: dict, result: dict):
     if not isinstance(content, str) or not path:
         return result
     repl = _pointer_for_file(messages, path, content)
+    if repl is None and name == "file_read":
+        diff = _changed_since(messages, path, content)
+        _files_sent()[path] = content.replace("\r\n", "\n")
+        if diff is not None:
+            return {**result, "content": diff, "changed_only": True, "path": path}
+        return result
     if repl is None:
         return result
     key = "text" if name == "read_lines" else "content"

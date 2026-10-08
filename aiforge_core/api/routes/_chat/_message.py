@@ -5,6 +5,8 @@ import json
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from aiforge_core.api.routes._sse import sse_response
@@ -46,6 +48,7 @@ class _SessionMsgBody(BaseModel):
     builder: str | None = Field(None, description="task builder charter: job|skill|workflow|rule — runs an interactive single-agent builder that ends by calling the matching finalize tool (bypasses the enhancer/team pipeline)")
     quick: bool = Field(False, description="Quick mode: one doer, a hard step cap (AIFORGE_CHAT_QUICK_STEPS, default 6) instead of an open-ended ReAct loop. For small asks — a rename, a one-line fix, a question — where the agent's own exploration costs more than the change.")
     single_agent: bool = Field(False, description="Execute with the one chat agent. An approved plan sets this so a build-shaped plan is not auto-escalated into the team pipeline.")
+    context: Literal["one", "split"] | None = Field(None, description="How the chat holds its context: 'one' (one agent, one rolling context, kept across messages — the default) | 'split' (a multi-file build is split into subtasks, each in a fresh context). Unset: AIFORGE_CHAT_CONTEXT, else 'one'.")
     resume: bool | None = Field(None, description="Resume the previous STOPPED turn instead of redoing it: prepends a brief of what already landed and what is still pending. null = decide automatically (re-sending the same words after a stopped turn resumes); true = resume even though the wording changed; false = FORCE a clean rerun and ignore the partial work.")
 
 

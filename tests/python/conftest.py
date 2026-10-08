@@ -88,6 +88,10 @@ os.environ.setdefault("AIFORGE_BACKGROUND_YIELD_S", "0")
 # paths don't attempt the network (callers fall back to the raw ranked list);
 # tests that exercise the fold set it to "1". Production leaves it unset → on.
 os.environ.setdefault("AIFORGE_UMEM_SUMMARIZE", "0")
+# The condense summary is a model call of its own (on by default since the
+# one-context change); tests that count the agent's calls must not see it.
+# A test about the summary turns it on.
+os.environ.setdefault("AIFORGE_COMPACT_LLM", "0")
 
 # Memory ISOLATION. Without this the suite reads and WRITES the operator's real
 # ~/.aiforge: local runs left 101 fixture files in ~/.aiforge/memory (t1, t2,

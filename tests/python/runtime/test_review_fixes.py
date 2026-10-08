@@ -53,6 +53,7 @@ def _pair(tool, body, args='{"path": "a.py"}'):
 
 
 def test_an_unread_batch_is_never_aged(monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_AGE_OBS", "1")         # per-step ageing is opt-in
     monkeypatch.setenv("AIFORGE_CHAT_AGE_KEEP", "2")        # the window alone would not protect it
     convo = [{"role": "system", "content": "s"}]
     for i in range(6):
@@ -62,7 +63,8 @@ def test_an_unread_batch_is_never_aged(monkeypatch):
     assert all("[aged:" not in m["content"] for m in convo[mark:] if m["role"] == "user")
 
 
-def test_an_aged_read_may_be_read_again():
+def test_an_aged_read_may_be_read_again(monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_AGE_OBS", "1")         # per-step ageing is opt-in
     convo = [{"role": "system", "content": "s"}] + _pair("file_read", "x" * 6000)
     for _ in range(6):
         convo += _pair("run_command", "ok", "{}")

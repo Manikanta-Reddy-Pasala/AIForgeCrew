@@ -170,7 +170,8 @@ def _events(pc):
                              single_agent=bool(getattr(
                                  pc.body, "single_agent", False)),
                              first_team_turn=bool(getattr(
-                                 pc, "_first_team_turn", False)))
+                                 pc, "_first_team_turn", False)),
+                             context=getattr(pc.body, "context", None))
     if _turn_was_stopped(pc.session_id):
         yield from _stopped_turn()
         return
@@ -277,7 +278,8 @@ def _single_agent_route(pc, _rd, _pp, rctx, cwd, _doc_task, _is_build_task,
     awaiting_ctx = {"awaiting": False}
     for _ev in _single_agent_events(_enriched_history, cwd, pc.role,
                                     pc.session_id, _single_mode, pc.body.quick,
-                                    awaiting_ctx):
+                                    awaiting_ctx,
+                                    context=getattr(pc.body, "context", None)):
         if _ev.get("type") == "done":
             _capture_bg.kick(pc)   # beside the end-of-turn suggestion
         yield _ev

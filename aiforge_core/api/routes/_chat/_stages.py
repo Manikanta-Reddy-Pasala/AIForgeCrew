@@ -314,14 +314,15 @@ def _fold_enriched_history(history, enriched, resume_brief, prompt, doc_task):
 
 
 def _single_agent_events(enriched_history, cwd, role, session_id, single_mode,
-                         quick, awaiting_ctx):
+                         quick, awaiting_ctx, context=None):
     """Run the single conversational agent and yield its events, flagging
     ``awaiting_ctx["awaiting"]`` when the turn ended waiting on user input (an
     ASK / a REJECT). A doc/analysis task runs read-only (mode="analyze")."""
     from aiforge_core.runtime.chat_agent import run_chat_agent
     for ev in run_chat_agent(enriched_history, cwd=cwd, role=role,
                              session_id=session_id, mode=single_mode,
-                             max_steps=_quick_step_cap(quick)):
+                             max_steps=_quick_step_cap(quick), context=context,
+                             carry=True):
         if ev.get("type") == "message" and ev.get("awaiting_input"):
             awaiting_ctx["awaiting"] = True
         yield ev

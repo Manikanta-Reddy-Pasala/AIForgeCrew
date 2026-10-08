@@ -138,6 +138,8 @@ _CTX_BUDGET_FLOOR_CHARS = 4000
 # "96k" as if that were the window. Cave mode still keeps the context lean
 # (smaller repo map, fewer optional blocks); it no longer halves the window.
 _CONDENSE_FRACTION = 0.80
+#: The condense point when the characters-per-token ratio was measured.
+_MEASURED_FRACTION = 0.75
 
 
 def _history_fraction(_role: str | None = None) -> float:
@@ -207,6 +209,17 @@ def _output_reserve_tokens(win: int, role: str | None = None,
     return total
 
 
+def _chars_per_token(role: str | None = None) -> float:
+    """Measured characters per prompt token for ``role`` (see
+    :mod:`aiforge_core.llm.ctx_ratio`), never above 4; 4 when unmeasured."""
+    try:
+        from aiforge_core.llm import ctx_ratio
+        got = ctx_ratio.chars_per_token(role)
+    except Exception:  # noqa: BLE001
+        got = None
+    return min(4.0, got) if got else 4.0
+
+
 def _ctx_budget_chars(role: str | None = None,
                       sys_chars: int | None = None,
                       extra_reserve_tokens: int = 0) -> int:
@@ -235,13 +248,27 @@ def _ctx_budget_chars(role: str | None = None,
     # Unknown window → the registry's 128K default, so the 80% rule holds here
     # too (this used to fall back to a fixed 24K/48K chars, i.e. ~6K/12K tokens).
     win = _window_tokens(role) or 131072
+    try:
+        from aiforge_core.llm import ctx_ratio
+        told = ctx_ratio.learned_window(role)
+        if told:
+            win = min(win, told)     # the server said its window is smaller
+    except Exception:  # noqa: BLE001
+        pass
     # The context (system prompt + history) may reach _history_fraction of the
     # window — 80% by default — and never past the window minus the model's own
     # reply (its output cap + any reasoning allowance), so a request always fits.
-    out_chars = _output_reserve_tokens(win, role, extra_reserve_tokens) * 4
-    win_chars = win * 4                          # ~4 chars/token
-    ceiling = min(int(win_chars * _history_fraction(role)),
-                  win_chars - out_chars)
+    # Characters per token: what the provider counted on the last request
+    # (it pays for the tool list too), else ~4.
+    cpt = _chars_per_token(role)
+    out_chars = int(_output_reserve_tokens(win, role, extra_reserve_tokens) * cpt)
+    win_chars = int(win * cpt)
+    frac = _history_fraction(role)
+    if cpt < 4.0 and not os.environ.get("AIFORGE_CTX_HISTORY_FRACTION"):
+        # Measured: condense at 75% of what the server really counts, leaving
+        # room for the next reply and for a long tool result.
+        frac = min(frac, _MEASURED_FRACTION)
+    ceiling = min(int(win_chars * frac), win_chars - out_chars)
     return max(ceiling - reserve_sys, _CTX_BUDGET_FLOOR_CHARS)
 
 

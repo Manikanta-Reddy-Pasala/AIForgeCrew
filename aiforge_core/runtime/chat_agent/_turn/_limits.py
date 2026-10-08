@@ -198,6 +198,74 @@ def _condense_and_report(st, role, complete_fn, session_id, _meter):
     yield from events
 
 
+#: Newest history kept whole when old tool output is pruned, in tokens.
+_PRUNE_KEEP_TOKENS = 25_000
+#: ... and once the context has been shrinking over and over (tight mode).
+_PRUNE_KEEP_TIGHT = 10_000
+#: The thrash guard: this many shrinks within the last N steps.
+_TIGHT_AFTER, _TIGHT_WINDOW = 3, 8
+_STOP_AFTER, _STOP_WINDOW = 5, 10
+_TIGHT_NOTE = ("\n\n[harness: the context keeps filling up and being shrunk. "
+               "From now on: read files in ranges (read_lines) and only the "
+               "part you need, grep before reading, do not re-read what you "
+               "already have, and do not re-run commands with long output — "
+               "pipe them through tail or grep.]")
+
+
+def _prune_at_condense_point(st, role) -> int:
+    """The cheap first stage at the condense point: old reads and command
+    output become a head, a tail and an id (``_aging``), the newest ~25K tokens
+    stay whole. No message is dropped, nothing is asked of the model; when that
+    is enough the condense below has nothing to do. Returns how many shrank."""
+    from .._context._compaction import _hist_chars, _system_chars
+    from .._context._window import _chars_per_token, _ctx_budget_chars
+    try:
+        budget = _ctx_budget_chars(role, sys_chars=_system_chars(st.convo))
+        if budget <= 0 or _hist_chars(st.convo[1:]) <= budget:
+            return 0
+        from .._context._aging import age_observations
+        # Keep the newest ~25K tokens whole (10K when tight), but never more
+        # than 40% (20%) of the budget: on a small window a fixed 25K would
+        # leave nothing to prune.
+        tight = getattr(st, "ctx_tight", False)
+        keep_chars = min(int((_PRUNE_KEEP_TIGHT if tight else _PRUNE_KEEP_TOKENS)
+                             * _chars_per_token(role)),
+                         int(budget * (0.2 if tight else 0.4)))
+        n = age_observations(
+            st.convo, protect_from=st.batch_mark if st.batch_unread else None,
+            forget=getattr(st, "read_sigs_seen", None), force=True,
+            keep_chars=keep_chars)
+        if n:
+            st.pruned = getattr(st, "pruned", 0) + n
+        return n
+    except Exception:  # noqa: BLE001 — pruning never blocks a step
+        return 0
+
+
+def _thrash_guard(st) -> list:
+    """The history had to shrink again. Shrinking over and over means the
+    work does not fit the way it is being done: first tighten (keep less,
+    tell the model to read in ranges and keep outputs short), then stop the
+    turn with a clear message instead of churning — every shrink costs a
+    rebuild of the prompt and loses detail. Returns UI events."""
+    step = getattr(st, "step_n", 0)
+    st.shrinks = [s for s in getattr(st, "shrinks", []) if s > step - _STOP_WINDOW] + [step]
+    recent = [s for s in st.shrinks if s > step - _TIGHT_WINDOW]
+    events: list = []
+    if len(st.shrinks) >= _STOP_AFTER:
+        st.ctx_stop = True
+        return events
+    if len(recent) >= _TIGHT_AFTER and not getattr(st, "ctx_tight", False):
+        st.ctx_tight = True
+        last = st.convo[-1] if st.convo else None
+        if last and last.get("role") == "user" and isinstance(last.get("content"), str):
+            st.convo[-1] = {**last, "content": last["content"] + _TIGHT_NOTE}
+        events.append({"type": "thought", "role": "system",
+                       "text": "⚙ the context keeps filling up — keeping less "
+                               "history and asking the agent to read in smaller parts"})
+    return events
+
+
 def _condense_events(st, role, complete_fn, session_id, _meter) -> list:
     # Auto-condense the running history before the call so a long session
     # can't overflow the model's context window (MUST). Tell the user it
@@ -205,6 +273,7 @@ def _condense_events(st, role, complete_fn, session_id, _meter) -> list:
     events: list = []
     _before = len(st.convo)
     _unread = _unread_batch_msgs(st)
+    _prune_at_condense_point(st, role)
     st.convo = _compact_convo(st.convo, role=role, complete_fn=complete_fn,
                               session_id=session_id, keep_min=_unread,
                               pin=turn_pin(st),
@@ -218,6 +287,9 @@ def _condense_events(st, role, complete_fn, session_id, _meter) -> list:
         # result is above" about content the condense just deleted — and the
         # turn can never recover the file it is being refused.
         st.read_sigs_seen.clear()
+    if len(st.convo) < _before:
+        # A condense dropped messages (pruning alone is cheap and not counted).
+        events.extend(_thrash_guard(st))
     if len(st.convo) < _before and not st.condensed_notified:
         st.condensed_notified = True   # notify ONCE, not every over-budget turn
         events.append({"type": "thought", "role": "system",
@@ -234,14 +306,16 @@ def _condense_events(st, role, complete_fn, session_id, _meter) -> list:
         # ~4 chars/token. The meter shows the context against the MODEL'S
         # window ("30k / 256k") and where compaction fires.
         from .._context._window import (
+            _chars_per_token,
             _history_fraction,
             _window_source,
             _window_tokens,
         )
-        _model_win = _window_tokens(role) or (_ctx_budget + _sys_len) // 4
+        _cpt = _chars_per_token(role)        # measured when on, else 4
+        _model_win = _window_tokens(role) or int((_ctx_budget + _sys_len) / _cpt)
         _win_src = _window_source(role)[1]
-        _ctx_tokens = (_ctx_chars + _sys_len) // 4          # what is sent
-        _compact_at = (_ctx_budget + _sys_len) // 4
+        _ctx_tokens = int((_ctx_chars + _sys_len) / _cpt)   # what is sent
+        _compact_at = int((_ctx_budget + _sys_len) / _cpt)
         _calls = _meter.snapshot(session_id) if _meter is not None else {}
         events.append({"type": "usage", "context_chars": _ctx_chars,
                "budget_chars": _ctx_budget,
@@ -274,6 +348,25 @@ def _after_condense(st, unread, before):
     _rebase_batch(st, unread)
     if len(st.convo) < before and st.board:
         pin_board(st.convo, st.board)
+    if len(st.convo) < before:
+        _repin_turn_note(st)
+
+
+def _repin_turn_note(st) -> None:
+    """The message's prompt blocks (rules, skills, checklist) were in a note
+    in the history; a condense that folded it away puts them in the condense
+    note, so they still apply for the rest of the turn."""
+    text = getattr(st, "turn_note_text", "")
+    if not text:
+        return
+    from .._context import _note
+    from ._convo import is_turn_note
+    if any(is_turn_note(m) for m in st.convo):
+        return
+    at = _note.note_index(st.convo)
+    if not at or text in (st.convo[at].get("content") or ""):
+        return
+    st.convo[at] = {**st.convo[at], "content": st.convo[at]["content"] + "\n\n" + text}
 
 
 def _stuck_output_guard(st, out):

@@ -130,10 +130,11 @@ function mergeUsage(prev: LiveTurn, evt: any): LiveTurn {
 function buildSendPayload(
   q: string, runMode: ChatMode, builder: unknown, editFrom: number | null,
   opts: { resume?: boolean; singleAgent?: boolean } | undefined,
-  reviewEdits: boolean, quickMode: boolean,
+  reviewEdits: boolean, quickMode: boolean, contextMode: ContextMode = 'one',
 ): Record<string, unknown> {
   return {
     content: q, mode: builder ? 'simple' : runMode, review_edits: reviewEdits,
+    context: contextMode,
     // Quick only applies to the single-agent modes; Team runs its own pipeline.
     // An approved plan is real work. The Quick toggle must not cap it at
     // a handful of steps the way it would a one-line question.
@@ -241,6 +242,42 @@ function QuickToggle({ chatMode, quickMode, setQuickMode, busy }: Readonly<{
     >
       {quickMode ? '⚡' : '🐢'} Quick {quickMode ? 'on' : 'off'}
     </button>
+  );
+}
+
+type ContextMode = 'one' | 'split';
+
+// One context | Split: how a Simple chat holds its context. A pill like Quick,
+// so the header row does not grow. Hidden in Plan (one read-only agent) and
+// Team (its own pipeline).
+function ContextToggle({ chatMode, contextMode, setContextMode, busy, onFresh }: Readonly<{
+  chatMode: ChatMode; contextMode: ContextMode;
+  setContextMode: (m: ContextMode) => void; busy: boolean; onFresh?: () => void;
+}>) {
+  if (chatMode !== 'simple') return null;
+  const one = contextMode === 'one';
+  const pill = {
+    display: 'flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-xs)',
+    padding: '2px 8px', borderRadius: 999, cursor: 'pointer',
+    border: '1px solid var(--border-1)', background: 'transparent', color: 'var(--fg-2)',
+  } as const;
+  return (
+    <>
+      <button type="button" style={pill} disabled={busy} aria-pressed={!one}
+        onClick={() => setContextMode(one ? 'split' : 'one')}
+        title={one
+          ? 'One context — one agent does the whole request, keeps what it read and ran across your messages, and shrinks the history only when the window is nearly full. Click for Split.'
+          : 'Split — a big multi-file request is broken into subtasks, each in a fresh context; subtasks do not see each other\'s work. Click for One context.'}>
+        {one ? '🧠 One context' : '✂ Split'}
+      </button>
+      {onFresh && (
+        <button type="button" style={pill} onClick={onFresh} disabled={busy}
+          aria-label="Start the next message from a fresh context"
+          title="Start the next message from a fresh context: earlier answers stay in the chat, but what the agent read and ran is not carried over. Use it when you change topic.">
+          ⟲ Fresh
+        </button>
+      )}
+    </>
   );
 }
 
@@ -789,6 +826,13 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   useEffect(() => {
     try { localStorage.setItem('aiforge.chat.quick', quickMode ? '1' : '0'); } catch { /* ignore */ }
   }, [quickMode]);
+  // One context (default) or Split — kept like Quick, across chats.
+  const [contextMode, setContextMode] = useState<ContextMode>(() => {
+    try { return localStorage.getItem('aiforge.chat.context') === 'split' ? 'split' : 'one'; } catch { return 'one'; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('aiforge.chat.context', contextMode); } catch { /* ignore */ }
+  }, [contextMode]);
   // Cave mode (lean context) is now AUTO-enabled for small model windows
   // (≤48K) server-side, so the per-chat toggle was removed — it's the
   // default for local models. Advanced operators can still force it on/off
@@ -1775,7 +1819,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
       const res = await fetch(chatSessionMessageURL(sessionId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildSendPayload(q, runMode, builder, editFrom, opts, reviewEdits, quickMode)),
+        body: JSON.stringify(buildSendPayload(q, runMode, builder, editFrom, opts, reviewEdits, quickMode, contextMode)),
         signal: ctrl.signal,
       });
       await raiseForStatus(res);
@@ -2131,7 +2175,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
       <div className="chat-v2-main">
         {/* Topbar */}
         <div className="chat-topbar">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, flex: 1 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, flex: '1 1 220px' }}>
             {/* Title — click to rename (no separate button). */}
             <button type="button"
               onClick={() => activeSession && setRenaming({ id: activeSession.id, value: activeSession.title })}
@@ -2210,6 +2254,12 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
           <div className="row" style={{ gap: 'var(--s-2)' }}>
             <ModeToggle chatMode={chatMode} setChatMode={setChatMode} busy={busy} />
             <QuickToggle chatMode={chatMode} quickMode={quickMode} setQuickMode={setQuickMode} busy={busy} />
+            <ContextToggle chatMode={chatMode} contextMode={contextMode} setContextMode={setContextMode} busy={busy}
+              onFresh={activeId !== null ? () => {
+                chatApi.freshContext(activeId).then(
+                  () => toast.success('The next message starts from a fresh context. Earlier answers stay in the chat.'),
+                  (e: Error) => toast.error(`Could not reset the context: ${e.message}`));
+              } : undefined} />
             <ApprovalsToggle approvalsOn={approvalsOn} toggleApprovals={toggleApprovals}
                              modeApprovalKey={modeApprovalKey} chatMode={chatMode} />
             <ModelSelect chatMode={chatMode} busy={busy} modelActive={modelActive}

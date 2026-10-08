@@ -174,7 +174,10 @@ def select(query: str, cwd: str | None = None, k: int = 3) -> list[Skill]:
     if not pool:
         return []
     chosen: dict[str, Skill] = {w.name: w for w in pool if w.always}
+    floor = _sk._inject_min()
     for hit in search(query, cwd, k=k):
+        if hit["score"] < floor:
+            continue
         w = next((x for x in pool if x.name == hit["name"]), None)
         if w is not None:
             chosen[w.name] = w

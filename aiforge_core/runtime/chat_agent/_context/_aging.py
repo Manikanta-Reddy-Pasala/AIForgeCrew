@@ -4,9 +4,14 @@ A file read stays in the history at full size for the rest of the run, and in
 a long task most of the prompt is reads the model finished with many steps ago.
 Once an observation is more than a few messages old, its full text is saved
 (``runtime.context_offload``) and the history keeps a head, a tail and the id:
-``memory_lookup {"id": ...}`` or a fresh read brings it back. Only reads and
-searches age; command output, errors and edit results stay as they are.
-``AIFORGE_CHAT_AGE_OBS=0`` turns it off.
+``memory_lookup {"id": ...}`` or a fresh read brings it back. Reads,
+searches and command output age (a command keeps its error lines); edit
+results stay as they are.
+
+It runs when the history reaches the condense point, as the first and cheap
+stage (``force``): one rewrite, then the prompt only grows again, so a local
+server keeps reusing what it already processed. ``AIFORGE_CHAT_AGE_OBS=1``
+also ages every step, in bursts (the old way).
 """
 from __future__ import annotations
 
@@ -31,7 +36,7 @@ _ERR = __import__("re").compile(
 
 
 def _on() -> bool:
-    return os.environ.get("AIFORGE_CHAT_AGE_OBS", "1").strip().lower() \
+    return os.environ.get("AIFORGE_CHAT_AGE_OBS", "0").strip().lower() \
         not in ("0", "false", "no", "off")
 
 
@@ -58,24 +63,42 @@ def _read_sig(prev: dict) -> "str | None":
     return mt.group(1) + "|" + json.dumps(args, sort_keys=True, default=str)
 
 
+def _keep_by_chars(convo: list, keep_chars: int) -> int:
+    """How many of the newest messages fit in ``keep_chars``."""
+    total, n = 0, 0
+    for m in reversed(convo[1:]):
+        c = m.get("content") if isinstance(m, dict) else ""
+        total += len(c) if isinstance(c, str) else len(str(c or ""))
+        if total > keep_chars:
+            break
+        n += 1
+    return max(n, 4)
+
+
 def age_observations(convo: list, protect_from: "int | None" = None,
-                     forget: "set | None" = None) -> int:
+                     forget: "set | None" = None, *, force: bool = False,
+                     keep_chars: "int | None" = None) -> int:
     """Shrink old, large read/search observations in place. Returns how many.
 
     ``protect_from``: messages at or after this index are results the model has
     not read yet (a queued batch) and are never aged. ``forget``: the loop's set
     of reads already done; an aged read leaves it, so reading the file again is
-    allowed instead of being refused as a duplicate of text that is now a stub."""
-    if not _on() or not convo:
+    allowed instead of being refused as a duplicate of text that is now a stub.
+    ``force``: the condense point was reached — age now, whatever the switch
+    and the burst size say, keeping the newest ``keep_chars`` of history whole."""
+    if not convo or not (force or _on()):
         return 0
     keep = _int_env("AIFORGE_CHAT_AGE_KEEP", 10)       # newest messages untouched
     floor = _int_env("AIFORGE_CHAT_AGE_MIN_CHARS", 3000)
+    if force:
+        keep = _keep_by_chars(convo, keep_chars) if keep_chars else keep
+        floor = min(floor, 1500)
     from aiforge_core.runtime import context_offload
     # Age in BURSTS, not one message per step: every edit to an old message
     # changes the prompt from that point on, and a local server then re-reads
     # everything after it. A burst is one rebuild instead of many.
     burst = max(1, _int_env("AIFORGE_CHAT_AGE_BURST", 4))
-    if _candidates(convo, keep, floor) < burst:
+    if not force and _candidates(convo, keep, floor) < burst:
         return 0
     aged = 0
     stop = max(1, len(convo) - keep)

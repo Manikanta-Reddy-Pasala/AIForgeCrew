@@ -8,7 +8,9 @@ from aiforge_core.runtime.chat_agent._context import _aging as A
 @pytest.fixture(autouse=True)
 def _home(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
-    monkeypatch.delenv("AIFORGE_CHAT_AGE_OBS", raising=False)
+    # Per-step ageing is opt-in now (one context ages only at the condense
+    # point); these cases are about the per-step mode.
+    monkeypatch.setenv("AIFORGE_CHAT_AGE_OBS", "1")
     monkeypatch.setenv("AIFORGE_CHAT_AGE_BURST", "1")
 
 

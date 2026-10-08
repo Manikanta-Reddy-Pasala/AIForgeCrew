@@ -296,6 +296,21 @@ def chat_session_set_learn(session_id: int, body: _LearnBody) -> dict:
     return s
 
 
+@router.delete("/api/chat/sessions/{session_id}/transcript", responses={404: {"description": "Not found"}, 409: {"description": "A turn is running"}})
+def chat_session_fresh_context(session_id: int) -> dict:
+    """Start the next message from a fresh context: the working transcript the
+    chat carries between messages (runtime/chat_transcript) is dropped; the
+    messages themselves stay. Refused while a turn runs — it would save its
+    transcript again when it ends."""
+    from aiforge_core.runtime import chat_runs, chat_store, chat_transcript
+    if not chat_store.get_session(session_id):
+        raise HTTPException(404, f"session {session_id} not found")
+    if chat_runs.is_running(session_id):
+        raise HTTPException(409, "a turn is running in this chat — wait for it to end")
+    chat_transcript.drop(session_id)
+    return {"ok": True}
+
+
 @router.delete("/api/chat/sessions/{session_id}", status_code=204, responses={404: {"description": "Not found"}})
 def chat_session_delete(session_id: int) -> None:
     from aiforge_core.runtime import (
@@ -318,6 +333,8 @@ def chat_session_delete(session_id: int) -> None:
     chat_approve.cancel(session_id)
     chat_interject.clear(session_id)
     chat_runs.finish(session_id)
+    from aiforge_core.runtime import chat_transcript
+    chat_transcript.drop(session_id)
     # Grab the isolated-workspace path BEFORE deleting the row so we can rm -rf
     # it — a lingering workspace's files otherwise leak into a future chat.
     _sess = chat_store.get_session(session_id)

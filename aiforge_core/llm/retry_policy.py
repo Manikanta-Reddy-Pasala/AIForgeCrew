@@ -311,6 +311,9 @@ class Hooks:
     on_overflow: Callable[[], str]
     #: what ``call`` returns when Stop cut the send
     stopped: Any
+    #: the prompt failed for size once: learn from the refusal (passed in) and
+    #: shrink it to what the server really counts; what was done, or ""
+    on_first_overflow: "Callable[[Any], str] | None" = None
 
 
 class Outcome(NamedTuple):
@@ -473,6 +476,13 @@ def run_with_policy(hooks: Hooks, policy: RetryPolicy, exc, *,
             return Outcome(STOPPED)
         if over_budget():
             break
+        if over_n == 1 and hooks.on_first_overflow is not None:
+            # Do not send the same oversized prompt again: size the history
+            # by the server's own numbers and shrink it first.
+            did = hooks.on_first_overflow(last)
+            if did:
+                yield _status("⟳ the prompt was over the model's context window — "
+                              + did + ", sending a smaller one")
         if over_n >= 2:
             over_n = 0
             did = hooks.on_overflow()

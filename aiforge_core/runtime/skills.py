@@ -63,6 +63,29 @@ except ValueError:
     _MAX_BODY = 4000
 _WORD_RE = re.compile(r"[a-z0-9_]+")
 
+#: Words that say nothing about which playbook fits ("to", "and", "add",
+#: "new"): matching on them put a pull-request review and a Jira write-up in
+#: front of every coding request.
+_STOP = frozenset("""
+a an and are as at be but by can could did do does done for from get had has
+have how i if in into is it its just let like make me my need new no not of
+on or our out please should so some than that the their them then there these
+they this those to up us use using want was we were what when where which who
+why will with would you your add also all any each one two via
+""".split())
+
+#: Below this relevance a playbook is not pasted into the prompt on its own
+#: (an exact trigger scores 5, so a trigger hit always passes). The
+#: skill_search / workflow_search tools still list every match.
+_INJECT_MIN = 3.0
+
+
+def _inject_min() -> float:
+    try:
+        return float(os.environ.get("AIFORGE_PLAYBOOK_MIN_SCORE", _INJECT_MIN))
+    except (TypeError, ValueError):
+        return _INJECT_MIN
+
 
 @dataclass(frozen=True)
 class Skill:
@@ -263,15 +286,18 @@ def search(query: str, cwd: str | None = None, k: int = 5,
     ``[{name, description, score, source}]`` top-k (score > 0)."""
     pool = skills if skills is not None else load(cwd)
     q = (query or "").lower()
-    qtok = _tokens(query)
+    qtok = _tokens(query) - _STOP
     scored: list[tuple[float, float, Skill]] = []
     for sk in pool:
         score = 0.0
         for t in sk.triggers:
             if t and t in q:
                 score += 5.0                       # exact trigger hit
+        name_tok = _tokens(sk.name) - _STOP
+        if name_tok and name_tok <= qtok:
+            score += 3.0                           # the request names it
         score += _fuzzy_overlap(qtok, _tokens(sk.name + " " + sk.description
-                                              + " " + " ".join(sk.triggers)))
+                                              + " " + " ".join(sk.triggers)) - _STOP)
         if sk.always:
             score += 0.5
         if score > 0:
@@ -328,7 +354,10 @@ def select(query: str, cwd: str | None = None, k: int = 4) -> list[Skill]:
     pool = load(cwd)
     always_on = _always_on(pool)
     chosen: dict[str, Skill] = {s.name: s for s in always_on}
+    floor = _inject_min()
     for hit in search(query, cwd, k=k, skills=pool):
+        if hit["score"] < floor:
+            continue
         sk = next((s for s in pool if s.name == hit["name"]), None)
         if sk is not None:
             chosen[sk.name] = sk

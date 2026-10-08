@@ -32,7 +32,7 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
-def _record_usage(role: str, resp_body: dict, token=None) -> None:
+def _record_usage(role: str, resp_body: dict, token=None, messages=None) -> None:
     """Record what the provider says this response cost, in tokens.
 
     This was a `pass` — every response's ``usage`` block was read off the wire
@@ -55,5 +55,9 @@ def _record_usage(role: str, resp_body: dict, token=None) -> None:
             completion_tokens=usage.get("completion_tokens") or 0,
             token=token,
         )
+        if messages is not None:
+            from aiforge_core.llm import ctx_ratio
+            ctx_ratio.note(role, messages, usage.get("prompt_tokens"),
+                           model=resp_body.get("model"))
     except Exception:  # noqa: BLE001 — accounting must never break a call
         pass

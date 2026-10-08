@@ -13,6 +13,7 @@ const REASONS: Record<string, string> = {
   no_implementation: 'no change was made',
   pipeline_error: 'the team pipeline failed',
   server_restart: 'the server restarted during the run',
+  context_thrash: 'the context kept filling up faster than the work progressed',
 };
 
 /** Why a stopped turn stopped, in words, or '' when there is nothing to add.

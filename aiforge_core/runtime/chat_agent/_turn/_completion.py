@@ -133,6 +133,42 @@ def _shrink_after_overflow(st, complete_fn, role, convo, session_id) -> str:
     return ""
 
 
+def _resize_after_overflow(st, complete_fn, role, convo, session_id, exc) -> str:
+    """The server refused the prompt as too long. Learn its real window and
+    token count from the refusal, then make the history fit that: prune old
+    tool output first, condense only if that is not enough. Returns what was
+    done, or "" when nothing changed."""
+    try:
+        from aiforge_core.llm import ctx_ratio, model_outage
+        text = " ".join(model_outage._text(e) for e in model_outage.chain(exc))
+        learned = ctx_ratio.learn_from_overflow(role, convo, text)
+    except Exception:  # noqa: BLE001
+        learned = False
+    from .._context._compaction import _compact_convo
+    before = sum(len(str(m.get("content") or "")) for m in convo)
+    try:
+        if st is not None and convo is st.convo:
+            # The turn's own condense: unread results kept, reads re-pointed,
+            # the board and the pinned goal kept, and the loop guard counts it.
+            from ._limits import _condense_events
+            _condense_events(st, role, complete_fn, session_id, None)
+            if st.convo is not convo:
+                convo[:] = st.convo
+                st.convo = convo
+        else:
+            new = _compact_convo(convo, role=role, complete_fn=complete_fn,
+                                 session_id=session_id)
+            if new is not convo:
+                convo[:] = new
+    except Exception:  # noqa: BLE001
+        pass
+    after = sum(len(str(m.get("content") or "")) for m in convo)
+    if after < before:
+        return ("sized the history to the server's own count and shrank it"
+                if learned else "shrank the history")
+    return "learned the server's window" if learned else ""
+
+
 def _hooks(complete_fn, role, convo, session_id, st=None):
     """What the retry loop needs from this turn: send again, Stop, an
     interruptible sleep, and the two ways to make the prompt smaller."""
@@ -152,7 +188,9 @@ def _hooks(complete_fn, role, convo, session_id, st=None):
         shrink=lambda: _shrink_for_retry(convo, role, complete_fn, session_id),
         on_overflow=lambda: _shrink_after_overflow(st, complete_fn, role, convo,
                                                    session_id),
-        stopped=_CANCELLED)
+        stopped=_CANCELLED,
+        on_first_overflow=lambda exc: _resize_after_overflow(
+            st, complete_fn, role, convo, session_id, exc))
 
 
 def _retry_completion(complete_fn, role, convo, session_id, exc,

@@ -4,7 +4,9 @@ Split from ``parallel_subtasks.py`` (mechanical move, behaviour identical)."""
 from __future__ import annotations
 
 import contextlib
+import glob
 import os
+import re
 import threading
 
 from ._runners_write import (  # noqa: F401  # re-exported
@@ -30,7 +32,53 @@ from ._runners_write import (  # noqa: F401  # re-exported
 from ._items import board_block as _board_block
 
 
-def _doer_message(subtask: dict, spec_md: str, path: str, goal: str) -> str:
+#: Total size of the existing-code outline a subtask is given.
+_OUTLINE_MAX = 6000
+_OUTLINE_LINE = re.compile(
+    r"^(?:(?:async\s+)?def |class |[A-Z_][A-Z0-9_]*\s*[:=]|export |function |"
+    r"(?:public |protected |private )?(?:static )?(?:final )?(?:class|interface|enum) )")
+
+
+def _existing_outline(worktree: "str | None", path: str, scope) -> str:
+    """The top-level names of files this subtask may touch that ALREADY exist:
+    a subtask runs in a fresh context, and one that rewrote a shared file from
+    its goal alone dropped names the rest of the code imports. Empty when there
+    is nothing to show."""
+    if not worktree or not os.path.isdir(worktree):
+        return ""
+    wanted = [p.lstrip("./") for p in [path, *(scope or [])] if p]
+    if not wanted:
+        return ""
+    found: list[str] = []
+    for w in wanted:
+        for hit in glob.glob(os.path.join(worktree, w), recursive=True)[:40]:
+            rel = os.path.relpath(hit, worktree)
+            if os.path.isfile(hit) and rel not in found and "/." not in "/" + rel:
+                found.append(rel)
+    parts, used = [], 0
+    for rel in sorted(found)[:20]:
+        try:
+            with open(os.path.join(worktree, rel), encoding="utf-8", errors="replace") as fh:
+                lines = [ln.rstrip() for ln in fh if _OUTLINE_LINE.match(ln)]
+        except OSError:
+            continue
+        if not lines:
+            continue
+        block = f"{rel}:\n" + "\n".join(f"  {ln[:160]}" for ln in lines[:60])
+        if used + len(block) > _OUTLINE_MAX:
+            break
+        parts.append(block)
+        used += len(block)
+    if not parts:
+        return ""
+    return ("EXISTING CODE (these files are already there and other code uses "
+            "them). EDIT them with small patches; do NOT rewrite a file whole; "
+            "keep every name listed here, with the same signature:\n"
+            + "\n".join(parts) + "\n\n")
+
+
+def _doer_message(subtask: dict, spec_md: str, path: str, goal: str,
+                  worktree: "str | None" = None) -> str:
     accept = subtask.get("acceptance") or []
     scope = subtask.get("scope_allowlist_globs") or []
     # Hard path pin: every subtask runs in its OWN fresh context, so without an
@@ -46,6 +94,7 @@ def _doer_message(subtask: dict, spec_md: str, path: str, goal: str) -> str:
          f"{spec_md.strip()[:6000]}\n\n---\n\n"
          if spec_md and spec_md.strip() else "")
         + _board_block(subtask)
+        + _existing_outline(worktree, path, scope)
         + f"Implement this subtask, then build + test it.\n\n{path_pin}GOAL: {goal}\n"
         + ("ACCEPTANCE:\n" + "\n".join(f"- {a}" for a in accept) + "\n"
            if accept else "")
@@ -107,7 +156,7 @@ def default_run_one(subtask: dict, worktree: str, spec_md: str = "") -> dict:
         return {"ok": False, "error": f"import: {exc}"}
     path = str(subtask.get("path") or "").strip().lstrip("/")
     goal = subtask.get("goal") or subtask.get("slug") or "implement the subtask"
-    msg = _doer_message(subtask, spec_md, path, goal)
+    msg = _doer_message(subtask, spec_md, path, goal, worktree)
     # HARD file ownership: restrict this subtask's WRITES to the file(s) it owns
     # so two subtasks can NEVER edit the same file — the reconcile is then a
     # trivial disjoint union, not a same-file merge. An explicit

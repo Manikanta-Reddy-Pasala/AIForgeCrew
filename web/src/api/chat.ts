@@ -115,6 +115,9 @@ export const chatApi = {
   },
 
   worktree: (id: number) => j<ChatWorktree>(`/chat/sessions/${id}/worktree`),
+  // Drop the working transcript this chat carries between messages.
+  freshContext: (id: number) =>
+    j<{ ok: boolean }>(`/chat/sessions/${id}/transcript`, { method: 'DELETE' }),
   worktreeMerge: (id: number) =>
     j<{ ok: boolean; message: string; reason?: string; merged?: number }>(
       `/chat/sessions/${id}/worktree/merge`, { method: 'POST' }),

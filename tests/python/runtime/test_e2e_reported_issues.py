@@ -421,7 +421,9 @@ def _flat(convo):
     return "\n".join(str(m.get("content")) for m in convo)
 
 
-def test_4_big_request_is_decomposed_gated_reset_and_finalised_last(tmp_path):
+def test_4_big_request_is_decomposed_gated_reset_and_finalised_last(tmp_path, monkeypatch):
+    # The per-item reset is opt-in now (one context runs the whole task).
+    monkeypatch.setenv("AIFORGE_CHAT_ITEM_CONTEXT_RESET", "1")
     names = ["alpha.txt", "beta.txt", "gamma.txt", "delta.txt"]
     words = {"alpha.txt": "ALPHA", "beta.txt": "BETA", "gamma.txt": "GAMMA",
              "delta.txt": "DELTA"}
