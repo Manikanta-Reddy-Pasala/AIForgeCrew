@@ -114,6 +114,9 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
     _sig = yield from _wait_for_own_jobs(st, step)
     if _sig:
         return _sig
+    _sig = yield from _not_from_a_toolless_reply(st, step, builder)
+    if _sig:
+        return _sig
     _sig = yield from _do_what_you_said(st, step, builder, strict_finish)
     if _sig:
         return _sig
@@ -470,8 +473,15 @@ _INTENT_NUDGES = 2
 #: The LAST sentence says it is about to act ("Let me fix it.", "I'll fix that
 #: now."): the answer explains, then stops where the work should start.
 _TRAILING_INTENT_RE = re.compile(
-    r"^(?:so |now |ok(?:ay)?,? )?(?:let me|i(?:'ll| will)|i(?:'m| am) going to|next,? i(?:'ll| will)?|"
-    r"now i(?:'ll| will)) (?:now |next |then |go |quickly )?" + _WORK + r"\b[^!?]*?[.!]?$", re.I)
+    r"^(?:so |now |ok(?:ay)?,? )?(?:"
+    r"(?:let me|i(?:'ll| will)|i(?:'m| am) going to|next,? i(?:'ll| will)?|now i(?:'ll| will)) "
+    r"(?!know\b|keep\b|leave\b|wait\b|stop\b|let you\b|explain\b|describe\b|"
+    r"summari[sz]e\b|clarify\b|note\b|answer\b|use\b|be\b|recap\b|remind\b|mention\b|look forward\b)\w+"
+    r")\b[^!?]*?[.!]?$", re.I)
+#: "Both fixes will happen." — the sentence ends there.
+_WILL_HAPPEN_RE = re.compile(
+    r"^(?:both |all |the |these |those )?(?:\w+ ){0,3}(?:fix(?:es)?|changes?|steps?|parts?) "
+    r"will (?:happen|be done|follow)\s*[.!]?$", re.I)
 #: ... unless it is an offer or waits on someone ("I'll push it if you want").
 _CONDITIONAL_RE = re.compile(
     r"\b(?:if|once|when|after|unless|later|tomorrow|approve|approval|confirm|you)\b", re.I)
@@ -480,6 +490,38 @@ _CONDITIONAL_RE = re.compile(
 def _last_sentence(text: str) -> str:
     parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", text.strip()) if p.strip()]
     return parts[-1] if parts else ""
+
+
+#: How often one turn retries after a reply that came without tools.
+_TOOLLESS_RETRIES = 3
+
+
+def _not_from_a_toolless_reply(st, step, builder=None):
+    """The tool-enabled call was refused and this reply came from a plain-
+    text fallback: the model had no tools, so whatever it wrote ("Let me do
+    that now.") is not the answer. Retry the step with tools instead of ending
+    the turn (bounded). Not in plan / read-only mode."""
+    fn = getattr(st, "complete_fn", None)
+    try:
+        was = bool(fn is not None and getattr(fn, "last_degraded", None) and fn.last_degraded())
+    except Exception:  # noqa: BLE001
+        was = False
+    # A reply that says FINAL: is an answer even from the fallback; only prose
+    # without the marker (``implicit``) is the model talking without tools.
+    if (not was or not step.get("implicit") or builder or getattr(st, "plan_mode", False)
+            or getattr(st, "readonly_mode", False)
+            or getattr(st, "toolless_retries", 0) >= _TOOLLESS_RETRIES):
+        return None
+    st.toolless_retries = getattr(st, "toolless_retries", 0) + 1
+    yield {"type": "thought", "role": "system",
+           "text": "⟳ the model's reply came without tool access (the call was "
+                   "refused) — trying the step again with tools"}
+    st.convo.append({"role": "user", "content":
+        "[harness — not the user] Your last reply was made without tool access "
+        "(the request with tools failed), so it did not do anything. Continue "
+        "the task now with a tool call. Answer only when the work is done or "
+        "you need the user."})
+    return "continue"
 
 
 def _do_what_you_said(st, step, builder=None, strict_finish=False):
@@ -501,7 +543,8 @@ def _do_what_you_said(st, step, builder=None, strict_finish=False):
     last = _last_sentence(text)
     if _CONDITIONAL_RE.search(last):
         return None                  # an offer, or waiting on someone
-    about_to_act = bool(_TRAILING_INTENT_RE.match(last))
+    about_to_act = (bool(_TRAILING_INTENT_RE.match(last) or _WILL_HAPPEN_RE.match(last))
+                    and not _DONE_RE.search(last))
     if not (announced or about_to_act):
         return None
     st.intent_nudges = getattr(st, "intent_nudges", 0) + 1

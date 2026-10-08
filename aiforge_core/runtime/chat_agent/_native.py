@@ -485,6 +485,10 @@ def make_native_complete_fn(mode: str = "act", builder: str = "",
 
     queued: list[str] = []
     skipped = [0]
+    # The last reply came from a plain-text fallback (the tool-enabled call
+    # was refused): no tools and no text-protocol instructions, so prose in
+    # it is not an answer. See ``last_degraded``.
+    degraded = [False]
     gated: list[dict] = []    # integration gate, once per turn
     tools: list[dict] = []    # grows if a later message names another system
 
@@ -496,8 +500,12 @@ def make_native_complete_fn(mode: str = "act", builder: str = "",
         skipped[0] = 0
         return items, n
 
+    def last_degraded() -> bool:
+        return degraded[0]
+
     def _fn(role: str, convo: list[dict]) -> str:
         take_queued()
+        degraded[0] = False
         # Known-incapable model (a prior turn hit a definitive tools-rejection) →
         # text protocol, transparently. This is the ONLY thing that disables
         # native, and it's per-model + self-discovered, never transient.
@@ -524,11 +532,13 @@ def make_native_complete_fn(mode: str = "act", builder: str = "",
             msg = client.complete_raw(role, msgs, tools=tools, tool_choice="auto")
         except Exception as exc:  # noqa: BLE001
             if _native_error_is_permanent(exc, model):
+                degraded[0] = True
                 return client.complete(role, convo)
             if _native_error_transient(exc):
                 raise
             msg = _complete_repaired(client, role, msgs, tools, exc)
             if msg is None:
+                degraded[0] = True
                 return client.complete(role, convo)
         _log_native_step(msg.get("tool_calls") or [])
         step = _synth_step(msg)
@@ -536,9 +546,11 @@ def make_native_complete_fn(mode: str = "act", builder: str = "",
             # the model attempted tool args but they were truncated/malformed —
             # redo this turn on the hardened text path rather than emit empty args
             log.info("native args unrecoverable → text fallback for this turn")
+            degraded[0] = True
             return client.complete(role, convo)
         queued[:], skipped[0] = _queued_steps(msg)
         return step
 
     _fn.take_queued = take_queued
+    _fn.last_degraded = last_degraded
     return _fn

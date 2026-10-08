@@ -195,3 +195,65 @@ def test_an_answer_that_ends_on_let_me_fix_it_is_sent_back():
 def test_a_last_sentence_with_a_file_name_still_counts():
     text = "The copy step creates no folder. Let me fix build.sh."
     assert _drain(_finish._do_what_you_said(SimpleNamespace(convo=[]), {"text": text}))[1] == "continue"
+
+
+# ── a reply that came without tools ──────────────────────────────────────────
+
+def test_a_reply_from_the_toolless_fallback_is_retried_with_tools():
+    fn = lambda *a, **k: ""                                  # noqa: E731
+    fn.last_degraded = lambda: True
+    st = SimpleNamespace(convo=[], complete_fn=fn)
+    sigs = [_drain(_finish._not_from_a_toolless_reply(st, {"text": "Let me do that now.", "implicit": True}))[1]
+            for _ in range(5)]
+    assert sigs.count("continue") == _finish._TOOLLESS_RETRIES and sigs[-1] is None
+    assert "without tool access" in st.convo[-1]["content"]
+
+
+def test_a_normal_reply_or_plan_mode_is_not_retried():
+    fn = lambda *a, **k: ""                                  # noqa: E731
+    fn.last_degraded = lambda: False
+    assert _drain(_finish._not_from_a_toolless_reply(SimpleNamespace(convo=[], complete_fn=fn), {"text": "x"}))[1] is None
+    fn2 = lambda *a, **k: ""                                 # noqa: E731
+    fn2.last_degraded = lambda: True
+    st = SimpleNamespace(convo=[], complete_fn=fn2, plan_mode=True)
+    assert _drain(_finish._not_from_a_toolless_reply(st, {"text": "x"}))[1] is None
+
+
+def test_native_fn_marks_a_text_fallback(monkeypatch):
+    from aiforge_core.llm import client
+    from aiforge_core.runtime.chat_agent import _native
+
+    def refuse(*a, **k):
+        raise RuntimeError("400 bad request: template error")
+    monkeypatch.setattr(client, "complete_raw", refuse)
+    monkeypatch.setattr(client, "complete", lambda role, convo, **k: "Let me do that now.")
+    monkeypatch.setattr(_native, "_native_error_is_permanent", lambda exc, model: False)
+    monkeypatch.setattr(_native, "_native_error_transient", lambda exc: False)
+    monkeypatch.setattr(_native, "_complete_repaired", lambda *a, **k: None)
+    fn = _native.make_native_complete_fn()
+    out = fn("chat", [{"role": "system", "content": "s"}, {"role": "user", "content": "go"}])
+    assert out == "Let me do that now." and fn.last_degraded() is True
+
+
+# ── the latest screenshot ───────────────────────────────────────────────────
+
+def test_the_latest_endings_are_sent_back():
+    for text in ("I stopped because you asked me to commit and push to a new branch first "
+                 "before proceeding with the fixes. Let me do that now.",
+                 "Both fixes will happen",
+                 "The build script has a bug — it copies to /tmp/buildsrc/ but doesn't create "
+                 "that directory first. Let me fix it."):
+        assert _drain(_finish._do_what_you_said(SimpleNamespace(convo=[]), {"text": text}))[1] == "continue", text
+
+
+def test_a_final_marked_answer_from_the_fallback_still_ends():
+    fn = lambda *a, **k: ""                                  # noqa: E731
+    fn.last_degraded = lambda: True
+    st = SimpleNamespace(convo=[], complete_fn=fn)
+    assert _drain(_finish._not_from_a_toolless_reply(st, {"text": "Fixed X; tests pass."}))[1] is None
+
+
+def test_polite_endings_are_not_sent_back():
+    for text in ("All set. I'll be here if you need more.", "Done. Let me recap: two files changed.",
+                 "The remaining steps will follow the same pattern as the first one."):
+        assert _drain(_finish._do_what_you_said(SimpleNamespace(convo=[]), {"text": text}))[1] is None, text
