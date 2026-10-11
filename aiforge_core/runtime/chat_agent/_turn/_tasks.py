@@ -29,7 +29,7 @@ _MARK = {"pending": "[ ]", "running": "[>]", "done": "[x]",
 #: Items a model may add in one run. A plan is a handful of lines; this only
 #: stops a confused model from growing the pinned block without end.
 _MAX_ITEMS = 60
-_MAX_TITLE = 200
+_MAX_TITLE = 300
 
 
 _PLAN_STEP = re.compile(r"(?m)^\s*(?:\d+[\.\)]\s+)(.+)$")
@@ -73,6 +73,24 @@ def steer_note(board: dict) -> str:
             "leave it as it is.")
 
 
+def revised_note(board: dict, changes: list) -> str:
+    """What the harness did to the task board for a mid-run message. "" when
+    the run has no board and the message added none."""
+    if not board:
+        return ""
+    lines = "\n".join(f"{_MARK[it['status']]} {s}: {it['title']}"
+                      for s, it in board.items())
+    did = ("The harness updated your task board for the user's message above:\n"
+           + "\n".join(f"- {c}" for c in changes) if changes else
+           "The user's message above changes nothing on your task board.")
+    return (f"[task board — not the user] {did}\nThe board now:\n{lines}\n"
+            "This board replaces any checklist given earlier. Work through it "
+            "in this order; each item says how it is checked. "
+            "Mark items with plan_progress as you go. If the board misreads "
+            "the user, correct it with plan_progress (same slug, new title or "
+            "status skipped).")
+
+
 def board_items(board: dict) -> list[dict]:
     """The board as the UI's subtasks dock reads it."""
     return [{"slug": s, "goal": it["title"], "title": it["title"],
@@ -101,6 +119,63 @@ def open_for_final(st) -> list[str]:
     return open_planned(board)
 
 
+_STOP = frozenset("a an the to in on of for and or with that this is it be "
+                  "by from as at so then each both".split())
+_WORD = re.compile(r"[\w./-]+")
+
+
+def _stem(w: str) -> str:
+    for end in ("ing", "es", "ed", "s"):
+        if len(w) > len(end) + 3 and w.endswith(end):
+            return w[:-len(end)]
+    return w
+
+
+def _words(title: str) -> set:
+    head = re.split(r"\s[—–-]+\s*check:|\(done when", title, maxsplit=1,
+                    flags=re.I)[0]
+    return {_stem(w.strip("./-:").lower()) for w in _WORD.findall(head)} - _STOP - {""}
+
+
+def _names(words: set) -> set:
+    """The words that name a thing: svc-a, notes.md, v2. (A full path is
+    where, not what: a reworded title seldom repeats it.)"""
+    return {w for w in words if re.search(r"[-.\d]", w) and "/" not in w}
+
+
+def _same_work(board: dict, title: str) -> str | None:
+    """The item the harness put on the board (the request's parts, or work a
+    later message added) that ``title`` is plainly a rewording of, else None.
+    A model that plans again in its own words would otherwise double the
+    board and leave the first copy open. The names in ``title`` (repos,
+    files) must be the item's; then the words in common, over all the
+    words of both, must be clearly highest for one item."""
+    mine = _words(title)
+    if len(mine) < 3:
+        return None
+    scores = []
+    for s, it in board.items():
+        if not (it.get("from_request") or it.get("by_harness")):
+            continue
+        theirs = _words(it["title"])
+        if _names(mine) and _names(mine) != _names(theirs):
+            continue
+        scores.append((len(mine & theirs) / len(mine | theirs), s))
+    scores.sort(reverse=True)
+    if not scores or scores[0][0] < 0.55:
+        return None
+    if len(scores) > 1 and scores[0][0] - scores[1][0] < 0.15:
+        return None                      # two near matches: not plainly one
+    return scores[0][1]
+
+
+def _known(board: dict, slug: str) -> str:
+    """``slug``, or the board item it was mapped onto earlier."""
+    if slug in board:
+        return slug
+    return next((s for s, it in board.items() if slug in it.get("aliases", ())), slug)
+
+
 def apply_progress(board: dict, args: dict) -> tuple[dict, list[dict]]:
     """Apply one ``plan_progress`` call. Returns ``(result, ui_events)``."""
     slug = str(args.get("slug") or args.get("part") or "").strip()[:80]
@@ -112,6 +187,15 @@ def apply_progress(board: dict, args: dict) -> tuple[dict, list[dict]]:
     if status and status not in _STATUSES:
         return {"ok": False, "slug": slug,
                 "error": f"status must be one of {', '.join(_STATUSES)}"}, []
+    asked = slug
+    slug = _known(board, slug)
+    same = _same_work(board, title) if (slug not in board and title) else None
+    if same:
+        # Work already on the board: the call moves that item, and the
+        # model's slug is kept as another name for it.
+        board[same].setdefault("aliases", []).append(asked)
+        slug, title = same, ""
+        status = status or board[same]["status"]
     if slug not in board and not title:
         # Just a progress flip for the dock (the old convention); only an
         # item with a title goes on the board.
@@ -134,6 +218,9 @@ def apply_progress(board: dict, args: dict) -> tuple[dict, list[dict]]:
     item = board[slug]
     still_open = open_items(board)
     result = {"ok": True, "slug": slug, "status": item["status"],
+              **({"note": f"already on your task board as {slug}: "
+                          f"{item['title']} — use slug {slug} for it"}
+                 if slug != asked else {}),
               "open": [f"{s}: {board[s]['title']}" for s in still_open[:20]],
               "open_count": len(still_open)}
     if title:

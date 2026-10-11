@@ -155,6 +155,52 @@ def _own_words(last_user: str) -> str:
     return (last_user or "").split("\n\n---\n" + REFERENCE_MARK)[0]
 
 
+def _task_list(role, words, messages, cwd, session_id, act) -> list[str]:
+    """The parts of the user's message as the turn's task list: written by
+    the model in a chat act turn (refined, with a check per item), else — or
+    when that call fails — split from the wording."""
+    from . import _plan_llm
+    # A turn the harness started (a resume brief, a finished command) is not
+    # the user asking for new work.
+    if act and session_id is not None and _plan_llm.enabled() \
+            and not (words or "").lstrip().startswith("⟳"):
+        _say_planning(session_id)
+        planned = _plan_llm.plan_asks(role, _request_only(words), messages,
+                                      cwd, session_id)
+        if planned is not None:
+            return planned
+    return _split_asks(words)
+
+
+def _say_planning(session_id) -> None:
+    """The plan call runs before the turn's first event: say so in the live
+    run (and in the run's phase, which a quiet spell reports)."""
+    try:
+        from aiforge_core.runtime import chat_runs
+        chat_runs.set_phase(session_id, "writing the task list")
+        chat_runs.publish(session_id, {"type": "thought", "role": "system",
+                                       "text": "⧗ writing the task list…"})
+    except Exception:  # noqa: BLE001 — a status line never breaks a turn
+        pass
+
+
+def _request_only(words: str) -> str:
+    """The user's request without a block the harness put under it (a
+    retry's resume brief, a hand-off, the enhancer's restatement): what was
+    done or planned before is not new work. A "continue" whose resume brief
+    quotes the request is that request."""
+    from aiforge_core.runtime.chat_resume import quoted_request
+    from ._state import _ADDED_BLOCKS
+    text = words or ""
+    for marker in _ADDED_BLOCKS:
+        text = text.split(marker)[0]
+    if len(text.strip()) < 40:
+        quoted = quoted_request(words or "")
+        if quoted:
+            return quoted
+    return text
+
+
 def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
                  analyze_mode, builder, strict_finish, session_id, native=False,
                  unlimited=False, stable_system=False, carried=False):
@@ -176,7 +222,8 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
     # model turn on the completeness gate every run.
     from .._native_prompt import is_plan_execution
     _asks = [] if (builder or strict_finish or is_plan_execution(last_user)) \
-        else _split_asks(_own_words(last_user))
+        else _task_list(role, _own_words(last_user), messages, cwd, session_id,
+                        act=not (readonly_mode or plan_mode or analyze_mode))
     sys_msg = _prepend_priority_blocks(
         sys_msg, _asks, prefs, rules, analyze_mode, plan_mode, builder)
     # Reply language (Settings): part of the protected core, never trimmed —

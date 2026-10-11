@@ -393,6 +393,9 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
             _slug = f"part-{_i + 1}"
             if st.board.get(_slug, {}).get("status") in ("failed", "skipped"):
                 continue            # the model said so; don't overwrite it
+            if st.board.get(_slug, {}).get("redo") \
+                    and st.board[_slug].get("status") != "done":
+                continue            # the user asked for it again; not redone
             yield {"type": "subtask_update", "slug": _slug, "status": "done"}
     _fire_stop("final", cwd)
     if plan_mode:

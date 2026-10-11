@@ -176,15 +176,54 @@ def _drain_steering(st, session_id):
             # queued messages cannot each claim to be the latest.
             _parts = ([chat_steer.steer_block(_steers)] if _steers else [])
             _parts += [chat_steer.reject_note(g) for g in _rejects]
+            _board_events: list = []
             if _steers:
-                # The task list follows the message: the model is shown the
-                # board and updates it before it carries on.
-                from ._tasks import steer_note
-                _parts.append(steer_note(getattr(st, "board", None) or {}))
+                # The task list follows the message: the harness brings the
+                # board in line with it (a model call), else the model is
+                # shown the board and told to.
+                note = yield from _revise_board(st, _steers, _board_events)
+                _parts.append(note)
             _directive = "\n\n".join(p for p in _parts if p)
             _append_directive(st, _directive)
             for _k, _t in _items:
                 yield chat_steer.steer_event(_t)
+            yield from _board_events
+
+
+def _revise_board(st, steers, events):
+    """The note on the task board that goes with a mid-run message. When the
+    board was revised, the dock's new list is put in ``events``."""
+    from . import _plan_llm
+    from ._tasks import board_items, revised_note, steer_note
+    board = getattr(st, "board", None)
+    if board is None:
+        board = st.board = {}
+    if not (_plan_llm.enabled() and getattr(st, "session_id", None) is not None
+            and not getattr(st, "builder", None)
+            and not getattr(st, "strict_finish", False)
+            and not getattr(st, "plan_mode", False)
+            and not getattr(st, "readonly_mode", False)):
+        return steer_note(board)
+    yield {"type": "thought", "role": "system",
+           "text": "⧗ updating the task list for your message…"}
+    new, changes = _plan_llm.revise(str(getattr(st, "role", "") or "chat"), board,
+                                    steers, getattr(st, "goal", "") or "",
+                                    st.session_id)
+    if new is None:
+        return steer_note(board)
+    if changes:
+        board.clear()
+        board.update(new)
+        # The board is in use now: a FINAL with its items open is held, as
+        # when the model put them there itself.
+        st.board_used = True
+        try:                      # a board grown to item size starts its log now
+            from ._items import ensure_started
+            ensure_started(st)
+        except Exception:  # noqa: BLE001
+            pass
+        events.append({"type": "subtasks", "items": board_items(board)})
+    return revised_note(board, changes)
 
 def _condense_and_report(st, role, complete_fn, session_id, _meter):
     """Auto-condense the running history to stay within the window (clearing the
