@@ -306,3 +306,24 @@ def test_the_plan_call_says_so_and_is_bounded_by_its_timeout(monkeypatch):
     assert said and "task list" in said[0]["text"] and phases == ["writing the task list"]
     # The request's own deadline is the wait: nothing outlives it.
     assert seen[0][2]["timeout_s"] == 12
+
+
+def test_a_message_mid_run_changes_the_approved_plans_steps(monkeypatch):
+    """Wanted (user 10-11): during an approved plan, what the user types
+    changes the plan's steps, not only a side note."""
+    goal = ("Carry out the approved plan.\n\n1. add farewell to svc-a\n"
+            "2. add farewell to svc-b\n3. run the tests in both")
+    st = _st(board=_tasks.seed_board([], goal), goal=goal)
+    assert list(st.board) == ["plan-1", "plan-2", "plan-3"]
+    _model(monkeypatch, json.dumps({"tasks": [
+        {"id": "plan-1", "title": "add farewell to svc-a", "status": "pending"},
+        {"id": "plan-2", "title": "add farewell to svc-b", "status": "skipped"},
+        {"id": None, "title": "add farewell to svc-c — check: its test passes",
+         "status": "pending"},
+        {"id": "plan-3", "title": "run the tests in svc-a and svc-c", "status": "pending"}]}))
+    events = []
+    _, note = _drain(_limits._revise_board(st, ["not svc-b, do svc-c instead"], events))
+    assert list(st.board) == ["plan-1", "plan-2", "msg-4", "plan-3"]
+    assert st.board["plan-2"]["status"] == "skipped"
+    assert "svc-c" in st.board["plan-3"]["title"] and st.board_used and events
+    assert "replaces any checklist" in note
