@@ -47,6 +47,18 @@ function dropRenderNodes(id: string) {
   document.getElementById(`d${id}`)?.remove();
 }
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/* Mermaid returns its drawing as HTML text: a `<br/>` in a label comes back
+ * as `<br>`, which an XML parse rejects. The HTML parser reads it as written
+ * and, like the XML one, runs nothing while parsing.
+ */
+function svgRoot(markup: string): Element | null {
+  const doc = new DOMParser().parseFromString(markup, 'text/html');
+  const root = doc.body.firstElementChild;
+  return root?.namespaceURI === SVG_NS && root.localName === 'svg' ? root : null;
+}
+
 export function MermaidPreview({ source }: Readonly<{ source: string }>) {
   const host = React.useRef<HTMLDivElement>(null);
   const [state, setState] = React.useState<'loading' | 'ok' | 'error'>('loading');
@@ -65,11 +77,8 @@ export function MermaidPreview({ source }: Readonly<{ source: string }>) {
           dropRenderNodes(id);
           return;
         }
-        const doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
-        const root = doc.documentElement;
-        if (root.nodeName.toLowerCase() !== 'svg') {
-          throw new Error('Diagram preview was not an SVG');
-        }
+        const root = svgRoot(svg);
+        if (!root) throw new Error('Diagram preview was not an SVG');
         host.current.replaceChildren(document.importNode(root, true));
         setState('ok');
       })
