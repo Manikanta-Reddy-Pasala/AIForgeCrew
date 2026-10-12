@@ -30,6 +30,11 @@ FAMILY_CUE = (
     ("gitlab", re.compile(
         r"\bgitlab\b|(?-i:\bMRs?\b)|\bmerge[ -]requests?\b|\bpipelines?\b|"
         r"(?-i:\bCI\b)|\bci/cd\b", re.I)),
+    ("sonar", re.compile(
+        r"\bsonar(?:qube|cloud)?\b|\bquality[ -]gates?\b|\bcode smells?\b",
+        re.I)),
+    ("blackduck", re.compile(
+        r"\bblack[ -]?duck\b|\bpolicy violations?\b|(?-i:\bSCA\b)", re.I)),
     ("email", re.compile(
         r"\be-?mails?\b|\bmail\b|\bsmtp\b|\binbox\b", re.I)),
     ("web", re.compile(
@@ -60,6 +65,7 @@ FAMILY_TOOLS = {
 }
 FAMILY_PREFIX = {
     "jira": "jira_", "confluence": "confluence_", "gitlab": "gitlab_",
+    "sonar": "sonar_", "blackduck": "blackduck_",
     "email": "email_", "web": "web_",
 }
 SHARED_WHEN = {
@@ -72,6 +78,8 @@ FAMILY_BLURB = {
     "jira": "Jira issues: search, read, comment, move status, log work",
     "confluence": "Confluence pages: search, read, write",
     "gitlab": "GitLab merge requests, issues and CI pipelines",
+    "sonar": "SonarQube scan results: quality gate, issues, hotspots",
+    "blackduck": "Black Duck scan results: policy violations, vulnerabilities",
     "email": "read and send mail",
     "web": "fetch or crawl a web page by URL",
     "watch": "wait for a condition (a port, a file, a job)",

@@ -52,6 +52,29 @@ def test_observability_and_mcp_endpoints_are_derived(monkeypatch):
             "mcp2.corp.example"} <= hosts
 
 
+def test_the_scan_servers_are_derived_and_writable(monkeypatch):
+    """Sonar and Black Duck are integrations like the rest: configured means
+    reachable, and Black Duck's token exchange is a POST."""
+    monkeypatch.setenv("SONAR_BASE_URL", "https://sonar.corp.example")
+    monkeypatch.setenv("BLACKDUCK_BASE_URL", "https://bd.corp.example:8443")
+    want = {"sonar.corp.example", "bd.corp.example"}
+    assert want <= egress_hosts.allowed_hosts()
+    assert want <= egress_hosts.write_hosts()
+
+
+def test_a_saved_integration_is_allowed_at_once(monkeypatch):
+    """Save, then Test connection: the host just saved must not be refused by
+    a list memoised before the save."""
+    for var in ("SONAR_BASE_URL", "SONAR_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    from aiforge_core.config import _filecache, integrations
+    _filecache.clear()
+    assert "sonar.saved.example" not in egress_hosts.allowed_hosts()
+    integrations.set_("sonar", {"base_url": "https://sonar.saved.example"})
+    _filecache.clear()
+    assert "sonar.saved.example" in egress_hosts.allowed_hosts()
+
+
 def test_a_broken_probe_does_not_empty_the_whole_list(monkeypatch):
     """Each source is guarded separately: one half-configured integration must
     not fail the box closed on everything at once, the model included."""

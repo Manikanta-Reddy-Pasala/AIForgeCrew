@@ -313,6 +313,99 @@ export function GitlabCard() {
   );
 }
 
+// ── Scan servers: SonarQube and Black Duck ───────────────────────────────────
+const SCAN_TEXT = {
+  sonar: {
+    name: 'SonarQube',
+    about: 'the agent reads a scan\u2019s quality gate, issues and hotspots. A pipeline check picks the Sonar job up by itself. Read-only.',
+    placeholder: 'https://sonar.yourco.internal',
+    tokenHelp: 'Create a token in SonarQube: avatar → My Account → Security → Generate Tokens (a user token; the user needs Browse on the projects).',
+  },
+  blackduck: {
+    name: 'Black Duck',
+    about: 'the agent reads a scan\u2019s policy violations and vulnerabilities. A pipeline check picks the Black Duck job up by itself. Read-only.',
+    placeholder: 'https://blackduck.yourco.internal',
+    tokenHelp: 'Create a token in Black Duck: user menu → My Access Tokens → Create Token (read access is enough).',
+  },
+} as const;
+
+function ScanCard({ kind }: Readonly<{ kind: 'sonar' | 'blackduck' }>) {
+  const text = SCAN_TEXT[kind];
+  const [baseUrl, setBaseUrl] = useState('');
+  const [token, setToken] = useState('');
+  const [hasToken, setHasToken] = useState(false);
+  const [envManaged, setEnvManaged] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    integrationsApi.getScan(kind).then(c => {
+      setBaseUrl(c.base_url || '');
+      setHasToken(!!c.has_token);
+      setEnvManaged(!!c.env_managed);
+    }).catch(() => { /* endpoint may be absent on old API */ });
+  }, [kind]);
+
+  async function save() {
+    setBusy(true);
+    try {
+      const c = await integrationsApi.setScan(kind, {
+        base_url: baseUrl.trim(),
+        ...(token.trim() ? { token: token.trim() } : {}),
+      });
+      setHasToken(!!c.has_token);
+      setToken('');
+      toast.success(`${text.name} settings saved`);
+    } catch (e: any) {
+      toast.error(`Save failed: ${e.message}`);
+    } finally { setBusy(false); }
+  }
+
+  async function test() {
+    setBusy(true);
+    try {
+      const r = await integrationsApi.testScan(kind);
+      if (r.ok) {
+        const who = r.user ? ` as ${r.user}` : '';
+        const version = r.version ? ` (version ${r.version})` : '';
+        toast.success(`Connected to ${r.base_url || text.name}${who}${version}`);
+      } else {
+        const extra = r.detail ? ` — ${r.detail}` : '';
+        toast.error(`${r.error || 'Test failed'}${extra}${r.hint ? ' — ' + r.hint : ''}`, { duration: 14000 });
+      }
+    } catch (e: any) {
+      toast.error(`Test failed: ${e.message}`);
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div style={{ marginTop: 6 }}>
+      <div className="small muted" style={{ marginBottom: 8 }}>
+        <strong>{text.name}</strong> — {text.about}
+        {envManaged && <span style={{ color: 'var(--warn, #f59e0b)' }}> · currently set via env (overrides this form)</span>}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 460 }}>
+        <label className="small">Base URL{' '}
+          <input style={inputStyle} placeholder={text.placeholder}
+                 value={baseUrl} onChange={e => setBaseUrl(e.target.value)} />
+        </label>
+        <label className="small">Access Token{' '}
+          <input style={inputStyle} type="password"
+                 placeholder={hasToken ? '•••••• (leave blank to keep)' : 'paste a token'}
+                 value={token} onChange={e => setToken(e.target.value)} />
+        </label>
+        <div className="row" style={{ gap: 8 }}>
+          <button type="button" onClick={save} disabled={busy || !baseUrl.trim()}>Save</button>
+          <button type="button" className="ghost" onClick={test} disabled={busy}>Test connection</button>
+        </div>
+        <div className="xs muted">{text.tokenHelp}</div>
+      </div>
+    </div>
+  );
+}
+
+export function SonarCard() { return <ScanCard kind="sonar" />; }
+export function BlackduckCard() { return <ScanCard kind="blackduck" />; }
+
 // ── Email (SMTP/IMAP) integration card ───────────────────────────────────────
 export function EmailCard() {
   const [smtpHost, setSmtpHost] = useState('');
@@ -470,10 +563,10 @@ export function IntegrationsPanel({ defaultOpen = false }: Readonly<{ defaultOpe
         style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%',
                  justifyContent: 'space-between', background: 'none', border: 'none',
                  padding: 0, cursor: 'pointer' }}
-        title="Connect Jira / Confluence / GitLab / Email so the chat agent can use them"
+        title="Connect Jira / Confluence / GitLab / SonarQube / Black Duck / Email so the chat agent can use them"
       >
         <h2 style={{ fontSize: 14, margin: 0 }}>Integrations</h2>
-        <span className="small muted">{open ? '▾ hide' : '▸ Jira · Confluence · GitLab · Email'}</span>
+        <span className="small muted">{open ? '▾ hide' : '▸ Jira · Confluence · GitLab · Sonar · Black Duck · Email'}</span>
       </button>
       {open && (
         <div style={{ marginTop: 8 }}>
@@ -482,6 +575,10 @@ export function IntegrationsPanel({ defaultOpen = false }: Readonly<{ defaultOpe
           <JiraCard />
           {divider}
           <GitlabCard />
+          {divider}
+          <SonarCard />
+          {divider}
+          <BlackduckCard />
           {divider}
           <EmailCard />
         </div>

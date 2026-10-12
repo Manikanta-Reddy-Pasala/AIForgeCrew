@@ -1,4 +1,4 @@
-"""Jira, Confluence, GitLab and email — settings only.
+"""Jira, Confluence, GitLab, Sonar, Black Duck and email — settings only.
 
 Using them is not this module's business: those are agent tools inside the
 sandbox, so "file a Jira for this" already works in a chat and arrives here
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-KINDS = ("jira", "confluence", "gitlab", "email")
+KINDS = ("jira", "confluence", "gitlab", "sonar", "blackduck", "email")
 
 # Fields worth showing per kind, in the order a human reads them. Anything the
 # API adds later still shows up (see `extra` handling in `summary`).
@@ -23,6 +23,8 @@ FIELDS: dict[str, tuple[str, ...]] = {
     "jira": ("base_url", "user", "default_project", "has_token", "env_managed"),
     "confluence": ("base_url", "user", "default_space", "has_token", "env_managed"),
     "gitlab": ("base_url", "project", "has_token", "env_managed"),
+    "sonar": ("base_url", "has_token", "env_managed"),
+    "blackduck": ("base_url", "has_token", "env_managed"),
     # The server's own names (_EmailCfg): smtp_* / imap_*, not host/port/user.
     "email": ("smtp_host", "smtp_port", "smtp_user", "smtp_from", "smtp_starttls",
               "has_smtp_password", "imap_host", "imap_port", "imap_user", "imap_ssl",
@@ -36,6 +38,8 @@ SETTABLE: dict[str, tuple[str, ...]] = {
     "jira": ("base_url", "token", "user", "insecure_tls", "default_project"),
     "confluence": ("base_url", "token", "user", "insecure_tls", "default_space"),
     "gitlab": ("base_url", "token", "project", "insecure_tls"),
+    "sonar": ("base_url", "token"),
+    "blackduck": ("base_url", "token"),
     "email": ("smtp_host", "smtp_port", "smtp_user", "smtp_password", "smtp_from",
               "smtp_starttls", "imap_host", "imap_port", "imap_user", "imap_password",
               "imap_ssl"),

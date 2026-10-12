@@ -96,6 +96,16 @@ def _probe_gitlab():
     return [_base()]
 
 
+def _probe_sonar():
+    from aiforge_core.runtime.tools.sonar import _base
+    return [_base()]
+
+
+def _probe_blackduck():
+    from aiforge_core.runtime.tools.blackduck import _base
+    return [_base()]
+
+
 def _probe_mail():
     from aiforge_core.runtime.tools import email_tool
     return [(email_tool._smtp_conf() or {}).get("host"),
@@ -132,8 +142,8 @@ def _probe_sinks():
 
 
 _HOST_PROBES = (_probe_ssl, _probe_jira, _probe_confluence, _probe_gitlab,
-                _probe_mail, _probe_mcp, _probe_registry, _probe_admin,
-                _probe_sinks)
+                _probe_sonar, _probe_blackduck, _probe_mail, _probe_mcp,
+                _probe_registry, _probe_admin, _probe_sinks)
 
 
 def _integration_hosts() -> set[str]:

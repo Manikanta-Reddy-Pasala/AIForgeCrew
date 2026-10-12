@@ -277,6 +277,29 @@ def gitlab_pipeline(project: str = "", pipeline_id: int = 0, ref: str = "",
                                "log_chars": log_chars}, str(root()))
 
 
+def sonar_report(url: str = "", project: str = "", branch: str = "",
+                 pull_request: str = "", limit: int = 20) -> dict:
+    """A SonarQube scan result: quality gate, open issues, security hotspots,
+    coverage. Give ``url`` (a Sonar link from a CI job log) or ``project``
+    (the project key), with an optional ``branch`` or ``pull_request``.
+    Read-only, soft-fails."""
+    from aiforge_core.runtime.tools import sonar as _s
+    return _s.sonar_report({"url": url, "project": project, "branch": branch,
+                            "pull_request": pull_request, "limit": limit},
+                           str(root()))
+
+
+def blackduck_report(url: str = "", project: str = "", version: str = "",
+                     limit: int = 20) -> dict:
+    """A Black Duck scan result: policy status, components in violation, open
+    vulnerabilities. Give ``url`` (the link Detect prints in a CI job log) or
+    ``project`` and ``version`` names. Read-only, soft-fails."""
+    from aiforge_core.runtime.tools import blackduck as _b
+    return _b.blackduck_report({"url": url, "project": project,
+                                "version": version, "limit": limit},
+                               str(root()))
+
+
 def gitlab_pipeline_watch(project: str = "", pipeline_id: int = 0,
                           ref: str = "", sha: str = "", timeout_s: int = 600,
                           interval_s: int = 20, max_checks: int = 60) -> dict:

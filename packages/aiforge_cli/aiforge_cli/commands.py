@@ -29,7 +29,7 @@ MODES = ("simple", "plan", "team")
 SHELLS = ("bash", "zsh", "fish", "powershell")
 BOX_ACTIONS = ("up", "down", "restart", "status", "logs", "shell")
 MOUNT_ACTIONS = ("add", "rm", "ls", "approve")
-INTEGRATIONS = ("jira", "confluence", "gitlab", "email")
+INTEGRATIONS = ("jira", "confluence", "gitlab", "sonar", "blackduck", "email")
 INTEGRATION_ACTIONS = ("ls", "get", "set", "test")
 WORKTREE_ACTIONS = ("add", "ls", "rm")
 

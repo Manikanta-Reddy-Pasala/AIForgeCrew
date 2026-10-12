@@ -345,6 +345,8 @@ export function describeStep(name: string, args: Args | undefined | null): strin
     case 'confluence_search': return 'Searching Confluence';
     case 'confluence_create': return 'Creating a Confluence page';
     case 'confluence_update': return 'Updating a Confluence page';
+    case 'sonar_report': return 'Reading the SonarQube result';
+    case 'blackduck_report': return 'Reading the Black Duck result';
     case 'email_send': return 'Sending an email';
     case 'email_read': return 'Reading email';
     case 'committed': return 'Saved the changes as a commit';

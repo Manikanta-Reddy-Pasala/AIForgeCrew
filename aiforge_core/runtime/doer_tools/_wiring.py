@@ -23,14 +23,14 @@ from ._repo import (
     impacted_tests, rename_symbol, repo_map,
 )
 from ._integrations import (
-    confluence_attach, confluence_children, confluence_create,
+    blackduck_report, confluence_attach, confluence_children, confluence_create,
     confluence_read, confluence_search, confluence_update, email_read,
     email_send, gitlab_comment, gitlab_create, gitlab_mr_comment,
     gitlab_mr_create, gitlab_pipeline, gitlab_pipeline_watch, gitlab_pipelines,
     gitlab_read, gitlab_search, gitlab_update, jira_assign,
     jira_comment, jira_create, jira_link_issues, jira_read, jira_remote_links,
     jira_search, jira_transition, jira_transitions, jira_update, jira_worklog,
-    resolve_repo,
+    resolve_repo, sonar_report,
 )
 from ._tools import (
     bash, browse, command_kill, command_output, command_wait, commit,
@@ -112,6 +112,7 @@ def _adk_function_tools_impl(role: "str | None" = None) -> list:
                         gitlab_search, gitlab_read, gitlab_create, gitlab_update,
                         gitlab_comment, gitlab_mr_create, gitlab_mr_comment,
                         gitlab_pipelines, gitlab_pipeline, gitlab_pipeline_watch,
+                        sonar_report, blackduck_report,
                         codegraph_impact, codegraph_callers, codegraph_callees,
                         codegraph_explore, codegraph_query,
                         typecheck, run_tests, lsp, format,

@@ -85,6 +85,7 @@ from ._repo import (
     repo_map,
 )
 from ._integrations import (
+    blackduck_report,
     confluence_add_label,
     confluence_attach,
     confluence_children,
@@ -134,6 +135,7 @@ from ._integrations import (
     jira_update,
     jira_worklog,
     resolve_repo,
+    sonar_report,
 )
 from ._tools import (
     bash,
@@ -204,6 +206,7 @@ __all__ = [
     "gitlab_search", "gitlab_read", "gitlab_create", "gitlab_update",
     "gitlab_comment", "gitlab_mr_create", "gitlab_mr_comment",
     "gitlab_pipelines", "gitlab_pipeline", "gitlab_pipeline_watch",
+    "sonar_report", "blackduck_report",
     "typecheck", "run_tests", "lsp", "format",
     "mcp", "browse", "execute_ipython_cell", "delegate_to_agent",
     "github_pr", "multi_edit",

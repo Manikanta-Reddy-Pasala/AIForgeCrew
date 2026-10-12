@@ -355,9 +355,12 @@ CATALOG: dict = {
         "whatever failed. Address it by pipeline_id, or by ref/branch (latest "
         "on that branch), or by sha — or omit all three for the project's "
         "latest. This is a SNAPSHOT: if the pipeline is still running and the "
-        "user wants the outcome, use gitlab_pipeline_watch instead.",
+        "user wants the outcome, use gitlab_pipeline_watch instead. When a "
+        "job ran SonarQube or Black Duck, `scans` holds what that scan found "
+        "(quality gate, issues, policy violations, vulnerabilities) — read "
+        "it before answering about code quality or security.",
         {"project": "s", "pipeline_id": "i", "ref": "s", "sha": "s",
-         "logs": "b", "log_chars": "i"},
+         "logs": "b", "log_chars": "i", "scans": "b"},
         ()),
     "gitlab_pipeline_watch": (
         "READ (long-running): watch a GitLab CI pipeline until it FINISHES, "
@@ -368,6 +371,22 @@ CATALOG: dict = {
         "call covers the whole watch — do NOT poll gitlab_pipeline in a loop.",
         {"project": "s", "pipeline_id": "i", "ref": "s", "sha": "s",
          "interval_s": "i", "timeout_s": "i", "max_checks": "i"},
+        ()),
+    # ── scan results ─────────────────────────────────────────────────────
+    "sonar_report": (
+        "READ a SonarQube scan result: quality gate (and which condition "
+        "failed), open issues by severity with file and line, security "
+        "hotspots, coverage. Address it by url (a Sonar link, e.g. from a CI "
+        "job log) or by project key, with an optional branch or pull_request.",
+        {"url": "s", "project": "s", "branch": "s", "pull_request": "s",
+         "limit": "i"},
+        ()),
+    "blackduck_report": (
+        "READ a Black Duck scan result: policy status, the components in "
+        "violation and the rules they break, open vulnerabilities by "
+        "severity. Address it by url (the Black Duck link Detect prints in a "
+        "CI job log) or by project and version names.",
+        {"url": "s", "project": "s", "version": "s", "limit": "i"},
         ()),
     # ── email ────────────────────────────────────────────────────────────
     "email_send": ("Send an email via SMTP.",

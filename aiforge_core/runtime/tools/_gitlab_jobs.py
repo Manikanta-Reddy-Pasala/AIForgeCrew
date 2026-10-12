@@ -97,14 +97,44 @@ def _fetch_bridges(proj: str, pipeline_id) -> list:
     return out
 
 
-def _job_trace(proj: str, job_id, tail: int = _LOG_TAIL) -> "tuple[str, str]":
-    """(text, note). The END of one job's log — or an honest admission that it
-    is not the end.
+def _job_log(proj: str, job_id) -> tuple[str, str, int]:
+    """``(cleaned text, why it is missing, fetch cap hit)`` — one job's whole
+    log, as far as we were willing to fetch it.
 
     The trace endpoint returns plain TEXT, not JSON. It is pulled with its own
     large body cap (see _TRACE_FETCH_CAP), because the shared 200k default is
     sized for issue bodies and `data[-tail:]` over a capped READ returns the
     MIDDLE of a long log.
+    """
+    pkg = _pkg()
+    enc, err = _enc_id(job_id)
+    if err:
+        return "", f"log unavailable (bad job id: {err})", 0
+    r = pkg._request("GET", f"/projects/{pkg._enc_proj(proj)}/jobs/{enc}/trace",
+                 body_cap=_TRACE_FETCH_CAP, parse_json=False)
+    if not r["ok"]:
+        # A failed job whose log cannot be read must not vanish silently —
+        # "it failed and there is no log" is itself the finding.
+        return "", f"log unavailable ({r.get('error')})", 0
+    data = r["data"]
+    if not isinstance(data, str):
+        return "", "log unavailable (unexpected payload)", 0
+    txt = pkg._clean_log(data)
+    if not txt.strip():
+        # Checked AFTER cleaning: a trace of nothing but section markers is
+        # non-blank raw and empty once they are stripped, and "\r\r" as a
+        # failure log is worse than saying there is nothing there. A real,
+        # distinct fact — and the common one at the exact moment the watch's
+        # terminal re-read fires, before the runner has flushed.
+        return "", "the job log is empty", 0
+    return txt, "", int(r.get("body_cap_hit") or 0)
+
+
+def _job_trace(proj: str, job_id, tail: int = _LOG_TAIL, *,
+               keep: dict | None = None) -> "tuple[str, str]":
+    """(text, note). The END of one job's log — or an honest admission that it
+    is not the end. ``keep``, when given, receives the whole cleaned log under
+    the job id, for a caller that also needs to search it.
 
     RAISING THE CAP IS NOT THE SAME AS FIXING IT. http_request keeps the HEAD
     of an over-cap body, so above the cap this is still the middle — the fix is
@@ -113,33 +143,17 @@ def _job_trace(proj: str, job_id, tail: int = _LOG_TAIL) -> "tuple[str, str]":
     that does not contain the failure. Better a note the reader can act on than
     a number that is wrong in the direction of reassurance.
     """
-    pkg = _pkg()
-    enc, err = _enc_id(job_id)
-    if err:
-        return "", f"log unavailable (bad job id: {err})"
-    r = pkg._request("GET", f"/projects/{pkg._enc_proj(proj)}/jobs/{enc}/trace",
-                 body_cap=_TRACE_FETCH_CAP, parse_json=False)
-    if not r["ok"]:
-        # A failed job whose log cannot be read must not vanish silently —
-        # "it failed and there is no log" is itself the finding.
-        return "", f"log unavailable ({r.get('error')})"
-    data = r["data"]
-    if not isinstance(data, str):
-        return "", "log unavailable (unexpected payload)"
-    txt = pkg._clean_log(data)
-    if not txt.strip():
-        # Checked AFTER cleaning: a trace of nothing but section markers is
-        # non-blank raw and empty once they are stripped, and "\r\r" as a
-        # failure log is worse than saying there is nothing there. A real,
-        # distinct fact — and the common one at the exact moment the watch's
-        # terminal re-read fires, before the runner has flushed.
-        return "", "the job log is empty"
-    if r.get("body_cap_hit"):
+    txt, missing, cap_hit = _job_log(proj, job_id)
+    if not txt:
+        return "", missing
+    if keep is not None:
+        keep[job_id] = txt
+    if cap_hit:
         # We have the START of a log bigger than we were willing to fetch. The
         # tail of THIS is not the tail of the job.
         return txt[:tail], (
             f"THIS IS NOT THE END OF THE LOG — it is larger than the "
-            f"{r['body_cap_hit']}-byte fetch cap, so this is the first "
+            f"{cap_hit}-byte fetch cap, so this is the first "
             f"{tail} chars. Open the job URL for the failure.")
     note = ""
     if len(txt) > tail:
@@ -169,12 +183,14 @@ def _pipeline_status_flags(out: dict, status: str) -> None:
                        "progress until someone runs it")
 
 
-def _failed_job_logs(proj, args: dict, failed: list) -> tuple[dict, str]:
-    """``(logs by job name, truncation note)`` for the failed jobs."""
+def _failed_job_logs(proj, args: dict, failed: list,
+                     keep: dict | None = None) -> tuple[dict, str]:
+    """``(logs by job name, truncation note)`` for the failed jobs. ``keep``
+    receives each whole log under its job id."""
     tail = _pipe_int(args, "log_chars", _LOG_TAIL, 200, 20_000)
     logs: dict = {}
     for j in failed[:_MAX_TRACES]:
-        txt, note = _job_trace(proj, j.get("id"), tail)
+        txt, note = _job_trace(proj, j.get("id"), tail, keep=keep)
         logs[str(j.get("name"))] = txt or f"({note or 'no log'})"
         if note and txt:
             logs[str(j.get("name")) + " [note]"] = note
@@ -244,7 +260,8 @@ def gitlab_pipeline(args: dict, _cwd: str | None = None, *,
 
     Address it by ``pipeline_id``, or by ``ref``/``branch`` (latest pipeline on
     that branch), or by ``sha`` — or omit all three for the project's latest.
-    Set ``logs`` false to skip fetching failed-job logs."""
+    Set ``logs`` false to skip fetching failed-job logs, ``scans`` false to
+    skip reading what the Sonar / Black Duck jobs found."""
     pkg = _pkg()
     proj = pkg._proj_id(args)
     if not proj:
@@ -273,11 +290,30 @@ def gitlab_pipeline(args: dict, _cwd: str | None = None, *,
     # loop truncates the serialised observation, so a 40-job `jobs` array sitting
     # in front of `logs` sliced the failure reason out of what the model actually
     # reads — at 14 jobs, measured.
+    texts: dict = {}
     if failed and _truthy(args.get("logs")):
-        out["logs"], truncated = _failed_job_logs(proj, args, failed)
+        out["logs"], truncated = _failed_job_logs(proj, args, failed, texts)
         if truncated:
             out["logs_truncated"] = truncated
+    if _truthy(args.get("scans")):
+        _attach_scans(out, proj, jobs, texts)
     if status == "failed":
         _explain_failure(out, proj, failed)
     out["jobs"] = jobs
     return out
+
+
+def _attach_scans(out: dict, proj, jobs: list, texts: dict) -> None:
+    """Add ``scans``: what the pipeline's Sonar and Black Duck jobs found.
+
+    The job list only says a scan job passed or failed. Never lets a scan
+    server's trouble cost the pipeline answer."""
+    from . import _gitlab_scans
+    try:
+        scans = _gitlab_scans.collect(
+            proj, jobs, texts, lambda job_id: _job_log(proj, job_id)[0])
+    except Exception as exc:  # noqa: BLE001
+        out["scans_error"] = str(exc)[:200]
+        return
+    if scans:
+        out["scans"] = scans

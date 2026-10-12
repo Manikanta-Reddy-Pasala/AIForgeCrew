@@ -81,6 +81,27 @@ def integration_conf(name: str, env_prefix: str, *,
     return conf
 
 
+def same_origin(url: str, base: str) -> bool:
+    """Do ``url`` and ``base`` name the same host and port?
+
+    For a link that arrives from outside (a CI job log, the model): an
+    integration's token goes only to the server the operator configured."""
+    import urllib.parse
+    try:
+        a, b = urllib.parse.urlsplit(str(url or "")), urllib.parse.urlsplit(base or "")
+        if not a.hostname or not b.hostname:
+            return False
+        return (a.hostname.lower() == b.hostname.lower()
+                and (a.port or _default_port(a.scheme))
+                == (b.port or _default_port(b.scheme)))
+    except ValueError:
+        return False
+
+
+def _default_port(scheme: str) -> int:
+    return 80 if (scheme or "").lower() == "http" else 443
+
+
 def _shared_ca() -> str:
     """The estate-wide CA bundle (AIFORGE_CA_BUNDLE / SSL_CERT_FILE /
     REQUESTS_CA_BUNDLE), or "". One var covers Jira, Confluence, GitLab, the
@@ -161,7 +182,8 @@ def http_request(method: str, url: str, *, headers: dict,
                  body: dict | None = None, timeout: int = 20,
                  body_cap: int = 200_000, context=None,
                  capture_headers: tuple[str, ...] = (),
-                 parse_json: bool = True) -> dict:
+                 parse_json: bool = True,
+                 credential_exchange: bool = False) -> dict:
     """Issue one JSON request and return the soft-error envelope.
 
     Returns ``{"ok": True, "data": <json|str|{}>}`` on success (an empty body —
@@ -174,6 +196,11 @@ def http_request(method: str, url: str, *, headers: dict,
     plain text (a CI job log) must use it: the speculative ``json.loads`` turns a
     log that happens to BE json into a dict, and an empty body into ``{}``. Never
     raises.
+
+    ``credential_exchange=True`` marks a POST that sends the integration's own
+    token and nothing else, to get a session token back (Black Duck). The
+    egress policy then judges it as the read it serves. Never pass a ``body``
+    with it.
     """
     # EGRESS POLICY. This is the single entry point for Jira, Confluence and
     # GitLab, so one check here covers all three — including the case the
@@ -181,7 +208,10 @@ def http_request(method: str, url: str, *, headers: dict,
     # job) has no approver, so tool_gate degrades ASK to allow and a write
     # would go out with nobody watching.
     from aiforge_core.net import egress as _egress
-    refusal = _egress.allow("integration", url, method=method)
+    if credential_exchange and body is not None:
+        return {"ok": False, "error": "a credential exchange carries no body"}
+    refusal = _egress.allow("integration", url,
+                            method="GET" if credential_exchange else method)
     if refusal is not None:
         return refusal
     data = json.dumps(body).encode("utf-8") if body is not None else None

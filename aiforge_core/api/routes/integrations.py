@@ -1,4 +1,5 @@
-"""Integration config routes — Confluence / Jira / GitLab / Email.
+"""Integration config routes — Confluence / Jira / GitLab / Sonar /
+Black Duck / Email.
 
 Read / persist / test each integration's connection settings (secrets kept
 write-only). Extracted from api.py (APIRouter split).
@@ -168,6 +169,73 @@ def integrations_gitlab_test() -> dict:
     """Live connectivity + auth check against the configured GitLab."""
     from aiforge_core.runtime.tools.gitlab import gitlab_test
     return gitlab_test()
+
+
+class _ScanCfg(BaseModel):
+    base_url: str | None = None
+    token: str | None = None       # write-only; omitted on read
+
+
+def _scan_get(name: str, prefix: str) -> dict:
+    """Current settings of a scan server (token masked). Reflects env override."""
+    from aiforge_core.config import integrations
+    stored = integrations.get(name)
+    env_token = bool(os.environ.get(f"{prefix}_TOKEN"))
+    env_url = os.environ.get(f"{prefix}_BASE_URL")
+    return {
+        "base_url": env_url or stored.get("base_url", ""),
+        "has_token": env_token or bool(stored.get("token")),
+        "env_managed": bool(env_url or env_token),
+    }
+
+
+def _scan_set(name: str, prefix: str, body: _ScanCfg) -> dict:
+    """Persist a scan server's settings. An empty/omitted token keeps the
+    existing one (so re-saving the form doesn't wipe the secret)."""
+    from aiforge_core.config import integrations
+    patch: dict = {}
+    if body.base_url is not None:
+        patch["base_url"] = body.base_url.strip().rstrip("/")
+    if body.token:
+        # No token has whitespace in it. A pasted line break inside one would
+        # reach an HTTP header, and the refusal would quote the token back.
+        patch["token"] = "".join(body.token.split())
+    integrations.set_(name, patch)
+    return _scan_get(name, prefix)
+
+
+@router.get("/api/integrations/sonar")
+def integrations_sonar_get() -> dict:
+    return _scan_get("sonar", "SONAR")
+
+
+@router.put("/api/integrations/sonar")
+def integrations_sonar_set(body: _ScanCfg) -> dict:
+    return _scan_set("sonar", "SONAR", body)
+
+
+@router.post("/api/integrations/sonar/test")
+def integrations_sonar_test() -> dict:
+    """Live connectivity + token check against the configured SonarQube."""
+    from aiforge_core.runtime.tools.sonar import sonar_test
+    return sonar_test()
+
+
+@router.get("/api/integrations/blackduck")
+def integrations_blackduck_get() -> dict:
+    return _scan_get("blackduck", "BLACKDUCK")
+
+
+@router.put("/api/integrations/blackduck")
+def integrations_blackduck_set(body: _ScanCfg) -> dict:
+    return _scan_set("blackduck", "BLACKDUCK", body)
+
+
+@router.post("/api/integrations/blackduck/test")
+def integrations_blackduck_test() -> dict:
+    """Live connectivity + token check against the configured Black Duck."""
+    from aiforge_core.runtime.tools.blackduck import blackduck_test
+    return blackduck_test()
 
 
 class _EmailCfg(BaseModel):

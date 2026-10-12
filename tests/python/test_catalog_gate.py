@@ -12,7 +12,7 @@ import pytest
 from aiforge_core.runtime.chat_agent._catalog_gate import gate_catalog
 from aiforge_core.runtime.chat_agent._prompt import _SYSTEM
 
-ALL = {"jira", "confluence", "gitlab", "email"}
+ALL = {"jira", "confluence", "gitlab", "sonar", "blackduck", "email"}
 
 
 @pytest.fixture(autouse=True)
@@ -33,8 +33,10 @@ def test_everything_configured_is_a_noop():
 
 def test_unconfigured_families_are_dropped():
     out, missing = gate_catalog(_SYSTEM, set())
-    assert missing == ["confluence", "email", "gitlab", "jira"]
-    for prefix in ("- jira_", "- confluence_", "- gitlab_", "- email_"):
+    assert missing == ["blackduck", "confluence", "email", "gitlab", "jira",
+                       "sonar"]
+    for prefix in ("- jira_", "- confluence_", "- gitlab_", "- sonar_",
+                   "- blackduck_", "- email_"):
         assert prefix not in out
     assert len(out) < len(_SYSTEM)
 

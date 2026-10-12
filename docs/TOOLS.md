@@ -179,7 +179,7 @@ row are deleted — a disabled row is a loop nobody closed.
 | Tool | Args | Does | Gate |
 |---|---|---|---|
 | `gitlab_pipelines` | `{project, ref, status, sha, limit}` | list recent pipelines, newest first | RO |
-| `gitlab_pipeline` | `{project, pipeline_id \| ref \| sha, logs, log_chars}` | one pipeline: status, jobs, log tail of what failed | RO |
+| `gitlab_pipeline` | `{project, pipeline_id \| ref \| sha, logs, log_chars, scans}` | one pipeline: status, jobs, log tail of what failed, and what its Sonar / Black Duck jobs found (`scans`) | RO |
 | `gitlab_pipeline_watch` | `{project, …, interval_s, timeout_s, max_checks}` | poll until it finishes — ONE call covers the whole watch | RO |
 
 `ok` says the read/watch worked; `passed` says the pipeline was green — they are
@@ -192,6 +192,20 @@ The watch budget is clamped to ~180s only where nothing can Stop it (the jobs
 runner, `/api/chat/agent`); team mode and subtask runs re-bind the session so
 Stop reaches them and the full `timeout_s` applies. When the clamp bites, the
 effective value comes back as `unattended_budget_s`.
+
+### Scan results (SonarQube, Black Duck)
+
+| Tool | Args | Does | Gate |
+|---|---|---|---|
+| `sonar_report` | `{url \| project, branch, pull_request, limit}` | quality gate and failed conditions, open issues, security hotspots, measures | RO |
+| `blackduck_report` | `{url \| project + version, limit}` | policy status, components in violation with their rules, open vulnerabilities | RO |
+
+`url` is the link the scanner prints in the CI job log. It is opened only when
+it is on the configured server. `gitlab_pipeline` finds these links by itself:
+it recognises a Sonar or Black Duck job by what the scanner wrote in the job
+log, whatever the job is named, and puts the result under `scans`. It reads the
+failed jobs' logs first, then up to `GITLAB_SCAN_PROBE_JOBS` (default 6) other
+finished jobs, and only while one of the two servers is configured.
 
 ### Email & web
 

@@ -87,6 +87,7 @@ _READONLY_ALWAYS_ALLOW = {
     # default would start gating read-only tools.
     "gitlab_search", "gitlab_read",
     "gitlab_pipelines", "gitlab_pipeline", "gitlab_pipeline_watch",
+    "sonar_report", "blackduck_report",
     # Looking at a command the agent already started (its approval was the
     # run_command call).
     "command_wait", "command_output",

@@ -96,6 +96,10 @@ from ._gitlab import (
     _t_gitlab_pipelines,
     _t_github_pr,
 )
+from ._scans import (
+    _t_blackduck_report,
+    _t_sonar_report,
+)
 from ._git import (
     _t_git_status,
     _t_git_diff,

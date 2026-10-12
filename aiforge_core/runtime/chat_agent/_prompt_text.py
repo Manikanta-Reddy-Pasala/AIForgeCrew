@@ -166,8 +166,10 @@ Tool arguments:
 - gitlab_mr_create {{"project": "group/proj", "source_branch": "feat/x", "target_branch": "main", "title": "...", "description": "..."}}   (open a merge request — needs your Approve)
 - gitlab_mr_comment{{"project": "group/proj", "iid": 7, "body": "..."}}                    (comment on an MR — needs your Approve)
 - gitlab_pipelines{{"project": "group/proj", "ref": "main", "limit": 10}}                  (recent CI pipelines)
-- gitlab_pipeline{{"project": "group/proj", "ref": "main"}}                                (one pipeline + jobs + failed-job logs)
+- gitlab_pipeline{{"project": "group/proj", "ref": "main"}}                                (one pipeline + jobs + failed-job logs + what its Sonar / Black Duck jobs found, under "scans")
 - gitlab_pipeline_watch{{"project": "group/proj", "ref": "main", "timeout_s": 900}}        (wait for it to FINISH — one call, not a poll loop)
+- sonar_report  {{"url": "https://sonar.host/dashboard?id=proj&pullRequest=12"}}            (SonarQube result: quality gate, issues, hotspots — or "project": "key", optional "branch"/"pull_request")
+- blackduck_report {{"url": "https://bd.host/api/projects/<id>/versions/<id>/components"}}   (Black Duck result: policy violations, vulnerabilities — or "project": "name", "version": "name")
 - github_pr     {{"title": "...", "body": "...", "base": "main", "draft": false}}          (open a GitHub PR from the current branch via gh CLI — needs your Approve)
 After any Confluence/Jira/GitLab create/update/comment SUCCEEDS, show the user a \
 short AFTER preview of what was written (the `written` field in the result) plus \

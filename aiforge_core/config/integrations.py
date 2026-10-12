@@ -51,7 +51,19 @@ def set_(name: str, cfg: dict) -> dict:
     # integration at the same moment, must not leave a truncated or blended
     # integrations.json that loses every saved credential.
     _atomic.write_text(_path(), json.dumps(data, indent=2))
+    _refresh_egress_hosts()
     return cur
+
+
+def _refresh_egress_hosts() -> None:
+    """A saved host is allowed from the next call on. The allowlist is derived
+    from this file and memoised for a few seconds, so without this "Save, then
+    Test connection" on a new server answered ``host_not_allowed``."""
+    try:
+        from aiforge_core.config import egress_hosts
+        egress_hosts._invalidate()
+    except Exception:  # noqa: BLE001 — a save must not fail over a cache
+        pass
 
 
 __all__ = ["load_all", "get", "set_"]

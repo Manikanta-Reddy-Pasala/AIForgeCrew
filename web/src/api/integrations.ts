@@ -10,6 +10,9 @@ export type GitlabCfg = {
   has_token: boolean; env_managed: boolean;
 };
 
+export type ScanCfg = { base_url: string; has_token: boolean; env_managed: boolean };
+export type ScanKind = 'sonar' | 'blackduck';
+
 export type EmailCfg = {
   smtp_host: string; smtp_port: number; smtp_user: string; smtp_from: string;
   smtp_starttls: boolean;
@@ -50,6 +53,17 @@ export const integrationsApi = {
   testGitlab: () =>
     j<{ ok: boolean; base_url?: string; auth?: string; user?: string; error?: string; detail?: string; hint?: string }>(
       '/integrations/gitlab/test', { method: 'POST' }),
+
+  getScan: (kind: ScanKind) => j<ScanCfg>(`/integrations/${kind}`),
+  setScan: (kind: ScanKind, cfg: { base_url?: string; token?: string }) =>
+    j<ScanCfg>(`/integrations/${kind}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    }),
+  testScan: (kind: ScanKind) =>
+    j<{ ok: boolean; base_url?: string; user?: string; version?: string; error?: string; detail?: string; hint?: string }>(
+      `/integrations/${kind}/test`, { method: 'POST' }),
 
   getEmail: () => j<EmailCfg>('/integrations/email'),
   setEmail: (cfg: {

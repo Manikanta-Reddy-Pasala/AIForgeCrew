@@ -11,7 +11,7 @@ import {
   LlmSettingsInput,
 } from '../api';
 import { Icon } from '../icons';
-import { JiraCard, ConfluenceCard, GitlabCard, EmailCard } from '../components/Integrations';
+import { JiraCard, ConfluenceCard, GitlabCard, SonarCard, BlackduckCard, EmailCard } from '../components/Integrations';
 import AgentSettings from './AgentSettings';
 import MemorySyncCard from './Home.MemorySyncCard';
 import EgressCard from './Settings.EgressCard';
@@ -470,15 +470,15 @@ export default function Home() {
   );
 }
 
-// Integrations tab — pick Jira / Confluence / GitLab / Email, configure one at a time.
+// Integrations tab — pick Jira / Confluence / GitLab / Sonar / Black Duck / Email, configure one at a time.
 function IntegrationsTab() {
-  const [sub, setSub] = useState<'jira' | 'confluence' | 'gitlab' | 'email'>('jira');
-  const LABELS: Record<string, string> = { gitlab: 'GitLab', email: 'Email' };
+  const [sub, setSub] = useState<'jira' | 'confluence' | 'gitlab' | 'sonar' | 'blackduck' | 'email'>('jira');
+  const LABELS: Record<string, string> = { gitlab: 'GitLab', sonar: 'Sonar', blackduck: 'Black Duck', email: 'Email' };
   const label = (s: string) => LABELS[s] ?? s;
   return (
     <div className="card">
       <div className="row" style={{ gap: 4, marginBottom: 12 }}>
-        {(['jira', 'confluence', 'gitlab', 'email'] as const).map(s => (
+        {(['jira', 'confluence', 'gitlab', 'sonar', 'blackduck', 'email'] as const).map(s => (
           <button type="button" key={s} onClick={() => setSub(s)}
                   className={sub === s ? '' : 'ghost'}
                   style={{ textTransform: 'capitalize', fontWeight: sub === s ? 600 : 400 }}>
@@ -489,6 +489,8 @@ function IntegrationsTab() {
       {sub === 'jira' && <JiraCard />}
       {sub === 'confluence' && <ConfluenceCard />}
       {sub === 'gitlab' && <GitlabCard />}
+      {sub === 'sonar' && <SonarCard />}
+      {sub === 'blackduck' && <BlackduckCard />}
       {sub === 'email' && <EmailCard />}
     </div>
   );

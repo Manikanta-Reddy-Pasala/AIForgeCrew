@@ -1,7 +1,8 @@
-"""Integration settings: Confluence, Jira, GitLab and Email.
+"""Integration settings: Confluence, Jira, GitLab, Sonar, Black Duck and
+Email.
 
 Every one of these forms holds a secret, and the same two rules apply to all
-four. A secret is WRITE-ONLY: a read reports only whether one is set, never
+of them. A secret is WRITE-ONLY: a read reports only whether one is set, never
 the value. And an empty or omitted secret KEEPS the stored one — otherwise
 re-saving the form (which the UI does with a masked field) silently wipes the
 token and the integration stops working with no visible cause.
@@ -29,14 +30,17 @@ def client():
 @pytest.fixture(autouse=True)
 def store(monkeypatch):
     from aiforge_core.config import integrations
-    rows: dict = {"confluence": {}, "jira": {}, "gitlab": {}, "email": {}}
+    rows: dict = {"confluence": {}, "jira": {}, "gitlab": {}, "sonar": {},
+                  "blackduck": {}, "email": {}}
     monkeypatch.setattr(integrations, "get", lambda name: dict(rows.get(name, {})))
     monkeypatch.setattr(integrations, "set_",
                         lambda name, patch: rows.setdefault(name, {}).update(patch))
     for var in ("CONFLUENCE_BASE_URL", "CONFLUENCE_TOKEN", "CONFLUENCE_USER",
                 "CONFLUENCE_DEFAULT_SPACE", "JIRA_BASE_URL", "JIRA_TOKEN",
                 "JIRA_USER", "JIRA_DEFAULT_PROJECT", "GITLAB_BASE_URL",
-                "GITLAB_TOKEN", "GITLAB_PROJECT", "AIFORGE_SMTP_HOST",
+                "GITLAB_TOKEN", "GITLAB_PROJECT", "SONAR_BASE_URL",
+                "SONAR_TOKEN", "BLACKDUCK_BASE_URL", "BLACKDUCK_TOKEN",
+                "AIFORGE_SMTP_HOST",
                 "AIFORGE_SMTP_PORT", "AIFORGE_SMTP_USER", "AIFORGE_SMTP_FROM",
                 "AIFORGE_SMTP_PASSWORD", "AIFORGE_SMTP_STARTTLS",
                 "AIFORGE_IMAP_HOST", "AIFORGE_IMAP_PORT", "AIFORGE_IMAP_USER",
@@ -168,6 +172,62 @@ def test_the_gitlab_test_button_calls_the_client(client, monkeypatch):
     import aiforge_core.runtime.tools.gitlab as gl
     monkeypatch.setattr(gl, "gitlab_test", lambda: {"ok": True, "user": "ada"})
     assert client.post("/api/integrations/gitlab/test").json()["user"] == "ada"
+
+
+
+# ─── Sonar and Black Duck ──────────────────────────────────────────────
+
+SCAN_KINDS = [("sonar", "SONAR"), ("blackduck", "BLACKDUCK")]
+
+
+@pytest.mark.parametrize("kind, prefix", SCAN_KINDS)
+def test_scan_settings_are_saved_and_read_back(client, store, kind, prefix):
+    client.put(f"/api/integrations/{kind}",
+               json={"base_url": "https://scan.internal/", "token": " tok \n"})
+    body = client.get(f"/api/integrations/{kind}").json()
+    assert body == {"base_url": "https://scan.internal", "has_token": True,
+                    "env_managed": False}
+    assert store[kind]["token"] == "tok"
+    assert "token" not in body
+
+
+@pytest.mark.parametrize("kind, prefix", SCAN_KINDS)
+def test_re_saving_a_scan_form_keeps_the_token(client, store, kind, prefix):
+    client.put(f"/api/integrations/{kind}", json={"token": "tok"})
+    client.put(f"/api/integrations/{kind}",
+               json={"base_url": "https://other.internal", "token": ""})
+    assert store[kind]["token"] == "tok"
+    assert store[kind]["base_url"] == "https://other.internal"
+
+
+@pytest.mark.parametrize("kind, prefix", SCAN_KINDS)
+def test_an_env_managed_scan_server_is_flagged(client, store, monkeypatch,
+                                               kind, prefix):
+    store[kind]["base_url"] = "https://stored.internal"
+    monkeypatch.setenv(f"{prefix}_BASE_URL", "https://env.internal")
+    monkeypatch.setenv(f"{prefix}_TOKEN", "from-env")
+    body = client.get(f"/api/integrations/{kind}").json()
+    assert body["base_url"] == "https://env.internal"
+    assert body["has_token"] is True and body["env_managed"] is True
+
+
+def test_a_line_break_pasted_inside_a_token_is_dropped(client, store):
+    client.put("/api/integrations/blackduck", json={"token": "abc\ndef "})
+    assert store["blackduck"]["token"] == "abcdef"
+
+
+def test_the_two_scan_servers_do_not_share_a_store(client, store):
+    client.put("/api/integrations/sonar", json={"base_url": "https://s.internal"})
+    assert client.get("/api/integrations/blackduck").json()["base_url"] == ""
+
+
+def test_the_scan_test_buttons_call_their_clients(client, monkeypatch):
+    import aiforge_core.runtime.tools.blackduck as bd
+    import aiforge_core.runtime.tools.sonar as sq
+    monkeypatch.setattr(sq, "sonar_test", lambda: {"ok": True, "version": "10.6"})
+    monkeypatch.setattr(bd, "blackduck_test", lambda: {"ok": True, "user": "ci"})
+    assert client.post("/api/integrations/sonar/test").json()["version"] == "10.6"
+    assert client.post("/api/integrations/blackduck/test").json()["user"] == "ci"
 
 
 # ─── Email ─────────────────────────────────────────────────────────────

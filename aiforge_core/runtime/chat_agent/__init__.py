@@ -143,6 +143,8 @@ from ._tools import (
     _t_gitlab_pipeline_watch,
     _t_gitlab_pipelines,
     _t_github_pr,
+    _t_sonar_report,
+    _t_blackduck_report,
     _t_web_fetch,
     _t_web_crawl,
     _t_serve,

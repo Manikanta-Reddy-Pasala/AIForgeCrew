@@ -97,6 +97,8 @@ _READ_OBS_TOOLS = frozenset({
     # `jobs` array alone pushed it out of the observation — at 14 jobs,
     # measured — so the model read truncated JSON and no failure reason.
     "gitlab_pipeline", "gitlab_pipelines", "gitlab_pipeline_watch",
+    # A scan result is a list of findings; cut at 6k it loses the rows.
+    "sonar_report", "blackduck_report",
 })
 
 

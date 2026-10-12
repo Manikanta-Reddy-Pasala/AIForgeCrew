@@ -34,6 +34,8 @@ _PREFIX_FAMILY = (
     ("- jira_", "jira"),
     ("- confluence_", "confluence"),
     ("- gitlab_", "gitlab"),
+    ("- sonar_", "sonar"),
+    ("- blackduck_", "blackduck"),
     ("- email_", "email"),
 )
 _SHARED_LINES = ("- context_gather ", "- set_integration_default ")
@@ -54,6 +56,16 @@ def _gitlab() -> bool:
     return bool(_configured())
 
 
+def _sonar() -> bool:
+    from aiforge_core.runtime.tools.sonar import _configured
+    return bool(_configured())
+
+
+def _blackduck() -> bool:
+    from aiforge_core.runtime.tools.blackduck import _configured
+    return bool(_configured())
+
+
 def _email() -> bool:
     # email_tool has no _conf(): the old probe always said "not configured",
     # hiding email on every install. Configured = SMTP or IMAP has a host.
@@ -65,7 +77,8 @@ def _email() -> bool:
 
 
 _PROBES = {"jira": _jira, "confluence": _confluence,
-           "gitlab": _gitlab, "email": _email}
+           "gitlab": _gitlab, "sonar": _sonar, "blackduck": _blackduck,
+           "email": _email}
 
 # Web page fetch is a lockdown switch, not a config: when it is off the two
 # lines below are dead weight in exactly the way the Jira lines were. Web

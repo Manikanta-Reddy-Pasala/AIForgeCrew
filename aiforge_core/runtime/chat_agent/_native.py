@@ -281,6 +281,7 @@ CONCURRENT_READS = frozenset({
     "confluence_spaces", "confluence_page_by_title", "confluence_labels",
     "confluence_comments", "confluence_descendants",
     "gitlab_read", "gitlab_search", "gitlab_pipelines", "gitlab_pipeline",
+    "sonar_report", "blackduck_report",
     # A `codegraph` subprocess reading the SQLite index; the index is built
     # before the turn (ensure_indexed), never by a query.
     "codegraph_query", "codegraph_callers", "codegraph_callees",
