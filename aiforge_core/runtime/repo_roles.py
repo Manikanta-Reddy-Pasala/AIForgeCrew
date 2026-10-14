@@ -126,6 +126,38 @@ def roles(session_id) -> dict:
     return out
 
 
+TARGETS = "targets"
+
+
+def targets(session_id) -> dict:
+    """``{folder: {"repo", "branch", "for", "made"}}``: the folders recorded
+    for a BRANCH (runtime/branch_targets) — one per repository and branch."""
+    sid = owner(session_id)
+    if sid is None:
+        return {}
+    with _LOCK:
+        got = _load().get(str(sid))
+    t = got.get(TARGETS) if isinstance(got, dict) else None
+    return {k: v for k, v in t.items() if isinstance(v, dict)} if isinstance(t, dict) else {}
+
+
+def _state(data: dict, sid) -> dict:
+    have = data.get(str(sid)) if isinstance(data.get(str(sid)), dict) else {}
+    return {WORK: list(have.get(WORK) or []), READ: list(have.get(READ) or []),
+            TARGETS: dict(have.get(TARGETS) or {})}
+
+
+def _user_history(session_id, limit: int = 40) -> str:
+    """The user's own messages in this chat (the parent's, for a side task)."""
+    try:
+        from aiforge_core.runtime import chat_store
+        rows = chat_store.get_messages(int(owner(session_id))) or []
+    except Exception:  # noqa: BLE001
+        return ""
+    texts = [str(m.get("content") or "") for m in rows if m.get("role") == "user"]
+    return "\n".join(t.split("\n\n---\n[")[0] for t in texts[-limit:])
+
+
 def declared(session_id) -> bool:
     r = roles(session_id)
     return bool(r[WORK] or r[READ])
@@ -137,9 +169,26 @@ def forget(session_id=None) -> None:
     else:
         _OWNERS.pop(str(session_id), None)
     with _LOCK:
-        data = {} if session_id is None else _load()
+        data = _load()
+        gone = list(data.values()) if session_id is None else [data.get(str(session_id))]
+        if session_id is None:
+            data = {}
         if session_id is None or data.pop(str(session_id), None) is not None:
             _save(data)
+    # Worktrees made for branches go with the chat (never one with work in it).
+    from aiforge_core.runtime import branch_targets
+    with _LOCK:
+        still = {f for e in _load().values() if isinstance(e, dict)
+                 for f in (e.get(TARGETS) or {})}
+    for entry in gone:
+        for folder, meta in ((entry or {}).get(TARGETS) or {}).items():
+            if isinstance(meta, dict) and meta.get("made") and folder not in still:
+                try:
+                    from aiforge_core.runtime import git_target
+                    top = git_target.toplevel(folder) or folder
+                    branch_targets.remove(meta.get("repo") or "", top)
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("branch worktree kept: %s", exc)
 
 
 # ── folders ──────────────────────────────────────────────────────────────────
@@ -191,14 +240,30 @@ def _candidates(path: str, base: "str | None") -> set:
 def role_of(path: str, session_id, base: "str | None" = None) -> "tuple[str, str] | None":
     """``(role, folder)`` for a path: the most specific recorded folder that
     holds it, else None."""
+    from aiforge_core.runtime import git_target
     r = roles(session_id)
+    t = targets(session_id)
+    real = _real(path, base)
     cands = _candidates(path, base)
     best = None
     for role in (WORK, READ):
         for folder in r[role]:
-            if any(_under(c, folder) for c in cands) and (
-                    best is None or len(folder) > len(best[1])):
+            if folder in t:
+                # A branch folder holds only its own checkout: not the chat's
+                # worktree, nor another branch folder, that sit inside it.
+                hit = _under(real, folder) and \
+                    git_target.toplevel(real) == git_target.toplevel(folder)
+            else:
+                hit = any(_under(c, folder) for c in cands)
+            if hit and (best is None or len(folder) > len(best[1])):
                 best = (role, folder)
+    if best and best[0] == WORK and best[1] in t:
+        # A read-only SUBFOLDER of the repository (/proj/docs) stays read-only
+        # in every checkout of it, a branch folder too.
+        mapped = _main_path(real)
+        for f in r[READ]:
+            if f not in t and f != t[best[1]].get("repo") and _under(mapped, f):
+                return (READ, f)
     return best
 
 
@@ -206,12 +271,23 @@ def _repo_role(top: str, session_id) -> str:
     """For a git command run in repository ``top``: READ when the repository
     is (inside) a read-only folder, WORK when a work folder is in it or holds
     it, "" when it has no role."""
+    from aiforge_core.runtime import git_target
     r = roles(session_id)
+    t = targets(session_id)
     main = _main_path(top)
+    # A branch folder is its own checkout: git there is work, and only there
+    # (the repository's other checkouts are on other branches).
+    for f in r[WORK]:
+        if f in t and git_target.toplevel(f) == top:
+            return WORK
     # A work folder inside it (``/proj/rust`` of a read-only ``/proj``): git
     # there is work; what it changes in the tree is checked folder by folder.
-    if any(_under(f, main) for f in r[WORK]):
+    if any(_under(f, main) for f in r[WORK] if f not in t):
         return WORK
+    if any(git_target.toplevel(f) == top for f in r[READ] if f in t):
+        return READ
+    if t and any(m.get("repo") == main for m in t.values()):
+        return ""                         # the repository's branches have folders
     hit = role_of(main, session_id)
     return hit[0] if hit else ""
 
@@ -223,13 +299,27 @@ def has_roles(args) -> bool:
 
 
 def _listed(args, keys) -> list:
+    """The entries under ``keys``: ``{"path", "branch", "for", "from"}`` each
+    (a plain string is a path with no branch)."""
     out = []
     for k in keys:
         v = args.get(k)
-        if isinstance(v, str):
-            v = [s for s in v.replace(";", ",").split(",")]
-        if isinstance(v, list):
-            out += [str(s).strip() for s in v if str(s).strip()]
+        if isinstance(v, (str, dict)):
+            v = [v] if isinstance(v, dict) else v.replace(";", ",").split(",")
+        if not isinstance(v, list):
+            continue
+        for item in v:
+            if isinstance(item, dict):
+                path = str(item.get("path") or item.get("folder") or item.get("repo") or "")
+                ent = {"path": path.strip(),
+                       "branch": str(item.get("branch") or "").strip(),
+                       "for": str(item.get("for") or item.get("purpose")
+                                  or item.get("what") or "").strip()[:200],
+                       "from": str(item.get("from") or item.get("base") or "").strip()}
+            else:
+                ent = {"path": str(item).strip(), "branch": "", "for": "", "from": ""}
+            if ent["path"]:
+                out.append(ent)
     return out
 
 
@@ -263,6 +353,103 @@ def _resolve(raw: str, base: "str | None", known) -> "str | None":
     return found[0] if found else None
 
 
+def _branch_folder(folder: str, ent: dict, history: str):
+    """``(folder for that branch, meta)`` — or ``(None, why not)``. The branch
+    must be one the user named in this chat, or one already checked out: the
+    agent does not pick branches."""
+    from aiforge_core.runtime import branch_targets, git_target
+    branch = ent["branch"]
+    top = git_target.toplevel(folder) if os.path.exists(folder) else None
+    if not top:
+        return None, f"{folder} is not in a git repository, so it has no branch {branch}"
+    repo = _main_path(top)
+    rel = os.path.relpath(_main_path(folder), repo)
+    out_of = branch_targets.checked_out(repo)
+    if branch not in out_of and not git_target.branch_named(branch, history):
+        return None, (f"branch {branch} of {repo} was NOT recorded: the user has not named "
+                      f"it. Ask the user which branch to use; do not pick one.")
+    try:
+        got = branch_targets.ensure(repo, branch, ent.get("from") or "")
+    except Exception as exc:  # noqa: BLE001 — ValueError, a git timeout, an OS error
+        return None, f"branch {branch} of {repo} was NOT recorded: {exc}"
+    path = got["path"] if rel == "." else os.path.join(got["path"], rel)
+    return path, {"repo": repo, "branch": branch, "for": ent.get("for") or "",
+                  "made": got["made"], "new_branch": got["new_branch"]}
+
+
+def add_branch_folder(session_id, top: str, branch: str, base: str = "") -> "str | None":
+    """Give ``branch`` of ``top``'s repository a folder of its own and record
+    it as a work folder (with the checkout the chat has worked in so far, and
+    every repository it already changed, so nothing it did becomes
+    refused). Returns the folder, or None when one cannot be made."""
+    from aiforge_core.runtime import branch_targets, git_target
+    sid = owner(session_id)
+    if sid is None or not enabled():
+        return None
+    repo = _main_path(top)
+    try:
+        got = branch_targets.ensure(repo, branch, base)
+    except ValueError as exc:
+        log.debug("no branch folder for %s: %s", branch, exc)
+        return None
+    folder = got["path"]
+    pins = git_target.pins(session_id)
+    with _LOCK:
+        data = _load()
+        cur = _state(data, sid)
+        if not (cur[WORK] or cur[READ]):
+            # No roles yet: what the chat already works in stays work.
+            for t, b in pins.items():
+                f = os.path.realpath(t)
+                if f not in cur[WORK]:
+                    cur[WORK].append(f)
+                if b:
+                    cur[TARGETS].setdefault(f, {"repo": _main_path(t), "branch": b,
+                                                "for": "", "made": False,
+                                                "new_branch": False})
+        elif top in pins and pins[top] and top not in cur[TARGETS]:
+            # The checkout it worked in so far keeps its branch, as a folder.
+            if top not in cur[WORK]:
+                cur[WORK].append(top)
+            cur[TARGETS][top] = {"repo": repo, "branch": pins[top], "for": "",
+                                 "made": False, "new_branch": False}
+        if folder not in cur[WORK]:
+            cur[WORK].append(folder)
+        old = cur[TARGETS].get(folder) or {}
+        cur[TARGETS][folder] = {"repo": repo, "branch": branch, "for": old.get("for", ""),
+                                "made": bool(got["made"] or old.get("made")),
+                                "new_branch": got["new_branch"]}
+        data[str(sid)] = cur
+        _save(data)
+    git_target._pin(session_id, {git_target.toplevel(folder) or folder: branch}, move=True)
+    return folder
+
+
+def _drop_unused(made: dict, cur: dict) -> None:
+    """A worktree made in this call for an entry that was then not recorded
+    (a refused role change) goes again."""
+    from aiforge_core.runtime import branch_targets, git_target
+    for folder, meta in made.items():
+        if meta.get("made") and folder not in cur[TARGETS]:
+            try:
+                branch_targets.remove(meta["repo"], git_target.toplevel(folder) or folder)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _pin_branches(session_id, made: dict) -> None:
+    """Each branch folder's git pin is its branch (runtime/git_target)."""
+    if not made:
+        return
+    from aiforge_core.runtime import git_target
+    pins = {}
+    for folder, meta in made.items():
+        top = git_target.toplevel(folder)
+        if top:
+            pins[top] = meta["branch"]
+    git_target._pin(session_id, pins, move=True)
+
+
 def record(session_id, args: dict, base: "str | None", said: str = "",
            user_roots=()) -> dict:
     """Apply the roles in a plan_progress call. Returns the tool result."""
@@ -270,22 +457,49 @@ def record(session_id, args: dict, base: "str | None", said: str = "",
     if sid is None:
         return {"ok": False, "error": "repo roles are kept per chat; this run has none"}
     known = in_play(session_id, base, user_roots, said)
-    work, read, missing = [], [], []
+    work, read, missing, made = [], [], [], {}
+    notes: list = []
+    history = None
     for keys, into in ((WORK_KEYS, work), (READ_KEYS, read)):
-        for raw in _listed(args, keys):
+        for ent in _listed(args, keys):
+            raw = ent["path"]
             try:
                 got = _resolve(raw, base, known)
             except ValueError as exc:
                 return {"ok": False, "error": f"{exc}. Give the FULL path."}
             if got is None:
                 missing.append(raw)
-            elif got not in into:
+                continue
+            if ent["branch"] and into is read:
+                notes.append(f"{raw}: a read-only entry takes no branch (read another "
+                             f"branch with `git -C <repo> show {ent['branch']}:<path>`); a "
+                             "branch you CHANGE — a backport too — goes in work_in")
+                continue
+            if ent["branch"]:
+                if history is None:
+                    history = said + "\n" + _user_history(session_id)
+                got, why = _branch_folder(got, ent, history)
+                if got is None:
+                    notes.append(why)
+                    continue
+                made[got] = why
+            if got not in into:
                 into.append(got)
     if missing:
         return {"ok": False, "error": "not found: " + ", ".join(missing) + ". Give each "
                 "folder as its FULL path (a destination that does not exist yet too)."}
+    if read and not is_child(session_id):
+        words = said + "\n" + (history if history is not None else _user_history(session_id))
+        with _LOCK:
+            known_read = set(_state(_load(), sid)[READ])
+        unsure = [f for f in read if f not in known_read and not user_reads(f, words, base)]
+        if unsure:
+            read = [f for f in read if f not in unsure]
+            notes.append("NOT recorded as read-only (the user's request does not say they "
+                         "are only to be read — a source, a reference, 'do not change'): "
+                         + ", ".join(unsure) + ". If the request asks to change them, put "
+                         "them in work_in; if unsure, ask the user")
     both = sorted(set(work) & set(read))
-    notes = []
     if both:
         # Listed in both: keep what is recorded for it; say so.
         work = [f for f in work if f not in both]
@@ -293,15 +507,15 @@ def record(session_id, args: dict, base: "str | None", said: str = "",
         notes.append("ignored (listed as both work and read only): " + ", ".join(both))
     with _LOCK:
         data = _load()
-        have = data.get(str(sid)) if isinstance(data.get(str(sid)), dict) else {}
-        cur = {WORK: list(have.get(WORK) or []), READ: list(have.get(READ) or [])}
+        before = _state(data, sid)
+        cur = _state(data, sid)
         # Making a folder writable that is (inside) a read-only one is a move,
         # as is turning a work folder read-only.
         moved = [f for f in work if any(_under(f, g) for g in cur[READ])] \
             + [f for f in read if f in cur[WORK]]
         # A side task's words are its parent agent's: it never moves a role.
         refused = [f for f in moved if is_child(session_id) or not (
-            user_allows(f, said) if f in work else _named(f, said))]
+            user_allows(f, said) if f in work else user_restricts(f, said))]
         if refused:
             # The rest of the call still applies; these keep their role.
             work = [f for f in work if f not in refused]
@@ -317,10 +531,23 @@ def record(session_id, args: dict, base: "str | None", said: str = "",
                 cur[WORK].remove(f)
             if f not in cur[READ]:
                 cur[READ].append(f)
-        changed = cur != {WORK: list(have.get(WORK) or []), READ: list(have.get(READ) or [])}
+        for folder, meta in made.items():
+            if folder in cur[WORK] or folder in cur[READ]:
+                old = cur[TARGETS].get(folder) or {}
+                meta = {**meta, "made": bool(meta.get("made") or old.get("made")),
+                        "for": meta.get("for") or old.get("for") or ""}
+                cur[TARGETS][folder] = meta
+        changed = cur != before
         if changed:
             data[str(sid)] = cur
             _save(data)
+    _pin_branches(session_id, {f: m for f, m in made.items() if f in cur[TARGETS]})
+    _drop_unused(made, cur)
+    for folder, meta in made.items():
+        if meta.get("new_branch") and folder in cur[TARGETS]:
+            notes.append(f"branch {meta['branch']} did not exist (not locally, not on a "
+                         f"fetched remote): it was MADE from the current HEAD of {meta['repo']}"
+                         ". If it should come from a remote, run `git fetch` and tell the user")
     out = {"ok": bool(changed or not notes), "repos": cur, "changed": changed,
            "note": ("Recorded for the rest of this chat: " if changed
                     else "Already recorded, unchanged: ") + summary(cur)}
@@ -351,6 +578,57 @@ def user_allows(folder: str, said: str) -> bool:
     return False
 
 
+_RESTRICT = (r"\b(?:read[\s-]*only|only\s+read|do\s+not\s+(?:change|edit|touch|modify)|"
+             r"don'?t\s+(?:change|edit|touch|modify))\b")
+#: "leave X alone", "keep X untouched": the folder sits between the words.
+_RESTRICT_AROUND = (r"\b(?:leave|keep)\b", r"\b(?:alone|untouched|unchanged|as[\s-]is)\b")
+
+
+def user_restricts(folder: str, said: str) -> bool:
+    """The user's words make ``folder`` read-only, in one clause: "leave
+    calc-java alone", "web is read-only", "don't change /code/a"."""
+    if not folder or not said:
+        return False
+    folder = folder.rstrip(os.sep)
+    names = "|".join([re.escape(folder), re.escape(os.path.basename(folder))])
+    near = (rf"(?<![\w./-])`?(?:{names})`?(?![\w/-]|\.\w)")
+    return any(re.search(p, said, re.IGNORECASE) for p in (
+        _RESTRICT + r"[^.;,\n]{0,30}?" + near,
+        near + r"[^.;,\n]{0,30}?" + _RESTRICT,
+        _RESTRICT_AROUND[0] + r"[^.;\n]{0,12}?" + near + r"[^.;\n]{0,12}?"
+        + _RESTRICT_AROUND[1]))
+
+
+#: Words that make a folder a SOURCE / reference in the user's request.
+#: Before the folder, at most three words between: "Source: /a", "port the
+#: code from /a", "migrate /a", "rewrite /a in Rust", "convert this repo".
+_READ_BEFORE = (r"\b(?:source|sources|reference|references|based\s+on|"
+                r"from(?!\s+(?:now|here|then|scratch|time))|migrat\w*|rewrit\w*|"
+                r"convert\w*|translat\w*)\b")
+#: After the folder: "/a is the old one", "/a (source)", "/a is read-only".
+_READ_AFTER = (r"\b(?:source|reference|read[\s-]*only|legacy|old\s+(?:one|app|code|version|"
+               r"repo)|original)\b")
+
+
+def user_reads(folder: str, said: str, base: "str | None" = None) -> bool:
+    """The user's words make ``folder`` a source or reference (to read, not
+    change): "Source: /code/a", "port it from calc-java", "/code/spec for
+    reference", "convert the code in this repo" (for the chat's own repo)."""
+    if not folder or not said:
+        return False
+    folder = folder.rstrip(os.sep)
+    names = [re.escape(folder), re.escape(os.path.basename(folder))]
+    if base and folder_of(base) == folder:
+        names.append(r"this\s+(?:repo|repository|project|folder|codebase|code)")
+    # The folder name may follow a "/" (~/code/java-app, ../java-app).
+    near = r"(?<![\w.-])`?(?:[~.]*/(?:[\w./-]*/)?)?(?:" + "|".join(names) \
+        + r")`?(?![\w/-]|\.\w)"
+    return user_restricts(folder, said) or any(
+        re.search(p, said, re.IGNORECASE) for p in (
+            _READ_BEFORE + r"[:\s]+(?:[\w-]+\s+){0,3}?" + near,
+            near + r"[^.;,\n]{0,25}?" + _READ_AFTER))
+
+
 def allow_from_user(session_id, said: str) -> list:
     """The user's words this turn allow changes in a read-only folder: move it
     to the work list. Done by the harness, not left to the model. Returns the
@@ -364,8 +642,7 @@ def allow_from_user(session_id, said: str) -> list:
         return []
     with _LOCK:
         data = _load()
-        cur = data.get(str(sid)) if isinstance(data.get(str(sid)), dict) else {}
-        cur = {WORK: list(cur.get(WORK) or []), READ: list(cur.get(READ) or [])}
+        cur = _state(data, sid)
         for f in moved:
             cur[READ] = [g for g in cur[READ] if g != f]
             if f not in cur[WORK]:
@@ -375,12 +652,21 @@ def allow_from_user(session_id, said: str) -> list:
     return moved
 
 
+def _show(folder: str, t: dict) -> str:
+    meta = (t or {}).get(folder)
+    if not meta:
+        return folder
+    out = f"{folder} (branch `{meta.get('branch')}`"
+    return out + (f" — for: {meta['for']})" if meta.get("for") else ")")
+
+
 def summary(r: dict) -> str:
+    t = r.get(TARGETS) or {}
     parts = []
     if r.get(WORK):
-        parts.append("work in " + ", ".join(r[WORK]))
+        parts.append("work in " + ", ".join(_show(f, t) for f in r[WORK]))
     if r.get(READ):
-        parts.append("read only " + ", ".join(r[READ]))
+        parts.append("read only " + ", ".join(_show(f, t) for f in r[READ]))
     return "; ".join(parts) or "nothing"
 
 
@@ -601,14 +887,26 @@ def _check(session_id, name, args, base, user_roots, said=""):
         if not role:
             return _refusal("not_a_work_repo", (
                 f"Refused: this git command changes {top}, which is not one of the "
-                f"folders this chat works in ({summary(r)}). If the user asked for it, "
+                f"folders this chat works in ({summary(r)}). "
+                + _same_file_elsewhere(os.path.join(top, "."), session_id)
+                + "If the user asked for it, "
                 "add it with plan_progress {\"slug\": \"repos\", \"work_in\": [...]}."))
     for t in paths:
         if t.endswith(os.sep) and len(t) > 1:
             # A git command over the whole tree: refused when a read-only
             # folder is part of that tree.
-            main = _main_path(t.rstrip(os.sep))
-            inside = [f for f in r[READ] if _under(f, main)]
+            tree = t.rstrip(os.sep)
+            main = _main_path(tree)
+            # Read-only folders that are part of THIS checkout (a branch folder
+            # under .aiforge-worktrees is another checkout, not this tree).
+            t_all = targets(session_id)
+            tree_is_target = any(git_target.toplevel(x) == tree for x in t_all)
+            inside = [f for f in r[READ] if _under(f, main) and (
+                git_target.toplevel(f) in (None, tree)
+                # a read-only SUBFOLDER is part of every checkout's tree;
+                # the whole repository read-only is not this other checkout
+                or (f != main and f not in t_all)
+                or (f == main and not tree_is_target))]
             if inside:
                 return _refusal("read_only", (
                     f"Refused: this git command changes the whole tree of {main}, and "
@@ -617,6 +915,10 @@ def _check(session_id, name, args, base, user_roots, said=""):
                     inside[0])
             t = t.rstrip(os.sep)
         hit = role_of(t, session_id, base)
+        if hit and hit[0] == WORK:
+            bad = _off_branch(hit[1], session_id)
+            if bad:
+                return _refusal("wrong_branch", bad)
         if hit and hit[0] == READ:
             return _refusal("read_only", (
                 f"Refused: {t} is in {hit[1]}, which this chat only READS (source / "
@@ -625,7 +927,8 @@ def _check(session_id, name, args, base, user_roots, said=""):
         if hit is None and git_target.toplevel(t):
             return _refusal("not_a_work_repo", (
                 f"Refused: {t} is not in a folder this chat works in ({summary(r)}). "
-                f"Work only in {_work_list(r)}. If the user asked for this folder, add "
+                + _same_file_elsewhere(t, session_id)
+                + f"Work only in {_work_list(r)}. If the user asked for this folder, add "
                 "it with plan_progress {\"slug\": \"repos\", \"work_in\": [...]}."))
     return None
 
@@ -698,7 +1001,7 @@ def _changed(folder: str, was, now) -> list:
         if p.startswith("(") or _under(_main_path(os.path.realpath(full)), folder) \
                 or _under(os.path.realpath(full), folder):
             out.append(full)
-    if ref_moved and _main_path(root) == folder:
+    if ref_moved and (_main_path(root) == folder or os.path.realpath(root) == folder):
         out.append(f"{root} (HEAD / branch moved)")
     return out
 
@@ -754,6 +1057,48 @@ def final_note(folders, session_id, text: str) -> str:
             + " / ".join(f"'allow edits in {n}'" for n in names) + ".")
 
 
+def _same_file_elsewhere(path: str, session_id) -> str:
+    """For a write refused in a checkout of a repository whose branches have
+    folders: the same file in each branch folder."""
+    try:
+        return _same_file_elsewhere_(path, session_id)
+    except Exception:  # noqa: BLE001 — a hint never turns a refusal into a pass
+        return ""
+
+
+def _same_file_elsewhere_(path: str, session_id) -> str:
+    from aiforge_core.runtime import git_target
+    top = git_target.toplevel(path)
+    if not top:
+        return ""
+    main = _main_path(top)
+    rel = os.path.relpath(path, top)
+    homes = [(m.get("branch"), os.path.join(git_target.toplevel(f) or f, rel))
+             for f, m in targets(session_id).items() if m.get("repo") == main]
+    if not homes:
+        return ""
+    return ("This repository's branches have their own folders — write the file in "
+            "the one for its branch: " + "; ".join(f"`{b}` → {p}" for b, p in homes)
+            + ". ")
+
+
+def _off_branch(folder: str, session_id) -> str:
+    """Why a write in branch folder ``folder`` must not happen now: it is not
+    on its branch any more ("" when it is, or has no branch)."""
+    meta = targets(session_id).get(folder)
+    if not meta:
+        return ""
+    from aiforge_core.runtime import git_target
+    top = git_target.toplevel(folder)
+    now = git_target.branch(top) if top else ""
+    if not top or now == meta.get("branch") or git_target.busy(top):
+        return ""
+    return (f"Refused: {folder} is the folder for branch `{meta.get('branch')}`, but it "
+            f"is on `{now or 'detached HEAD'}` now. Do not switch branches in a branch "
+            f"folder. Tell the user in FINAL that {folder} moved to `{now}` and ask how "
+            "to go on.")
+
+
 def _refusal(kind: str, text: str, folder: str = "") -> dict:
     if folder:
         return {"ok": False, "blocked": "repo_roles", "reason": kind, "error": text,
@@ -768,13 +1113,25 @@ def prompt_note(session_id, base: "str | None" = None, user_roots=(), said: str 
     try:
         r = roles(session_id)
         if r[WORK] or r[READ]:
+            t = targets(session_id)
             lines = ["REPOSITORIES IN THIS CHAT (recorded; follow them every step):"]
-            if r[WORK]:
-                lines.append("- WORK IN (change files, build, commit here): "
-                             + ", ".join(r[WORK]))
-            if r[READ]:
-                lines.append("- READ ONLY (source / reference: read it, never edit, "
-                             "never commit there): " + ", ".join(r[READ]))
+            for f in r[WORK]:
+                lines.append("- WORK IN (change files, build, commit here): " + _show(f, t))
+            for f in r[READ]:
+                lines.append("- READ ONLY (read it, never edit, never commit there): "
+                             + _show(f, t))
+            if t:
+                from aiforge_core.runtime.chat_worktree import main_repo_of
+                own = base and main_repo_of(base) and os.path.realpath(base) not in t \
+                    and os.path.realpath(base) not in r[WORK]
+                lines.append("A folder with a branch IS that branch: make each change in "
+                             "the folder of the branch it belongs to (absolute paths) and "
+                             "commit it there (`git -C <folder> commit`). Never switch "
+                             "branches" + (f", and do not edit the chat's own worktree "
+                                           f"({base})" if own else "")
+                             + ". To LOOK at a branch: `git -C <folder> log`. To carry a "
+                             "commit to another branch (a backport): commit it in the first "
+                             "folder, then `git -C <other folder> cherry-pick <sha>`.")
             lines.append("Each run_command starts in the chat's folder; use absolute "
                          "paths or `git -C <folder>` for the folder you mean.")
             return "\n".join(lines)
@@ -790,6 +1147,6 @@ def prompt_note(session_id, base: "str | None" = None, user_roots=(), said: str 
     return ""
 
 
-__all__ = ["READ", "SLUG", "WORK", "check", "declared", "enabled", "folder_of",
+__all__ = ["READ", "SLUG", "TARGETS", "WORK", "check", "declared", "targets", "enabled", "folder_of",
            "forget", "has_roles", "in_play", "owner", "prompt_note", "record",
            "role_of", "roles", "summary"]

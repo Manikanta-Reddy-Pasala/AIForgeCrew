@@ -231,7 +231,11 @@ def _append_context_blocks(add, cwd, last_user, messages, session_id, role, cave
     from aiforge_core.runtime import context_bundle as _cb
     try:
         from aiforge_core.runtime import chat_worktree as _cw
-        add("workspace", _cw.prompt_note(cwd))
+        from aiforge_core.runtime import repo_roles as _rr0
+        # Branch folders recorded: they ARE where the work goes; the chat's own
+        # worktree note ("make every edit in your workspace") would contradict.
+        if not _rr0.targets(session_id):
+            add("workspace", _cw.prompt_note(cwd))
     except Exception:  # noqa: BLE001 — a note never breaks a turn
         pass
     try:

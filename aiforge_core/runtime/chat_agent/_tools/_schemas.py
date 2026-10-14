@@ -43,9 +43,10 @@ CATALOG: dict = {
                       "status. Keep one item running and mark each done when "
                       "it is finished. With several repositories, slug "
                       "\"repos\" + work_in / read_only folders records which "
-                      "you change and which you only read, for the whole chat.",
+                      "you change and which you only read, for the whole chat; "
+                      "an entry {path, branch, for} gives a branch its own folder.",
                       {"slug": "s", "title": "s", "status": "s",
-                       "work_in": "arrs", "read_only": "arrs"}, ("slug",)),
+                       "work_in": "arr", "read_only": "arr"}, ("slug",)),
     # ── files / editing ──────────────────────────────────────────────────
     "file_read": ("Read a file's contents.", {"path": "s"}, ("path",)),
     "read_files": ("Read MANY files in ONE call (batched file_read). Pass a "

@@ -165,7 +165,13 @@ def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
                          "content": f"OBSERVATION: {json.dumps(result)}"})
         return "handled"
 
-    if name == "plan_progress" and _repo_roles_call(args):
+    if name == "plan_progress" and _repo_roles_call(args) and str(
+            (args or {}).get("slug") or "repos") != "repos":
+        # Roles on a board item: the model scoping one step, not the chat's
+        # record (it flipped whole repositories to read-only that way). Only
+        # the "repos" item records roles.
+        args = {k: v for k, v in args.items() if not _is_role_key(k)}
+    elif name == "plan_progress" and _repo_roles_call(args):
         result = _record_repo_roles(st, args)
         if result.get("ok") and result.get("changed"):
             yield {"type": "thought", "role": "system",
@@ -173,10 +179,7 @@ def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
         yield {"type": "tool", "name": name, "args": args, "result": result}
         st.convo.append({"role": "user",
                          "content": f"OBSERVATION: {json.dumps(result)}"})
-        if str((args or {}).get("slug") or "repos") == "repos":
-            return "handled"
-        # The same call also moved a board item: do that too.
-        args = {k: v for k, v in args.items() if not _is_role_key(k)}
+        return "handled"
 
     if name == "plan_progress":
         result, events = apply_progress(st.board, args)
@@ -364,8 +367,15 @@ def _git_target_gate(st, name, args, cwd):
         result = repo_roles.check(session_id, name, args or {}, cwd,
                                   getattr(st, "user_roots", None) or (), _said(st))
         if result is None and name in shell_writes.SHELL_TOOLS:
-            result = git_target.check(session_id, shell_writes.command_of(args or {}),
-                                      _command_base(cwd), _said(st))
+            cmd = shell_writes.command_of(args or {})
+            said = _said(st)
+            if "git" in cmd:
+                # A branch the user named in an earlier turn counts too.
+                if getattr(st, "_user_history", None) is None:
+                    st._user_history = repo_roles._user_history(session_id) \
+                        if not repo_roles.is_child(session_id) else ""
+                said = said + "\n" + st._user_history
+            result = git_target.check(session_id, cmd, _command_base(cwd), said)
     except Exception:  # noqa: BLE001 — never break dispatch
         return None
     if result is None:
@@ -377,9 +387,26 @@ def _git_target_gate(st, name, args, cwd):
             st.roles_refused = list(getattr(st, "roles_refused", None) or []) + [folder]
     except Exception:  # noqa: BLE001
         pass
+    key = (result.get("blocked"), result.get("reason"),
+           result.get("folder") or str(result.get("error") or "")[:80])
+    seen = dict(getattr(st, "refusals_seen", None) or {})
+    seen[key] = seen.get(key, 0) + 1
+    st.refusals_seen = seen
+    if seen[key] >= 2:
+        result = {**result, "repeated": seen[key], "hint": (
+            f"This has been refused {seen[key]} times and will not run, however it is "
+            "worded. If the work is done, finish with FINAL; otherwise do what the "
+            "refusal says or ask the user.")}
     yield {"type": "tool", "name": name, "args": args, "result": result}
     st.convo.append({"role": "user",
                      "content": f"OBSERVATION: {json.dumps(result)}"})
+    if seen[key] >= 4:
+        _r = yield from finish_stuck(
+            st, "The same refused step was tried again and again.",
+            Pause("I kept trying a step the harness refuses: "
+                  + str(result.get("error") or "")[:200]
+                  + " I've paused — tell me how you'd like to go on."))
+        return _r if _r in ("return", "continue") else "return"
     return "continue"
 
 

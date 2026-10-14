@@ -65,8 +65,10 @@ the user approves, you carry this plan out yourself.
 When the request involves more than one repository or folder (a source to \
 port from, a destination, references), record first which you will CHANGE \
 and which you only READ: plan_progress {{"slug": "repos", "work_in": [<full \
-paths>], "read_only": [<full paths>]}}. Put the same two lists at the top of \
-the plan. They are kept and enforced for the whole chat.
+paths>], "read_only": [<full paths>]}}. When changes go to different \
+branches, give each branch an entry {{"path": ..., "branch": ..., "for": \
+<which changes>}}: each branch gets its own folder. Put the same lists at the \
+top of the plan. They are kept and enforced for the whole chat.
 
 Be short. Never invent a path or a command output.\
 """

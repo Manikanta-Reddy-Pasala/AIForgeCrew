@@ -147,10 +147,32 @@ def _repo_state(cwd) -> str:
     return f"last commit `{last}`" + (f", {pushed}" if pushed else "")
 
 
+def _landed(session_id) -> str:
+    """"commits: api@main abd8b1e, api@release/2 6b95d87": where this turn's
+    git commands committed, every repository and branch (not only the chat's
+    own folder)."""
+    try:
+        from aiforge_core.runtime import git_target
+        got = git_target.take_landed(session_id)
+    except Exception:  # noqa: BLE001
+        return ""
+    if not got:
+        return ""
+    names = [os.path.basename(repo) for repo in {r for r, _ in got}]
+    def label(repo):   # two repositories with one folder name: show the path
+        n = os.path.basename(repo)
+        return repo if names.count(n) > 1 else n
+    return "commits: " + ", ".join(f"`{label(repo)}@{branch}` `{sha}`"
+                                   for (repo, branch), sha in got.items())
+
+
 def parts(session_id, cwd, head0, dirty0: str = "") -> list:
     """The facts as short phrases, in reading order. Empty: nothing to show.
     ``dirty0``: ``git status --porcelain`` as the turn began."""
     out: list = []
+    landed = _landed(session_id)
+    if landed:
+        out.append(landed)
     changed = _changed(cwd, head0, session_id, dirty0)
     worked, failed, last = _commands(session_id)
     if changed:

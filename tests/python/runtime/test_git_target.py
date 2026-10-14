@@ -9,6 +9,21 @@ import pytest
 
 from aiforge_core.runtime import git_target as gt
 
+_REAL_USER_READS = None
+
+
+@pytest.fixture(autouse=True)
+def _reads_on_record(monkeypatch):
+    """These tests set roles directly; the "user said it is a source" rule
+    has its own tests."""
+    from aiforge_core.runtime import repo_roles
+    global _REAL_USER_READS
+    _REAL_USER_READS = repo_roles.user_reads
+    monkeypatch.setattr(repo_roles, "user_reads", lambda *a, **k: True)
+    monkeypatch.setattr(repo_roles, "_user_history", lambda *a, **k: "")
+    yield
+
+
 SID = 7
 
 

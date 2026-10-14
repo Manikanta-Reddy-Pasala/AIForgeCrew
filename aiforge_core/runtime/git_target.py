@@ -55,6 +55,8 @@ _TOPS_MAX = 512
 _HISTORY_WRITES = frozenset({"commit", "merge", "rebase", "pull", "cherry-pick",
                              "revert", "am", "reset"})
 _SWITCHES = frozenset({"checkout", "switch"})
+#: Subcommands that make a commit of the chat's own (not ``pull`` / ``reset``).
+_MAKES_COMMITS = frozenset({"commit", "cherry-pick", "revert", "am"})
 #: Git options whose next word is their value, not the subcommand.
 _VALUE_OPTS = frozenset({"-c", "--git-dir", "--work-tree", "--namespace",
                          "--exec-path", "--config-env"})
@@ -607,17 +609,41 @@ def _check(session_id, cmd, here, said):
         pin = pinned.get(top)
         if c.sub in _SWITCHES:
             new, target = _switch_target(top, c)
+            if new and branch_named(new, said) and (
+                    _users_checkout(session_id, top)
+                    or (pin and new != pin and _repo_has_work(session_id, top, pin))):
+                home = _auto_folder(session_id, top, new, _start_point(c, new))
+                if home:
+                    return _refusal("branch_switch", (
+                        f"Not run: {top} is not switched (" + (
+                            "it is the user's own checkout" if _users_checkout(session_id, top)
+                            else f"this chat already works on `{pin}` there")
+                        + f"), so the branch `{new}` got a folder of its own: {home}. "
+                        + _go_there(session_id, top, home, pin, new)))
             if new:
                 now[top] = new
                 made.add((top, new))
             elif target:
+                home = _branch_folder(session_id, top, target)
+                if not home and target != cur and branch_named(target, said) and (
+                        _users_checkout(session_id, top)
+                        or (pin and target != pin and _repo_has_work(session_id, top, pin))):
+                    # The chat already works on `pin` here: a second branch
+                    # gets a folder of its own instead of a switch.
+                    home = _auto_folder(session_id, top, target)
+                if home and target != cur:
+                    return _refusal("branch_switch", (
+                        f"Refused: branch `{target}` has its own folder in this chat: "
+                        f"{home}. Do not switch branches. " + _go_there(session_id, top, home, pin, target)))
                 if pin and target != pin and not branch_named(target, said):
                     return _refusal("branch_switch", (
                         f"Refused: `git {c.sub} {target}` would move {top} off branch "
                         f"`{pin or 'detached HEAD'}`, the branch this chat's work there is "
                         f"on, and the user did not name `{target}` in this turn. Stay on "
-                        f"`{pin}`. If another branch is really needed, ASK the user which "
-                        "one in FINAL; do not pick one yourself."))
+                        f"`{pin}`. To LOOK at `{target}` no switch is needed: `git -C {top} "
+                        f"log -3 {target}`, `git -C {top} show {target}:<path>`. If another "
+                        "branch is really needed, ASK the user which one in FINAL; do not "
+                        "pick one yourself."))
                 now[top] = target
             continue
         if pinned and top not in pinned and top not in edits \
@@ -636,8 +662,9 @@ def _check(session_id, cmd, here, said):
                 f"Refused: {top} is on branch `{cur or 'detached HEAD'}`, but this chat's "
                 f"work there is on `{pin}` (where it started). `git {c.sub}` would land "
                 f"on the wrong branch. Something switched it (another chat, the user, or "
-                f"an earlier command). Do not commit or push here: tell the user in FINAL "
-                f"that {top} is now on `{cur}` and ask whether to switch back to `{pin}`."))
+                f"an earlier command). Do not commit or push here, and do not switch "
+                f"branches: tell the user in FINAL that {top} is now on `{cur}` and ask "
+                "how to go on."))
         if c.sub == "push" and ({"--all", "--mirror"} & set(c.args)) and not re.search(
                 r"\ball (?:the )?branches\b|\bmirror\b", said or "", re.IGNORECASE):
             return _refusal("push_target", (
@@ -654,6 +681,105 @@ def _check(session_id, cmd, here, said):
                         f"in this turn. Push the current branch (`git -C {top} push -u "
                         f"origin {cur or 'HEAD'}`), or ask the user which branch to push to."))
     return None
+
+
+def _branch_folder(session_id, top: str, branch: str) -> str:
+    """The folder recorded for ``branch`` of ``top``'s repository, if any."""
+    try:
+        from aiforge_core.runtime import repo_roles
+        from aiforge_core.runtime.chat_worktree import main_repo_of
+        main = os.path.realpath(main_repo_of(top) or top)
+        for folder, meta in repo_roles.targets(session_id).items():
+            if meta.get("branch") == branch and os.path.realpath(meta.get("repo") or "") == main:
+                return folder
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
+def _start_point(call, new: str) -> str:
+    """``git checkout -b x <start>`` / ``switch -c x <start>``: the start."""
+    args = list(call.args)
+    for i, a in enumerate(args):
+        if a in _NEW_BRANCH and i + 1 < len(args) and args[i + 1] == new:
+            rest = [x for x in args[i + 2:] if not x.startswith("-")]
+            return rest[0] if rest else ""
+    return ""
+
+
+def _go_there(session_id, top: str, home: str, pin: "str | None", branch: str) -> str:
+    """What to do instead of the switch: work in ``home``; or, when the
+    branch already has this chat's commits, that it is done."""
+    mine = _MINE.get(str(_owner(session_id)), {}).get((_repo_key(top), branch))
+    ahead = ""
+    if mine and subprocess.run(["git", "merge-base", "--is-ancestor", mine, "HEAD"],
+                               cwd=home, capture_output=True).returncode == 0:
+        ahead = _git(["log", "--oneline", "-1", mine], home)
+    if ahead:
+        return (f"`{branch}` already has this chat's commit: "
+                + "; ".join(ahead.splitlines()) + f". If that is the change asked for, "
+                f"it is DONE — say so in FINAL. To look at it: `git -C {home} log -3` "
+                "(no switch needed).")
+    src = _chat_worktree(session_id) if _users_checkout(session_id, top) else top
+    sha = _git(["rev-parse", "--short", "HEAD"], src) if (pin or src != top) else ""
+    if sha and subprocess.run(["git", "merge-base", "--is-ancestor", sha, "HEAD"],
+                              cwd=home, capture_output=True).returncode == 0:
+        sha = ""                          # already in that branch: nothing to carry
+    return (f"Make the `{branch}` changes in {home} and commit there (`git -C {home} …`). "
+            + (f"To carry the last `{pin}` commit over: `git -C {home} cherry-pick {sha}`. "
+               if sha else "")
+            + f"To look at `{branch}`: `git -C {home} log -3` (no switch needed).")
+
+
+def _auto_folder(session_id, top: str, branch: str, start: str = "") -> str:
+    try:
+        from aiforge_core.runtime import repo_roles
+        # A new branch starts where the chat's own work is (this checkout's
+        # HEAD), or at the start point the command named.
+        own = _chat_worktree(session_id) if _users_checkout(session_id, top) else ""
+        base = start or _git(["rev-parse", "HEAD"], own or top)
+        return repo_roles.add_branch_folder(session_id, top, branch, base) or ""
+    except Exception as exc:  # noqa: BLE001
+        log.debug("branch folder not made: %s", exc)
+        return ""
+
+
+def _users_checkout(session_id, top: str) -> bool:
+    """``top`` is the user's own checkout of the repository this chat has a
+    worktree of: its branch is the user's, never switched by the chat."""
+    try:
+        from aiforge_core.runtime import chat_worktree as cw
+        from aiforge_core.runtime import repo_roles
+        sess = cw._session(repo_roles.owner(session_id))
+        wd = cw.workdir_of(sess)
+        main = cw.main_repo_of(wd) if wd else None
+        return bool(main) and os.path.realpath(main) == os.path.realpath(top)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _chat_worktree(session_id) -> str:
+    try:
+        from aiforge_core.runtime import chat_worktree as cw
+        from aiforge_core.runtime import repo_roles
+        return cw.workdir_of(cw._session(repo_roles.owner(session_id))) or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _repo_has_work(session_id, top: str, pin: str) -> bool:
+    """The chat worked on ``pin`` here (a pin exists only after it wrote) and
+    that work is committed: the checkout is clean. With uncommitted edits the
+    switch is the usual "edit, then ``checkout -b feat`` and commit" and
+    carries them over, so it is not redirected."""
+    if not pin or os.path.realpath(top) not in _WORKED.get(str(_owner(session_id)), set()):
+        return False
+    try:
+        p = subprocess.run(["git", "status", "--porcelain"], cwd=top, capture_output=True,
+                           text=True, timeout=15)
+    except Exception:  # noqa: BLE001 — cannot tell: not "clean"
+        return False
+    return p.returncode == 0 and not (p.stdout or "").strip()
 
 
 def _work_folder(session_id, top: str) -> bool:
@@ -757,6 +883,8 @@ def _after(session_id, name, args, cwd, *, failed: bool):
             elif c.sub in _SWITCHES and b in _switch_target(top, c):
                 moved[top] = b     # the branch it moved to (allowed) is where it is now
         verb = "was in the command, for" if failed else "ran in"
+        if not failed and c.sub in _MAKES_COMMITS and b:
+            _note_landed(session_id, top, b)
         line = f"`git {c.sub}` {verb} {top} (now on branch `{b or 'detached HEAD'}`)"
         if line not in lines:
             lines.append(line)
@@ -771,6 +899,42 @@ def _after(session_id, name, args, cwd, *, failed: bool):
         "work belongs to."
 
 
+_LANDED: dict = {}
+#: ``{session: {(repo, branch): sha}}`` — the last commit this chat made on
+#: each branch (kept for the chat; :data:`_LANDED` is taken by each answer).
+_MINE: dict = {}
+#: Repositories this chat really worked in: wrote files or committed.
+_WORKED: dict = {}
+
+
+def _repo_key(top: str) -> str:
+    from aiforge_core.runtime.chat_worktree import main_repo_of
+    return os.path.realpath(main_repo_of(top) or top)
+
+
+def _note_landed(session_id, top: str, branch: str) -> None:
+    got = _git(["log", "-1", "--format=%h %ct"], top).split()
+    if len(got) != 2 or not got[1].isdigit():
+        return
+    import time
+    if time.time() - int(got[1]) > 600:
+        return                            # an old commit: this command made none
+    sha = got[0]
+    key = str(_owner(session_id))
+    _LANDED.setdefault(key, {})[(_repo_key(top), branch)] = sha
+    _MINE.setdefault(key, {})[(_repo_key(top), branch)] = sha
+    _WORKED.setdefault(key, set()).add(os.path.realpath(top))
+    for d in (_LANDED, _MINE, _WORKED):
+        if len(d) > 512:
+            d.clear()
+
+
+def take_landed(session_id) -> dict:
+    """``{(repo name, branch): last sha}`` the chat's git commands committed
+    since the last call (the final answer's facts line takes them)."""
+    return _LANDED.pop(str(_owner(session_id)), {}) if session_id is not None else {}
+
+
 def _work_in(session_id, paths) -> None:
     found: dict = {}
     pinned = pins(session_id) if paths else {}
@@ -780,6 +944,8 @@ def _work_in(session_id, paths) -> None:
         top = toplevel(os.path.dirname(p) if not os.path.isdir(p) else p)
         # A repository already pinned keeps its pin: no git call for it
         # (one detached when pinned is re-read until it is on a branch).
+        if top:
+            _WORKED.setdefault(str(_owner(session_id)), set()).add(os.path.realpath(top))
         if top and top not in found and not pinned.get(top):
             found[top] = branch(top)
     _pin(session_id, found)
