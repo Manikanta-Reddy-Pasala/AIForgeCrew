@@ -234,6 +234,19 @@ def _append_context_blocks(add, cwd, last_user, messages, session_id, role, cave
         add("workspace", _cw.prompt_note(cwd))
     except Exception:  # noqa: BLE001 — a note never breaks a turn
         pass
+    try:
+        from aiforge_core.runtime import git_target as _gt
+        add("git_targets", _gt.prompt_note(session_id))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from aiforge_core.runtime import repo_roles as _rr
+        from ._state import _writable_roots
+        add("repo_roles", _rr.prompt_note(session_id, cwd,
+                                          _writable_roots(messages, session_id, cwd),
+                                          last_user or ""))
+    except Exception:  # noqa: BLE001
+        pass
     # A short remark skips the repo walk, the skill match and the memory
     # query — those run before the model speaks. Images, the session ledger
     # and workflows stay: a screenshot plus "what's this?", or "ok, commit",

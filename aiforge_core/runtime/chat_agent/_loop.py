@@ -19,6 +19,7 @@ from ._shell import _READ_OBS_TOOLS
 from ._turn._action import (  # noqa: F401
     _action_stall_guard,
     _ask_write_grant,
+    _git_target_gate,
     _post_tool,
     _pre_dispatch_gates,
     _pre_tool_checks,
@@ -285,6 +286,9 @@ def _gated_action(st, step, name, args, sig, n, cwd, session_id):
                                           st.analyze_mode)
     if _sig in ("continue", "handled"):
         return _sig
+    _sig = yield from _git_target_gate(st, name, args, cwd)
+    if _sig == "continue":
+        return "continue"
     _sig = yield from _approval_gate(name, args, cwd, session_id, st.convo)
     if _sig == "return":
         return "return"
@@ -297,6 +301,8 @@ def _gated_action(st, step, name, args, sig, n, cwd, session_id):
     # real checkout: a change there is reported and the run paused — nothing
     # is reverted (team_repo_net). A run already paused runs nothing more.
     from aiforge_core.runtime import team_repo_net as _net
+    from aiforge_core.runtime import repo_roles as _roles
+    _rh = _roles.net_begin(session_id, name, cwd)
     _h = _net.begin(cwd, name, session_id)
     _halt = _net.halt_result(_h)
     if _halt is not None:
@@ -306,6 +312,8 @@ def _gated_action(st, step, name, args, sig, n, cwd, session_id):
                                            _take_early_read(st, sig))
         result, _note = _net.end(_h, result) if _h is not None else (
             result, _net.poll(cwd))
+        result, _rnote = _roles.net_end(_rh, result)
+        _note = "\n".join(n for n in (_note, _rnote) if n)
     if _note:
         yield {"type": "message", "role": "system", "supplementary": True,
                "text": _note}
@@ -314,7 +322,8 @@ def _gated_action(st, step, name, args, sig, n, cwd, session_id):
             and (result.get("ok") is False or result.get("error"))):
         # A batched write failed: the model must see why before the rest run.
         _drop_batch(st, "an earlier write failed")
-    if isinstance(result, dict) and result.get("error") == "changed_users_checkout":
+    if isinstance(result, dict) and result.get("error") in (
+            "changed_users_checkout", "changed_read_only"):
         # The run pauses for the user (the team route asks); this agent
         # stops here instead of carrying on.
         st.convo.append({"role": "user",

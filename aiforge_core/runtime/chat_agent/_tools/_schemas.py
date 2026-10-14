@@ -41,8 +41,11 @@ CATALOG: dict = {
     "plan_progress": ("Your task board for long or multi-part work. A new slug "
                       "with a title adds an item; a known slug changes its "
                       "status. Keep one item running and mark each done when "
-                      "it is finished.",
-                      {"slug": "s", "title": "s", "status": "s"}, ("slug",)),
+                      "it is finished. With several repositories, slug "
+                      "\"repos\" + work_in / read_only folders records which "
+                      "you change and which you only read, for the whole chat.",
+                      {"slug": "s", "title": "s", "status": "s",
+                       "work_in": "arrs", "read_only": "arrs"}, ("slug",)),
     # ── files / editing ──────────────────────────────────────────────────
     "file_read": ("Read a file's contents.", {"path": "s"}, ("path",)),
     "read_files": ("Read MANY files in ONE call (batched file_read). Pass a "

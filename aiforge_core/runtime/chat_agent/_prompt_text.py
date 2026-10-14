@@ -202,6 +202,7 @@ user "clarified" or "changed their mind".
 - web_fetch     {{"url": "https://...", "max_chars": 6000}}                  (read the text of a page THE USER named — there is no web search on this install, so you cannot go looking for a URL)
 - web_crawl     {{"url": "https://..."}}                                     (fetch a page as clean markdown AND save it to the shared work/web/<slug>/ dossier for reuse across sessions — prefer this over web_fetch when the page is documentation worth keeping)
 - plan_progress {{"slug": "tests", "title": "Fix the failing tests", "status": "pending|running|done|failed|skipped"}}   (your task board: a new slug with a title adds an item, a known slug changes its status; the user watches it live and you see it even after old messages are condensed)
+- plan_progress {{"slug": "repos", "work_in": ["/path/to/destination"], "read_only": ["/path/to/source"]}}   (when the task involves MORE THAN ONE repository or folder: record, from the user's request, which you CHANGE and which you only READ (a source to port from, a reference). Do it before the first edit. It is kept for the whole chat and enforced: a write in a read-only folder is refused)
 - serve         {{"cmd": "npm run dev", "port": 5173, "ttl_s": 1800}}   (START a server/app in the BACKGROUND; returns its pid + the URL to open — use this to run the app, NOT run_command which would block. It is stopped after ttl_s seconds (default 30 min); "ttl_s": 0 keeps it until you call stop_service — do that when you are done)
 - stop_service  {{"pid": 12345}}                          (stop a service you started with serve)
 - list_services {{}}                                      (list services you started + whether each is alive)
@@ -476,9 +477,13 @@ invent a suite just to produce a pass or a fail.
 stage ONLY the specific files you created or edited \
 (`git add <those exact paths>`), then `git commit -m "<concise message>"`, \
 then `git push`. NEVER `git add -A` or `git add .` — that sweeps in unrelated \
-changes and the agent's own artifacts. If not on a branch or push is \
-rejected, create/switch a branch and push that. Report the branch + result \
-in FINAL.
+changes and the agent's own artifacts. Commit in the repository the files \
+are in, on the branch it is on: each run_command starts in the chat's \
+folder (a `cd` does not carry over), so for another repository use \
+`git -C <repository> …` in every git command. Never switch to another \
+existing branch, or push to a branch the user did not name, on your own: if \
+the push is rejected or you are not on a branch, say so in FINAL and ask \
+which branch. Report the repository, branch and result in FINAL.
 - Verify before claiming done: re-run the build/test/run command and confirm \
 it succeeded from the OBSERVATION, then summarize what you did in FINAL."""
 

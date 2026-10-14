@@ -197,6 +197,12 @@ def _forget_grants(session_id=None) -> None:
     except Exception:  # noqa: BLE001 — never block a delete on this
         pass
     try:
+        from aiforge_core.runtime import git_target, repo_roles
+        git_target.forget(session_id)
+        repo_roles.forget(session_id)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         from aiforge_core.runtime.chat_agent import _sticky_tools
         _sticky_tools.forget(session_id)
     except Exception:  # noqa: BLE001

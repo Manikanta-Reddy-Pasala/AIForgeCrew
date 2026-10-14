@@ -165,6 +165,19 @@ def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
                          "content": f"OBSERVATION: {json.dumps(result)}"})
         return "handled"
 
+    if name == "plan_progress" and _repo_roles_call(args):
+        result = _record_repo_roles(st, args)
+        if result.get("ok") and result.get("changed"):
+            yield {"type": "thought", "role": "system",
+                   "text": "📌 Repositories for this chat — " + result["note"].split(": ", 1)[-1]}
+        yield {"type": "tool", "name": name, "args": args, "result": result}
+        st.convo.append({"role": "user",
+                         "content": f"OBSERVATION: {json.dumps(result)}"})
+        if str((args or {}).get("slug") or "repos") == "repos":
+            return "handled"
+        # The same call also moved a board item: do that too.
+        args = {k: v for k, v in args.items() if not _is_role_key(k)}
+
     if name == "plan_progress":
         result, events = apply_progress(st.board, args)
         result, events = review_progress(st, result, events)
@@ -273,6 +286,107 @@ def _team_repo_guard(st, name, args, cwd):
     st.convo.append({"role": "user",
                      "content": f"OBSERVATION: {json.dumps(result)}"})
     return "continue"
+
+
+def _repo_roles_call(args) -> bool:
+    from aiforge_core.runtime import repo_roles
+    return repo_roles.enabled() and (repo_roles.has_roles(args) or str(
+        (args or {}).get("slug") or "") == repo_roles.SLUG)
+
+
+def _is_role_key(key: str) -> bool:
+    from aiforge_core.runtime import repo_roles
+    return key in repo_roles.WORK_KEYS + repo_roles.READ_KEYS
+
+
+#: A side task's request starts with its parent chat's recent messages
+#: (api/routes/_chat/_side_tasks._context_preamble): the model's words, not
+#: the user's. Only what follows this marker is the task.
+_SIDE_TASK_MARK = "\n\nThe side task:\n"
+
+
+def _said(st) -> str:
+    """The user's words in this turn: the request and any message sent mid-run."""
+    goal = str(getattr(st, "goal", "") or "")
+    if goal.startswith("This is a SIDE TASK") and _SIDE_TASK_MARK in goal:
+        # The task text may be the parent AGENT's (spawn_task), not the user's.
+        goal = ""
+    return "\n".join([goal] + [str(s) for s in (getattr(st, "steers", None) or [])])
+
+
+def _record_repo_roles(st, args) -> dict:
+    """plan_progress {"slug": "repos", "work_in": [...], "read_only": [...]}:
+    the chat's repository roles (runtime/repo_roles)."""
+    from aiforge_core.runtime import repo_roles
+    if not repo_roles.has_roles(args):
+        r = repo_roles.roles(getattr(st, "session_id", None))
+        return {"ok": False, "repos": r, "error": (
+            "Pass the folders: plan_progress {\"slug\": \"repos\", \"work_in\": "
+            "[<folders to change>], \"read_only\": [<source / reference folders>]}. "
+            "Recorded now: " + repo_roles.summary(r))}
+    try:
+        return repo_roles.record(getattr(st, "session_id", None), args,
+                                 getattr(st, "cwd", None), _said(st),
+                                 getattr(st, "user_roots", None) or ())
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"repo roles not recorded: {exc}"}
+
+
+def _git_target_gate(st, name, args, cwd):
+    """A call that would write in a repository this chat only reads, or in
+    one it does not work in (runtime/repo_roles), or a git command that would
+    land in the wrong repository or on the wrong branch (runtime/git_target),
+    is refused before it runs, and before any approval is asked for it.
+    Returns "continue" to skip the call, else None."""
+    session_id = getattr(st, "session_id", None)
+    if session_id is None:
+        return None
+    _seen = 1 + len(getattr(st, "steers", None) or [])
+    if getattr(st, "roles_allow_checked", 0) != _seen:
+        # "allow edits in calc-java": the harness moves the folder itself, at
+        # the first call of the turn and after each message sent mid-run (the
+        # model may get its own call wrong).
+        st.roles_allow_checked = _seen
+        try:
+            from aiforge_core.runtime import repo_roles
+            moved = repo_roles.allow_from_user(session_id, _said(st))
+        except Exception:  # noqa: BLE001
+            moved = []
+        if moved:
+            text = ("📌 You allowed changes in " + ", ".join(moved)
+                    + " — it is now a folder this chat works in.")
+            yield {"type": "thought", "role": "system", "text": text}
+            st.convo.append({"role": "user", "content": (
+                "[harness — not the user] " + text + " Writes and commits there are "
+                "allowed from now on.")})
+    try:
+        from aiforge_core.runtime import git_target, repo_roles, shell_writes
+        result = repo_roles.check(session_id, name, args or {}, cwd,
+                                  getattr(st, "user_roots", None) or (), _said(st))
+        if result is None and name in shell_writes.SHELL_TOOLS:
+            result = git_target.check(session_id, shell_writes.command_of(args or {}),
+                                      _command_base(cwd), _said(st))
+    except Exception:  # noqa: BLE001 — never break dispatch
+        return None
+    if result is None:
+        return None
+    try:
+        from aiforge_core.runtime import repo_roles
+        folder = repo_roles.refused_folder(result)
+        if folder:
+            st.roles_refused = list(getattr(st, "roles_refused", None) or []) + [folder]
+    except Exception:  # noqa: BLE001
+        pass
+    yield {"type": "tool", "name": name, "args": args, "result": result}
+    st.convo.append({"role": "user",
+                     "content": f"OBSERVATION: {json.dumps(result)}"})
+    return "continue"
+
+
+def _command_base(cwd) -> str:
+    """The folder run_command runs a command in."""
+    from aiforge_core.runtime.git_target import command_base
+    return command_base(cwd)
 
 
 def _explicit_grants(session_id) -> list:
@@ -398,6 +512,11 @@ def _record_edit(st, name, args, result, cwd):
                     f"wrote has a syntax error; fix it before continuing:\n{_pe[:600]}"})
 
 
+def _git_target_after(st, name, args, result, cwd) -> str:
+    from aiforge_core.runtime import git_target
+    return git_target.after(getattr(st, "session_id", None), name, args, result, cwd)
+
+
 def _record_read(st, name, sig, result, _long_chain_help):
     """Count a landed READ as new progress the first time its signature is seen
     (feeds the extension budget), and remember it for the duplicate-read guard."""
@@ -487,6 +606,11 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     # rides on this observation), then stop and ask.
     # Steps that change nothing, read nothing new and move no test, again
     # and again (varied scripts guessing a hash): the same plumbing.
+    # Where a git write landed (repository + branch), so a commit in the wrong
+    # place is visible to the model at once; also records where it works.
+    _git_line = _safely(_git_target_after, st, name, args, result, cwd)
+    if _git_line:
+        obs = f"{obs}\n{_git_line}"
     seen = _safely(note_failure, st, name, args, result)
     idle = _safely(note_step, st, name, args, result)
     seen = seen or idle

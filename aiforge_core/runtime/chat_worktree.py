@@ -130,7 +130,9 @@ def main_repo_of(path: "str | None") -> "str | None":
     marker = os.sep + "worktrees" + os.sep
     if marker not in gitdir:
         return None                       # a submodule's .git file, not a worktree
-    common = gitdir.split(marker, 1)[0]
+    common, rest = gitdir.rsplit(marker, 1)
+    if (os.sep + "modules" + os.sep) in os.sep + rest:
+        return None                       # a submodule inside a worktree
     return os.path.dirname(os.path.normpath(common))
 
 

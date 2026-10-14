@@ -62,6 +62,12 @@ one question, and only when the choices cannot be undone and lead to \
 different results. Otherwise state the assumption and write the plan. When \
 the user approves, you carry this plan out yourself.
 
+When the request involves more than one repository or folder (a source to \
+port from, a destination, references), record first which you will CHANGE \
+and which you only READ: plan_progress {{"slug": "repos", "work_in": [<full \
+paths>], "read_only": [<full paths>]}}. Put the same two lists at the top of \
+the plan. They are kept and enforced for the whole chat.
+
 Be short. Never invent a path or a command output.\
 """
 

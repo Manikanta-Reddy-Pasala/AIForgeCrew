@@ -434,6 +434,15 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
         step["text"] = _facts.strip_copied(step.get("text") or "")
         _bg_note = _facts.suffix(getattr(st, "session_id", None), cwd,
                                  getattr(st, "head0", None), _wt_fp0 or "") + _bg_note
+    # A change refused in a read-only folder this turn: the user is asked
+    # by the harness, in words they can answer, whatever the model wrote.
+    try:
+        from aiforge_core.runtime import repo_roles as _roles
+        _bg_note += _roles.final_note(getattr(st, "roles_refused", None),
+                                      getattr(st, "session_id", None),
+                                      step.get("text") or "")
+    except Exception:  # noqa: BLE001 — the note never blocks an answer
+        pass
     try:
         yield {"type": "message",
                "text": _strip_reasoning_prefix(step["text"]) + _bg_note}
