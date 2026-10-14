@@ -21,7 +21,7 @@ def test_no_board_no_note():
 def test_the_note_shows_the_board_and_how_to_change_it():
     note = T.steer_note(_board())
     assert "[x] part-1: add subtract" in note and "[ ] part-2: add power" in note
-    assert "plan_progress" in note and "skipped" in note
+    assert "plan_progress" in note and "remove: true" in note and "after/before" in note
     assert note.startswith("[task board — not the user]")
 
 

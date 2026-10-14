@@ -24,6 +24,8 @@ _ALIASES = {"todo": "pending", "open": "pending", "queued": "pending",
             "cancelled": "skipped", "canceled": "skipped", "wontfix": "skipped",
             "not_needed": "skipped"}
 _CLOSED = frozenset({"done", "failed", "skipped"})
+#: Status words that mean "take it off the board".
+_REMOVE_WORDS = frozenset({"remove", "removed", "delete", "deleted", "drop", "dropped"})
 _MARK = {"pending": "[ ]", "running": "[>]", "done": "[x]",
          "failed": "[!]", "skipped": "[-]"}
 #: Items a model may add in one run. A plan is a handful of lines; this only
@@ -67,9 +69,10 @@ def steer_note(board: dict) -> str:
             f"{lines}\n"
             "The user's message above may change this plan. Before you carry "
             "on, bring the board in line with it using plan_progress: a new "
-            "slug with a title for work it adds, status skipped for work it "
-            "drops, the same slug with a new title for work it changes. The "
-            "user watches this list. If the message changes nothing on it, "
+            "slug with a title for work it adds (with after/before/position "
+            "to put it where it belongs in the order), remove: true for work "
+            "it drops, the same slug with a new title for work it changes. "
+            "The user watches this list. If the message changes nothing on it, "
             "leave it as it is.")
 
 
@@ -87,8 +90,8 @@ def revised_note(board: dict, changes: list) -> str:
             "This board replaces any checklist given earlier. Work through it "
             "in this order; each item says how it is checked. "
             "Mark items with plan_progress as you go. If the board misreads "
-            "the user, correct it with plan_progress (same slug, new title or "
-            "status skipped).")
+            "the user, correct it with plan_progress (same slug with a new "
+            "title, remove: true, or after/before to move it).")
 
 
 def board_items(board: dict) -> list[dict]:
@@ -176,14 +179,95 @@ def _known(board: dict, slug: str) -> str:
     return next((s for s, it in board.items() if slug in it.get("aliases", ())), slug)
 
 
-def apply_progress(board: dict, args: dict) -> tuple[dict, list[dict]]:
-    """Apply one ``plan_progress`` call. Returns ``(result, ui_events)``."""
+def _truthy(v) -> bool:
+    return v is True or str(v).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _reorder(board: dict, order: list) -> list:
+    """Put ``board`` in the order of ``order`` (slugs; unknown ones ignored);
+    items it leaves out keep their place after the item before them."""
+    known = [_known(board, str(s).strip()) for s in order]
+    known = [s for i, s in enumerate(known) if s in board and s not in known[:i]]
+    rest = list(board)
+    out = list(known)
+    for i, s in enumerate(rest):
+        if s in out:
+            continue
+        before = [x for x in rest[:i] if x in out]
+        out.insert(out.index(before[-1]) + 1 if before else 0, s)
+    items = {s: board[s] for s in out}
+    board.clear()
+    board.update(items)
+    return out
+
+
+def _place(board: dict, slug: str, args: dict) -> bool:
+    """Move ``slug`` where the call says: ``after`` / ``before`` another item,
+    or ``position`` (1 = first). True when it moved."""
+    after = _known(board, str(args.get("after") or "").strip())
+    before = _known(board, str(args.get("before") or "").strip())
+    pos = args.get("position")
+    order = [s for s in board if s != slug]
+    if after in board and after != slug:
+        order.insert(order.index(after) + 1, slug)
+    elif before in board and before != slug:
+        order.insert(order.index(before), slug)
+    elif str(pos).strip().isdigit() and int(pos) >= 1:
+        order.insert(min(int(pos), len(order) + 1) - 1, slug)
+    else:
+        return False
+    old = list(board)
+    _reorder(board, order)
+    return old != list(board)
+
+
+def _remove(board: dict, slug: str, allow_request: bool) -> "tuple[dict, list]":
+    asked = slug
+    slug = _known(board, slug)
+    if slug not in board:
+        return {"ok": False, "slug": asked, "error": "not on your task board; items: "
+                + ", ".join(board)[:400]}, []
+    if board[slug].get("from_request") and not allow_request:
+        return {"ok": False, "slug": slug, "error": (
+            f"{slug} is a part of the user's request: it stays on the board (the "
+            "user sees what happened to it). If it is dropped or cannot be done, "
+            "mark it status skipped and say why in the title.")}, []
+    if board[slug]["status"] in ("done", "failed"):
+        return {"ok": False, "slug": slug, "error": (
+            f"{slug} is {board[slug]['status']}: finished work stays on the board "
+            "as the record of what was done.")}, []
+    del board[slug]
+    return {"ok": True, "slug": slug, "removed": True,
+            "open": [f"{s}: {board[s]['title']}" for s in open_items(board)[:20]],
+            "open_count": len(open_items(board))}, \
+        [{"type": "subtasks", "items": board_items(board)}]
+
+
+def apply_progress(board: dict, args: dict, *,
+                   allow_request_removal: bool = False) -> tuple[dict, list[dict]]:
+    """Apply one ``plan_progress`` call. Returns ``(result, ui_events)``.
+
+    Besides adding an item (new slug + title) and moving one (known slug +
+    status), a call can REMOVE an item (``remove: true`` or status
+    ``removed``), place an item (``after`` / ``before`` a slug, or
+    ``position``, 1 = first) and put the whole board in an ``order`` (a list
+    of slugs). A part of the user's request is removed only when the user
+    dropped it (``allow_request_removal``: a message arrived mid-run)."""
+    if isinstance(args.get("order"), list) and not args.get("slug"):
+        before = list(board)
+        _reorder(board, args["order"])
+        return ({"ok": True, "order": list(board),
+                 "open": [f"{s}: {board[s]['title']}" for s in open_items(board)[:20]]},
+                [{"type": "subtasks", "items": board_items(board)}]
+                if list(board) != before else [])
     slug = str(args.get("slug") or args.get("part") or "").strip()[:80]
     title = " ".join(str(args.get("title") or args.get("goal") or "").split())
     status = str(args.get("status") or "").strip().lower().replace(" ", "_")
-    status = _ALIASES.get(status, status)
     if not slug:
         return {"ok": False, "error": "missing 'slug'"}, []
+    if _truthy(args.get("remove")) or status in _REMOVE_WORDS:
+        return _remove(board, slug, allow_request_removal)
+    status = _ALIASES.get(status, status)
     if status and status not in _STATUSES:
         return {"ok": False, "slug": slug,
                 "error": f"status must be one of {', '.join(_STATUSES)}"}, []
@@ -213,8 +297,10 @@ def apply_progress(board: dict, args: dict) -> tuple[dict, list[dict]]:
     else:
         if title:
             board[slug]["title"] = title[:_MAX_TITLE]
-        board[slug]["status"] = status or ("done" if not title else
+        placing = any(args.get(k) not in (None, "") for k in ("after", "before", "position"))
+        board[slug]["status"] = status or ("done" if not (title or placing) else
                                            board[slug]["status"])
+    moved = _place(board, slug, args)
     item = board[slug]
     still_open = open_items(board)
     result = {"ok": True, "slug": slug, "status": item["status"],
@@ -223,8 +309,9 @@ def apply_progress(board: dict, args: dict) -> tuple[dict, list[dict]]:
                  if slug != asked else {}),
               "open": [f"{s}: {board[s]['title']}" for s in still_open[:20]],
               "open_count": len(still_open)}
-    if title:
-        # The dock needs the whole list to show a new or renamed item.
+    if title or moved or added:
+        # The dock needs the whole list to show a new, renamed or moved item.
+        result["position"] = list(board).index(slug) + 1
         return result, [{"type": "subtasks", "items": board_items(board)}]
     return result, [{"type": "subtask_update", "slug": slug,
                      "status": item["status"]}]

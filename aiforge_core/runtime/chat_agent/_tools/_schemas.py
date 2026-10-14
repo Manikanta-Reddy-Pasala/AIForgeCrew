@@ -39,14 +39,18 @@ _T = {
 CATALOG: dict = {
     # ── handled by the loop itself, not the TOOLS registry ───────────────
     "plan_progress": ("Your task board for long or multi-part work. A new slug "
-                      "with a title adds an item; a known slug changes its "
-                      "status. Keep one item running and mark each done when "
-                      "it is finished. With several repositories, slug "
+                      "with a title adds an item (after/before a slug, or "
+                      "position, puts it in its place); a known slug changes "
+                      "its status; remove:true takes an item off; order (a "
+                      "list of slugs) re-sorts the board. Keep one item "
+                      "running and mark each done when it is finished. With several repositories, slug "
                       "\"repos\" + work_in / read_only folders records which "
                       "you change and which you only read, for the whole chat; "
                       "an entry {path, branch, for} gives a branch its own folder.",
                       {"slug": "s", "title": "s", "status": "s",
-                       "work_in": "arr", "read_only": "arr"}, ("slug",)),
+                       "remove": "b", "after": "s", "before": "s",
+                       "position": "i", "order": "arrs",
+                       "work_in": "arr", "read_only": "arr"}, ()),
     # ── files / editing ──────────────────────────────────────────────────
     "file_read": ("Read a file's contents.", {"path": "s"}, ("path",)),
     "read_files": ("Read MANY files in ONE call (batched file_read). Pass a "
@@ -179,7 +183,8 @@ CATALOG: dict = {
                         "to clean up (running jobs, new files, packages, "
                         "containers, branches) with how to undo each.",
                         {"failed_only": "b", "limit": "i"}, ()),
-    "remember_rule": ("Persist a user rule for every session.",
+    "remember_rule": ("Persist a user rule for every session (scope 'project': "
+                      "only this project's chats; 'global': all).",
                       {"text": "s", "description": "s", "scope": "s",
                        "triggers": "arrs"}, ("text",)),
     "skill_search": ("Find reusable SKILL.md playbooks.", {"query": "s"},

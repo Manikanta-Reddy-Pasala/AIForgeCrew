@@ -334,7 +334,15 @@ export function describeStep(name: string, args: Args | undefined | null): strin
     case 'ui_check': return 'Taking a screenshot of the page';
     case 'spawn_task': return 'Starting a side task';
     case 'delegate': case 'delegate_to_agent': return 'Handing a task to another agent';
-    case 'plan_progress': return `Marking "${s(a.title) || s(a.slug)}" as ${s(a.status) || 'updated'}`;
+    case 'plan_progress': {
+      const st = s(a.status).toLowerCase();
+      if (a.remove === true || ['remove', 'removed', 'delete', 'deleted', 'drop', 'dropped'].includes(st))
+        return `Removing "${s(a.title) || s(a.slug)}" from the task list`;
+      if (Array.isArray(a.order) && !a.slug) return 'Re-ordering the task list';
+      if (!a.status && (a.after || a.before || a.position) && !a.title)
+        return `Moving "${s(a.slug)}" in the task list`;
+      return `Marking "${s(a.title) || s(a.slug)}" as ${s(a.status) || 'updated'}`;
+    }
     case 'execute_ipython_cell': return 'Running Python code';
     case 'jira_read': case 'jira_comments': case 'jira_worklog': return `Reading Jira ${s(a.key)}`.trim();
     case 'jira_search': return 'Searching Jira';

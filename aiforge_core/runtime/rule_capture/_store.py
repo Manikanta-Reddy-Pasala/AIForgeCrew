@@ -101,7 +101,10 @@ def _store_rule(item: dict, c: dict, repo, repo_root) -> None:
     from aiforge_core.memory import md_store
     cat, scope = item["category"], item["scope"]
     canonical = item["canonical"]
-    triggers = c.get("triggers") or []
+    # A rule stated for THIS project holds for all of its work: no topic
+    # gate (the classifier's triggers are the rule's own words, "vm, ssh",
+    # which a request like "run the tests" never repeats).
+    triggers = [] if scope == "project" else (c.get("triggers") or [])
     item["triggers"] = triggers
     src, title = _rule_brief_source(scope, repo)
     bullet_text = (f"[triggers: {', '.join(triggers)}] {canonical}"

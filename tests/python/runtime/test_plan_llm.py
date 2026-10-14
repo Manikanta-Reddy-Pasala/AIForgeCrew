@@ -123,8 +123,9 @@ def test_revise_keeps_left_out_items_and_never_marks_done(monkeypatch):
     _model(monkeypatch, json.dumps({"tasks": [
         {"id": "part-1", "title": board["part-1"]["title"], "status": "skipped"}]}))
     new, changes = _plan_llm.revise("chat", board, ["forget repo-a"], "goal", 7)
-    assert list(new) == ["part-1", "part-2"]
-    assert new["part-1"]["status"] == "skipped" and new["part-2"]["status"] == "pending"
+    # Dropped by the user: off the board (10-15: not kept as a struck line).
+    assert list(new) == ["part-2"] and new["part-2"]["status"] == "pending"
+    assert any(c.startswith("removed part-1") for c in changes)
 
 
 def test_revise_keeps_a_reorder_and_ignores_an_added_check(monkeypatch):
@@ -323,7 +324,7 @@ def test_a_message_mid_run_changes_the_approved_plans_steps(monkeypatch):
         {"id": "plan-3", "title": "run the tests in svc-a and svc-c", "status": "pending"}]}))
     events = []
     _, note = _drain(_limits._revise_board(st, ["not svc-b, do svc-c instead"], events))
-    assert list(st.board) == ["plan-1", "plan-2", "msg-4", "plan-3"]
-    assert st.board["plan-2"]["status"] == "skipped"
+    assert list(st.board) == ["plan-1", "msg-3", "plan-3"]
+    assert "plan-2" not in st.board
     assert "svc-c" in st.board["plan-3"]["title"] and st.board_used and events
     assert "replaces any checklist" in note

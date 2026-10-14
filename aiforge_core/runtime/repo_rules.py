@@ -157,7 +157,7 @@ def _rule_frontmatter(name: str, description: str, gl: list, trig: list,
 def write_rule(name: str, body: str, *, globs: list[str] | None = None,
                always: bool = True, description: str = "",
                triggers: list[str] | None = None, scope: str = "global",
-               links: list[str] | None = None) -> dict:
+               links: list[str] | None = None, root: "str | None" = None) -> dict:
     """Author/overwrite a global rule at ~/.aiforge/rules/<slug>.md.
 
     Emits the UNIFIED artifact frontmatter shared by rules, skills, and
@@ -170,7 +170,9 @@ def write_rule(name: str, body: str, *, globs: list[str] | None = None,
     if not name or not body:
         return {"ok": False, "error": "name and body are required"}
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "rule"
-    d = _global_rules_dir()
+    # ``root``: a project's own rule (``<root>/.aiforge/rules``), read by
+    # load_rules(<that project>) only.
+    d = (Path(root) / ".aiforge" / "rules") if root else _global_rules_dir()
     try:
         d.mkdir(parents=True, exist_ok=True)
         gl = [g.strip() for g in (globs or []) if str(g).strip()]

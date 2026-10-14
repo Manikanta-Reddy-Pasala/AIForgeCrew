@@ -182,19 +182,26 @@ def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
         return "handled"
 
     if name == "plan_progress":
+        # A part of the request comes off the board only when the user
+        # dropped it: a message arrived mid-run.
+        # A part of the user's request is never taken off by the model: it is
+        # marked skipped, so the user sees what happened to it. (The harness's
+        # own revise for a message the user sent mid-run removes dropped work.)
         result, events = apply_progress(st.board, args)
         result, events = review_progress(st, result, events)
         st.board_used = st.board_used or any(
             ev["type"] == "subtasks" for ev in events)
         # The model is working the board (also an item that came from the
         # request's own parts): a FINAL that leaves any item open is premature.
-        if result.get("ok") and result.get("slug") in st.board:
+        if result.get("ok") and (result.get("slug") in st.board
+                                 or result.get("removed") or result.get("order")):
             st.board_touched = True
         if readonly_mode:
             # Plan mode's panel holds the planner's steps; a whole-list
             # event would replace them.
-            events = [{"type": "subtask_update", "slug": result.get("slug"),
-                       "status": result.get("status")}] if result.get("ok") else []
+            events = ([{"type": "subtask_update", "slug": result.get("slug"),
+                        "status": result.get("status")}]
+                      if result.get("ok") and result.get("status") else [])
         yield from events
         yield {"type": "tool", "name": name, "args": args, "result": result}
         st.convo.append({"role": "user",

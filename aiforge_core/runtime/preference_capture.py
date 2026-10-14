@@ -68,6 +68,19 @@ _SYS = (
     "stable slug. global=true unless the preference is clearly repo-specific.")
 
 
+_PROJECT_WORDS = re.compile(r"\b(?:this|the|our)\s+(?:project|repo|repository|codebase|"
+                            r"app|service)\b|\bfor\s+(?:this|the)\s+(?:project|repo)\b",
+                            re.IGNORECASE)
+
+
+def _project_scoped(prompt: str, repo: "str | None") -> bool:
+    """The message says the preference is for this project ("for this
+    project, always …"): it never becomes global."""
+    return bool(repo) and (bool(_PROJECT_WORDS.search(prompt or ""))
+                           or bool(re.search(rf"\b{re.escape(repo)}\b", prompt or "",
+                                             re.IGNORECASE)))
+
+
 def capture(prompt: str, *, repo: str | None = None,
             session_id=None) -> dict:
     """Detect + upsert a durable preference from ``prompt``. Returns
@@ -93,14 +106,16 @@ def capture(prompt: str, *, repo: str | None = None,
         # LLM down → deterministic fallback: store the raw line under a slug of
         # the message so an explicit instruction still persists (no update-map).
         log.debug("pref_capture llm down: %s", exc)
-        return _persist(_slug(p), p[:400], global_=True, fallback=True)
+        return _persist(_slug(p), p[:400], global_=not _project_scoped(p, repo),
+                        repo=repo, fallback=True)
 
     obj = _parse(raw)
     if not obj or not obj.get("is_preference"):
         return {"ok": False, "skipped": "not-a-pref"}
     subject = _slug(obj.get("subject") or p[:40])
     value = (obj.get("value") or p).strip()[:500]
-    return _persist(subject, value, global_=bool(obj.get("global", True)),
+    return _persist(subject, value,
+                    global_=bool(obj.get("global", True)) and not _project_scoped(p, repo),
                     repo=repo)
 
 

@@ -218,9 +218,11 @@ def plan_asks(role: str, message: str, messages, cwd=None, session_id=None):
 _STATUSES = ("pending", "running", "done", "failed", "skipped")
 
 
-def _next_slug(board: dict) -> str:
+def _next_slug(board: dict, taken=()) -> str:
+    """A new ``msg-N``, never one an item had before (a removed item's slug
+    handed out again would carry its history)."""
     n = len(board) + 1
-    while f"msg-{n}" in board:
+    while f"msg-{n}" in board or f"msg-{n}" in taken:
         n += 1
     return f"msg-{n}"
 
@@ -255,6 +257,8 @@ def _merged(board: dict, tasks: list) -> tuple[dict, list]:
             continue
         slug = str(t.get("id") or "").strip()
         title = _clean(t.get("title"))
+        if slug in board and slug not in new:
+            continue                  # listed again after it was removed
         if slug in board and slug not in order:
             item = new[slug]
             # A title the reviser only added a "— check:" to is the same work.
@@ -268,22 +272,28 @@ def _merged(board: dict, tasks: list) -> tuple[dict, list]:
                 # and is not closed for the agent when its answer is taken.
                 item["from_request"] = False
                 item["redo"] = True
+            if status == "skipped" and status != item["status"]:
+                # Dropped by the user's message: off the board, not left on it
+                # as a struck-out line.
+                changes.append(f"removed {slug}: {item['title']}")
+                new.pop(slug, None)
+                continue
             if status != item["status"]:
-                changes.append(f"{'dropped' if status == 'skipped' else 'to do again'} "
-                               f"{slug}: {item['title']}")
+                changes.append(f"to do again {slug}: {item['title']}")
                 item["status"] = status
             order.append(slug)
             continue
         if slug in board or not title or not room \
                 or title in (v["title"] for v in new.values()):
             continue
-        slug = _next_slug(new)          # new work (an unknown id counts as none)
+        slug = _next_slug(new, board)   # new work (an unknown id counts as none)
         new[slug] = {"title": title, "status": "pending", "by_harness": True}
         changes.append(f"added {slug}: {title}")
         order.append(slug)
         room -= 1
+    gone = {s for s in board if s not in new}
     for i, slug in enumerate(board):
-        if slug in order:
+        if slug in order or slug in gone:
             continue
         before = [s for s in list(board)[:i] if s in order]
         order.insert(order.index(before[-1]) + 1 if before else 0, slug)

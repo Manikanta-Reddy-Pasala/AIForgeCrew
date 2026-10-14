@@ -25,6 +25,7 @@ from .._guards import (
     ZeroEditGuard,
     run_guards,
 )
+from .._guards.rules import RuleBreakGuard
 from .._prompt import _strip_reasoning_prefix
 from .._registry import (
     _BUILDER_FINALIZE_TOOL,
@@ -375,7 +376,9 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
         # named as changed that no write touched) and against the turn's own
         # commands (a check that failed after the last change).
         UnchangedFileClaimGuard(cwd, readonly_mode, builder, plan_mode),
-        UnpassedCheckGuard(readonly_mode, builder, plan_mode)])
+        UnpassedCheckGuard(readonly_mode, builder, plan_mode),
+        # A command that did what one of the user's rules forbids.
+        RuleBreakGuard(cwd, readonly_mode, builder, plan_mode)])
     if _sig == "continue":
         return "continue"
     _sig = yield from _verify_on_final(st, step, cwd, plan_mode, builder)

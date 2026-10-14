@@ -185,15 +185,30 @@ def _t_remember_rule(args: dict, cwd: str) -> dict:
                                description=description)   # LLM format+elaborate
         # Unified artifact frontmatter (same shape as skills/workflows):
         # name / description / triggers / scope.
+        root = None
+        if scope in ("project", "repo", "repository"):
+            # A rule for THIS project lives in the project
+            # (<repo>/.aiforge/rules), not in the global folder every
+            # project reads.
+            from aiforge_core.runtime import repo_ident
+            # The repository's top folder, or the chat's own folder when the
+            # project is not a git repository (load_rules reads it there).
+            root = (repo_ident.git_toplevel(cwd) or (cwd if os.path.isdir(cwd) else None)) \
+                if cwd else None
+            # No folder at all: it can only live in the global store.
         res = repo_rules.write_rule(
             name, body, globs=_csv_list(args.get("globs")), always=True,
             description=description, triggers=_csv_list(args.get("triggers")),
-            scope=scope)
+            scope=scope, root=root)
         if not res.get("ok"):
             return res
         _record_rule_memory(text, scope, cwd)
-        return {"ok": True, "name": name, "scope": scope, "remembered": body,
-                "path": res.get("path")}
+        out = {"ok": True, "name": name, "scope": scope, "remembered": body,
+               "path": res.get("path")}
+        if scope in ("project", "repo", "repository") and not root:
+            out["note"] = ("this chat has no project folder, so the rule was saved "
+                           "globally (it applies in every project)")
+        return out
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
 
@@ -255,13 +270,16 @@ def _is_pref_row(row) -> bool:
     return any(isinstance(t, str) and t.startswith("pref:") for t in tags)
 
 
-def _preference_lines() -> list[str]:
+def _preference_lines(repo: "str | None" = None) -> list[str]:
+    """Global preferences plus THIS project's (a preference stated "for this
+    project" never reaches another project's chats)."""
     from aiforge_core.memory import sqlite_memory as _m
     lines: list[str] = []
     with _m._conn() as c:  # noqa: SLF001
         rows = c.execute(
             "SELECT text, tags FROM memory_units WHERE kind='preference' "
-            "ORDER BY id DESC LIMIT 40").fetchall()
+            "AND (repo IS NULL OR repo = '' OR repo = ?) "
+            "ORDER BY id DESC LIMIT 40", (repo or "",)).fetchall()
     for r in rows:
         txt = (r["text"] or "").strip().replace("\n", " ")
         if txt and _is_pref_row(r):
@@ -278,7 +296,7 @@ def _preferences_context(_cwd: str) -> str:
         from aiforge_core.memory import backend_select as _bsel
         if not _bsel.embedded():
             return ""
-        lines = _preference_lines()
+        lines = _preference_lines(_chat_repo_key(_cwd) if _cwd else None)
         if not lines:
             return ""
         return ("USER PREFERENCES (standing defaults/conventions the user set — "
@@ -309,7 +327,11 @@ def _md_rule_bullets(cwd: str) -> tuple[list[str], list]:
             if not line.strip():
                 continue
             trig, text = _parse_bullet(line)
-            if not trig:
+            # A project's own rule book is short and every rule in it was
+            # stated for this project: always on. Gating one by topic words
+            # ("[triggers: vm, ssh]") hid "run tests on the VM" from "run the
+            # tests" — the rule was forgotten in the next chat.
+            if not trig or src != "rules:global":
                 always.append("- " + text)
             else:
                 tagged.append(_sk.Skill(
@@ -422,6 +444,35 @@ def _capped_rules(blocks: list[str]) -> str:
             "(\"rules\") for the full list before acting")
 
 
+def user_rule_lines(cwd: str) -> list[str]:
+    """The rules the USER set (captured in chat, written in the Library,
+    this project's rule files, stored constraints) — not the shipped
+    defaults. What a turn's actions are checked against."""
+    out: list[str] = []
+    try:
+        always, tagged = _md_rule_bullets(cwd)
+        out += always + ["- " + getattr(t, "body", "") for t in tagged]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from aiforge_core.runtime import library_defaults
+        from aiforge_core.runtime import repo_rules as _rr
+        for r in (_rr.load_rules(cwd) if cwd else _rr.load_global_rules()):
+            src = str(getattr(r, "source", "") or "")
+            if src == "builtin" or library_defaults.is_builtin(src):
+                continue
+            body = (r.body or "").strip().replace("\n", " ")[:400]
+            if body:
+                out.append("- " + body)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        out += _constraint_bullets(cwd)
+    except Exception:  # noqa: BLE001
+        pass
+    return list(dict.fromkeys(x for x in out if x.strip("- ").strip()))
+
+
 def _rules_context(cwd: str, query: str = "") -> str:
     """The user's persistent rule book (global + this-repo) plus the stored
     CONSTRAINT units, injected into EVERY session so the rules are always
@@ -441,13 +492,17 @@ def _rules_context(cwd: str, query: str = "") -> str:
         tagged += repo_tagged
         selected, ambiguous_note = (_select_tagged(tagged, query) if tagged
                                     else ([], ""))
-        blocks = always + selected
+        blocks = list(dict.fromkeys(always + selected))
         if not blocks:
             return ""
         return ("RULES — MANDATORY, non-negotiable: the user ordered these "
                 "ALWAYS followed, every session, HIGHEST priority (they "
                 "override defaults and convenience). Check your plan against "
-                "each rule before answering or acting:\n"
+                "each rule before answering or acting. When a rule cannot be "
+                "followed (the VM is unreachable, a tool is missing), STOP and "
+                "tell the user what blocks it: never do what the rule forbids "
+                "instead (e.g. run locally what must run on the VM), and never "
+                "report such work as done:\n"
                 + _capped_rules(blocks) + ambiguous_note)
     except Exception:  # noqa: BLE001
         return ""

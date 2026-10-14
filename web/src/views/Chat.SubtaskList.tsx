@@ -80,8 +80,11 @@ export function SubtaskList({ items, onViewSpec, onDismiss }: Readonly<{
           <span style={{ flexShrink: 0, width: 58, textAlign: 'center', fontSize: 10, fontWeight: 600,
             color: SUBTASK_COLORS[s.status] || SUBTASK_COLORS.pending,
             border: `1px solid ${SUBTASK_COLORS[s.status] || SUBTASK_COLORS.pending}`, borderRadius: 4, padding: '1px 3px' }}>{STATUS_LABEL[s.status] || s.status}</span>
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
-            <span style={{ color: '#8892a0', fontFamily: 'monospace', marginRight: 6 }}>{s.slug}</span>
+          <span title={s.slug ? `${s.slug}: ${label}` : label}
+            style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+            {/* Numbered in board order (the agent can insert, move and remove
+                items); the slug is an id, shown on hover. */}
+            <span style={{ color: '#8892a0', fontFamily: 'monospace', marginRight: 6 }}>{i + 1}.</span>
             <span style={{ color: '#8892a0' }}>{label.length > 60 ? label.slice(0, 60) + '…' : label}</span>
           </span>
         </div>
