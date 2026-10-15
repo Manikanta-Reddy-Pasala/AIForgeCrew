@@ -376,11 +376,13 @@ def window(monkeypatch):
 
 def test_the_default_reserve_is_the_output_cap_as_before(window):
     win_chars = window * 4
-    expect = min(int(win_chars * 0.8), win_chars - 4096 * 4) - 5000
+    expect = min(int(win_chars * 0.5), win_chars - 4096 * 4) - 5000
     assert W._ctx_budget_chars("chat", sys_chars=5000) == expect
 
 
-def test_a_reasoning_allowance_shrinks_the_history_budget(window):
+def test_a_reasoning_allowance_shrinks_the_history_budget(window, monkeypatch):
+    # At the default 50% the reserve rarely binds; a high fraction makes it.
+    monkeypatch.setenv("AIFORGE_CTX_HISTORY_FRACTION", "0.95")
     base = W._ctx_budget_chars("chat", sys_chars=5000)
     boosted = W._ctx_budget_chars("chat", sys_chars=5000,
                                   extra_reserve_tokens=60_000)
@@ -400,6 +402,7 @@ def test_the_reserve_is_capped_to_a_window_fraction(window):
 def test_a_boosted_step_adds_to_the_reserve(window, monkeypatch):
     from aiforge_core.llm import reasoning
     monkeypatch.setenv("AIFORGE_BOOST_RESERVE_TOKENS", "50000")
+    monkeypatch.setenv("AIFORGE_CTX_HISTORY_FRACTION", "0.95")
     base = W._ctx_budget_chars("chat", sys_chars=5000)
     with reasoning.boost():
         assert W._ctx_budget_chars("chat", sys_chars=5000) < base

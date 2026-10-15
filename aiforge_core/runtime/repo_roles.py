@@ -681,11 +681,23 @@ def _typed_folders(said: str) -> list:
     out = []
     for raw in _USER_PATH_RE.findall(said or ""):
         p = os.path.realpath(os.path.expanduser(raw.rstrip(".:!?*_`")))
-        if os.path.isdir(p) or (not os.path.exists(p)
-                                and os.path.isdir(os.path.dirname(p))
-                                and "." not in os.path.basename(p)):
+        if os.path.isdir(p) or (not os.path.exists(p) and _new_folder_name(p)):
             out.append(p)
     return out
+
+
+#: A folder name someone would type as a destination. A template in the text
+#: ("INV/{financial_year}/{seq:04d}") or a glob is not a folder to work in.
+_FOLDER_NAME = __import__("re").compile(r"\w[\w\-]*")
+
+
+def _new_folder_name(p: str) -> bool:
+    """A path not made yet that reads as a destination folder: its parent
+    exists and is not ``/``, and its name is a plain name (no dot, brace,
+    ``$`` or ``*``)."""
+    parent = os.path.dirname(p)
+    return (parent != os.sep and os.path.isdir(parent)
+            and bool(_FOLDER_NAME.fullmatch(os.path.basename(p))))
 
 
 def _skip_folder(real: str) -> bool:

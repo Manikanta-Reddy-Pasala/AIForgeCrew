@@ -150,7 +150,58 @@ def _t_file_read(args: dict, cwd: str) -> dict:
                         "call file_read on a specific file to read contents"}
     if not p.is_file():
         return {"ok": False, "error": f"no such file or directory: {args['path']}"}
-    return {"ok": True, "content": p.read_text(encoding="utf-8", errors="replace")}
+    text = p.read_text(encoding="utf-8", errors="replace")
+    shaped = _outline_read(str(p), text, args)
+    return shaped if shaped is not None else {"ok": True, "content": text}
+
+
+def _truthy(v) -> bool:
+    return v is True or str(v).strip().lower() in ("1", "true", "yes")
+
+
+def _wants_full(args: dict) -> bool:
+    return _truthy(args.get("full"))
+
+
+def _outline_read(path: str, text: str, args: dict) -> dict | None:
+    """A ``symbol`` read, or a big source file as its outline; ``None`` keeps
+    the plain whole-file read.
+
+    A whole large file fills the context, and one cut at a size cap leaves the
+    model guessing the rest. The outline lists every class and function with
+    its line range; the model then reads the part it needs. ``full: true``
+    still returns the whole file."""
+    from aiforge_core.runtime.tools import code_outline
+    symbol = str(args.get("symbol") or "").strip()
+    limit = code_outline.big_file_chars()
+    if not symbol and (_wants_full(args) or not limit or len(text) <= limit):
+        return None
+    symbols = code_outline.outline(path, text)
+    if not symbols:
+        return None              # no grammar, or nothing to list: the text
+    # "\n" only, as tree-sitter and read_lines count: splitlines() also
+    # splits on form feeds and U+2028, which shifts every later line.
+    lines = code_outline.split_lines(text)
+    shown = args.get("path") or path
+    if symbol:
+        hits = code_outline.find_symbol(symbols, symbol)
+        if not hits:
+            return {"ok": False, "path": shown, "total_lines": len(lines),
+                    "error": f"no symbol named {symbol!r} in {shown}",
+                    "outline": code_outline.render(shown, symbols, len(lines))}
+        hit = hits[0]
+        more = "" if len(hits) == 1 else (
+            f"{len(hits)} symbols are named {symbol!r}; showing the first. "
+            "Others start at line " + ", ".join(str(h.start) for h in hits[1:]))
+        return {"ok": True, "path": shown, "symbol": symbol, "start": hit.start,
+                "end": hit.end, "total_lines": len(lines), "note": more,
+                "text": "\n".join(lines[hit.start - 1:hit.end])}
+    return {"ok": True, "path": shown, "total_lines": len(lines), "chars": len(text),
+            "note": (f"{len(lines)} lines, too big to show whole — its outline "
+                     "(line ranges) follows. Read what you need: file_read "
+                     'with "symbol" (a function or Class.method), or read_lines '
+                     'with start/end. "full": true reads the whole file.'),
+            "outline": code_outline.render(shown, symbols, len(lines))}
 
 
 def _requested_paths(args: dict) -> list[str]:
@@ -179,6 +230,14 @@ def _one_read_block(path: str, cwd: str, per_cap: int) -> tuple[str, bool]:
     if not (isinstance(r, dict) and r.get("ok") and not r.get("is_dir")):
         err = r.get("error") if isinstance(r, dict) else "unknown error"
         return f"=== {path} ===\n[read failed: {err}]", False
+    if r.get("outline"):
+        rows = str(r["outline"])
+        if len(rows) > per_cap:
+            kept = rows[:per_cap].rsplit("\n", 1)[0]
+            rows = kept + (f"\n… {rows.count(chr(10)) - kept.count(chr(10))} more "
+                           "outline rows — file_read this file for all of them")
+        return (f"=== {path} ===\n[{r.get('total_lines')} lines — outline; read a "
+                f"part with file_read symbol or read_lines]\n{rows}"), True
     txt = str(r.get("content") or "")
     if len(txt) > per_cap:
         txt = (txt[:per_cap] + f"\n…[truncated {len(txt) - per_cap} chars — "
@@ -238,6 +297,11 @@ def _t_file_write(args: dict, cwd: str) -> dict:
     from aiforge_core.runtime.syntax_guard import attach_oversize
     p = _resolve(cwd, args["path"])
     content = args.get("content", "")
+    # before the syntax check: its "pass force:true" must not also wave a
+    # rewrite-from-outline through (overwrite has its own key)
+    big = _big_overwrite(p, args)
+    if big:
+        return {"ok": False, "error": "big_file_overwrite", "detail": big}
     bad = _syntax_check(str(p), content, args)
     if bad:
         return {"ok": False, "error": "syntax_invalid", "detail": bad,
@@ -250,6 +314,32 @@ def _t_file_write(args: dict, cwd: str) -> dict:
     return attach_oversize(
         {"ok": True, "path": str(p), "bytes": len(content),
          **({} if existed else {"created": True})}, str(p), content)
+
+
+def _big_overwrite(p, args: dict) -> str:
+    """Why overwriting ``p`` whole is refused ("" when it is fine).
+
+    A file that ``file_read`` shows as an outline (same test: characters over
+    the outline size, and it has symbols) was never seen whole. Rewriting it
+    from that outline drops every body the model did not see. file_patch /
+    multi_edit change it in place; ``overwrite: true`` (after a ``full: true``
+    read) replaces it anyway."""
+    if _truthy(args.get("overwrite")):
+        return ""
+    from aiforge_core.runtime.tools import code_outline
+    limit = code_outline.big_file_chars()
+    try:
+        if not limit or not p.is_file() or p.is_symlink() or p.stat().st_size <= limit:
+            return ""
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    if len(text) <= limit or not code_outline.outline(str(p), text):
+        return ""
+    return (f"{p.name} is a big source file ({len(text)} chars), shown to you as an "
+            "outline, not whole. Overwriting it would drop the code you did not see. "
+            "Change it with file_patch or multi_edit; to really replace it, read it "
+            "with full:true and call file_write again with overwrite:true.")
 
 
 def _t_file_patch(args: dict, cwd: str) -> dict:

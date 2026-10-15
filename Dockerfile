@@ -51,7 +51,7 @@ RUN if [ -n "$APT_MIRROR" ]; then \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates curl git less openssh-client procps python3.12 \
-        python3.12-venv rsync sudo tmux \
+        python3.12-venv ripgrep rsync sudo tmux \
     && rm -rf /var/lib/apt/lists/* \
     && (userdel -r ubuntu 2>/dev/null || true) \
     && mkdir -p "$APP_HOME" \

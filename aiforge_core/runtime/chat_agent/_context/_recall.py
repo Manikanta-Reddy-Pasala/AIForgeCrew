@@ -171,6 +171,28 @@ def _sentence_asks(t: str) -> list:
     return out
 
 
+_HEADING_RE = re.compile(r"^(#{2,4})\s+(\S.*?)\s*#*\s*$")
+#: A numbered section: "1. Batches", "Part 2 — Coupons", "Step 3: …".
+_NUMBERED_RE = re.compile(r"^(?:\d{1,2}[.)]\s|(?:part|step|feature|task|phase)\s*\d+\b)",
+                          re.IGNORECASE)
+
+
+def _heading_asks(t: str) -> list:
+    """The numbered section headings of a request written as a document
+    ("## 1. Batches", "## 2. Coupons"): each section is one part of the work.
+    The level used is the top one with at least two numbered headings; a
+    heading such as "## Background" is not a part."""
+    found: dict = {}
+    for ln in t.splitlines():
+        m = _HEADING_RE.match(ln.strip())
+        if m and _NUMBERED_RE.match(m.group(2)):
+            found.setdefault(len(m.group(1)), []).append(m.group(2))
+    for level in sorted(found):
+        if len(found[level]) >= 2:
+            return found[level]
+    return []
+
+
 def _split_asks(text: str, cap: int = 8) -> list[str]:
     """Break the user's CURRENT message into its distinct asks so a
     multi-part message ("fix X. also why does Y happen? and add Z") gets a
@@ -185,7 +207,16 @@ def _split_asks(text: str, cap: int = 8) -> list[str]:
     # An explicit list beats any heuristic: if the user bulleted or numbered
     # their asks, those ARE the asks — but only their OWN list, not the
     # sequence items of a config file they pasted (see _is_ask_bullet).
-    parts = _bulleted_asks(t) or _sentence_asks(t)
+    parts = _heading_asks(t)       # t has fenced blocks stripped already
+    if len(parts) > cap:
+        return []                 # a cut checklist would look complete
+    if not parts:
+        parts = _bulleted_asks(t)
+        if len(parts) > 2 * cap:
+            # A pasted spec, not a list of asks: its first 8 bullets were the
+            # checklist ("money means a Decimal…") and its 5 features were not.
+            return []
+        parts = parts or _sentence_asks(t)
     parts = [p[:160] for p in parts
              if p.strip() and not _CONSTRAINT_LEAD_RE.match(p.strip())][:cap]
     return parts if len(parts) >= 2 else []

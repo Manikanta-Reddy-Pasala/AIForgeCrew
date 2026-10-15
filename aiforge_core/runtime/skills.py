@@ -279,14 +279,35 @@ def _fuzzy_overlap(qtok: set[str], stok: set[str]) -> float:
     return score
 
 
+def _overlap_damping(n_tokens: int) -> float:
+    """Weight of the word overlap for a request of ``n_tokens`` distinct words.
+
+    The overlap is a sum, so a long request (a pasted spec of 17K characters)
+    shares a dozen words with any playbook's description and every one of them
+    passed the bar: a pure coding task got the Jira, Confluence and PR-review
+    playbooks, about 11K characters of instructions for work nobody asked for.
+    Up to ``AIFORGE_SKILL_MATCH_TOKENS`` (40) words the overlap counts in full,
+    as before; past that it is scaled down by the length. A trigger phrase or
+    the playbook's own name in the request still counts in full."""
+    try:
+        full = max(1, int(os.environ.get("AIFORGE_SKILL_MATCH_TOKENS", "40")))
+    except ValueError:
+        full = 40
+    return 1.0 if n_tokens <= full else full / n_tokens
+
+
 def search(query: str, cwd: str | None = None, k: int = 5,
-           skills: list[Skill] | None = None) -> list[dict]:
+           skills: list[Skill] | None = None, *,
+           damp_long: bool = False) -> list[dict]:
     """Relevance-rank skills for ``query``. Score = exact-trigger boost +
     token overlap with name/description/triggers. Returns
     ``[{name, description, score, source}]`` top-k (score > 0)."""
     pool = skills if skills is not None else load(cwd)
     q = (query or "").lower()
     qtok = _tokens(query) - _STOP
+    # Only playbook injection damps a long request. Rules (trigger-gated,
+    # glob-scoped) share this scorer and must not fade in a long message.
+    damp = _overlap_damping(len(qtok)) if damp_long else 1.0
     scored: list[tuple[float, float, Skill]] = []
     for sk in pool:
         score = 0.0
@@ -296,8 +317,8 @@ def search(query: str, cwd: str | None = None, k: int = 5,
         name_tok = _tokens(sk.name) - _STOP
         if name_tok and name_tok <= qtok:
             score += 3.0                           # the request names it
-        score += _fuzzy_overlap(qtok, _tokens(sk.name + " " + sk.description
-                                              + " " + " ".join(sk.triggers)) - _STOP)
+        score += damp * _fuzzy_overlap(qtok, _tokens(
+            sk.name + " " + sk.description + " " + " ".join(sk.triggers)) - _STOP)
         if sk.always:
             score += 0.5
         if score > 0:
@@ -355,7 +376,7 @@ def select(query: str, cwd: str | None = None, k: int = 4) -> list[Skill]:
     always_on = _always_on(pool)
     chosen: dict[str, Skill] = {s.name: s for s in always_on}
     floor = _inject_min()
-    for hit in search(query, cwd, k=k, skills=pool):
+    for hit in search(query, cwd, k=k, skills=pool, damp_long=True):
         if hit["score"] < floor:
             continue
         sk = next((s for s in pool if s.name == hit["name"]), None)

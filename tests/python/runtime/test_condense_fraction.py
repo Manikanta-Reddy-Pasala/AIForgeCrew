@@ -1,4 +1,5 @@
-"""Auto-compaction fires at 80% of the model's window (user, 2026-09-11).
+"""Auto-compaction fires at 50% of the model's window (user, 2026-10-15: past
+70-80% the model makes things up; it was 80% from 2026-09-11).
 
 It used to be 40% in cave mode (the default), which on a 256K model compacted
 at ~96K — and the chat meter showed that 96K as if it were the window. Cave
@@ -12,10 +13,10 @@ import aiforge_core.runtime.chat_agent._context._window as w
 
 
 @pytest.mark.parametrize("cave", ["0", "1"])
-def test_compaction_is_at_80_percent_in_and_out_of_cave(monkeypatch, cave):
+def test_compaction_is_at_50_percent_in_and_out_of_cave(monkeypatch, cave):
     monkeypatch.delenv("AIFORGE_CTX_HISTORY_FRACTION", raising=False)
     monkeypatch.setenv("AIFORGE_CAVE_MODE", cave)
-    assert w._history_fraction("chat") == w._CONDENSE_FRACTION == 0.80
+    assert w._history_fraction("chat") == w._CONDENSE_FRACTION == 0.50
 
 
 def test_env_override_wins(monkeypatch):
@@ -30,14 +31,14 @@ def test_env_override_clamped(monkeypatch):
     assert w._history_fraction("chat") == 0.95
 
 
-def test_on_a_256k_model_the_context_compacts_near_205k(monkeypatch):
+def test_on_a_256k_model_the_context_compacts_near_131k(monkeypatch):
     monkeypatch.delenv("AIFORGE_CTX_HISTORY_FRACTION", raising=False)
     monkeypatch.delenv("AIFORGE_CHAT_CONTEXT_BUDGET_CHARS", raising=False)
     monkeypatch.setattr(w, "_window_tokens", lambda role=None: 262144)
     sys_chars = 60000
     history = w._ctx_budget_chars("chat", sys_chars=sys_chars)
     compact_at_tokens = (history + sys_chars) // 4
-    assert compact_at_tokens == int(262144 * 4 * 0.80) // 4      # ≈ 209.7K, not 96K
+    assert compact_at_tokens == int(262144 * 4 * 0.50) // 4      # ≈ 131K
 
 
 def test_the_reply_always_keeps_its_room_on_a_small_window(monkeypatch):

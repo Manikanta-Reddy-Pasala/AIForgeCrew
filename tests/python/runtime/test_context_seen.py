@@ -268,9 +268,9 @@ def test_the_ui_still_sees_the_raw_result_and_the_model_does_not(monkeypatch):
     assert _BODY not in obs
 
 
-def test_compaction_fires_at_80_percent_and_keeps_the_ask_and_unread_tail(
+def test_compaction_fires_at_50_percent_and_keeps_the_ask_and_unread_tail(
         monkeypatch, tmp_path):
-    """80% of the window, not the overflow edge. The user's ask stays in the
+    """50% of the window, not the overflow edge. The user's ask stays in the
     breadcrumb and the unread tail stays verbatim."""
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("AIFORGE_CHAT_CONTEXT_BUDGET_CHARS", raising=False)
@@ -282,9 +282,9 @@ def test_compaction_fires_at_80_percent_and_keeps_the_ask_and_unread_tail(
     sys = "S" * 2000
     budget = w._ctx_budget_chars("chat", sys_chars=len(sys))
     win_chars = 100_000 * 4
-    # The trigger is 80% of the window. The reply's room is still inside the
+    # The trigger is 50% of the window. The reply's room is still inside the
     # window, so this is earlier than overflow.
-    assert budget + len(sys) == int(win_chars * 0.80)
+    assert budget + len(sys) == int(win_chars * 0.50)
     assert budget + len(sys) < win_chars - 8192 * 4
 
     under = [{"role": "system", "content": sys},
@@ -294,7 +294,7 @@ def test_compaction_fires_at_80_percent_and_keeps_the_ask_and_unread_tail(
 
     convo = [{"role": "system", "content": sys},
              {"role": "user", "content": "please add the export"}]
-    # Pad past 80% with tool traffic, then an unread result the model has
+    # Pad past 50% with tool traffic, then an unread result the model has
     # not consumed yet.
     while sum(len(m["content"]) for m in convo[1:]) <= budget:
         convo.append({"role": "assistant", "content": "ACTION: file_read\nARGS_JSON: {}"})

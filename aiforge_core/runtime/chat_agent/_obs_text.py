@@ -27,17 +27,38 @@ def _tail(text: str, budget: int) -> str:
 def render_read(result: dict, cap: int) -> str:
     """A file or directory as text the model can copy into a patch."""
     if result.get("ok") is False:
-        return f"error: {result.get('error') or 'read failed'}"
+        err = f"error: {result.get('error') or 'read failed'}"
+        if result.get("outline"):
+            err += "\noutline of the file:\n" + str(result["outline"])
+        return err[:cap]
     if result.get("is_dir"):
         entries = result.get("entries") or []
         body = "\n".join(str(e) for e in entries)
         path = result.get("path") or ""
         text = (path + "\n" if path else "") + body
         return text[:cap]
-    content = str(result.get("content") or "")
-    numbered = "\n".join(f"{i}|{line}" for i, line in enumerate(content.splitlines(), 1))
     path = str(result.get("path") or "")
     note = str(result.get("note") or "")
+    if result.get("outline") and not result.get("content"):
+        return "\n".join(p for p in (path, note, str(result["outline"])) if p)[:cap]
+    # read_lines (and a file_read of one symbol) carry ``text`` from ``start``
+    content = result.get("content")
+    if content is None:
+        content = result.get("text")
+    content = str(content or "")
+    try:
+        first = max(1, int(result.get("start") or 1))
+    except (TypeError, ValueError):
+        first = 1
+    if result.get("already_in_context"):
+        numbered = content            # a pointer to an earlier copy, not lines
+    else:
+        lines = content.split("\n")  # as read_lines counts (not splitlines)
+        if lines and lines[-1] == "":
+            lines.pop()
+        numbered = "\n".join(f"{i}|{line}" for i, line in enumerate(lines, first))
+    if not content and result.get("total_lines") is not None:
+        numbered = f"(no lines there — the file has {result['total_lines']} lines)"
     parts = [p for p in (path, note, numbered) if p]
     text = "\n".join(parts)
     if len(text) > cap:

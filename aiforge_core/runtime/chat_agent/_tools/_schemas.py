@@ -52,12 +52,18 @@ CATALOG: dict = {
                        "position": "i", "order": "arrs",
                        "work_in": "arr", "read_only": "arr"}, ()),
     # ── files / editing ──────────────────────────────────────────────────
-    "file_read": ("Read a file's contents.", {"path": "s"}, ("path",)),
+    "file_read": ("Read a file. A big source file comes back as its outline "
+                  "(classes/functions with line ranges): then pass symbol "
+                  "(a function or Class.method) to read just that part, or "
+                  "full:true for the whole file.",
+                  {"path": "s", "symbol": "s", "full": "b"}, ("path",)),
     "read_files": ("Read MANY files in ONE call (batched file_read). Pass a "
                    "`paths` list — ALWAYS prefer this over reading files one at "
                    "a time when you need several.", {"paths": "arrs"}, ("paths",)),
     "file_write": ("Create/overwrite a file (syntax-checked; force:true "
-                   "overrides).", {"path": "s", "content": "s", "force": "b"},
+                   "overrides). A big source file you saw only as an outline "
+                   "needs overwrite:true.",
+                   {"path": "s", "content": "s", "force": "b", "overwrite": "b"},
                    ("path", "content")),
     "file_create": ("Create a new file.", {"path": "s", "content": "s"},
                     ("path", "content")),

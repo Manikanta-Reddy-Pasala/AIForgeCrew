@@ -74,8 +74,8 @@ def test_budget_uses_measured_ratio(monkeypatch):
     plain = _window._ctx_budget_chars("doer", sys_chars=0)
     ctx_ratio.note("doer", _msgs(30_000), 10_000)          # 3 chars/token
     measured = _window._ctx_budget_chars("doer", sys_chars=0)
-    assert plain == 320_000                                 # 80% of 100k × 4
-    assert measured == 225_000                              # 75% of 100k × 3
+    assert plain == 200_000                                 # 50% of 100k × 4
+    assert measured == 150_000                              # 50% of 100k × 3
 
 
 def test_budget_never_assumes_more_than_four(monkeypatch):
@@ -83,7 +83,7 @@ def test_budget_never_assumes_more_than_four(monkeypatch):
     monkeypatch.delenv("AIFORGE_CHAT_CONTEXT_BUDGET_CHARS", raising=False)
     monkeypatch.setenv("AIFORGE_CTX_MEASURED", "1")
     ctx_ratio.note("doer", _msgs(50_000), 10_000)           # 5 chars/token
-    assert _window._ctx_budget_chars("doer", sys_chars=0) == 320_000
+    assert _window._ctx_budget_chars("doer", sys_chars=0) == 200_000
 
 
 # ── chat_transcript ──────────────────────────────────────────────────────────

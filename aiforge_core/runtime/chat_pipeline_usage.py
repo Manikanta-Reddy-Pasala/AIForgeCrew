@@ -23,9 +23,9 @@ def usage_event(session_id, stage: str, est_chars: int = 0) -> "dict | None":
     try:
         from aiforge_core.llm import call_meter
         from aiforge_core.runtime.chat_agent._context._window import (
+            _effective_window,
             _history_fraction,
             _window_source,
-            _window_tokens,
         )
         role = stage or None
         calls = call_meter.snapshot(session_id) if session_id is not None else {}
@@ -33,7 +33,7 @@ def usage_event(session_id, stage: str, est_chars: int = 0) -> "dict | None":
         reported = tokens > 0
         if not reported:
             tokens = max(0, int(est_chars)) // 4
-        win = _window_tokens(role)
+        win = _effective_window(role)
         if win <= 0:
             return None
         frac = _history_fraction(role)

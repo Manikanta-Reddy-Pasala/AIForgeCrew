@@ -55,7 +55,7 @@ def test_budget_leaves_room_for_input_on_32k(ca, monkeypatch):
     monkeypatch.setenv("AIFORGE_CAVE_MODE", "0")  # deterministic non-cave headroom
     budget = ca._ctx_budget_chars()
     win_chars = 32768 * 4
-    # History + the ~14K system-prompt estimate stay within 80% of the window,
+    # History + the ~14K system-prompt estimate stay within 50% of the window,
     # and never eat the reply's room (the output cap).
     from aiforge_core.config import runtime_settings
     out_chars = int(runtime_settings.get("max_output_tokens")) * 4
@@ -75,7 +75,7 @@ def test_budget_never_below_floor_on_tiny_window(ca, monkeypatch):
 
 
 def test_cave_no_longer_moves_the_compaction_point(ca, monkeypatch):
-    """Compaction is at 80% either way (user, 2026-09-11); cave only keeps the
+    """Compaction is at 50% either way (user, 2026-10-15); cave only keeps the
     injected context lean."""
     monkeypatch.setenv("AIFORGE_LOCAL_CTX_WINDOW", "32768")
     monkeypatch.setenv("AIFORGE_CAVE_MODE", "0")

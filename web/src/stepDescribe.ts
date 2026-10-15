@@ -272,7 +272,9 @@ export function riskyPart(cmd: string): string {
 export function describeStep(name: string, args: Args | undefined | null): string {
   const a: Args = args ?? {};
   switch (name) {
-    case 'file_read': case 'read': return `Reading ${short(a.path) || 'a file'}`;
+    case 'file_read': case 'read':
+      if (a.symbol) return `Reading ${String(a.symbol)} in ${short(a.path) || 'a file'}`;
+      return `Reading ${short(a.path) || 'a file'}`;
     case 'read_lines': {
       const end = Number(a.end) > 0 ? s(a.end) : 'end';
       return `Reading lines ${s(a.start) || '1'}–${end} of ${short(a.path) || 'a file'}`;

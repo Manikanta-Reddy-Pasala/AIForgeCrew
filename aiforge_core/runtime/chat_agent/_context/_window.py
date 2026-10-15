@@ -133,26 +133,50 @@ _CTX_BUDGET_FLOOR_CHARS = 4000
 
 
 # Auto-compaction fires when the context (system prompt + live history)
-# reaches this fraction of the model's window — 80% (user, 2026-09-11). It used
-# to be 40% in cave mode, which on a 256K model compacted at ~96K and showed
-# "96k" as if that were the window. Cave mode still keeps the context lean
-# (smaller repo map, fewer optional blocks); it no longer halves the window.
-_CONDENSE_FRACTION = 0.80
+# reaches this fraction of the model's window — 50% (user, 2026-10-15: past
+# 70-80% the model starts making things up, so the context must never get
+# there). It was 80% from 2026-09-11, and 40% in cave mode before that, when
+# the meter showed the compaction budget as if it were the window. Cave mode
+# still keeps the context lean (smaller repo map, fewer optional blocks).
+_CONDENSE_FRACTION = 0.50
 #: The condense point when the characters-per-token ratio was measured.
-_MEASURED_FRACTION = 0.75
+_MEASURED_FRACTION = 0.50
+#: Below this window (tokens) the system prompt and one big read already take
+#: most of half the window, so 50% would condense on every step: a small
+#: model keeps the old 75%.
+_SMALL_WINDOW_TOKENS = 65536
+_SMALL_WINDOW_FRACTION = 0.75
 
 
 def _history_fraction(_role: str | None = None) -> float:
     """Fraction of the model's window the context may fill before an
     auto-condense: ``AIFORGE_CTX_HISTORY_FRACTION`` if set (clamped to
-    0.15-0.95), else :data:`_CONDENSE_FRACTION`."""
+    0.15-0.95), else :data:`_CONDENSE_FRACTION` — :data:`_SMALL_WINDOW_FRACTION`
+    when ``role``'s window is below :data:`_SMALL_WINDOW_TOKENS`."""
     env = os.environ.get("AIFORGE_CTX_HISTORY_FRACTION")
     if env is not None:
         try:
             return min(0.95, max(0.15, float(env)))
         except (TypeError, ValueError):
             pass
+    win = _effective_window(_role)
+    if 0 < win <= _SMALL_WINDOW_TOKENS:
+        return _SMALL_WINDOW_FRACTION
     return _CONDENSE_FRACTION
+
+
+def _effective_window(role: str | None = None) -> int:
+    """The window the budget really uses: the registry's, or the smaller one
+    the server reported for this role and chat. 0 when unknown."""
+    win = _window_tokens(role)
+    try:
+        from aiforge_core.llm import ctx_ratio
+        told = ctx_ratio.learned_window(role)
+        if told:
+            win = min(win, told) if win else told
+    except Exception:  # noqa: BLE001
+        pass
+    return win
 
 
 def _window_tokens(role: str | None = None) -> int:
@@ -245,7 +269,7 @@ def _ctx_budget_chars(role: str | None = None,
         except ValueError:
             pass
     reserve_sys = _SYSTEM_PROMPT_CHARS if sys_chars is None else max(0, int(sys_chars))
-    # Unknown window → the registry's 128K default, so the 80% rule holds here
+    # Unknown window → the registry's 128K default, so the 50% rule holds here
     # too (this used to fall back to a fixed 24K/48K chars, i.e. ~6K/12K tokens).
     win = _window_tokens(role) or 131072
     try:
@@ -256,7 +280,7 @@ def _ctx_budget_chars(role: str | None = None,
     except Exception:  # noqa: BLE001
         pass
     # The context (system prompt + history) may reach _history_fraction of the
-    # window — 80% by default — and never past the window minus the model's own
+    # window — 50% by default — and never past the window minus the model's own
     # reply (its output cap + any reasoning allowance), so a request always fits.
     # Characters per token: what the provider counted on the last request
     # (it pays for the tool list too), else ~4.
@@ -264,8 +288,10 @@ def _ctx_budget_chars(role: str | None = None,
     out_chars = int(_output_reserve_tokens(win, role, extra_reserve_tokens) * cpt)
     win_chars = int(win * cpt)
     frac = _history_fraction(role)
-    if cpt < 4.0 and not os.environ.get("AIFORGE_CTX_HISTORY_FRACTION"):
-        # Measured: condense at 75% of what the server really counts, leaving
+    if win <= _SMALL_WINDOW_TOKENS and not os.environ.get("AIFORGE_CTX_HISTORY_FRACTION"):
+        frac = _SMALL_WINDOW_FRACTION       # the window that was resolved here
+    elif cpt < 4.0 and not os.environ.get("AIFORGE_CTX_HISTORY_FRACTION"):
+        # Measured: condense at 50% of what the server really counts, leaving
         # room for the next reply and for a long tool result.
         frac = min(frac, _MEASURED_FRACTION)
     ceiling = min(int(win_chars * frac), win_chars - out_chars)

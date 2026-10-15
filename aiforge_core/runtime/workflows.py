@@ -154,11 +154,12 @@ def scripts_for(md_source: str) -> list[str]:
         return []
 
 
-def search(query: str, cwd: str | None = None, k: int = 5) -> list[dict]:
+def search(query: str, cwd: str | None = None, k: int = 5, *,
+           damp_long: bool = False) -> list[dict]:
     """Relevance-rank workflows for ``query`` (same scorer as skills). Hits
     additionally carry ``scripts`` (the workflow's helper-script paths) so the
     agent can run them instead of re-deriving the commands."""
-    hits = _sk.search(query, cwd, k=k, skills=load(cwd))
+    hits = _sk.search(query, cwd, k=k, skills=load(cwd), damp_long=damp_long)
     for h in hits:
         scripts = scripts_for(h.get("source") or "")
         if scripts:
@@ -175,7 +176,7 @@ def select(query: str, cwd: str | None = None, k: int = 3) -> list[Skill]:
         return []
     chosen: dict[str, Skill] = {w.name: w for w in pool if w.always}
     floor = _sk._inject_min()
-    for hit in search(query, cwd, k=k):
+    for hit in search(query, cwd, k=k, damp_long=True):
         if hit["score"] < floor:
             continue
         w = next((x for x in pool if x.name == hit["name"]), None)

@@ -74,7 +74,7 @@ def test_the_history_fraction_is_shared_with_the_simple_loop(monkeypatch):
     """Team mode condenses at the same point, so a small model does not run
     near-full where it drifts and invents edits."""
     import aiforge_core.runtime.chat_agent._context._window as w
-    monkeypatch.setattr(w, "_history_fraction", lambda: 0.4)
+    monkeypatch.setattr(w, "_history_fraction", lambda role=None: 0.4)
     assert pl._history_frac() == 0.4
 
 

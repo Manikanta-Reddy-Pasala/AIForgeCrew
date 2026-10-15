@@ -52,15 +52,16 @@ def _context_window() -> int:
 
 
 def _history_frac() -> float:
-    """The same compaction trigger the simple ReAct loop uses (80% of the
-    window by default), so team mode and tickets trim at the same point.
-    Soft-fails to 0.8 when the import is unavailable.
+    """The same compaction trigger the simple ReAct loop uses (50% of the
+    window by default, 75% on a window of 64K tokens or less), so team mode
+    and tickets trim at the same point. Soft-fails to 0.5 when the import is
+    unavailable.
     """
     try:
         from aiforge_core.runtime.chat_agent._context._window import _history_fraction
-        return _history_fraction()
+        return _history_fraction("doer")   # the window _context_window trims to
     except Exception:  # noqa: BLE001
-        return 0.8
+        return 0.5
 
 
 def _text_of(c) -> str:
