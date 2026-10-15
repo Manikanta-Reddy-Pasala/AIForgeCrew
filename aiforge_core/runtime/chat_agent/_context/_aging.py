@@ -77,7 +77,8 @@ def _keep_by_chars(convo: list, keep_chars: int) -> int:
 
 def age_observations(convo: list, protect_from: "int | None" = None,
                      forget: "set | None" = None, *, force: bool = False,
-                     keep_chars: "int | None" = None) -> int:
+                     keep_chars: "int | None" = None,
+                     keep_msgs: "int | None" = None) -> int:
     """Shrink old, large read/search observations in place. Returns how many.
 
     ``protect_from``: messages at or after this index are results the model has
@@ -93,6 +94,9 @@ def age_observations(convo: list, protect_from: "int | None" = None,
     if force:
         keep = _keep_by_chars(convo, keep_chars) if keep_chars else keep
         floor = min(floor, 1500)
+    if keep_msgs is not None:
+        # The user asked to compact: only the newest messages stay whole.
+        keep = max(1, keep_msgs)
     from aiforge_core.runtime import context_offload
     # Age in BURSTS, not one message per step: every edit to an old message
     # changes the prompt from that point on, and a local server then re-reads

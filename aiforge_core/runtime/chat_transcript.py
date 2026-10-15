@@ -289,6 +289,51 @@ def carried(session_id, messages) -> "list | None":
     return [*work, last]
 
 
+def load_work(session_id) -> "list | None":
+    """The saved working transcript's messages (None: none saved)."""
+    try:
+        data = json.loads(_path(session_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    work = data.get("messages") if isinstance(data, dict) else None
+    return work if isinstance(work, list) and work else None
+
+
+def stamp(session_id) -> "tuple | None":
+    """What ties the saved transcript to the chat's history right now."""
+    try:
+        data = json.loads(_path(session_id).read_text(encoding="utf-8"))
+        return (data.get("users"), data.get("mark"), len(data.get("messages") or []))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def replace_work(session_id, work: list, expect: "tuple | None" = None) -> bool:
+    """Put ``work`` in place of the saved transcript's messages, keeping what
+    ties it to the chat's history (user count, last message mark): a
+    compacted transcript is still the one the next message continues.
+    ``expect``: the :func:`stamp` it was compacted from — a turn that saved
+    a newer transcript meanwhile wins (False)."""
+    if not work:
+        return False
+    try:
+        with _lock:
+            data = json.loads(_path(session_id).read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return False
+            if expect is not None and (data.get("users"), data.get("mark"),
+                                       len(data.get("messages") or [])) != expect:
+                return False
+            data["messages"] = work
+            tmp = _path(session_id).with_suffix(".tmp")
+            tmp.write_text(json.dumps(data), encoding="utf-8")
+            os.replace(tmp, _path(session_id))
+        return True
+    except (OSError, ValueError, TypeError) as exc:
+        log.debug("transcript not replaced: %s", exc)
+        return False
+
+
 def drop(session_id) -> None:
     try:
         _path(session_id).unlink()

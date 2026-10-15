@@ -311,6 +311,38 @@ def chat_session_fresh_context(session_id: int) -> dict:
     return {"ok": True}
 
 
+@router.post("/api/chat/sessions/{session_id}/compact-context", responses={404: {"description": "Not found"}})
+def chat_session_compact_context(session_id: int) -> dict:
+    """The Compact button: shrink the chat's working context now.
+
+    A turn is running: it compacts at its next step and carries on with the
+    same task (nothing is stopped). No turn is running: the context the chat
+    carries to its next message is compacted; and when the last turn did not
+    finish (stopped, or work was left), a turn that continues it is started
+    (the UI attaches to it like to any running turn)."""
+    from aiforge_core.runtime import chat_compact, chat_runs, chat_store
+    sess = chat_store.get_session(session_id)
+    if not sess:
+        raise HTTPException(404, f"session {session_id} not found")
+    if chat_runs.is_running(session_id):
+        chat_compact.request(session_id)
+        return {"ok": True, "mode": "running",
+                "message": "Compacting the context at the agent's next step — the "
+                           "task goes on by itself."}
+    got = chat_compact.compact_saved(session_id, role=sess.get("role") or "chat")
+    out = {"mode": "idle", **got}
+    if got.get("ok") and chat_compact.last_turn_unfinished(session_id):
+        try:
+            from ._message import _SessionMsgBody, chat_session_message
+            chat_session_message(session_id, _SessionMsgBody(
+                content=chat_compact.RESUME_PROMPT, resume=True))
+            out["resumed"] = True
+        except Exception as exc:  # noqa: BLE001 — the compaction itself stands
+            out["resumed"] = False
+            out["resume_error"] = str(exc)[:200]
+    return out
+
+
 @router.delete("/api/chat/sessions/{session_id}", status_code=204, responses={404: {"description": "Not found"}})
 def chat_session_delete(session_id: int) -> None:
     from aiforge_core.runtime import (

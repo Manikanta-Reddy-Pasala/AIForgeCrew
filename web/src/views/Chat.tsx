@@ -250,9 +250,10 @@ type ContextMode = 'one' | 'split';
 // One context | Split: how a Simple chat holds its context. A pill like Quick,
 // so the header row does not grow. Hidden in Plan (one read-only agent) and
 // Team (its own pipeline).
-function ContextToggle({ chatMode, contextMode, setContextMode, busy, onFresh }: Readonly<{
+function ContextToggle({ chatMode, contextMode, setContextMode, busy, onCompact, compacting }: Readonly<{
   chatMode: ChatMode; contextMode: ContextMode;
-  setContextMode: (m: ContextMode) => void; busy: boolean; onFresh?: () => void;
+  setContextMode: (m: ContextMode) => void; busy: boolean;
+  onCompact?: () => void; compacting?: boolean;
 }>) {
   if (chatMode !== 'simple') return null;
   const one = contextMode === 'one';
@@ -270,11 +271,12 @@ function ContextToggle({ chatMode, contextMode, setContextMode, busy, onFresh }:
           : 'Split — a big multi-file request is broken into subtasks, each in a fresh context; subtasks do not see each other\'s work. Click for One context.'}>
         {one ? '🧠 One context' : '✂ Split'}
       </button>
-      {onFresh && (
-        <button type="button" style={pill} onClick={onFresh} disabled={busy}
-          aria-label="Start the next message from a fresh context"
-          title="Start the next message from a fresh context: earlier answers stay in the chat, but what the agent read and ran is not carried over. Use it when you change topic.">
-          ⟲ Fresh
+      {onCompact && (
+        // Usable while a turn runs: that is when the window fills up.
+        <button type="button" style={pill} onClick={onCompact} disabled={compacting}
+          aria-label="Compact the context now"
+          title="Compact the context now: keep the goal, the task list, a summary of what was done and the newest steps; drop old file reads and command output. While a task runs it compacts at the next step and the task goes on by itself; when the last task was stopped, it compacts and then continues that task.">
+          {compacting ? '⏳ Compacting…' : '🗜 Compact'}
         </button>
       )}
     </>
@@ -424,14 +426,14 @@ function OrchSelect({ chatMode, orchOptions, orchModel, setOrchModel, chatProvid
 // Secondary actions tucked into an overflow (⋯) menu.
 function OverflowMenu({ menuRef, menuOpen, setMenuOpen, chatMode, selectedModel, setModelActive,
                         fullPipeline, toggleFullPipeline, busy, compactionDisabled, toggleCompaction,
-                        activeSession, openCheckpoints, killAll, deleteSession }: Readonly<{
+                        activeSession, openCheckpoints, killAll, deleteSession, onFresh }: Readonly<{
   menuRef: React.RefObject<HTMLDivElement>; menuOpen: boolean;
   setMenuOpen: React.Dispatch<React.SetStateAction<boolean>>; chatMode: ChatMode;
   selectedModel: string; setModelActive: React.Dispatch<React.SetStateAction<boolean>>;
   fullPipeline: boolean; toggleFullPipeline: (next: boolean) => void; busy: boolean;
   compactionDisabled: boolean; toggleCompaction: (next: boolean) => void;
   activeSession: ChatSession | null; openCheckpoints: () => void; killAll: () => void;
-  deleteSession: (id: number) => void;
+  deleteSession: (id: number) => void; onFresh?: () => void;
 }>) {
   return (
     <div ref={menuRef} style={{ position: 'relative' }}>
@@ -466,6 +468,13 @@ function OverflowMenu({ menuRef, menuOpen, setMenuOpen, chatMode, selectedModel,
                    onChange={e => toggleCompaction(e.target.checked)} disabled={busy} />{' '}
             Disable memory compaction
           </label>
+          {onFresh && (
+            <button type="button" style={menuBtn} disabled={busy}
+              title="Start the next message from a fresh context: earlier answers stay in the chat, but what the agent read and ran is not carried over."
+              onClick={() => { setMenuOpen(false); onFresh(); }}>
+              ⟲ Start the next message fresh
+            </button>
+          )}
           {activeSession && (
             <button type="button" style={menuBtn} onClick={() => { setMenuOpen(false); openCheckpoints(); }}>
               ↶ Checkpoints
@@ -1969,6 +1978,33 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
       ...(carry ? { singleAgent: true } : {}),
     });
   }
+  const [compacting, setCompacting] = useState(false);
+  // The Compact button: while a turn runs the agent compacts at its next step
+  // and carries on; when idle the carried context is compacted, and a stopped
+  // or unfinished task is continued (a run the server starts — attach to it).
+  function compactContext(sessionId: number) {
+    setCompacting(true);
+    chatApi.compactContext(sessionId).then(r => {
+      if (r.mode === 'running') {
+        toast.success(r.message || 'Compacting at the next step — the task goes on by itself.');
+      } else if (!r.ok) {
+        toast.error(`Could not compact: ${r.error || 'unknown error'}`);
+      } else if (!r.compacted) {
+        toast(r.resumed ? 'Nothing to compact — continuing the stopped task…'
+          : (r.reason || 'Nothing to compact.'));
+      } else {
+        const k = (n?: number) => `~${Math.round((n ?? 0) / 4000)}k`;
+        toast.success(`Context compacted (${k(r.before)} → ${k(r.after)} tokens).`
+          + (r.resumed ? ' Continuing the task…' : ''));
+      }
+      if (r.resume_error) toast.error(`Could not continue the task: ${r.resume_error}`);
+      if (r.resumed && activeIdRef.current === sessionId) {
+        loadSession(sessionId).then(() => attachToRun(sessionId));
+      }
+    }, (e: Error) => toast.error(`Could not compact: ${e.message}`))
+      .finally(() => setCompacting(false));
+  }
+
   // The escape hatch: the partial work may be junk the user wants abandoned.
   // Without this, every route back to "run this again" meant "continue this".
   function rerunFresh() {
@@ -2295,11 +2331,8 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
             <ModeToggle chatMode={chatMode} setChatMode={setChatMode} busy={busy} />
             <QuickToggle chatMode={chatMode} quickMode={quickMode} setQuickMode={setQuickMode} busy={busy} />
             <ContextToggle chatMode={chatMode} contextMode={contextMode} setContextMode={setContextMode} busy={busy}
-              onFresh={activeId !== null ? () => {
-                chatApi.freshContext(activeId).then(
-                  () => toast.success('The next message starts from a fresh context. Earlier answers stay in the chat.'),
-                  (e: Error) => toast.error(`Could not reset the context: ${e.message}`));
-              } : undefined} />
+              compacting={compacting}
+              onCompact={activeId !== null ? () => compactContext(activeId) : undefined} />
             <ApprovalsToggle approvalsOn={approvalsOn} toggleApprovals={toggleApprovals}
                              modeApprovalKey={modeApprovalKey} chatMode={chatMode} />
             <ModelSelect chatMode={chatMode} busy={busy} modelActive={modelActive}
@@ -2313,7 +2346,12 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                           fullPipeline={fullPipeline} toggleFullPipeline={toggleFullPipeline} busy={busy}
                           compactionDisabled={compactionDisabled} toggleCompaction={toggleCompaction}
                           activeSession={activeSession} openCheckpoints={openCheckpoints}
-                          killAll={killAll} deleteSession={deleteSession} />
+                          killAll={killAll} deleteSession={deleteSession}
+                          onFresh={activeId !== null ? () => {
+                            chatApi.freshContext(activeId).then(
+                              () => toast.success('The next message starts from a fresh context. Earlier answers stay in the chat.'),
+                              (e: Error) => toast.error(`Could not reset the context: ${e.message}`));
+                          } : undefined} />
           </div>
         </div>
 

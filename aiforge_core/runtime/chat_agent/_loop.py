@@ -162,6 +162,28 @@ def _emit_loop_prelude(st):
                "text": f"🔌 native tool-calling active ({_ntools} tools)"}
 
 
+def _compact_on_request(st, role, complete_fn, session_id):
+    """The user pressed Compact while this turn runs: condense the history
+    now, say so, and go on with the same task."""
+    try:
+        from aiforge_core.runtime import chat_compact
+        if not chat_compact.take(session_id):
+            return
+        got = chat_compact.compact_running(st, role, complete_fn, session_id)
+    except Exception as exc:  # noqa: BLE001 — a compaction never ends the turn
+        yield {"type": "thought", "role": "system",
+               "text": f"⚙ compaction on request did not run: {str(exc)[:160]}"}
+        return
+    if not got:
+        yield {"type": "thought", "role": "system",
+               "text": "⚙ compact: the context is already short — nothing to drop"}
+        return
+    yield {"type": "thought", "role": "system",
+           "text": (f"⚙ compacted the context on request: ~{got['before'] // 4000}k → "
+                    f"~{got['after'] // 4000}k tokens ({got['messages_before']} → "
+                    f"{got['messages_after']} messages) — continuing the task")}
+
+
 def _step_prologue(st, n, _cwd, role, complete_fn, session_id, builder):
     """Per-step prologue up to a parsed reply: cap/deadline/cancel guards, builder
     nudge, steering drain, condense+usage, the model completion, and the stuck-
@@ -196,6 +218,7 @@ def _step_prologue(st, n, _cwd, role, complete_fn, session_id, builder):
     except Exception:  # noqa: BLE001 — ageing never blocks a step
         pass
     st.step_n = n
+    yield from _compact_on_request(st, role, complete_fn, session_id)
     yield from _condense_and_report(st, role, complete_fn, session_id, st.meter)
     if getattr(st, "ctx_stop", False) and not getattr(st, "ctx_restarted", False):
         # Once, before stopping: start over from a fresh context holding the
@@ -513,6 +536,11 @@ def run_chat_agent(
         inner.close()
         rec.finish()
         action_log.end_run(_alog_run)
+        try:
+            from aiforge_core.runtime import chat_compact
+            chat_compact.clear(session_id)
+        except Exception:  # noqa: BLE001
+            pass
         if _carry_on:
             try:
                 chat_transcript.save(session_id, _asked, st.convo,
