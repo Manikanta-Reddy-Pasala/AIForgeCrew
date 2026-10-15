@@ -331,6 +331,20 @@ def chat_session_compact_context(session_id: int) -> dict:
                            "task goes on by itself."}
     got = chat_compact.compact_saved(session_id, role=sess.get("role") or "chat")
     out = {"mode": "idle", **got}
+    if got.get("ok") and not got.get("compacted"):
+        # A stopped task keeps no full working context: it is kept as its
+        # handoff (goal, what is done, what failed, the next step) — already
+        # the compact form. Say so, and show it.
+        try:
+            from aiforge_core.runtime import handoff_store
+            v = handoff_store.view(session_id)
+            if v.get("unfinished") and v.get("text"):
+                out["handoff"] = True
+                out["summary"] = v["text"][:4000]
+                out["reason"] = ("this stopped task is already kept as a short summary "
+                                 "(goal, what is done, the next step)")
+        except Exception:  # noqa: BLE001 — the answer stands without it
+            pass
     if got.get("ok") and chat_compact.last_turn_unfinished(session_id):
         try:
             from ._message import _SessionMsgBody, chat_session_message

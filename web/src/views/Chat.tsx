@@ -1990,7 +1990,9 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
       } else if (!r.ok) {
         toast.error(`Could not compact: ${r.error || 'unknown error'}`);
       } else if (!r.compacted) {
-        toast(r.resumed ? 'Nothing to compact — continuing the stopped task…'
+        toast(r.handoff && r.resumed
+          ? 'This stopped task is already kept as a short summary (goal, what is done, the next step) — continuing from it…'
+          : r.resumed ? 'Nothing to compact — continuing the stopped task…'
           : (r.reason || 'Nothing to compact.'));
       } else {
         const k = (n?: number) => `~${Math.round((n ?? 0) / 4000)}k`;

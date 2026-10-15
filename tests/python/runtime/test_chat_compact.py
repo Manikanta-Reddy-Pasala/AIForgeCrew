@@ -160,3 +160,9 @@ def test_not_done_in_an_answer_is_not_unfinished(monkeypatch):
             {"role": "assistant", "content": "| item | NOT DONE |"}]
     monkeypatch.setattr(chat_store, "get_messages", lambda sid: rows)
     assert not chat_compact.last_turn_unfinished(1)
+
+
+def test_resume_step_shows_the_summary():
+    from aiforge_core.api.routes._chat._stages import _prelude_notices
+    ev = list(_prelude_notices("GOAL: x\nDONE: a, b\nNEXT: c", None))
+    assert "saved summary" in ev[0]["text"] and "NEXT: c" in ev[0]["text"]

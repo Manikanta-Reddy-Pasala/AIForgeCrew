@@ -119,7 +119,7 @@ export const chatApi = {
   compactContext: (id: number) =>
     j<{ ok: boolean; mode: 'running' | 'idle'; compacted?: boolean; resumed?: boolean;
         message?: string; reason?: string; error?: string; before?: number; after?: number;
-        resume_error?: string }>(
+        resume_error?: string; handoff?: boolean; summary?: string }>(
       `/chat/sessions/${id}/compact-context`, { method: 'POST' }),
   freshContext: (id: number) =>
     j<{ ok: boolean }>(`/chat/sessions/${id}/transcript`, { method: 'DELETE' }),

@@ -161,9 +161,15 @@ def _prelude_notices(resume_brief, cmd_expanded):
     (so the user sees WHY their "/deploy …" became a longer prompt)."""
     from ._prep import _reference_only
     if resume_brief and not _reference_only(resume_brief):
+        # The summary the turn continues from, shown in the chat: what was
+        # done, what is left, the next step.
+        shown = resume_brief.strip()
+        if len(shown) > 1500:
+            shown = shown[:1500].rstrip() + "\n…"
         yield {"type": "thought", "role": "system",
-               "text": "↻ Resuming the stopped turn — carrying over what already "
-                       "landed and finishing only what is pending."}
+               "text": "↻ Resuming the stopped task from its saved summary — "
+                       "carrying over what already landed and finishing only "
+                       "what is pending:\n\n" + shown}
     if cmd_expanded:
         yield {"type": "thought", "role": "command",
                "text": f"Expanded /{cmd_expanded} command template."}

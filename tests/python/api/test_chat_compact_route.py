@@ -63,3 +63,16 @@ def test_idle_finished_task_is_not_resumed(client, monkeypatch):
 
 def test_unknown_session(client):
     assert client.post("/api/chat/sessions/99999/compact-context").status_code == 404
+
+
+def test_stopped_task_reports_its_saved_summary(client, monkeypatch):
+    from aiforge_core.api.routes._chat import _message
+    from aiforge_core.runtime import chat_compact, handoff_store
+    sid = _session(client)
+    monkeypatch.setattr(chat_compact, "last_turn_unfinished", lambda s: True)
+    monkeypatch.setattr(handoff_store, "view", lambda s: {
+        "unfinished": True, "text": "GOAL: summarise 12 files\nDONE: mod1-6\nNEXT: mod7"})
+    monkeypatch.setattr(_message, "chat_session_message", lambda s, body: None)
+    r = client.post(f"/api/chat/sessions/{sid}/compact-context").json()
+    assert r["handoff"] and r["resumed"] and "NEXT: mod7" in r["summary"]
+    assert "already kept as a short summary" in r["reason"]
