@@ -208,7 +208,7 @@ def eligible(session: "dict | None", mode: str = "simple") -> "str | None":
     feature is off."""
     if not enabled() or not session:
         return None
-    if session.get("parent_id") or workdir_of(session):
+    if session.get("parent_id") or workdir_of(session) or session.get("temporary"):
         return None
     cwd = session.get("cwd")
     if not cwd or not os.path.isdir(cwd):

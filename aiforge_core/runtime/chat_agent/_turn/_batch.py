@@ -82,6 +82,11 @@ def _can_start_early(st, name, args, sig):
     from .._registry import TOOLS
     if name not in CONCURRENT_READS or name not in TOOLS:
         return False
+    from ._action import _TEMP_CHAT_BLOCKED, _TEMP_CHAT_NO_ATTACHMENTS
+    if name in _TEMP_CHAT_BLOCKED or name in _TEMP_CHAT_NO_ATTACHMENTS:
+        from aiforge_core.runtime import chat_private
+        if chat_private.is_temporary(getattr(st, "session_id", None)):
+            return False        # its gate changes or refuses it: run in order
     if st.long_chain_help and sig in st.read_sigs_seen:
         return False
     if name == "web_fetch" and egress.check(str(args.get("url") or "")):

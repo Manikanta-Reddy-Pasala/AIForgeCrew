@@ -414,6 +414,14 @@ def compact_session(session_id, *, repo: str | None = None,
     if _disabled():
         return {"ok": False, "skipped": "disabled", "captured": 0}
     try:
+        from aiforge_core.runtime import chat_store as _cs
+        if not _cs.session_learns(session_id):
+            # Learning off for this chat (a temporary chat too): nothing of
+            # it is distilled into memory.
+            return {"ok": False, "skipped": "disabled", "captured": 0}
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         from aiforge_core.memory import md_store
         from aiforge_core.memory.md_store import _role as _mrole
 

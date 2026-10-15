@@ -62,6 +62,12 @@ def save(text: str) -> "str | None":
     if not text:
         return None
     try:
+        from aiforge_core.runtime import chat_private
+        if chat_private.current():
+            return None     # a temporary chat writes nothing to disk
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         if len(text) > _MAX_CHARS:
             # Keep the start (the task) and the END (the latest turns, which a
             # stuck run most needs), not just the first part.

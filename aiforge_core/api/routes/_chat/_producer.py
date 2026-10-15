@@ -112,7 +112,9 @@ def _events(pc):
     # The repo map is built in the background from here, overlapping the
     # capture pass, the classifier and the enhancer; the agent's first prompt
     # waits for it only briefly (see _repomap._aider_digest_bounded).
-    if not pc.team:
+    from aiforge_core.runtime import chat_private as _cpriv
+    _temp = _cpriv.is_temporary(pc.session_id)
+    if not pc.team and not _temp:      # a temporary chat builds no index
         _warm_repo_map(pc.cwd)
     _overlap.warm_slots()
     # Staleness auto-curation: a session bound to a jira/confluence
@@ -121,7 +123,8 @@ def _events(pc):
     # pre-check is cheap and network-free; the actual curation re-fetches
     # the source, so it's HARD time-boxed (like the rule_capture pass
     # below) — a dead Jira must never stall the chat turn. FAILS OPEN.
-    yield from _note_staleness_notice(pc.cwd, pc.session_id)
+    if not _temp:                       # re-curating rewrites the note
+        yield from _note_staleness_notice(pc.cwd, pc.session_id)
     if _turn_was_stopped(pc.session_id):
         yield from _stopped_turn()
         return
@@ -132,8 +135,9 @@ def _events(pc):
     # A long message carries its own task, so it is never a pure capture: its
     # classify runs in the background and never holds up routing.
     pctx = {"done": False}
-    if getattr(pc, "_wake", False):
-        pass        # a harness note with command output in it: no rule of the user's
+    from aiforge_core.runtime import chat_private as _cp
+    if getattr(pc, "_wake", False) or _cp.is_temporary(pc.session_id):
+        pass        # a harness note (no rule of the user's), or a temporary chat
     elif _capture_bg.inline_needed(pc.prompt):
         yield from _rule_capture_pass(pc.prompt, pc.cwd, pc.session_id, pctx)
     else:
@@ -279,8 +283,16 @@ def _single_agent_route(pc, _rd, _pp, rctx, cwd, _doc_task, _is_build_task,
     # `git status` reports THEM, so a no-code Jira/Q&A turn wrongly triggers
     # the build/integration pipeline on stale files and the Changes view
     # shows the previous ticket's edits.
-    _simple_sha, _skip_worktree = _commit_simple_baseline(cwd)
+    from aiforge_core.runtime import chat_private
+    if chat_private.is_temporary(pc.session_id):
+        _simple_sha, _skip_worktree = None, True      # no git init, no commit
+    else:
+        _simple_sha, _skip_worktree = _commit_simple_baseline(cwd)
     _single_mode = "analyze" if _doc_task and pc.agent_mode != "plan" else pc.agent_mode
+    from aiforge_core.runtime import chat_private
+    if chat_private.is_temporary(pc.session_id) and pc.agent_mode != "plan":
+        # A temporary chat only reads: nothing it can call writes.
+        _single_mode = "analyze"
     awaiting_ctx = {"awaiting": False}
     for _ev in _single_agent_events(_enriched_history, cwd, pc.role,
                                     pc.session_id, _single_mode, pc.body.quick,

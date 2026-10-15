@@ -130,16 +130,22 @@ class _SqliteChatStore:
             # The cleanup inventory (runtime/cleanup_inventory.py): what the
             # chat created or started and has not undone. One JSON blob.
             _add_column_if_missing(c, "chat_sessions", "cleanup", "TEXT")
+            # A temporary chat (runtime/chat_private): nothing of it is kept.
+            _add_column_if_missing(c, "chat_sessions", "temporary",
+                                   "INTEGER NOT NULL DEFAULT 0")
             yield c
             c.commit()
         finally:
             c.close()
 
-    def create_session(self, title=_NEW_CHAT, cwd=None, role="chat") -> dict:
+    def create_session(self, title=_NEW_CHAT, cwd=None, role="chat",
+                       temporary=False) -> dict:
         with _LOCK, self._conn() as c:
             cur = c.execute(
-                "INSERT INTO chat_sessions(title, cwd, role) VALUES (?,?,?)",
-                (title or _NEW_CHAT, cwd, role or "doer"),
+                "INSERT INTO chat_sessions(title, cwd, role, temporary, learn) "
+                "VALUES (?,?,?,?,?)",
+                (title or _NEW_CHAT, cwd, role or "doer", 1 if temporary else 0,
+                 0 if temporary else 1),
             )
             r = c.execute(_SELECT_FROM_CHAT_SESSIONS_WH,
                           (cur.lastrowid,)).fetchone()
@@ -276,6 +282,8 @@ class _SqliteChatStore:
             "COALESCE(s.title, '') AS session_title "
             "FROM chat_messages m LEFT JOIN chat_sessions s ON s.id = m.session_id "
             f"WHERE ({where}) AND TRIM(m.content) <> ''"
+            # a temporary chat is never an answer for another chat
+            " AND COALESCE(s.temporary, 0) = 0"
         )
         if exclude_session is not None:
             sql += " AND m.session_id <> ?"

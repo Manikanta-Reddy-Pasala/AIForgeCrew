@@ -253,7 +253,10 @@ def create(parent_id: int, content: str, mode: str = "simple") -> dict:
     title = " ".join(text.split())[:60] or "Side task"
     with _LOCK:
         child = chat_store.create_session(title, parent.get("cwd"),
-                                          role=parent.get("role") or "chat")
+                                          role=parent.get("role") or "chat",
+                                          # a temporary chat's side task keeps
+                                          # nothing either
+                                          temporary=bool(parent.get("temporary")))
         chat_store.set_session_task(child["id"], parent["id"], {
             "state": QUEUED, "prompt": text, "mode": mode,
             "edits": edits_files(text, mode), "posted": False,

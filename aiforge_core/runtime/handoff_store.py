@@ -299,7 +299,9 @@ def seed_next_turn(session_id, rows: list, prompt: str, history: list,
         j = _unfinished_tail(rows)
         dropped = _chat_history_for_agent(rows[j:-1]) if j < len(rows) - 1 else []
         prefix = _chat_history_for_agent(rows[:j])
-        oid = context_offload.save(context_offload.render(dropped)) if dropped else None
+        from aiforge_core.runtime import chat_private
+        oid = context_offload.save(context_offload.render(dropped)) \
+            if dropped and not chat_private.is_temporary(session_id) else None
         if oid:
             h["offload"] = oid
         # How the record is PRESENTED depends on whether the message names a

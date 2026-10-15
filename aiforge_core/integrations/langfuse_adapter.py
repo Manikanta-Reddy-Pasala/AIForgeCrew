@@ -89,12 +89,24 @@ def _send(payload: dict) -> None:
                     len(errs), str(errs)[:500])
 
 
+def _from_temporary_chat(session_id) -> bool:
+    """A temporary chat sends nothing to tracing (the bound chat, or the one
+    named). Soft-fails to False."""
+    try:
+        from aiforge_core.runtime import chat_private
+        return chat_private.current() or chat_private.is_temporary(session_id)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def record_generation(*, role: str, model: str = "", messages=None,
                       output: str = "", latency_ms: int = 0,
                       error: str = "", session_id=None,
                       metadata: dict | None = None) -> None:
     """One LLM completion → one Langfuse trace+generation, sent async.
     Raises only on payload-build errors — the caller wraps regardless."""
+    if _from_temporary_chat(session_id):
+        return
     cap = _cap()
     now = datetime.datetime.now(datetime.timezone.utc)
     start = now - datetime.timedelta(milliseconds=max(0, latency_ms))
@@ -140,6 +152,8 @@ def record_score(*, name: str, value: float, session_id=None,
     carry it and tag that trace with ``sessionId`` — so the score lands under
     the session AND shows in the Scores view. Both server v2 and v3 accept
     ``score-create`` with a numeric value + traceId over this REST endpoint."""
+    if _from_temporary_chat(session_id):
+        return
     now = datetime.datetime.now(datetime.timezone.utc)
     trace_id = str(uuid.uuid4())
     meta = {**(metadata or {})}

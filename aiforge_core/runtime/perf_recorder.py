@@ -84,6 +84,9 @@ def record(family: str, name: str, ms: float) -> None:
     """Append one perf sample. Soft-fail: never raises."""
     global _record_count
     try:
+        from aiforge_core.runtime import chat_private
+        if chat_private.current():
+            return                      # a temporary chat writes nothing
         path = _perf_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
         line = json.dumps({

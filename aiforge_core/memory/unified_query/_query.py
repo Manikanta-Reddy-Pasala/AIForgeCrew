@@ -231,6 +231,9 @@ def _mirror_recall_to_langfuse(text: str, repo, used: list, result: dict,
         from aiforge_core.integrations import langfuse_adapter as _lf
         if not _lf.enabled():
             return
+        from aiforge_core.runtime import chat_private
+        if chat_private.current():
+            return              # a temporary chat sends nothing to tracing
         summary = "\n".join(
             f"[{h.get('source') or h.get('source_uri') or '?'}] "
             + str(h.get('text') or '')[:200] for h in result["hits"][:8])

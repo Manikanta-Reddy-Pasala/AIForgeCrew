@@ -141,6 +141,9 @@ def trace_generation(role: str, messages: list[dict], output: str,
         from aiforge_core.integrations import langfuse_adapter as _lf
         if not _lf.enabled():
             return
+        from aiforge_core.runtime import chat_private
+        if chat_private.current():
+            return              # a temporary chat sends nothing to tracing
         model = ""
         try:
             model = resolve(role).model

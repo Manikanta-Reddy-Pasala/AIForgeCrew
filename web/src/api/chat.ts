@@ -16,6 +16,7 @@ export interface ChatSession {
   parent_id?: number | null;   // set on a side task: the chat it was spun off
   running?: boolean;          // a run is going in this chat right now
   workdir?: string | null;   // this chat's own git worktree, when it has one
+  temporary?: boolean;       // nothing of it is kept; deleted when closed
 }
 
 /** A chat's own git worktree (a branch of its own in a separate folder). */
@@ -186,7 +187,7 @@ export const chatApi = {
       body: JSON.stringify({ model, ...(provider ? { provider } : {}) }),
     }),
 
-  sessionCreate: (body?: { title?: string; cwd?: string }) =>
+  sessionCreate: (body?: { title?: string; cwd?: string; temporary?: boolean }) =>
     j<ChatSession>('/chat/sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -212,6 +213,10 @@ export const chatApi = {
     apiFetch(`/chat/sessions/${id}`, { method: 'DELETE' }).then(r => {
       if (!r.ok && r.status !== 204) throw new Error(`${r.status} ${r.statusText}`);
     }),
+  // Leaving a temporary chat (also from a closing page: keepalive lets the
+  // request outlive it).
+  temporaryDiscard: (id: number) =>
+    apiFetch(`/chat/sessions/${id}`, { method: 'DELETE', keepalive: true }).catch(() => undefined),
 
   // Resolve a pending approval gate (#1) — Approve/Reject a risky action.
   // `note` = optional guidance the user typed on the card; on reject it steers

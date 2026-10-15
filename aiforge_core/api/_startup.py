@@ -171,6 +171,18 @@ def _recover_interrupted_turns() -> None:
         logging.getLogger("aiforge").warning("turn recovery skipped: %s", exc)
 
 
+def _sweep_temporary_chats() -> None:
+    """Temporary chats do not outlive the server: any left (the page was
+    closed without leaving the chat) are deleted at boot, and later every
+    half hour once idle (runtime/chat_private)."""
+    try:
+        from aiforge_core.runtime import chat_private, periodic
+        chat_private.sweep(all_of_them=True)
+        periodic.register("temporary-chats", chat_private.sweep, every_s=1800)
+    except Exception as exc:  # noqa: BLE001 — never block boot on this
+        logging.getLogger("aiforge").warning("temporary chat sweep skipped: %s", exc)
+
+
 def _ensure_model_context_on_boot() -> None:
     """Post-deploy, LM Studio JIT-loads the local model at its small default
     context (e.g. 8192), which HTTP-400s the big prompts a multi-file build needs

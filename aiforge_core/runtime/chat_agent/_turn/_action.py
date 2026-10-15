@@ -144,6 +144,15 @@ def _loop_nudge(name, reason, recap) -> str:
             "previous action.")
 
 
+#: Tools on the read-only list that write anyway (files in the shared work
+#: folder, a memory note, an index): off in a temporary chat.
+_TEMP_CHAT_BLOCKED = frozenset({"context_gather", "web_crawl",
+                                # a background watch outlives the turn
+                                "gitlab_pipeline_watch"})
+#: Read tools that save attachments by default: run without them there.
+_TEMP_CHAT_NO_ATTACHMENTS = frozenset({"jira_read", "confluence_read"})
+
+
 def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
     """Pre-dispatch bookkeeping gates: plan_progress flips a UI subtask (pure
     bookkeeping, allowed in every mode); read-only Plan/Analyze mode blocks a
@@ -208,6 +217,31 @@ def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
                       "content": f"OBSERVATION: {json.dumps(result)}"})
         return "handled"
 
+    # A temporary chat: read tools that still WRITE something (context_gather
+    # saves dossiers and a memory note, web_crawl a page dossier) are not
+    # available either; Jira/Confluence reads skip the attachments they save.
+    if name in _TEMP_CHAT_BLOCKED or name in _TEMP_CHAT_NO_ATTACHMENTS:
+        try:
+            from aiforge_core.runtime import chat_private
+            temp = chat_private.is_temporary(getattr(st, "session_id", None))
+        except Exception:  # noqa: BLE001
+            temp = False
+        if temp and name in _TEMP_CHAT_NO_ATTACHMENTS:
+            if isinstance(args, dict):
+                args["attachments"] = "false"
+                args.pop("images", None)
+            temp = False
+        if temp:
+            result = {"ok": False, "blocked": "temporary_chat", "error": (
+                f"'{name}' saves what it gathers or keeps running after the turn, "
+                "and this is a TEMPORARY chat that "
+                "keeps nothing. Read the ticket/page/files directly (web_fetch for a web "
+                "page, gitlab_pipeline to check a pipeline once) instead.")}
+            yield {"type": "tool", "name": name, "args": args, "result": result}
+            st.convo.append({"role": "user",
+                             "content": f"OBSERVATION: {json.dumps(result)}"})
+            return "continue"
+
     # PLAN/ANALYZE mode (#2): block mutating tools — read-only only.
     if readonly_mode and name not in _READONLY_TOOLS:
         _mname = "Analyze" if analyze_mode else "Plan"
@@ -217,6 +251,17 @@ def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
         result = {"ok": False, "blocked": "plan_mode",
                   "error": f"'{name}' is blocked in {_mname} mode "
                            f"(read-only). {_mtail}"}
+        try:
+            from aiforge_core.runtime import chat_private
+            if chat_private.is_temporary(getattr(st, "session_id", None)):
+                result["error"] = (
+                    f"'{name}' is not available: this is a TEMPORARY chat — it only "
+                    "reads and keeps nothing; no file is written, no command changes "
+                    "anything, nothing is saved. Tell the user plainly that this "
+                    "request needs a normal chat, and answer what can be answered "
+                    "by reading.")
+        except Exception:  # noqa: BLE001
+            pass
         yield {"type": "tool", "name": name, "args": args, "result": result}
         st.convo.append({"role": "user",
                       "content": f"OBSERVATION: {json.dumps(result)}"})
@@ -327,7 +372,10 @@ def _said(st) -> str:
 def _record_repo_roles(st, args) -> dict:
     """plan_progress {"slug": "repos", "work_in": [...], "read_only": [...]}:
     the chat's repository roles (runtime/repo_roles)."""
-    from aiforge_core.runtime import repo_roles
+    from aiforge_core.runtime import chat_private, repo_roles
+    if chat_private.is_temporary(getattr(st, "session_id", None)):
+        return {"ok": False, "error": "a temporary chat only reads: no folders or "
+                "branches are set up for work"}
     if not repo_roles.has_roles(args):
         r = repo_roles.roles(getattr(st, "session_id", None))
         return {"ok": False, "repos": r, "error": (

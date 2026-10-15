@@ -60,6 +60,8 @@ def _most_recent_prior_session(exclude_session_id, *,
             continue
         if cwd and not _same_project((s or {}).get("cwd"), cwd):
             continue
+        if (s or {}).get("temporary"):
+            continue            # a temporary chat is never carried into another
         return sid
     return None
 

@@ -30,6 +30,8 @@ def reset_backend_for_tests():
     """Test hook — drop the memoized backend so env changes take effect."""
     global _BACKEND
     _BACKEND = None
+    from aiforge_core.runtime import chat_private
+    chat_private.forget_all()       # a fresh store: its ids start again
 
 
 # ═══════════════════════════ public function API ═════════════════════════════
@@ -37,8 +39,14 @@ def reset_backend_for_tests():
 # module; callers are unchanged.
 
 def create_session(title: str = "New chat", cwd: str | None = None,
-                   role: str = "chat") -> dict:
-    return _backend().create_session(title, cwd, role)
+                   role: str = "chat", temporary: bool = False) -> dict:
+    s = _backend().create_session(title, cwd, role, temporary=temporary)
+    try:
+        from aiforge_core.runtime import chat_private
+        chat_private.remember(s["id"], temporary)
+    except Exception:  # noqa: BLE001
+        pass
+    return s
 
 
 def set_session_cwd(session_id: int, cwd: str) -> "dict | None":
@@ -88,6 +96,12 @@ def session_learns(session_id) -> bool:
     switch can only ever turn learning OFF."""
     if session_id is None:
         return True
+    try:
+        from aiforge_core.runtime import chat_private
+        if chat_private.is_temporary(session_id):
+            return False        # a temporary chat (also one just deleted)
+    except Exception:  # noqa: BLE001
+        pass
     try:
         s = _backend().get_session(int(session_id))
     except Exception:  # noqa: BLE001

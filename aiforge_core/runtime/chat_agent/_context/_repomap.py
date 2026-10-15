@@ -300,6 +300,12 @@ def _build_repo_map(cwd: str, max_entries: int = 160, max_depth: int = 3,
     base = str(_workspace_root() or cwd)
     if not os.path.isdir(base):
         return f"WORKING DIRECTORY: {base} (not a directory)"
+    from aiforge_core.runtime import chat_private
+    if chat_private.current():
+        # A temporary chat: the tree-sitter map keeps a tags cache on disk
+        # (repo-index); the in-memory maps only.
+        return (_pagerank_map(base, focus) or _regex_symbol_map(base)
+                or _tree_map(base, max_entries, max_depth))
     return (_pagerank_map(base, focus) or _ranked_symbol_map(base)
             or _regex_symbol_map(base) or _tree_map(base, max_entries, max_depth))
 

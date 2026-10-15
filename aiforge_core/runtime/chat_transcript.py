@@ -208,6 +208,9 @@ def save(session_id, messages, convo, answer: "str | None" = None,
     transcript instead, so the next message falls back to the bare history."""
     if not enabled() or session_id is None or not convo:
         return False
+    from aiforge_core.runtime import chat_private
+    if chat_private.is_temporary(session_id):
+        return False        # a temporary chat keeps no working-context file
     work = _working_part(convo)
     if work and work[-1].get("role") != "assistant" and answer:
         work.append({"role": "assistant", "content": answer})

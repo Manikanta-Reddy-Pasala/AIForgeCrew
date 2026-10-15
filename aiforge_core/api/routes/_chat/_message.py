@@ -159,7 +159,15 @@ def _message_turn_locked(session_id: int, body: _SessionMsgBody,
     # per chat for its whole life, whatever the mode switches.
     cwd = chat_worktree.workdir_of(session) \
         or session.get("cwd") or _default_cwd()
-    team = body.mode == "team"
+    from aiforge_core.runtime import chat_private
+    _temporary = chat_private.is_temporary(session_id)
+    # A temporary chat runs as one read-only agent (runtime/chat_private):
+    # no team, no split into subtasks, no escalation.
+    if _temporary:
+        body.single_agent = True
+        body.context = "one"
+        body.builder = None         # builders save jobs/skills/rules
+    team = body.mode == "team" and not _temporary
     agent_mode = "plan" if (body.mode == "plan" or _plan_ask) else "act"
     prompt = body.content.strip()
 
@@ -180,14 +188,14 @@ def _message_turn_locked(session_id: int, body: _SessionMsgBody,
     # the SHARED ~/.aiforge/work/<kind>/<key>/ folder — so that ticket's images,
     # pages and scratch persist across every session that touches it. A session
     # already pinned to a context or to a real repo the user chose is left as-is.
-    if wake is None:
+    if wake is None and not _temporary:
         cwd = _rehome_context_workspace(cwd, prompt, session_id)
     # A command this turn leaves running wakes the agent when it finishes —
     # for an ordinary turn only (runtime/chat_wake).
     from aiforge_core.runtime import chat_wake
     # (Not a side task: its answer is already posted to the parent chat.)
     if (not team and agent_mode == "act" and not body.builder
-            and not session.get("parent_id")):
+            and not session.get("parent_id") and not _temporary):
         import os as _os
         _review = bool(body.review_edits) or _os.environ.get(
             "AIFORGE_CHAT_REVIEW_EDITS", "0") in ("1", "true", "yes", "on")
@@ -205,7 +213,7 @@ def _message_turn_locked(session_id: int, body: _SessionMsgBody,
     # CONCURRENTLY with the turn (a fast ~20-token call) so it neither blocks
     # the response nor lingers the stream. The client's post-turn session
     # refresh picks it up. Best-effort.
-    if _fresh_title:
+    if _fresh_title and not _temporary:
         _spawn(lambda: _gen_title(prompt, session_id), name="gen-title")
 
     from aiforge_core.runtime import chat_cancel

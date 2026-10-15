@@ -133,7 +133,11 @@ def schedule(key: "str | None", gen: int, call) -> bool:
                     _READY.move_to_end(key)
                     _prune_locked(time.monotonic())
 
-    threading.Thread(target=_worker, daemon=True, name="aiforge-compact").start()
+    import contextvars
+    # The turn's context rides along: the call is the chat's (a temporary
+    # chat's summary is not sent to tracing).
+    threading.Thread(target=contextvars.copy_context().run, args=(_worker,),
+                     daemon=True, name="aiforge-compact").start()
     return True
 
 

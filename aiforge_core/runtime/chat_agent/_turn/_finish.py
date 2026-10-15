@@ -324,9 +324,10 @@ def _ready_suggestion(handle, session_id=None):
     if p is None:
         return
     try:
-        from aiforge_core.runtime import next_step
-        next_step.remember(p, {"message": message,
-                               "repo": _repo_name(str(cwd or ""))})
+        from aiforge_core.runtime import chat_private, next_step
+        if not chat_private.current():
+            next_step.remember(p, {"message": message,
+                                   "repo": _repo_name(str(cwd or ""))})
         ev = p.as_event()
     except Exception as exc:  # noqa: BLE001 — a prediction never breaks a turn
         _log.debug("next_step: suggestion skipped: %s", exc)

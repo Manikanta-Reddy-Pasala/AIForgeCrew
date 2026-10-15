@@ -79,7 +79,9 @@ def _consume_produce_events(_events, st, steps, run, session_id, turn_t0,
     (coercing in-flight subtasks to a terminal state so nothing reloads stuck).
     "planned" is a settled, never-run plan-mode state — NOT in-flight, left."""
     from aiforge_core.runtime.chat_turn_save import TurnSaver
-    saver = TurnSaver(session_id, turn_mode)
+    from aiforge_core.runtime import chat_private
+    saver = TurnSaver(None if chat_private.is_temporary(session_id) else session_id,
+                      turn_mode)
     for ev in _events():
         ev = _clean_and_log_produce_event(ev, session_id, turn_t0, turn_mode,
                                           clog, emit)
@@ -96,6 +98,13 @@ def _consume_produce_events(_events, st, steps, run, session_id, turn_t0,
 
 
 def _mirror_event_to_log(ev, session_id, clog, emit):
+    from aiforge_core.runtime import chat_private
+    if chat_private.is_temporary(session_id):
+        return              # a temporary chat's words go to no log
+    _mirror_event_to_log_(ev, session_id, clog, emit)
+
+
+def _mirror_event_to_log_(ev, session_id, clog, emit):
     """Mirror a substantive producer event (thought/tool/message/error) into the observability NDJSON. Best-effort."""
     if clog is not None and emit is not None and \
             ev.get("type") in ("thought", "tool", "message", "error"):
@@ -267,7 +276,8 @@ def _finalize_produce_turn(session_id, cwd, prompt, final_text, steps, awaiting,
     # a team run whether or not the ADK driver launched).
     try:
         from aiforge_core.integrations import langfuse_adapter as _lf
-        if _lf.enabled():
+        from aiforge_core.runtime import chat_private as _cpv
+        if _lf.enabled() and not _cpv.is_temporary(session_id):
             _lf.record_score(
                 name="turn_completed",
                 value=0.0 if cancelled else 1.0,

@@ -247,6 +247,37 @@ function QuickToggle({ chatMode, quickMode, setQuickMode, busy }: Readonly<{
 
 type ContextMode = 'one' | 'split';
 
+// Temporary chat: nothing of it is kept, and leaving it deletes it. Off a
+// normal chat it starts a new temporary one; on a temporary chat it is the
+// badge that says so, with End.
+function TemporaryToggle({ temporary, busy, onStart, onEnd }: Readonly<{
+  temporary: boolean; busy: boolean; onStart: () => void; onEnd: () => void;
+}>) {
+  const pill = {
+    display: 'flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-xs)',
+    padding: '2px 8px', borderRadius: 999, cursor: 'pointer',
+    border: '1px solid var(--border-1)', background: 'transparent', color: 'var(--fg-2)',
+  } as const;
+  if (temporary) {
+    return (
+      <span style={{ ...pill, cursor: 'default', borderStyle: 'dashed', color: 'var(--fg-1)' }}
+        title="Temporary chat: nothing is learned, captured, traced or kept. It only reads (no file changes). Leaving it, closing the page or End deletes it.">
+        🕶 Temporary — nothing is saved
+        <button type="button" onClick={onEnd} disabled={busy}
+          style={{ ...pill, padding: '0 6px', marginLeft: 4 }}
+          aria-label="End and delete this temporary chat">End</button>
+      </span>
+    );
+  }
+  return (
+    <button type="button" style={pill} onClick={onStart} disabled={busy}
+      aria-label="Start a temporary chat"
+      title="Start a temporary chat: ask and get answers; nothing is learned, captured, traced or kept, and it is deleted when you leave it.">
+      🕶 Temporary
+    </button>
+  );
+}
+
 // One context | Split: how a Simple chat holds its context. A pill like Quick,
 // so the header row does not grow. Hidden in Plan (one read-only agent) and
 // Team (its own pipeline).
@@ -579,6 +610,22 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   const lsSessionKey = project ? `${LS_SESSION_KEY}:${project.name}` : LS_SESSION_KEY;
   // Sessions list
   const [sessions, setSessions] = useState<ChatSession[]>([]);
+  // For handlers that run outside a render (leaving a temporary chat).
+  const sessionsRef = useRef<ChatSession[]>([]);
+  useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+  // A temporary chat open when the page closes is deleted then (going to
+  // another page of the app keeps it open); the server also sweeps any it
+  // missed.
+  useEffect(() => {
+    const drop = () => {
+      const id = activeIdRef.current;
+      const s = id === null ? undefined : sessionsRef.current.find(x => x.id === id);
+      // a side task is part of its chat: the chat goes, and its tasks with it
+      if (id !== null && s?.temporary) chatApi.temporaryDiscard(s.parent_id ?? id);
+    };
+    window.addEventListener('pagehide', drop);
+    return () => { window.removeEventListener('pagehide', drop); };
+  }, []);
   const [sessionsLoading, setSessionsLoading] = useState(true);
   // Active session
   const [activeId, setActiveId] = useState<number | null>(() => {
@@ -1223,8 +1270,55 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
 
   // ── Select a session ──────────────────────────────────────────────────────
 
+  // A temporary chat is deleted the moment it is left: switching to another
+  // chat, starting a new one, End, or closing the page. Its side tasks are part
+  // of it: moving between the chat and its tasks is not leaving it.
+  // The temporary chat that leaving ``id`` for ``going`` ends, or null.
+  function temporaryLeft(id: number | null, going?: number | null): number | null {
+    if (id === null) return null;
+    const s = sessionsRef.current.find(x => x.id === id);
+    if (!s?.temporary) return null;
+    const root = s.parent_id ?? id;
+    if (going != null && (going === root
+        || sessionsRef.current.find(x => x.id === going)?.parent_id === root)) return null;
+    return root;
+  }
+
+  function confirmLeaveTemporary(): boolean {
+    return window.confirm('Leave this temporary chat? It will be deleted — nothing of it is kept.');
+  }
+
+  function discardTemporary(root: number) {
+    chatSessionStop(root);
+    for (const k of sessionsRef.current) if (k.parent_id === root) chatSessionStop(k.id);
+    chatApi.temporaryDiscard(root);           // its side tasks go with it
+    setSessions(prev => prev.filter(x => x.id !== root && x.parent_id !== root));
+  }
+
+  // False when the user chose to stay.
+  function leaveTemporary(id: number | null, going?: number | null, ask = false): boolean {
+    const root = temporaryLeft(id, going);
+    if (root === null) return true;
+    if (ask && !confirmLeaveTemporary()) return false;
+    discardTemporary(root);
+    return true;
+  }
+
+  function endTemporary(id: number) {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    leaveTemporary(id);
+    setActiveId(null);
+    activeIdRef.current = null;
+    setMessages([]);
+    setLiveTurn(null);
+    setBusy(false);
+    toast.success('Temporary chat ended — nothing of it was kept.');
+  }
+
   function selectSession(id: number) {
     if (id === activeId) return;
+    if (!leaveTemporary(activeIdRef.current, id, true)) return;
     abortRef.current?.abort();   // drop any in-flight stream on the old session
     abortRef.current = null;
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
@@ -1239,10 +1333,16 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
 
   // ── Create a new session ──────────────────────────────────────────────────
 
-  async function createSession(cwd?: string): Promise<number | null> {
+  async function createSession(cwd?: string, temporary = false): Promise<number | null> {
     try {
+      // Asked first, deleted only once the new chat exists (a failed create
+      // leaves the user where they were).
+      const left = temporaryLeft(activeIdRef.current);
+      if (left !== null && !confirmLeaveTemporary()) return null;
       const where = cwd ?? (project?.path || undefined);
-      const session = await chatApi.sessionCreate(where ? { cwd: where } : undefined);
+      const session = await chatApi.sessionCreate({ ...(where ? { cwd: where } : {}),
+                                                    ...(temporary ? { temporary: true } : {}) });
+      if (left !== null) discardTemporary(left);
       setSessions(prev => [session, ...prev]);
       abortRef.current?.abort();   // drop any stream still tied to the old session
       abortRef.current = null;
@@ -2310,7 +2410,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                     ⚠ {sameFolderRunning} other {sameFolderRunning === 1 ? 'chat is' : 'chats are'} running here
                   </span>
                 )}
-                {activeSession && (
+                {activeSession && !activeSession.temporary && (
                   <button type="button" className="ghost sm" disabled={busy}
                           title={activeSession.learn === false
                             ? 'Nothing from this chat is saved to memory. Click to turn learning on.'
@@ -2331,6 +2431,9 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
           </div>
           <div className="row" style={{ gap: 'var(--s-2)' }}>
             <ModeToggle chatMode={chatMode} setChatMode={setChatMode} busy={busy} />
+            <TemporaryToggle temporary={!!activeSession?.temporary} busy={busy}
+              onStart={() => { createSession(undefined, true); }}
+              onEnd={() => { if (activeId !== null) endTemporary(activeId); }} />
             <QuickToggle chatMode={chatMode} quickMode={quickMode} setQuickMode={setQuickMode} busy={busy} />
             <ContextToggle chatMode={chatMode} contextMode={contextMode} setContextMode={setContextMode} busy={busy}
               compacting={compacting}

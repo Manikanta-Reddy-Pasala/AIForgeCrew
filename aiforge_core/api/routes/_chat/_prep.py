@@ -178,8 +178,9 @@ def _auto_checkpoint(pc):
     # this turn's edits. Best-effort; gated by env. Runs INSIDE _gen
     # (first, before streaming) so its git subprocesses don't delay the
     # StreamingResponse from opening.
+    from aiforge_core.runtime import chat_private
     if os.environ.get("AIFORGE_CHAT_AUTO_CHECKPOINT", "1") in ("0", "false") \
-            or pc.team:
+            or pc.team or chat_private.is_temporary(pc.session_id):
         return
     try:
         import datetime as _dt

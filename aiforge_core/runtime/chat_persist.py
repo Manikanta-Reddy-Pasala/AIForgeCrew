@@ -168,6 +168,9 @@ def persist_turn(*, session_id: int, cwd: str, prompt: str,
         return
     chat_store.add_message(session_id, "assistant", final_text, steps,
                            mode=mode, duration_s=duration_s)
+    from aiforge_core.runtime import chat_private
+    if chat_private.is_temporary(session_id):
+        return          # no trace, no memory note: the message is all there is
     _append_trace(session_id, prompt, steps, final_text, team, cwd)
     if _skip_auto_memory(final_text, awaiting, cancelled):
         return

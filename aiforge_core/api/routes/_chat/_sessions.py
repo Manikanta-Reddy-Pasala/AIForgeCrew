@@ -22,6 +22,9 @@ class _NewSessionBody(BaseModel):
     title: str | None = Field(None)
     cwd: str | None = Field(None)
     role: str = Field("chat", description="model slot driving chat (default: chat)")
+    temporary: bool = Field(False, description="A temporary chat: nothing of it is "
+                            "learned, captured, traced or kept; it runs read-only "
+                            "and is deleted when it is closed (runtime/chat_private).")
 
 
 class _RenameBody(BaseModel):
@@ -37,6 +40,27 @@ def _chat_workspace_root() -> str:
         "AIFORGE_CHAT_WORKSPACE_ROOT",
         os.path.join(os.path.expanduser(
             str(config_dir())), "chat-workspaces"))
+
+
+def _wipe_temporary(session_id: int) -> None:
+    """A temporary chat is gone: also its own scratch folder (media lives
+    there even when the chat was opened on a project), a running-turn
+    snapshot and a trace file, should any exist."""
+    import shutil
+    from aiforge_core.config.paths import config_dir
+    from aiforge_core.runtime import chat_private
+    chat_private.forget(session_id)
+    _delete_chat_workspace(os.path.join(_chat_workspace_root(), f"session-{session_id}"))
+    cfg = str(config_dir())
+    for p in (os.path.join(cfg, "running-turns", f"{session_id}.json"),
+              os.path.join(cfg, "chat_traces", f"session_{session_id}.md"),
+              os.path.join(cfg, "chat_traces", f"session_{session_id}.jsonl")):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    shutil.rmtree(os.path.join(cfg, "chat_transcripts", f"session_{session_id}"),
+                  ignore_errors=True)
 
 
 def _delete_chat_workspace(cwd: str | None) -> bool:
@@ -84,9 +108,13 @@ def _is_isolated_workspace(cwd: str | None) -> bool:
 @router.post("/api/chat/sessions", status_code=201)
 def chat_session_create(body: _NewSessionBody) -> dict:
     from aiforge_core.runtime import chat_store
-    s = chat_store.create_session(body.title or _NEW_CHAT,
+    s = chat_store.create_session(body.title or ("Temporary chat" if body.temporary
+                                                 else _NEW_CHAT),
                                   body.cwd or _default_cwd(),
-                                  role=body.role or "chat")
+                                  role=body.role or "chat",
+                                  **({"temporary": True} if body.temporary else {}))
+    from aiforge_core.runtime import chat_private
+    chat_private.remember(s["id"], bool(body.temporary))
     # Isolation: when the caller didn't pin a cwd, give the session its
     # own workspace dir so it can build/clean/run without touching other
     # sessions or the host. Persisted under app_state on the compose deploy.
@@ -112,8 +140,9 @@ def chat_session_create(body: _NewSessionBody) -> dict:
     except Exception:  # noqa: BLE001
         pass
     # Start the ranked repo map for a pinned project now: the first parse of a
-    # big repo is seconds, and the first turn must not wait on it.
-    if body.cwd:
+    # big repo is seconds, and the first turn must not wait on it. (Not for a
+    # temporary chat: opening a project mirrors its memory into the repo.)
+    if body.cwd and not body.temporary:
         try:
             from aiforge_core.runtime.chat_agent._context._repomap import (
                 warm_repo_map)
@@ -191,6 +220,10 @@ def chat_sessions_reset() -> dict:
     # Snapshot each session's cwd before the rows go, so we delete exactly the
     # managed workspaces they owned (a pinned user repo is refused by the helper).
     cwds = [(s or {}).get("cwd") for s in (chat_store.list_sessions() or [])]
+    # A temporary chat's own files go too. Its id stays known as temporary
+    # (a turn still finishing writes nothing) until a new chat takes the id.
+    temps = [s["id"] for s in (chat_store.list_sessions() or [])
+             if s.get("temporary") and not s.get("parent_id")]
     try:
         from aiforge_core.runtime import chat_worktree
         for _s in chat_store.list_sessions() or []:
@@ -209,6 +242,8 @@ def chat_sessions_reset() -> dict:
         chat_okr.clear_all_markers()
     except Exception:  # noqa: BLE001
         pass
+    for _tid in temps:
+        _wipe_temporary(_tid)
     removed = sum(1 for _cwd in cwds if _delete_chat_workspace(_cwd))
     removed += _sweep_orphan_session_dirs()
     return {"ok": True, "deleted": deleted, "workspaces_removed": removed}
@@ -289,7 +324,9 @@ def chat_session_rename(session_id: int, body: _RenameBody) -> dict:
 def chat_session_set_learn(session_id: int, body: _LearnBody) -> dict:
     """Switch memory writes on or off for ONE chat. Off = nothing this chat
     says is learned, folded or captured; reading memory is unaffected."""
-    from aiforge_core.runtime import chat_store
+    from aiforge_core.runtime import chat_private, chat_store
+    if body.learn and chat_private.is_temporary(session_id):
+        raise HTTPException(409, "a temporary chat never learns — start a normal chat")
     s = chat_store.set_session_learn(session_id, body.learn)
     if not s:
         raise HTTPException(404, f"session {session_id} not found")
@@ -379,6 +416,14 @@ def chat_session_delete(session_id: int) -> None:
     chat_approve.cancel(session_id)
     chat_interject.clear(session_id)
     chat_runs.finish(session_id)
+    from aiforge_core.runtime import chat_private
+    if chat_private.is_temporary(session_id):
+        # nothing of a temporary chat outlives it, a watch or command included
+        try:
+            from aiforge_core.runtime import bg_work
+            bg_work.stop_session(session_id)
+        except Exception:  # noqa: BLE001
+            pass
     from aiforge_core.runtime import chat_transcript
     chat_transcript.drop(session_id)
     # Grab the isolated-workspace path BEFORE deleting the row so we can rm -rf
@@ -410,6 +455,11 @@ def chat_session_delete(session_id: int) -> None:
     # A side task shares its parent's folder — never remove that with it.
     if not (_sess or {}).get("parent_id"):
         _delete_chat_workspace((_sess or {}).get("cwd"))
+        if (_sess or {}).get("temporary"):
+            _wipe_temporary(session_id)
+        else:
+            from aiforge_core.runtime import chat_private as _cp
+            _cp.forget(session_id)
 
 
 @router.post("/api/chat/sessions/{session_id}/media", status_code=201, responses={400: {"description": "Bad request"}, 404: {"description": "Not found"}})
@@ -426,6 +476,10 @@ async def chat_media_upload(session_id: int, file: Annotated[UploadFile, File()]
     if not saved.get("ok"):
         raise HTTPException(400, saved.get("error", "invalid file"))
     role = (chat_store.get_session(session_id) or {}).get("role") or "chat"
+    from aiforge_core.runtime import request_context
+    # The description's model call belongs to this chat (a temporary chat's
+    # upload is then not traced either).
+    _tok = request_context.set_session_id(session_id)
     try:
         # describe_upload runs a (slow) vision/text extraction — off the event
         # loop so one image upload doesn't block every other request.
@@ -434,6 +488,8 @@ async def chat_media_upload(session_id: int, file: Annotated[UploadFile, File()]
             saved["mime"], role)
     except Exception:  # noqa: BLE001 — describe/extract is best-effort
         desc = ""
+    finally:
+        request_context.reset_session_id(_tok)
     row = chat_store.add_media(session_id, saved["filename"], saved["path"],
                                mime=saved["mime"], description=desc)
     row["kind"] = saved.get("kind")

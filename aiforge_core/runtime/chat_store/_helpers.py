@@ -138,6 +138,8 @@ def _session_out(d: dict) -> dict:
             "role": (d.get("role") or "doer"),
             # 0 only when the user switched learning off for this chat.
             "learn": d.get("learn") != 0,
+            # A temporary chat: nothing of it is kept (runtime/chat_private).
+            "temporary": bool(d.get("temporary")),
             "created_at": _iso(d["created_at"]),
             "updated_at": _iso(d["updated_at"])}
 

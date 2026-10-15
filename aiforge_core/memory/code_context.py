@@ -65,6 +65,12 @@ def aider_digest(worktree: str, chat_files: list[str],
     if os.environ.get("AIFORGE_AIDER_REPOMAP_ENABLED", "1") != "1":
         return ""
     try:
+        from aiforge_core.runtime import chat_private
+        if chat_private.current():
+            return ""       # a temporary chat: no tags cache on disk
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         from aiforge_core.indexing.aider_map import (
             AiderMapConfig, render_repo_map_cached as render_repo_map,
         )
