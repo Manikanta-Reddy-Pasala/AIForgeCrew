@@ -664,6 +664,9 @@ if ! _in_box; then
     esac
   done
   export AIFORGE_RUN_ARGS="${_pass[*]:-}"
+  # Compose only sees env vars that exist at `up` time. Bind host must be
+  # exported so the sandbox boot guard observes the same address `--host` set.
+  export AIFORGE_BIND_HOST="$HOST"
 
   case "$DOCKER_ACTION" in
     # stop, not down: the container keeps what the agent installed in it

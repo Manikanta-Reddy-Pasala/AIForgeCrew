@@ -40,6 +40,18 @@ WAIT="${AIFORGE_DEPLOY_WAIT:-300}"
 BOX=aiforge                              # docker-compose.yml's container_name
 FORCE=0
 PULL=1
+# NUC is fronted by WireGuard + the reverse proxy; without this the sandbox
+# crash-loops on the off-loopback boot guard and tickets.oneshell.in 502s.
+export AIFORGE_BIND_HOST="$HOST"
+case "$HOST" in
+  127.0.0.1|localhost|::1) ;;
+  *)
+    if [[ -z "${AIFORGE_API_TOKEN:-}" \
+          && -z "${AIFORGE_ALLOW_UNAUTH_NONLOOPBACK:-}" ]]; then
+      export AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1
+    fi
+    ;;
+esac
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

@@ -6,12 +6,17 @@ Requires=docker.service
 
 [Service]
 WorkingDirectory=%h/AIForgeCrew
-# run.sh is the single source of truth for env wiring and for bringing the box
-# up — do NOT duplicate that here as hardcoded Environment= lines, they drift.
-# It reads %h/AIForgeCrew/aiforge.env itself; only --host needs passing, because
-# run.sh's own HOST default (127.0.0.1) is a shell variable, not something the
-# env file can override.
+# run.sh reads %h/AIForgeCrew/aiforge.env itself. These Environment= lines are
+# the NUC-only knobs that must survive reboot without relying on an interactive
+# shell export:
+#   --host 0.0.0.0  — fleet / WireGuard peers must reach :8799 (not loopback).
+#   AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1 — boot guard otherwise crash-loops the
+#     sandbox when bound off-loopback with no token; this box is fronted by the
+#     WG reverse proxy (77.42.45.12:9443 / tickets.oneshell.in), not exposed bare.
+#   AIFORGE_BIND_HOST — compose passthrough so the guard sees the intended bind.
 Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1
+Environment=AIFORGE_BIND_HOST=0.0.0.0
 # There is no host mode. run.sh starts the sandbox and returns, so this unit is
 # oneshot + RemainAfterExit: what actually serves the API is the container, kept
 # alive by its own `restart: unless-stopped`, not by systemd re-running this.
