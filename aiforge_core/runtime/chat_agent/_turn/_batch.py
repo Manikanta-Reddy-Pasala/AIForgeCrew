@@ -30,7 +30,11 @@ def _parallel_cap() -> int:
 
 
 def _call_sig(name, args):
-    """One call's identity: the loop matches a started read by it."""
+    """One call's identity: the loop matches a started read by it. Recipe
+    marks (``_recipe*``) are left out so two raw commands that became the same
+    recipe share a signature."""
+    if isinstance(args, dict):
+        args = {k: v for k, v in args.items() if not str(k).startswith("_recipe")}
     return name + "|" + json.dumps(args, sort_keys=True, default=str)
 
 

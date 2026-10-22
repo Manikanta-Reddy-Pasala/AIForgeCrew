@@ -239,9 +239,12 @@ def _t_lsp(args: dict, _cwd: str) -> dict:
 
 
 def _t_run_tests(args: dict, cwd: str) -> dict:
-    from ._misc import _recipe_run
-    hit = _recipe_run("test", cwd)
-    if hit is not None:
-        return hit
+    pattern = str(args.get("pattern") or "")
+    # The whole suite follows the test recipe; a pattern is a targeted run.
+    if not pattern.strip():
+        from ._misc import _recipe_run
+        hit = _recipe_run("test", cwd, timeout=args.get("timeout"))
+        if hit is not None:
+            return hit
     from aiforge_core.runtime.tools.test_runner import run_tests
-    return run_tests(mode=str(args.get("mode") or "fast"), pattern=str(args.get("pattern") or ""))
+    return run_tests(mode=str(args.get("mode") or "fast"), pattern=pattern)

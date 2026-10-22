@@ -11,6 +11,8 @@ import json
 import logging
 import os
 import re
+import shlex
+import subprocess
 import time
 
 from aiforge_core.config import _atomic
@@ -155,8 +157,12 @@ def load(root: str) -> dict:
         key = _slug(verb)
         if not key or not isinstance(row, dict) or not str(row.get("cmd") or "").strip():
             continue
+        cwd = str(row.get("cwd") or ".").strip() or "."
+        if not _cwd_ok(cwd):
+            log.warning("recipes: ignoring %r: cwd %r leaves the project", key, cwd)
+            continue
         out[key] = {"cmd": str(row["cmd"]).strip(),
-                    "cwd": str(row.get("cwd") or "."),
+                    "cwd": cwd,
                     "aliases": [str(a).strip().lower() for a in (row.get("aliases") or [])
                                 if str(a).strip()],
                     "saved": row.get("saved")}
@@ -182,7 +188,7 @@ def save(root: str, verb: str, cmd: str, *, cwd: str = ".", aliases=None) -> dic
     if not cmd:
         raise ValueError(f"recipe {key!r} needs a command")
     cwd = str(cwd or ".").strip() or "."
-    if os.path.isabs(cwd) or ".." in cwd:
+    if not _cwd_ok(cwd):
         raise ValueError(f"recipe cwd must stay inside the project, got {cwd!r}")
     row = {"cmd": cmd, "cwd": cwd, "saved": int(time.time())}
     clean = [str(a).strip().lower() for a in (aliases or []) if str(a).strip()]
@@ -217,6 +223,40 @@ def decline(root: str, verb: str) -> None:
 
 def _declined(root: str) -> set:
     return set(_read(os.path.join(_dir(root), _DECLINED)))
+
+
+def _cwd_ok(cwd: str) -> bool:
+    """A recipe cwd stays inside the project: relative, no ``..``."""
+    return not (os.path.isabs(cwd) or ".." in cwd)
+
+
+def exec_root(cwd: str) -> str:
+    """Where a recipe RUNS: the toplevel of the checkout ``cwd`` is in (a chat
+    worktree stays a worktree — unlike ``repo_ident.git_toplevel``, which maps
+    it to the main repo and is right only for the recipes.json LOOKUP); ``cwd``
+    itself outside git."""
+    if not cwd:
+        return cwd
+    try:
+        out = subprocess.run(["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=3)
+        top = out.stdout.strip() if out.returncode == 0 else ""
+    except Exception:  # noqa: BLE001 — never let git break a recipe run
+        top = ""
+    return top or str(cwd)
+
+
+def recipe_command(rec: dict, exec_root: str) -> str:
+    """The shell line that runs ``rec`` from ``exec_root``: the command alone
+    for cwd ".", else ``cd <abs dir> && <cmd>`` — so the recipe's folder holds
+    on both the tool path and the raw-command rewrite, and under a workspace
+    jail (where the shell tool ignores its cwd argument)."""
+    cmd = str(rec.get("cmd") or "").strip()
+    cwd = str(rec.get("cwd") or ".").strip() or "."
+    if os.path.normpath(cwd) == ".":
+        return cmd
+    where = os.path.normpath(os.path.join(exec_root, cwd))
+    return f"cd {shlex.quote(where)} && {cmd}"
 
 
 def _slug(verb: str) -> str:
