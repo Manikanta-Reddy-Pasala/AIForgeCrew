@@ -379,10 +379,12 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
         # commands (a check that failed after the last change).
         UnchangedFileClaimGuard(cwd, readonly_mode, builder, plan_mode),
         UnpassedCheckGuard(readonly_mode, builder, plan_mode),
+        # The answer asks the user for a target that is already on disk. Free
+        # (regex + one index read), so it runs before the rule check's LLM
+        # call, which is wasted when the answer is sent back anyway.
+        TargetReaskGuard(),
         # A command that did what one of the user's rules forbids.
-        RuleBreakGuard(cwd, readonly_mode, builder, plan_mode),
-        # The answer asks the user for a target that is already on disk.
-        TargetReaskGuard()])
+        RuleBreakGuard(cwd, readonly_mode, builder, plan_mode)])
     if _sig == "continue":
         return "continue"
     _sig = yield from _verify_on_final(st, step, cwd, plan_mode, builder)

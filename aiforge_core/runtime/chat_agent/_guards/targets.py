@@ -16,6 +16,8 @@ class TargetReaskGuard:
     def applies(self, st) -> bool:
         # ``targets.list`` is [] when targets are off (AIFORGE_CHAT_TARGETS=0),
         # the session is unknown or nothing was captured — the cheap no-op.
+        # ``_rows`` is cached here because ``_check`` always calls ``applies``
+        # first and the instance is built per FINAL, so it never goes stale.
         self._rows = targets.list(getattr(st, "session_id", None))
         return bool(self._rows)
 
