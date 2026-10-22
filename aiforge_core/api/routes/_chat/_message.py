@@ -14,6 +14,7 @@ from aiforge_core.runtime.background import spawn as _spawn
 
 from ._core import (
     _NEW_CHAT,
+    _af_log,
     _default_cwd,
     router,
 )
@@ -141,6 +142,15 @@ def _message_turn_locked(session_id: int, body: _SessionMsgBody,
     _turn_t0 = _time.time()   # wall-clock start → per-turn duration (all 3 modes)
     _user_msg_id = chat_store.add_message(session_id, "user", body.content,
                                           mode=_turn_mode)
+    # A target the message carries ("match this output: ```…```") is stored
+    # verbatim now; the board seed reads the store (runtime/targets).
+    try:
+        from aiforge_core.runtime import targets as _targets
+        _turn_no = sum(1 for r in chat_store.get_messages(session_id)
+                       if r.get("role") == "user")
+        _targets.capture(session_id, body.content, turn=_turn_no)
+    except Exception as exc:  # noqa: BLE001 — never block the turn on target storage
+        _af_log.warning("target capture failed: %s", exc)
     # Provisional title now (instant), upgraded to a model-generated one after
     # the turn (see _produce). _fresh marks a still-unnamed session.
     _fresh_title = (session.get("title") or _NEW_CHAT) == _NEW_CHAT

@@ -97,7 +97,9 @@ def revised_note(board: dict, changes: list) -> str:
 def board_items(board: dict) -> list[dict]:
     """The board as the UI's subtasks dock reads it."""
     return [{"slug": s, "goal": it["title"], "title": it["title"],
-             "status": it["status"]} for s, it in board.items()]
+             "status": it["status"],
+             "enforced": bool(it.get("enforced")),
+             } for s, it in board.items()]
 
 
 def open_items(board: dict) -> list[str]:
@@ -227,6 +229,10 @@ def _remove(board: dict, slug: str, allow_request: bool) -> "tuple[dict, list]":
     if slug not in board:
         return {"ok": False, "slug": asked, "error": "not on your task board; items: "
                 + ", ".join(board)[:400]}, []
+    if board[slug].get("enforced"):
+        return {"ok": False, "slug": slug, "error": (
+            f"{slug} is a target item: it stays on the board until a compare "
+            "command (diff/cmp/jq/python) on the target file runs and passes.")}, []
     if board[slug].get("from_request") and not allow_request:
         return {"ok": False, "slug": slug, "error": (
             f"{slug} is a part of the user's request: it stays on the board (the "
@@ -241,6 +247,17 @@ def _remove(board: dict, slug: str, allow_request: bool) -> "tuple[dict, list]":
             "open": [f"{s}: {board[s]['title']}" for s in open_items(board)[:20]],
             "open_count": len(open_items(board))}, \
         [{"type": "subtasks", "items": board_items(board)}]
+
+
+def _enforced_refusal(board: dict, slug: str, status: str, args: dict) -> dict | None:
+    """The result that refuses the model's own ``done`` on an enforced item
+    (a target: it closes only when the harness saw a passing compare command,
+    which calls with ``_harness``). None when the write may go ahead."""
+    if status != "done" or not board[slug].get("enforced") or args.get("_harness"):
+        return None
+    return {"ok": False, "slug": slug, "status": board[slug]["status"],
+            "error": "target items close only on a passing compare command "
+                     "(diff/cmp/jq/python) on the target file — run one"}
 
 
 def apply_progress(board: dict, args: dict, *,
@@ -295,11 +312,15 @@ def apply_progress(board: dict, args: dict, *,
                     "error": f"the task board is full ({_MAX_ITEMS} items)"}, []
         board[slug] = {"title": title[:_MAX_TITLE], "status": status or "pending"}
     else:
+        placing = any(args.get(k) not in (None, "") for k in ("after", "before", "position"))
+        new_status = status or ("done" if not (title or placing) else
+                                board[slug]["status"])
+        refused = _enforced_refusal(board, slug, new_status, args)
+        if refused:
+            return refused, []
         if title:
             board[slug]["title"] = title[:_MAX_TITLE]
-        placing = any(args.get(k) not in (None, "") for k in ("after", "before", "position"))
-        board[slug]["status"] = status or ("done" if not (title or placing) else
-                                           board[slug]["status"])
+        board[slug]["status"] = new_status
     moved = _place(board, slug, args)
     item = board[slug]
     still_open = open_items(board)
@@ -392,6 +413,13 @@ def turn_pin(st) -> str | None:
     if changed:
         more = f" (+{len(changed) - 40} more)" if len(changed) > 40 else ""
         parts.append("FILES CHANGED SO FAR: " + ", ".join(changed[-40:]) + more)
+    try:
+        from aiforge_core.runtime import targets as _targets
+        tb = _targets.block(getattr(st, "session_id", None))
+        if tb:
+            parts.append(tb)
+    except Exception:  # noqa: BLE001 — the pin stands without the targets
+        pass
     return "\n".join(parts)
 
 
