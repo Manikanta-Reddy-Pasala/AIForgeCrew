@@ -370,3 +370,27 @@ def test_offer_cwd_is_relative_to_the_checkout_the_command_ran_in(tmp_path):
               "result": {"ok": True, "code": 0}}]
     assert R.offers(str(main), steps, run_root=str(wt)) == [
         {"verb": "test", "cmd": "pytest -q", "cwd": "svc"}]
+
+
+def test_a_leading_cd_is_not_part_of_the_command(tmp_path):
+    """Models often send "cd <dir> && pytest -q": the family, the offer and
+    the offer's folder come from the command after the cd."""
+    root = str(tmp_path)
+    (tmp_path / "svc").mkdir()
+    assert R.split_cd("cd /x/y && pytest -q") == ("/x/y", "pytest -q")
+    assert R.split_cd("cd 'a b' && npm test") == ("a b", "npm test")
+    assert R.split_cd("pytest -q") == (None, "pytest -q")
+    assert R.family_of(f"cd {root} && python3 -m pytest -q") == "test"
+    steps = [{"type": "tool", "name": "run_command",
+              "args": {"cmd": f"cd {tmp_path / 'svc'} && python3 -m pytest -q"},
+              "result": {"ok": True, "code": 0}}]
+    assert R.offers(root, steps) == [{"verb": "test", "cmd": "python3 -m pytest -q", "cwd": "svc"}]
+
+
+def test_a_cd_into_the_recipe_folder_is_rewritten_another_folder_is_not(tmp_path):
+    root = str(tmp_path)
+    R.save(root, "test", "./t.sh")
+    assert R.rewrite(root, f"cd {root} && pytest -q") == ("test", "./t.sh")
+    assert R.rewrite(root, "cd . && pytest -q") == ("test", "./t.sh")
+    assert R.rewrite(root, f"cd {root}/other && pytest -q") is None
+    assert R.rewrite(root, f"cd {root} && ./t.sh") is None          # already the recipe

@@ -294,31 +294,54 @@ def _norm(cmd: str) -> str:
     return " ".join(str(cmd or "").split())
 
 
+_CD_RE = re.compile(r"^cd\s+(?P<q>['\"]?)(?P<dir>[^'\"&;|<>]+?)(?P=q)\s*&&\s*(?P<rest>\S.*)$")
+
+
+def split_cd(cmd: str) -> tuple[str | None, str]:
+    """``("dir", "rest")`` for ``cd dir && rest`` (what models often send),
+    else ``(None, cmd)``. One leading ``cd`` only."""
+    c = _norm(cmd)
+    m = _CD_RE.match(c)
+    if not m:
+        return None, c
+    return m.group("dir").strip(), m.group("rest").strip()
+
+
 def family_of(cmd: str) -> str | None:
     """The built-in verb a whole command belongs to, or None for targeted or
-    unrelated commands."""
-    c = _norm(cmd)
+    unrelated commands. A leading ``cd <dir> &&`` is not part of the command."""
+    c = split_cd(cmd)[1]
     for verb, rx in _FAMILY:
         if rx.match(c):
             return verb
     return None
 
 
-def _match(root: str, cmd: str) -> tuple[str, str] | None:
+def _match(root: str, cmd: str, run_root: str | None = None) -> tuple[str, str] | None:
     verb = family_of(cmd)
     if not verb:
         return None
     rec = get(root, verb)
-    if not rec or _norm(rec["cmd"]) == _norm(cmd):
+    where, rest = split_cd(cmd)
+    if not rec or _norm(rec["cmd"]) in (_norm(cmd), rest):
         return None
+    if where is not None:
+        # "cd sub && npm test" in another folder than the recipe's is another
+        # project's command: never swapped for this one.
+        base = run_root or root
+        there = where if os.path.isabs(where) else os.path.join(base, where)
+        if os.path.normpath(there) != os.path.normpath(os.path.join(base, rec.get("cwd") or ".")):
+            return None
     return verb, rec["cmd"]
 
 
-def rewrite(root: str, cmd: str) -> tuple[str, str] | None:
-    """(verb, recipe command) when a raw family command must run as the recipe."""
+def rewrite(root: str, cmd: str, run_root: str | None = None) -> tuple[str, str] | None:
+    """(verb, recipe command) when a raw family command must run as the
+    recipe. ``run_root``: the checkout the command runs in (:func:`exec_root`),
+    against which a leading ``cd <dir>`` is placed; defaults to ``root``."""
     if not replace_enabled():
         return None
-    return _match(root, cmd)
+    return _match(root, cmd, run_root)
 
 
 def warn(root: str, cmd: str) -> str | None:
@@ -412,12 +435,13 @@ def offers(root: str, steps, run_root: str | None = None) -> list[dict]:
         if res.get("ok") is not True:
             continue
         args = s.get("args") if isinstance(s.get("args"), dict) else {}
-        cmd = _norm(args.get("cmd") or args.get("command"))
+        where, cmd = split_cd(args.get("cmd") or args.get("command"))
         verb = family_of(cmd)
         if not verb or verb in have or verb in declined or verb in seen:
             continue
         seen.add(verb)
-        out.append({"verb": verb, "cmd": cmd, "cwd": _offer_cwd(run_root or root, args.get("cwd"))})
+        out.append({"verb": verb, "cmd": cmd,
+                    "cwd": _offer_cwd(run_root or root, where or args.get("cwd"))})
         if len(out) == 3:
             break
     return out

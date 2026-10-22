@@ -58,6 +58,11 @@ def _pick_runner() -> tuple[str, str] | None:
     table = [
         ("pyproject.toml", "python",       "pytest"),
         ("setup.py",       "python",       "pytest"),
+        ("pytest.ini",     "python",       "pytest"),
+        ("setup.cfg",      "python",       "pytest"),
+        ("tox.ini",        "python",       "pytest"),
+        ("conftest.py",    "python",       "pytest"),
+        ("requirements.txt", "python",     "pytest"),
         ("package.json",   "node",         "npm"),
         ("pom.xml",        "java-maven",   "mvn"),
         ("build.gradle",   "java-gradle",  "./gradlew"),
@@ -149,12 +154,18 @@ def run_tests(
     if pick is None:
         return {"ok": False, "error": "no_language"}
     lang, tool = pick
-    if shutil.which(tool.split("/")[-1]) is None and shutil.which(tool) is None:
+    prefix: list = []
+    if lang == "python" and shutil.which(tool) is None:
+        # No pytest script on PATH: the module through the box's python.
+        py = shutil.which("python3") or shutil.which("python")
+        if py:
+            prefix, tool = [py, "-m"], "pytest"
+    if not prefix and shutil.which(tool.split("/")[-1]) is None and shutil.which(tool) is None:
         return {"ok": False, "error": "missing_tool", "tool": tool}
     build = _TEST_COMMANDS.get(lang)
     if build is None:
         return {"ok": False, "error": "no_language"}
-    cmd = _shard(build(tool, mode, pattern), lang, mode)
+    cmd = _shard(prefix + build(tool, mode, pattern), lang, mode)
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=900,
                            cwd=str(root()))

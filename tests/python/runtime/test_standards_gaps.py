@@ -147,3 +147,17 @@ def test_test_runner_no_language(tmp_path, monkeypatch) -> None:
     out = test_runner.run_tests()
     assert out["ok"] is False
     assert out["error"] == "no_language"
+
+
+def test_test_runner_finds_a_pytest_ini_project_and_runs_it(tmp_path, monkeypatch) -> None:
+    """A project marked only by pytest.ini (no pyproject/setup.py) is Python;
+    with no pytest script on PATH the module runs through python3."""
+    monkeypatch.setenv("AIFORGE_REPO_ROOT", str(tmp_path))
+    (tmp_path / "pytest.ini").write_text("[pytest]\n")
+    (tmp_path / "test_a.py").write_text("def test_a():\n    assert True\n")
+    real_which = test_runner.shutil.which
+    monkeypatch.setattr(test_runner.shutil, "which",
+                        lambda name, *a, **k: None if name == "pytest" else real_which(name, *a, **k))
+    out = test_runner.run_tests(mode="all")
+    assert out.get("language") == "python", out
+    assert out["ok"] is True, out
