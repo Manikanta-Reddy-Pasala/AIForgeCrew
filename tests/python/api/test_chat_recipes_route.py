@@ -53,14 +53,41 @@ def test_a_bare_phrase_runs_the_recipe_without_the_agent(tmp_path, monkeypatch):
     assert pctx["done"] is True
 
 
-def test_the_recipe_runs_in_its_own_cwd(tmp_path, monkeypatch):
+def test_the_recipe_runs_in_the_chats_checkout_from_its_own_folder(tmp_path, monkeypatch):
+    """The recipe is looked up under the project (``git_toplevel`` maps a chat
+    worktree to its main repo) but RUNS in the checkout the chat works in,
+    from the recipe's folder — never against the user's main checkout."""
     from aiforge_core.api.routes._chat import _routing as RT
-    R.save(str(tmp_path), "build", "make", cwd="web")
+    from aiforge_core.runtime import repo_ident
+    from aiforge_core.runtime.tools import command_risk
+    main, work = tmp_path / "main", tmp_path / "chat-1" / "work"
+    work.mkdir(parents=True)
+    monkeypatch.setattr(repo_ident, "git_toplevel", lambda cwd: str(main))
+    R.save(str(main), "build", "make", cwd="web")
+    monkeypatch.setattr(command_risk, "assess",
+                        lambda cmd: {"level": command_risk.SAFE, "reason": ""})
     seen = {}
     monkeypatch.setattr(RT, "_run_recipe", lambda cmd, cwd: seen.update(cmd=cmd, cwd=cwd)
                         or {"cmd": cmd, "ok": True, "code": 0, "output": ""})
+    evs = _drain(RT._recipe_pass("build it", str(work), 1, {"done": False}))
+    exec_root = R.exec_root(str(work))
+    assert seen == {"cmd": R.recipe_command({"cmd": "make", "cwd": "web"}, exec_root),
+                    "cwd": exec_root}
+    assert seen["cmd"].startswith("cd ") and seen["cmd"].endswith("/web && make")
+    assert str(main) not in seen["cmd"] and seen["cwd"] != str(main)
+    assert evs[0]["args"]["cmd"] == seen["cmd"]
+
+
+def test_the_risk_check_sees_the_line_that_runs(tmp_path, monkeypatch):
+    from aiforge_core.api.routes._chat import _routing as RT
+    from aiforge_core.runtime.tools import command_risk
+    R.save(str(tmp_path), "build", "make", cwd="web")
+    assessed = []
+    monkeypatch.setattr(command_risk, "assess",
+                        lambda cmd: assessed.append(cmd) or {"level": command_risk.SAFE, "reason": ""})
+    monkeypatch.setattr(RT, "_run_recipe", lambda cmd, cwd: {"ok": True, "code": 0, "output": ""})
     _drain(RT._recipe_pass("build it", str(tmp_path), 1, {"done": False}))
-    assert seen == {"cmd": "make", "cwd": str(tmp_path / "web")}
+    assert assessed == [R.recipe_command({"cmd": "make", "cwd": "web"}, R.exec_root(str(tmp_path)))]
 
 
 def test_a_failing_recipe_hands_the_output_to_the_agent(tmp_path, monkeypatch):
