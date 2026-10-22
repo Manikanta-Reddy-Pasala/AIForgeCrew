@@ -22,6 +22,9 @@ set -uo pipefail
 FILE="${1:?usage: awake-bridge.sh <heartbeat file> [container]}"
 BOX="${2:-aiforge}"
 STALE_S="${AIFORGE_AWAKE_STALE_S:-60}"
+GIVE_UP="${AIFORGE_AWAKE_GIVE_UP_CHECKS:-120}"
+[[ "$STALE_S" =~ ^[0-9]+$ ]] || STALE_S=60
+[[ "$GIVE_UP" =~ ^[0-9]+$ ]] || GIVE_UP=120
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOLDER=""
 
@@ -49,7 +52,7 @@ while true; do
     misses=0
   else
     misses=$((misses + 1))
-    (( misses >= ${AIFORGE_AWAKE_GIVE_UP_CHECKS:-120} )) && exit 0   # ~30 min: the box is gone
+    (( misses >= GIVE_UP )) && exit 0   # ~30 min: the box is gone
   fi
   fresh=0
   if [[ -f "$FILE" ]]; then

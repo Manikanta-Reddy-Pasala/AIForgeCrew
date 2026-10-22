@@ -405,8 +405,3 @@ def test_a_relative_cd_starts_at_the_calls_own_folder(tmp_path):
     R.save(root, "test", "./t.sh", cwd="sub")
     assert R.rewrite(root, "cd sub && npm test", root, here=root) == ("test", "./t.sh")
     assert R.rewrite(root, "cd sub && npm test", root, here=f"{root}/pkg") is None
-    steps = [{"type": "tool", "name": "run_command",
-              "args": {"cmd": "cd sub && python3 -m pytest -q", "cwd": "pkg"},
-              "result": {"ok": True, "code": 0}}]
-    R.remove(root, "test")
-    assert R.offers(root, steps)[0]["cwd"] == "pkg/sub"

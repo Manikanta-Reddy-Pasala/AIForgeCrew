@@ -303,9 +303,10 @@ def _apply_recipe(name: str, args: dict, cwd: str) -> None:
         return
     root = repo_ident.git_toplevel(cwd) or cwd
     run_root = recipes.exec_root(cwd) if recipes.split_cd(cmd)[0] is not None else None
-    here = args.get("cwd") or cwd
-    if here and not os.path.isabs(str(here)):
-        here = os.path.join(cwd, str(here))
+    # The folder the shell really starts in (run_command ignores a cwd
+    # argument; a workspace jail runs at its root): a relative cd starts there.
+    from aiforge_core.runtime import git_target
+    here = git_target.command_base(cwd) if run_root is not None else None
     hit = recipes.rewrite(root, cmd, run_root, here)
     if hit:
         verb, _new = hit

@@ -338,6 +338,9 @@ def test_a_failure_inside_the_program_is_still_a_failure(cmd, code, err):
     ("python -m pytest -q", 127, "/bin/sh: 1: python: not found"),
     ("pytest -q", 127, "bash: pytest: command not found"),
     ("diff <(a) b", 2, 'bash: line 1: syntax error near unexpected token `("'),
+    ("diff <(a) b", 2, "/bin/sh: -c: line 0: syntax error near unexpected token `('"),   # macOS sh
+    ("foo --x", 127, "zsh: command not found: foo"),
+    ("source .venv/bin/activate && pytest -q", 127, "/bin/sh: 1: source: not found"),
 ])
 def test_the_shell_refusing_the_line_is_not_a_failed_check(cmd, code, err):
     assert tf._shell_refused(cmd, err)

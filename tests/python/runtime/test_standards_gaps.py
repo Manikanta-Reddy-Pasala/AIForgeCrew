@@ -177,3 +177,10 @@ def test_no_pytest_anywhere_is_a_missing_tool(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(test_runner.shutil, "which", lambda name, *a, **k: None)
     out = test_runner.run_tests()
     assert out["ok"] is False and out["error"] == "missing_tool"
+
+
+def test_a_pytest_suite_with_frontend_tooling_stays_python(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("AIFORGE_REPO_ROOT", str(tmp_path))
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "conftest.py").write_text("")
+    assert test_runner._pick_runner() == ("python", "pytest")

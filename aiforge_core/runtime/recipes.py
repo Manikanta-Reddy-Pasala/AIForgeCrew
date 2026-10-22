@@ -448,9 +448,6 @@ def offers(root: str, steps, run_root: str | None = None) -> list[dict]:
             continue
         args = s.get("args") if isinstance(s.get("args"), dict) else {}
         where, cmd = split_cd(args.get("cmd") or args.get("command"))
-        step_cwd = args.get("cwd")
-        if where and step_cwd and not os.path.isabs(where):
-            where = os.path.join(str(step_cwd), where)   # "cd sub" from cwd=pkg is pkg/sub
         verb = family_of(cmd)
         if not verb or verb in have or verb in declined or verb in seen:
             continue

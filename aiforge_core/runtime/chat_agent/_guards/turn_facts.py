@@ -293,8 +293,9 @@ def _programs(cmd: str) -> set:
 #: `npm test` whose script calls a missing jest ("sh: 1: jest: not found") is a
 #: real failure of the tests.
 _SHELL_LEVEL_RE = re.compile(
-    r"^\S*\b(?:ba|da|z)?sh: (?:line \d+: |\d+: )?"
+    r"^\S*\b(?:ba|da|z)?sh: (?:-c: )?(?:line \d+: |\d+: )?"
     r"(?:(?P<syntax>Syntax error|syntax error near unexpected token|Bad substitution)"
+    r"|command not found: (?P<zprog>\S+)"
     r"|(?P<prog>[^\s:]+): (?:command )?not found)", re.I)
 
 
@@ -305,8 +306,12 @@ def _shell_refused(cmd: str, stderr: str) -> bool:
         return False
     if m.group("syntax"):
         return True
-    prog = m.group("prog").rsplit("/", 1)[-1]
-    return prog == _program(cmd)
+    prog = (m.group("prog") or m.group("zprog") or "").rsplit("/", 1)[-1]
+    # A word of the line itself — its program or a setup word before it
+    # ("source .venv/bin/activate && pytest" under dash) — not a tool some
+    # script of the program calls.
+    words = {w.rsplit("/", 1)[-1] for w in re.split(r"[\s;&|()]+", cmd or "") if w}
+    return bool(prog) and (prog == _program(cmd) or prog in words)
 
 
 def unpassed_failures(steps: list) -> list:

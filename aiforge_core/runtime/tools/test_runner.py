@@ -67,6 +67,7 @@ def _pick_runner() -> tuple[str, str] | None:
         ("pyproject.toml", "python",       "pytest"),
         ("setup.py",       "python",       "pytest"),
         ("pytest.ini",     "python",       "pytest"),
+        ("conftest.py",    "python",       "pytest"),   # a pytest suite, whatever else is here
         ("package.json",   "node",         "npm"),
         ("pom.xml",        "java-maven",   "mvn"),
         ("build.gradle",   "java-gradle",  "./gradlew"),
@@ -76,7 +77,6 @@ def _pick_runner() -> tuple[str, str] | None:
         # requirements.txt or a setup.cfg is still that stack.
         ("setup.cfg",      "python",       "pytest"),
         ("tox.ini",        "python",       "pytest"),
-        ("conftest.py",    "python",       "pytest"),
         ("requirements.txt", "python",     "pytest"),
     ]
     for marker, lang, tool in table:

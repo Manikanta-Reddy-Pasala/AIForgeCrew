@@ -674,7 +674,7 @@ if ! _in_box; then
       local _p; _p="$(cat "$_AWAKE_PID" 2>/dev/null)"
       # Only our bridge: a pid file it left behind when it exited on its own
       # may name an unrelated process by now.
-      if [[ "$_p" =~ ^[0-9]+$ ]] && ps -p "$_p" -o command= 2>/dev/null | grep -q awake-bridge; then
+      if [[ "$_p" =~ ^[0-9]+$ ]] && ps -ww -p "$_p" -o command= 2>/dev/null | grep -q awake-bridge; then
         kill "$_p" 2>/dev/null || true
       fi
       rm -f "$_AWAKE_PID"
