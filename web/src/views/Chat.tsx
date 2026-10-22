@@ -6,7 +6,7 @@ import { Icon } from '../icons';
 import { MdLite, copyText as mdCopyText } from '../mdlite';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { AgentStep, SubtaskItem, RuleState, RuleStateCtx, LiveTurn, ChatMode, BuilderKind, PendingApproval } from './Chat.types';
-import { menuBtn, menuItem, LS_SESSION_KEY, LS_MODEL_KEY, LS_MODE_KEY, BUILDER_KINDS, BUILDER_LABELS, LS_BUILDER_KEY, relTime, dateTimeLabel, toAgentStep, msgAwaiting, getDismissedPlans, addDismissedPlan, isStoppedTurn, fmtTokens, pickDockSubtasks } from './Chat.helpers';
+import { menuBtn, menuItem, LS_SESSION_KEY, LS_MODEL_KEY, LS_MODE_KEY, BUILDER_KINDS, BUILDER_LABELS, LS_BUILDER_KEY, relTime, dateTimeLabel, toAgentStep, msgAwaiting, getDismissedPlans, addDismissedPlan, getDismissedRecipes, addDismissedRecipe, isStoppedTurn, fmtTokens, pickDockSubtasks } from './Chat.helpers';
 import { pickChatModel } from '../chatModelPick';
 import { SubtaskList } from './Chat.SubtaskList';
 import { SideTasks } from './Chat.SideTasks';
@@ -1125,6 +1125,8 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
     setMedia([]);               // reset attachments while the session loads
     setPendingApproval(null);   // don't carry a card across sessions/loads
     setPlanReady(null);         // don't let session A's plan execute in session B
+    setRecipeOffers(null);      // nor its recipe offers / scope net show there
+    setScopeNet(null);
     setCheckpoints(null);
     loadMedia(id);              // pull this session's attached images
     try {
@@ -1147,6 +1149,23 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
           if (pr && !getDismissedPlans(id).has(lastAssistant.id)) {
             setPlanReady({ spec: pr.spec || '', plan: pr.plan || '', msgId: lastAssistant.id });
           }
+          // Recipe offers persist as `recipe_offer` steps (dropped by
+          // toAgentStep: not an agent step). Rebuilt for the LAST turn only,
+          // minus the verbs answered in this session; Save / Not this then
+          // dismiss as they do live. The scope net is NOT rehydrated: its
+          // revert is pinned to the turn's start, and the tree has moved on.
+          const answered = getDismissedRecipes(id);
+          const offers: RecipeOffer[] = [];
+          for (const s of (lastAssistant.steps || [])) {
+            if (s?.type !== 'recipe_offer') continue;
+            const verb = String(s.verb || '').trim();
+            const cmd = String(s.cmd || '').trim();
+            if (!verb || !cmd || answered.has(verb)) continue;
+            const offer = { verb, cmd, cwd: String(s.cwd || '.') };
+            const at = offers.findIndex(o => o.verb === verb);
+            if (at >= 0) offers[at] = offer; else offers.push(offer);
+          }
+          if (offers.length) setRecipeOffers({ sessionId: id, offers });
         }
       } catch { /* best-effort rehydrate — ignore */ }
     } catch (e: any) {
@@ -2829,11 +2848,16 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
               {recipeOffers && !busy && activeId !== null && recipeOffers.sessionId === activeId
                 && recipeOffers.offers.map(offer => (
                 <RecipeOfferCard key={offer.verb} sessionId={activeId} offer={offer}
-                                 onDone={() => setRecipeOffers(prev => {
-                                   if (!prev) return prev;
-                                   const offers = prev.offers.filter(o => o.verb !== offer.verb);
-                                   return offers.length ? { ...prev, offers } : null;
-                                 })} />
+                                 onDone={() => {
+                                   // Remembered so a reload does not rebuild
+                                   // the card from the persisted step.
+                                   addDismissedRecipe(activeId, offer.verb);
+                                   setRecipeOffers(prev => {
+                                     if (!prev) return prev;
+                                     const offers = prev.offers.filter(o => o.verb !== offer.verb);
+                                     return offers.length ? { ...prev, offers } : null;
+                                   });
+                                 }} />
               ))}
             </div>
             )}

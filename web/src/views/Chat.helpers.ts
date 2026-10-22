@@ -148,6 +148,28 @@ export function addDismissedPlan(sessionId: number, msgId: number): void {
   } catch { /* ignore */ }
 }
 
+// ── Recipe offers answered in this session (Save or Not this) ────────────────
+// An offer's `recipe_offer` step stays in the persisted message, so on reload
+// the card would come back for a verb the server already has an answer for;
+// the client cannot ask cheaply, so it remembers the verbs it answered here.
+// Per session: a session works one project, and a verb answered once is never
+// offered for that project again.
+export const LS_DISMISSED_RECIPE_PREFIX = 'aiforge.chat.dismissedRecipe.';
+export function getDismissedRecipes(sessionId: number): Set<string> {
+  try {
+    const raw = localStorage.getItem(LS_DISMISSED_RECIPE_PREFIX + sessionId);
+    const arr = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(arr) ? arr.map(String) : []);
+  } catch { return new Set(); }
+}
+export function addDismissedRecipe(sessionId: number, verb: string): void {
+  try {
+    const s = getDismissedRecipes(sessionId);
+    s.add(verb);
+    localStorage.setItem(LS_DISMISSED_RECIPE_PREFIX + sessionId, JSON.stringify([...s]));
+  } catch { /* ignore */ }
+}
+
 // ── gate-intent / flag labels (CapturedPill + AutoApprovalsPanel) ─────────────
 export const GATE_INTENT_FLAG: Record<string, string> = {
   commit: 'commit_auto_approve',

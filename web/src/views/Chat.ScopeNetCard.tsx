@@ -27,14 +27,15 @@ export default function ScopeNetCard(
       const r = await chatApi.revertPaths(sessionId, net.paths, net.head0);
       const reverted = r.reverted ?? [];
       const refused = r.refused ?? [];
-      if (!r.ok && !reverted.length) {
-        // Nothing moved: the card stays so the user can retry or keep.
-        toast.error(refused.length ? `Could not revert: ${refused.join(', ')}` : 'Could not revert');
+      // The refused list is always said, whatever else happened.
+      if (refused.length) toast.warning(`Not reverted: ${refused.join(', ')}`);
+      if (!reverted.length) {
+        // Nothing moved (whatever `ok` says): the card stays so the user can
+        // retry or keep — a card that vanished here would read as "reverted".
+        if (!refused.length) toast.error('Nothing was reverted');
         return;
       }
-      onDone(refused.length
-        ? `Reverted ${reverted.length} file(s); refused: ${refused.join(', ')}`
-        : `Reverted ${reverted.length} file(s)`);
+      onDone(`Reverted ${reverted.length} file(s)`);
     } catch (e: any) {
       toast.error(e?.message || 'Could not revert');
     } finally {
@@ -44,8 +45,8 @@ export default function ScopeNetCard(
 
   return (
     <div className="card" role="group" aria-label="unrequested changes"
-         style={{ marginTop: 8, padding: '8px 12px', borderColor: '#d4a72c' }}>
-      <span style={{ color: '#d4a72c', fontWeight: 600 }}>⚠ Unrequested changes: </span>
+         style={{ marginTop: 8, padding: '8px 12px', borderColor: 'var(--warn, #d4a72c)' }}>
+      <span style={{ color: 'var(--warn, #d4a72c)', fontWeight: 600 }}>⚠ Unrequested changes: </span>
       <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 6 }}>
         {net.paths.map(p => <code key={p} title={p}>{p}</code>)}
       </span>
