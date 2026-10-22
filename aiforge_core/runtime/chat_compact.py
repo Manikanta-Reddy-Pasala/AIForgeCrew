@@ -150,9 +150,16 @@ def compact_saved(session_id, role: str = "chat") -> dict:
                    and not str(m.get("content") or "").startswith(("OBSERVATION", "["))), "")
     convo = [{"role": "system", "content": ""}] + work
     key = f"compact-{session_id}-{int(time.time())}"
+    # The chat's targets ride the pin too: never summarized away.
+    try:
+        from aiforge_core.runtime import targets
+        _tblock = targets.block(session_id)
+    except Exception:  # noqa: BLE001
+        _tblock = ""
+    pin = ((latest[:2000] or "") + "\n\n" + _tblock).strip() or None
     new = _compact_convo(convo, keep_recent=KEEP_RECENT, role=role,
                          session_id=session_id, force=True, run_key=key,
-                         pin=latest[:2000] or None)
+                         pin=pin)
     if len(new) >= len(convo):
         _summary_bg.release(key)
         return {"ok": True, "compacted": False,

@@ -198,6 +198,11 @@ def parts(session_id, cwd, head0, dirty0: str = "") -> list:
         state = _repo_state(cwd)
         if state:
             out.append(state)
+    try:
+        from aiforge_core.runtime import targets
+        out.extend(targets.facts(session_id))
+    except Exception:  # noqa: BLE001 — the targets never block the facts
+        pass
     return out
 
 

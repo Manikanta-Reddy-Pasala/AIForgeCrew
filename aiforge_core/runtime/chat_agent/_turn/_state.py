@@ -325,6 +325,17 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         # unattended runs share session None and run in parallel).
         compact_key=uuid.uuid4().hex,
         **progress_fields(), **item_fields())
+    # The chat's unverified targets each hold an enforced board item: closed
+    # only by a passing compare command (runtime/targets).
+    try:
+        from aiforge_core.runtime import targets as _targets
+        if session_id is not None:
+            for slug, item in _targets.board_items(session_id).items():
+                st.board.setdefault(slug, item)
+            if st.board and any(it.get("enforced") for it in st.board.values()):
+                st.board_used = True
+    except Exception:  # noqa: BLE001 — a target store miss never blocks the turn
+        pass
     # The commit the turn starts on: with a clean tree before and after, a
     # moved HEAD is the only sign that work landed (see _guards/zero_edit).
     st.head0 = None

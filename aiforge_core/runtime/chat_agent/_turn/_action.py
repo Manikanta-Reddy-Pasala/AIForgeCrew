@@ -621,6 +621,26 @@ def _record_read(st, name, sig, result, _long_chain_help):
             st.read_sigs_seen.add(sig)
 
 
+def _note_target_compare(st, name, args, result) -> list:
+    """A passing compare command on a target file closes its enforced item."""
+    from aiforge_core.runtime import shell_writes, targets
+    if name not in shell_writes.SHELL_TOOLS or not isinstance(result, dict):
+        return []
+    sid = getattr(st, "session_id", None)
+    cmd = shell_writes.command_of(args or {})
+    tid = targets.is_compare(cmd, sid)
+    if not tid or result.get("ok") is not True:
+        return []
+    board = getattr(st, "board", None) or {}
+    if tid not in board or board[tid].get("status") == "done":
+        return []
+    out = str(result.get("stdout") or "")[:400]
+    targets.mark_verified(sid, tid, f"{cmd[:200]} → exit 0{(' · ' + out) if out else ''}")
+    board[tid]["status"] = "done"
+    board[tid]["note"] = "compare passed: " + cmd[:120]
+    return [{"type": "subtask_update", "slug": tid, "status": "done"}]
+
+
 def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     """Post-tool bookkeeping: PostToolUse hook, emit the tool result, count landed
     reads/edits (feeding the progress + verify gates), post-edit syntax self-
@@ -689,6 +709,10 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
                 model_result[k.lstrip("_")] = args[k]
     obs = render_observation(name, model_result, _obs_cap)
     _note_green_tests(st, name, args, result, cwd)
+    # A compare command that passed on a target file: the harness closes
+    # that target's enforced board item (the model cannot).
+    for _ev in (_safely(_note_target_compare, st, name, args, result) or []):
+        yield _ev
     note_evidence(st, name, args, result)
     # The same failure after a different fix, again: nudge once (the nudge
     # rides on this observation), then stop and ask.
