@@ -136,7 +136,7 @@ def test_guard_sends_back_then_labels(monkeypatch):
     from aiforge_core.runtime.chat_agent._guards import base
     from aiforge_core.runtime.chat_agent._guards import rules as rg
     from aiforge_core.runtime.chat_agent._tools import _memory
-    monkeypatch.setattr(_memory, "user_rule_lines", lambda cwd: ["- tests only on the VM"])
+    monkeypatch.setattr(_memory, "user_rule_lines", lambda cwd, session_id=None: ["- tests only on the VM"])
     monkeypatch.setattr(rg, "_commands", lambda sid, since=0: ["python -m pytest"][since:])
     monkeypatch.setattr(rg, "breaks", lambda role, rules, cmds, sid:
                         [(c, "tests only on the VM") for c in cmds])
@@ -191,7 +191,7 @@ def test_guard_keeps_the_break_when_the_model_reruns_nothing(monkeypatch):
     from aiforge_core.runtime.chat_agent._guards import base
     from aiforge_core.runtime.chat_agent._guards import rules as rg
     from aiforge_core.runtime.chat_agent._tools import _memory
-    monkeypatch.setattr(_memory, "user_rule_lines", lambda cwd: ["- tests only on the VM"])
+    monkeypatch.setattr(_memory, "user_rule_lines", lambda cwd, session_id=None: ["- tests only on the VM"])
     monkeypatch.setattr(rg, "_commands", lambda sid, since=0: ["python -m pytest"][since:])
     monkeypatch.setattr(rg, "breaks", lambda role, rules, cmds, sid:
                         [(c, "tests only on the VM") for c in cmds])

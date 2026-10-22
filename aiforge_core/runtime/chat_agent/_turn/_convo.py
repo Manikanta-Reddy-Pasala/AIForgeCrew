@@ -69,10 +69,12 @@ def _codegraph_directive(cwd, readonly_mode) -> str:
     return ""
 
 
-def _seed_prompt(messages, cwd, readonly_mode, *, native=False, plan_mode=False):
+def _seed_prompt(messages, cwd, readonly_mode, *, native=False, plan_mode=False,
+                 session_id=None):
     """Seed the system prompt: extract the raw last-user message, load cave/rules/
     prefs, format the core prompt, and apply the catalog + codegraph gates.
-    Returns (last_user, cave, rules, prefs, sys_msg).
+    Returns (last_user, cave, rules, prefs, sys_msg). ``session_id`` lets the
+    rules block carry the rules captured for THIS chat.
 
     Native mode sends rules and no tool catalog. Plan mode sends the short
     read-and-plan rules, not the act prompt. The text catalog is the fallback
@@ -89,7 +91,7 @@ def _seed_prompt(messages, cwd, readonly_mode, *, native=False, plan_mode=False)
     # each follow-up question (the conversation history only carries prior
     # answers, not the structure it discovered last turn).
     cave = _cave_mode()
-    rules = _rules_context(cwd, last_user)
+    rules = _rules_context(cwd, last_user, session_id=session_id)
     prefs = _preferences_context(cwd)
     if native:
         from .._native_prompt import native_rules, plan_rules
@@ -229,7 +231,8 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
     images into the message list. Returns
     ``(convo, bundle, asks, dropped_playbooks)``."""
     last_user, cave, rules, prefs, sys_msg = _seed_prompt(
-        messages, cwd, readonly_mode, native=native, plan_mode=plan_mode)
+        messages, cwd, readonly_mode, native=native, plan_mode=plan_mode,
+        session_id=session_id)
     _core = sys_msg              # the same for every message of the chat
     # Multi-part message (simple mode has no enhancer/spec, so nothing else
     # tracks the parts): derive an ASK CHECKLIST and pin it HIGH in the

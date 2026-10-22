@@ -72,7 +72,7 @@ def test_native_rules_have_no_catalog():
     assert "workflow_search" not in text
     assert "remember_rule" not in text
     assert "Never weaken or delete a test" in text
-    assert "Ask only when the choices cannot be undone" in text
+    assert 'under "Suggested, not done"' in text
 
 
 def test_batch_reads_rule_does_not_reinstate_one_action():
@@ -148,7 +148,7 @@ def test_native_system_prompt_is_rules_not_a_catalog(tmp_path):
     assert "one ACTION per turn" not in sys_msg
     assert "codegraph_explore" not in sys_msg
     assert "ensure_runtime" not in sys_msg
-    assert "Ask only when the choices cannot be undone" in sys_msg
+    assert 'under "Suggested, not done"' in sys_msg
 
 
 def test_plan_mode_gets_the_short_prompt(tmp_path):
