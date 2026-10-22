@@ -306,6 +306,7 @@ def review_progress(st, result: dict, events: list):
                 else:
                     suffix = " — UNVERIFIED (accepted after retries)"
         item["note"] = _note(facts, status, suffix)
+        item["files"] = list(facts.get("edited") or [])
         if not carried:
             st.item_prev_start = st.item_start
         st.item_start = len(st.item_log)

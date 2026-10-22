@@ -431,6 +431,8 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
         pass
     # What the harness measured in this turn (files, commits, commands), so
     # "done" / "already done" / "nothing changed" can be read against it.
+    from .._guards import scope_net as _sn
+    _sn_paths: list = []
     if not (strict_finish or builder or plan_mode):
         from aiforge_core.runtime import turn_facts_line as _facts
         # The block is the harness's: one the model copied from an earlier
@@ -438,6 +440,17 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
         step["text"] = _facts.strip_copied(step.get("text") or "")
         _bg_note = _facts.suffix(getattr(st, "session_id", None), cwd,
                                  getattr(st, "head0", None), _wt_fp0 or "") + _bg_note
+        # Files changed under work the model added itself (scope net): named
+        # at the end of the answer, with a revert offer in the UI.
+        try:
+            if _sn.enabled() and not readonly_mode:
+                _changed = _facts._changed(cwd, getattr(st, "head0", None),
+                                           getattr(st, "session_id", None),
+                                           _wt_fp0 or "") or set()
+                _sn_paths = _sn.unrequested(st, _changed)
+                _bg_note = _bg_note + _sn.block(_sn_paths)
+        except Exception:  # noqa: BLE001 — the net never blocks an answer
+            _sn_paths = []
     # A change refused in a read-only folder this turn: the user is asked
     # by the harness, in words they can answer, whatever the model wrote.
     try:
@@ -451,6 +464,8 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
         yield {"type": "message",
                "text": _strip_reasoning_prefix(step["text"]) + _bg_note}
         yield {"type": "done"}
+        if _sn_paths:
+            yield _sn.event(st, _sn_paths)
         # The run stays open after done until the producer finishes, and the
         # UI applies a suggestion that arrives then. Wait out the rest of the
         # grace here: the answer is already on screen.

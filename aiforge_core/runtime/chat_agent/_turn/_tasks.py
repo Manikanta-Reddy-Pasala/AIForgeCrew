@@ -14,6 +14,9 @@ import re
 
 _BOARD_OPEN = "<<AIFORGE_TASK_BOARD>>"
 _BOARD_CLOSE = "<</AIFORGE_TASK_BOARD>>"
+#: The item that records the chat's repository roles (runtime/repo_roles.SLUG):
+#: the harness's record, not work the model added.
+_ROLES_SLUG = "repos"
 _STATUSES = ("pending", "running", "done", "failed", "skipped")
 #: Words models use for the same statuses.
 _ALIASES = {"todo": "pending", "open": "pending", "queued": "pending",
@@ -97,7 +100,9 @@ def revised_note(board: dict, changes: list) -> str:
 def board_items(board: dict) -> list[dict]:
     """The board as the UI's subtasks dock reads it."""
     return [{"slug": s, "goal": it["title"], "title": it["title"],
-             "status": it["status"]} for s, it in board.items()]
+             "status": it["status"], "enforced": bool(it.get("enforced")),
+             "self_added": bool(it.get("self_added"))}
+            for s, it in board.items()]
 
 
 def open_items(board: dict) -> list[str]:
@@ -294,6 +299,11 @@ def apply_progress(board: dict, args: dict, *,
             return {"ok": False, "slug": slug,
                     "error": f"the task board is full ({_MAX_ITEMS} items)"}, []
         board[slug] = {"title": title[:_MAX_TITLE], "status": status or "pending"}
+        if slug != _ROLES_SLUG and not _truthy(args.get("by_harness")):
+            # Work the model put on the board itself (no part of the request
+            # reads as the same work: _same_work ran above). The scope net
+            # names the files changed under it at FINAL.
+            board[slug]["self_added"] = True
     else:
         if title:
             board[slug]["title"] = title[:_MAX_TITLE]

@@ -70,6 +70,70 @@ def chat_session_checkpoint_restore(session_id: int, body: _RestoreBody) -> dict
                                delete_orphans=bool(body.delete_orphans))
 
 
+class _RevertBody(BaseModel):
+    paths: list[str] = Field(..., description="paths the scope net named, relative to the work folder")
+    head0: str | None = Field(None, description="the commit the turn started on; HEAD when missing or unknown")
+
+
+def _inside(root: str, path: str) -> "str | None":
+    """The absolute path of ``path`` when it stays inside ``root`` (every
+    link on the way resolved, so a symlink that points out is refused too);
+    None otherwise."""
+    if not path or os.path.isabs(path):
+        return None
+    full = os.path.realpath(os.path.join(root, path))
+    return full if full.startswith(root + os.sep) else None
+
+
+def _revert_ref(root: str, head0: "str | None") -> str:
+    """``head0`` when it names a commit of the repo at ``root``, else HEAD."""
+    import subprocess
+    sha = (head0 or "").strip()
+    if not sha or not sha.isalnum():
+        return "HEAD"
+    ok = subprocess.run(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=root,
+                        capture_output=True).returncode == 0
+    return sha if ok else "HEAD"
+
+
+@router.post("/api/chat/sessions/{session_id}/revert",
+             responses={404: {"description": "Not found"}, 409: {"description": "A turn is running"}})
+def chat_session_revert(session_id: int, body: _RevertBody) -> dict:
+    """Undo the unrequested changes the scope net listed: tracked files go back
+    to head0 (or HEAD), untracked files are deleted. Paths outside the chat's
+    work folder are refused. Nothing runs while a turn is in flight."""
+    import subprocess
+
+    from aiforge_core.runtime import chat_runs, chat_store, chat_worktree
+    session = chat_store.get_session(session_id)
+    if not session:
+        raise HTTPException(404, f"session {session_id} not found")
+    if chat_runs.is_running(session_id):
+        raise HTTPException(409, "a turn is running")
+    cwd = chat_worktree.workdir_of(session) or session.get("cwd") or _default_cwd()
+    root = os.path.realpath(cwd)
+    ref = _revert_ref(root, body.head0)
+    reverted, refused = [], []
+    for p in body.paths:
+        full = _inside(root, p)
+        if full is None:
+            refused.append(p)
+            continue
+        tracked = subprocess.run(["git", "ls-files", "--error-unmatch", "--", p], cwd=root,
+                                 capture_output=True).returncode == 0
+        if tracked:
+            ok = subprocess.run(["git", "checkout", ref, "--", p], cwd=root,
+                                capture_output=True).returncode == 0
+        else:
+            try:
+                os.remove(full)
+                ok = True
+            except OSError:
+                ok = False
+        (reverted if ok else refused).append(p)
+    return {"ok": not refused, "reverted": reverted, "refused": refused}
+
+
 class _SessionTicketBody(BaseModel):
     content: str = Field(..., min_length=1)
     project: str | None = Field(None, description="target repo; defaults to session cwd name")
