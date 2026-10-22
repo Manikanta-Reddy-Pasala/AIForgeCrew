@@ -132,6 +132,9 @@ def test_parse_sentence_removes(text, verb):
     "build is slow", "test is failing", "lint is broken", "deploy with care", "run is the verb",
     # a remove needs the word "recipe"
     "delete test", "remove build",
+    # a tool name alone, an unknown verb, or a URL is prose too
+    "run with docker", "go with docker compose", "start with npm install",
+    "url is https://x", "endpoint is http://localhost:8080",
 ])
 def test_parse_sentence_ignores_other_text(text):
     assert R.parse_sentence(text) is None
@@ -139,8 +142,12 @@ def test_parse_sentence_ignores_other_text(text):
 
 @pytest.mark.parametrize("text,verb,cmd", [
     ("test is pytest -q", "test", "pytest -q"),
+    ("test means pytest -q tests/", "test", "pytest -q tests/"),
+    ("build is make all", "build", "make all"),
     ("build is ./gradlew assemble", "build", "./gradlew assemble"),
     ("run-job is python main.py --job nightly", "run-job", "python main.py --job nightly"),
+    ("from now on, test = ./t.sh", "test", "./t.sh"),
+    ("remember, build is make all", "build", "make all"),
 ])
 def test_plain_sentence_saves_when_the_command_looks_like_one(text, verb, cmd):
     assert R.parse_sentence(text) == ("save", verb, cmd)
@@ -184,9 +191,36 @@ def test_corrupt_store_is_moved_aside_on_first_write(tmp_path, caplog):
     with caplog.at_level("WARNING", logger="aiforge.recipes"):
         assert R.load(str(tmp_path)) == {}
         R.save(str(tmp_path), "test", "./t.sh")
-    assert (d / "recipes.json.bad").read_text() == "{not json"
+    bad = list(d.glob("recipes.json.bad-*"))
+    assert len(bad) == 1 and bad[0].read_text() == "{not json"
+    assert bad[0].name.split("bad-")[1].isdigit()
     assert list(json.loads((d / "recipes.json").read_text())) == ["test"]
     assert any("recipes.json" in r.getMessage() for r in caplog.records)
+
+
+def test_unreadable_store_blocks_the_write(tmp_path):
+    d = tmp_path / ".aiforge"
+    d.mkdir()
+    (d / "recipes.json").mkdir()            # EISDIR on open
+    assert R.load(str(tmp_path)) == {}      # a read stays safe
+    with pytest.raises(OSError):
+        R.save(str(tmp_path), "test", "./t.sh")
+    with pytest.raises(OSError):
+        R.remove(str(tmp_path), "test")
+    assert (d / "recipes.json").is_dir() and not list(d.glob("recipes.json.bad-*"))
+
+
+def test_corrupt_declined_file_is_logged_once(tmp_path, caplog):
+    d = tmp_path / ".aiforge"
+    d.mkdir()
+    (d / "recipes-declined.json").write_text("[oops")
+    steps = [{"type": "tool", "name": "run_command", "args": {"cmd": "pytest"}, "result": {"ok": True}}]
+    with caplog.at_level("WARNING", logger="aiforge.recipes"):
+        assert R.offers(str(tmp_path), steps) == [{"verb": "test", "cmd": "pytest", "cwd": "."}]
+        assert R.offers(str(tmp_path), steps) == [{"verb": "test", "cmd": "pytest", "cwd": "."}]
+    hits = [r for r in caplog.records if "recipes-declined.json" in r.getMessage()]
+    assert len(hits) == 1
+    assert (d / "recipes-declined.json").read_text() == "[oops"   # a read never moves it
 
 
 def test_block_text_follows_the_replace_switch(tmp_path, monkeypatch):
@@ -231,6 +265,18 @@ def test_offers_carry_the_step_cwd(tmp_path):
     steps = [{"type": "tool", "name": "run_command", "args": {"cmd": "npm test", "cwd": "web"},
               "result": {"ok": True, "code": 0}}]
     assert R.offers(str(tmp_path), steps) == [{"verb": "test", "cmd": "npm test", "cwd": "web"}]
+
+
+@pytest.mark.parametrize("cwd,want", [
+    ("{root}/web", "web"), ("{root}/web/app/", "web/app"), ("{root}", "."),
+    ("{root}/../elsewhere", "."), ("/elsewhere", "."), ("web/../..", "."), ("../up", "."),
+    ("web/../api", "api"), ("", "."),
+])
+def test_offer_cwd_is_relative_and_inside_the_project(tmp_path, cwd, want):
+    root = str(tmp_path)
+    steps = [{"type": "tool", "name": "run_command", "args": {"cmd": "npm test", "cwd": cwd.format(root=root)},
+              "result": {"ok": True, "code": 0}}]
+    assert R.offers(root, steps) == [{"verb": "test", "cmd": "npm test", "cwd": want}]
 
 
 @pytest.mark.parametrize("cwd", ["/abs/path", "../up", "web/../..", "/"])

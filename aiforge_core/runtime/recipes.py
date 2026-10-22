@@ -67,7 +67,7 @@ _TOOL_HEADS = frozenset((
     "docker", "bash", "sh"))
 _POLITE = re.compile(r"^(?:please|pls|now|ok|okay|and|then|just|go ahead and)\s+", re.I)
 _SAVE_RE = re.compile(
-    r"^(?P<lead>remember:?|always|from now on|recipe:?)?\s*"
+    r"^(?P<lead>remember:?|always|from now on|recipe:?)?,?\s*"
     r"(?:run |do )?(?P<verb>[a-z][a-z0-9-]{0,30})\s+"
     r"(?:recipe\s+)?(?P<sep>=|is|means|with|using|via)\s+"
     r"(?P<q>`?)(?P<cmd>[^`\n]{2,300}?)`?\s*[.!]?$", re.I)
@@ -95,15 +95,25 @@ def _path(root: str) -> str:
     return os.path.join(_dir(root), _FILE)
 
 
+_WARNED: set[str] = set()   # store paths already reported unreadable (once per process)
+
+
 def _read(path: str, *, for_write: bool = False) -> dict:
-    """The JSON object in ``path``; {} when missing or unreadable. A corrupt
-    file is logged; when the read precedes a write it is moved aside to
-    ``<path>.bad`` so the rewrite does not bury what the user had there."""
+    """The JSON object in ``path``; {} when missing. On a read: any other
+    failure is logged once and gives {}. Before a write: a read error other
+    than "missing" is re-raised so the caller never overwrites a store it could
+    not read, and a corrupt file is moved aside to ``<path>.bad-<epoch>`` so the
+    rewrite does not bury what the user had there."""
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
-    except OSError:
+    except FileNotFoundError:
         return {}
+    except OSError as exc:
+        if for_write:
+            log.warning("recipes: cannot read %s before writing it: %s", path, exc)
+            raise
+        return _warn_once(path, f"cannot read ({exc})")
     except ValueError as exc:
         return _corrupt(path, f"not valid JSON ({exc})", for_write)
     if not isinstance(data, dict):
@@ -111,16 +121,23 @@ def _read(path: str, *, for_write: bool = False) -> dict:
     return data
 
 
+def _warn_once(path: str, why: str) -> dict:
+    if path not in _WARNED:
+        _WARNED.add(path)
+        log.warning("recipes: ignoring %s: %s", path, why)
+    return {}
+
+
 def _corrupt(path: str, why: str, for_write: bool) -> dict:
     if not for_write:
-        log.warning("recipes: ignoring %s: %s", path, why)
-        return {}
-    bad = path + ".bad"
+        return _warn_once(path, why)
+    bad = f"{path}.bad-{int(time.time())}"
     try:
         os.replace(path, bad)
         log.warning("recipes: %s: %s; moved aside to %s", path, why, bad)
     except OSError as exc:
         log.warning("recipes: %s: %s; could not move aside (%s)", path, why, exc)
+        raise
     return {}
 
 
@@ -279,11 +296,20 @@ def verb_for_phrase(root: str, text: str) -> str | None:
     return None
 
 
-def _looks_like_command(cmd: str) -> bool:
+def _looks_like_command(verb: str, cmd: str) -> bool:
     """A plain "<verb> is <cmd>" (no lead-in, no = or backticks) only counts
-    when the first word is a known tool or a path — "build is slow" is not."""
-    head = cmd.split()[0].lower() if cmd.split() else ""
-    return bool(head) and (head in _TOOL_HEADS or "/" in head or "." in head)
+    when the verb is a built-in or a coined slug (run-job) and the command is
+    a tool head with arguments or a path — "build is slow", "run with docker",
+    "go with docker compose" and "url is https://x" are prose."""
+    if "://" in cmd:
+        return False
+    if verb not in BUILTIN_VERBS and "-" not in verb:
+        return False
+    parts = cmd.split()
+    head = parts[0].lower() if parts else ""
+    if head.startswith(("./", "/", "~")):
+        return True
+    return len(parts) >= 2 and head in _TOOL_HEADS
 
 
 def parse_sentence(text: str) -> tuple[str, str, str] | None:
@@ -305,7 +331,7 @@ def parse_sentence(text: str) -> tuple[str, str, str] | None:
     if " is what " in t or " says" in t or verb in ("remember", "always"):
         return None
     explicit = bool(m.group("lead")) or m.group("sep") == "=" or bool(m.group("q"))
-    if not explicit and not _looks_like_command(cmd):
+    if not explicit and not _looks_like_command(verb, cmd):
         return None
     return "save", verb, cmd
 
@@ -330,10 +356,25 @@ def offers(root: str, steps) -> list[dict]:
         if not verb or verb in have or verb in declined or verb in seen:
             continue
         seen.add(verb)
-        out.append({"verb": verb, "cmd": cmd, "cwd": str(args.get("cwd") or ".").strip() or "."})
+        out.append({"verb": verb, "cmd": cmd, "cwd": _offer_cwd(root, args.get("cwd"))})
         if len(out) == 3:
             break
     return out
+
+
+def _offer_cwd(root: str, cwd) -> str:
+    """The step's cwd as a path inside the project: relative stays, absolute
+    under ``root`` becomes relative, anything that leaves the project is "."."""
+    cwd = str(cwd or ".").strip() or "."
+    if os.path.isabs(cwd):
+        try:
+            cwd = os.path.relpath(cwd, root or os.curdir)
+        except ValueError:
+            return "."
+    cwd = os.path.normpath(cwd)
+    if os.path.isabs(cwd) or cwd == ".." or ".." in cwd.replace("\\", "/").split("/"):
+        return "."
+    return cwd
 
 
 def help_text(root: str) -> str:
