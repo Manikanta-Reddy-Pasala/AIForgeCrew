@@ -8,29 +8,38 @@ command for the verb and the model cannot route around it. Store:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
 
 from aiforge_core.config import _atomic
 
+log = logging.getLogger("aiforge.recipes")
+
 BUILTIN_VERBS = ("test", "build", "run", "lint", "deploy")
 _FILE = "recipes.json"
 _DECLINED = "recipes-declined.json"
 _MAX_BLOCK_LINES = 10
 
+# Flags a family head may carry and still be the whole-project command:
+# short (-q, -x) or long (--quiet, --tb=short). A flag with a separate value
+# (-k foo, --maxfail 1) breaks the match on purpose — that is a targeted run.
+_FLAGS = r"(?: -[a-zA-Z]+| --[a-z-]+(?:=\S+)?)*"
+_MVN = r"^(?:\./)?mvnw?"
+
 # Command families: whole-command patterns. A command with a path, a -k/-Dtest
 # selector or anything after the family head is NOT a family command (the model
 # is running one test file on purpose) — see family_of.
 _FAMILY = (
-    ("test", re.compile(r"^(?:python3? -m )?pytest(?: -[a-zA-Z]+)*$")),
+    ("test", re.compile(r"^(?:python3? -m )?pytest" + _FLAGS + r"$")),
     ("test", re.compile(r"^(?:npm|yarn|pnpm) (?:run )?test$")),
-    ("test", re.compile(r"^mvn(?: -[a-zA-Z]+)* (?:test|verify)$")),
+    ("test", re.compile(_MVN + _FLAGS + r" (?:test|verify)$")),
     ("test", re.compile(r"^go test(?: \./\.\.\.)?$")),
     ("test", re.compile(r"^cargo test$")),
     ("test", re.compile(r"^make test$")),
     ("test", re.compile(r"^(?:\./)?gradlew? test$")),
-    ("build", re.compile(r"^mvn(?: -[a-zA-Z]+)*(?: clean)? (?:compile|package|install)(?: -DskipTests)?$")),
+    ("build", re.compile(_MVN + _FLAGS + r"(?: clean)? (?:compile|package|install)(?: -DskipTests)?$")),
     ("build", re.compile(r"^(?:npm|yarn|pnpm) run build$")),
     ("build", re.compile(r"^go build(?: \./\.\.\.)?$")),
     ("build", re.compile(r"^cargo build(?: --release)?$")),
@@ -50,15 +59,21 @@ _PHRASES = {
     "lint": ("lint", "run lint", "run the linter"),
     "deploy": ("deploy", "deploy it", "run deploy"),
 }
+_BUILTIN_PHRASES = {p for ps in _PHRASES.values() for p in ps}
+# Tool heads that make "<verb> is <cmd>" a recipe sentence without a lead-in.
+_TOOL_HEADS = frozenset((
+    "python", "python3", "pytest", "npm", "yarn", "pnpm", "npx", "mvn", "mvnw",
+    "gradle", "gradlew", "go", "cargo", "make", "tsc", "ruff", "eslint", "flake8",
+    "docker", "bash", "sh"))
 _POLITE = re.compile(r"^(?:please|pls|now|ok|okay|and|then|just|go ahead and)\s+", re.I)
 _SAVE_RE = re.compile(
-    r"^(?:remember:?|always|from now on|recipe:?)?\s*"
+    r"^(?P<lead>remember:?|always|from now on|recipe:?)?\s*"
     r"(?:run |do )?(?P<verb>[a-z][a-z0-9-]{0,30})\s+"
-    r"(?:recipe\s+)?(?:=|is|means|with|using|via)\s+"
-    r"`?(?P<cmd>[^`\n]{2,300}?)`?\s*[.!]?$", re.I)
+    r"(?:recipe\s+)?(?P<sep>=|is|means|with|using|via)\s+"
+    r"(?P<q>`?)(?P<cmd>[^`\n]{2,300}?)`?\s*[.!]?$", re.I)
 _REMOVE_RE = re.compile(
-    r"^(?:forget|remove|drop|delete)\s+(?:the\s+)?(?:recipe\s+)?(?P<verb>[a-z][a-z0-9-]{0,30})"
-    r"(?:\s+recipe)?\s*[.!]?$", re.I)
+    r"^(?:forget|remove|drop|delete)\s+(?:the\s+)?(?:(?P<before>recipe)\s+)?"
+    r"(?P<verb>[a-z][a-z0-9-]{0,30})(?:\s+(?P<after>recipe))?\s*[.!]?$", re.I)
 _CMD_START = re.compile(r"^(?:\.?/|[a-z][a-z0-9_.-]*)")
 
 
@@ -80,13 +95,33 @@ def _path(root: str) -> str:
     return os.path.join(_dir(root), _FILE)
 
 
-def _read(path: str) -> dict:
+def _read(path: str, *, for_write: bool = False) -> dict:
+    """The JSON object in ``path``; {} when missing or unreadable. A corrupt
+    file is logged; when the read precedes a write it is moved aside to
+    ``<path>.bad`` so the rewrite does not bury what the user had there."""
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
+    except OSError:
         return {}
+    except ValueError as exc:
+        return _corrupt(path, f"not valid JSON ({exc})", for_write)
+    if not isinstance(data, dict):
+        return _corrupt(path, "top level is not an object", for_write)
+    return data
+
+
+def _corrupt(path: str, why: str, for_write: bool) -> dict:
+    if not for_write:
+        log.warning("recipes: ignoring %s: %s", path, why)
+        return {}
+    bad = path + ".bad"
+    try:
+        os.replace(path, bad)
+        log.warning("recipes: %s: %s; moved aside to %s", path, why, bad)
+    except OSError as exc:
+        log.warning("recipes: %s: %s; could not move aside (%s)", path, why, exc)
+    return {}
 
 
 def _write(path: str, data: dict) -> None:
@@ -100,11 +135,14 @@ def load(root: str) -> dict:
         return {}
     out = {}
     for verb, row in _read(_path(root)).items():
-        if isinstance(row, dict) and str(row.get("cmd") or "").strip():
-            out[str(verb)] = {"cmd": str(row["cmd"]).strip(),
-                              "cwd": str(row.get("cwd") or "."),
-                              "aliases": [str(a) for a in (row.get("aliases") or []) if str(a).strip()],
-                              "saved": row.get("saved")}
+        key = _slug(verb)
+        if not key or not isinstance(row, dict) or not str(row.get("cmd") or "").strip():
+            continue
+        out[key] = {"cmd": str(row["cmd"]).strip(),
+                    "cwd": str(row.get("cwd") or "."),
+                    "aliases": [str(a).strip().lower() for a in (row.get("aliases") or [])
+                                if str(a).strip()],
+                    "saved": row.get("saved")}
     return out
 
 
@@ -112,29 +150,51 @@ def get(root: str, verb: str) -> dict | None:
     return load(root).get(_slug(verb))
 
 
+def _need_slug(verb: str) -> str:
+    key = _slug(verb)
+    if not key:
+        raise ValueError(f"recipe verb must be a word or slug, got {verb!r}")
+    return key
+
+
 def save(root: str, verb: str, cmd: str, *, cwd: str = ".", aliases=None) -> dict:
-    data = _read(_path(root))
-    row = {"cmd": cmd.strip(), "cwd": cwd or ".", "saved": int(time.time())}
-    if aliases:
-        row["aliases"] = [str(a).strip().lower() for a in aliases if str(a).strip()]
-    data[_slug(verb)] = row
+    """Store ``verb → cmd``. ValueError on an empty verb or command, a cwd
+    that leaves the project, or an alias that already means a built-in verb."""
+    key = _need_slug(verb)
+    cmd = str(cmd or "").strip()
+    if not cmd:
+        raise ValueError(f"recipe {key!r} needs a command")
+    cwd = str(cwd or ".").strip() or "."
+    if os.path.isabs(cwd) or ".." in cwd:
+        raise ValueError(f"recipe cwd must stay inside the project, got {cwd!r}")
+    row = {"cmd": cmd, "cwd": cwd, "saved": int(time.time())}
+    clean = [str(a).strip().lower() for a in (aliases or []) if str(a).strip()]
+    for alias in clean:
+        if alias in _BUILTIN_PHRASES and alias not in _PHRASES.get(key, ()):
+            raise ValueError(f"alias {alias!r} already means a built-in verb")
+    if clean:
+        row["aliases"] = clean
+    data = _read(_path(root), for_write=True)
+    data[key] = row
     _write(_path(root), data)
     return row
 
 
 def remove(root: str, verb: str) -> bool:
-    data = _read(_path(root))
-    if _slug(verb) not in data:
+    key = _need_slug(verb)
+    data = _read(_path(root), for_write=True)
+    if key not in data:
         return False
-    del data[_slug(verb)]
+    del data[key]
     _write(_path(root), data)
     return True
 
 
 def decline(root: str, verb: str) -> None:
+    key = _need_slug(verb)
     p = os.path.join(_dir(root), _DECLINED)
-    data = _read(p)
-    data[_slug(verb)] = int(time.time())
+    data = _read(p, for_write=True)
+    data[key] = int(time.time())
     _write(p, data)
 
 
@@ -197,20 +257,33 @@ def warn(root: str, cmd: str) -> str | None:
 
 
 def verb_for_phrase(root: str, text: str) -> str | None:
-    """The verb a bare message asks for, when a recipe for it exists."""
+    """The verb a bare message asks for, when a recipe for it exists. Built-in
+    verbs are checked before custom ones so an alias never shadows them."""
     recs = load(root)
     if not recs:
         return None
-    t = _norm(text).lower().strip(" .!")
-    t = _POLITE.sub("", t)
+    t = _norm(text).lower().strip(" .!,")
+    while True:
+        stripped = _POLITE.sub("", t)
+        if stripped == t:
+            break
+        t = stripped
     if not t or "?" in t or len(t) > 40:
         return None
-    for verb, rec in recs.items():
-        phrases = set(_PHRASES.get(verb, ())) | set(rec["aliases"])
+    ordered = [v for v in BUILTIN_VERBS if v in recs] + [v for v in recs if v not in BUILTIN_VERBS]
+    for verb in ordered:
+        phrases = set(_PHRASES.get(verb, ())) | set(recs[verb]["aliases"])
         phrases |= {verb, f"run {verb}", f"run the {verb}", verb.replace("-", " ")}
         if t in phrases:
             return verb
     return None
+
+
+def _looks_like_command(cmd: str) -> bool:
+    """A plain "<verb> is <cmd>" (no lead-in, no = or backticks) only counts
+    when the first word is a known tool or a path — "build is slow" is not."""
+    head = cmd.split()[0].lower() if cmd.split() else ""
+    return bool(head) and (head in _TOOL_HEADS or "/" in head or "." in head)
 
 
 def parse_sentence(text: str) -> tuple[str, str, str] | None:
@@ -220,6 +293,8 @@ def parse_sentence(text: str) -> tuple[str, str, str] | None:
         return None
     m = _REMOVE_RE.match(t)
     if m:
+        if not (m.group("before") or m.group("after")):
+            return None
         return "remove", _canon(m.group("verb")), ""
     m = _SAVE_RE.match(t)
     if not m:
@@ -228,6 +303,9 @@ def parse_sentence(text: str) -> tuple[str, str, str] | None:
     if verb in ("that", "this", "the", "it") or not _CMD_START.match(cmd):
         return None
     if " is what " in t or " says" in t or verb in ("remember", "always"):
+        return None
+    explicit = bool(m.group("lead")) or m.group("sep") == "=" or bool(m.group("q"))
+    if not explicit and not _looks_like_command(cmd):
         return None
     return "save", verb, cmd
 
@@ -246,12 +324,13 @@ def offers(root: str, steps) -> list[dict]:
         res = s.get("result") if isinstance(s.get("result"), dict) else {}
         if res.get("ok") is not True:
             continue
-        cmd = _norm((s.get("args") or {}).get("cmd") or (s.get("args") or {}).get("command"))
+        args = s.get("args") if isinstance(s.get("args"), dict) else {}
+        cmd = _norm(args.get("cmd") or args.get("command"))
         verb = family_of(cmd)
         if not verb or verb in have or verb in declined or verb in seen:
             continue
         seen.add(verb)
-        out.append({"verb": verb, "cmd": cmd, "cwd": "."})
+        out.append({"verb": verb, "cmd": cmd, "cwd": str(args.get("cwd") or ".").strip() or "."})
         if len(out) == 3:
             break
     return out
@@ -273,8 +352,11 @@ def block(root: str) -> str:
     recs = load(root)
     if not recs:
         return ""
-    lines = ["RECIPES — this project's fixed commands. For these verbs run the "
-             "recipe command exactly (the harness replaces a raw command with it):"]
+    if replace_enabled():
+        rule = "run the recipe command exactly (the harness replaces a raw command with it):"
+    else:
+        rule = "run the recipe command, not a raw equivalent:"
+    lines = [f"RECIPES — this project's fixed commands. For these verbs {rule}"]
     verbs = list(recs)
     for verb in verbs[:_MAX_BLOCK_LINES]:
         lines.append(f"- {verb} → {recs[verb]['cmd']}")

@@ -44,6 +44,9 @@ def test_unreadable_store_is_empty(tmp_path):
     ("mvn compile", "build"), ("npm run build", "build"), ("go build ./...", "build"),
     ("cargo build", "build"), ("make", "build"), ("tsc --noEmit", "build"),
     ("ruff check .", "lint"), ("eslint .", "lint"), ("npm run lint", "lint"),
+    ("pytest --tb=short", "test"), ("pytest -x --tb=short -q", "test"),
+    ("mvn --quiet test", "test"), ("./mvnw -q test", "test"), ("mvnw verify", "test"),
+    ("./mvnw clean package -DskipTests", "build"), ("mvnw --offline compile", "build"),
 ])
 def test_family_of_command(cmd, verb):
     assert R.family_of(cmd) == verb
@@ -52,6 +55,7 @@ def test_family_of_command(cmd, verb):
 @pytest.mark.parametrize("cmd", [
     "pytest tests/test_x.py::test_y", "pytest -k foo", "go test ./pkg/one",
     "ls", "git status", "python main.py", "mvn -q test -Dtest=Foo",
+    "mvn test -Dtest=Foo", "./mvnw test -Dtest=Foo", "pytest --maxfail 1",
 ])
 def test_targeted_or_other_commands_have_no_family(cmd):
     assert R.family_of(cmd) is None
@@ -124,9 +128,118 @@ def test_parse_sentence_removes(text, verb):
 @pytest.mark.parametrize("text", [
     "run tests", "the build is slow", "compile = ./build.sh is what the README says, fix the README",
     "remember that the build uses java 21",
+    # plain "<verb> is <words>" with no lead-in, = or backticks is prose, not a recipe
+    "build is slow", "test is failing", "lint is broken", "deploy with care", "run is the verb",
+    # a remove needs the word "recipe"
+    "delete test", "remove build",
 ])
 def test_parse_sentence_ignores_other_text(text):
     assert R.parse_sentence(text) is None
+
+
+@pytest.mark.parametrize("text,verb,cmd", [
+    ("test is pytest -q", "test", "pytest -q"),
+    ("build is ./gradlew assemble", "build", "./gradlew assemble"),
+    ("run-job is python main.py --job nightly", "run-job", "python main.py --job nightly"),
+])
+def test_plain_sentence_saves_when_the_command_looks_like_one(text, verb, cmd):
+    assert R.parse_sentence(text) == ("save", verb, cmd)
+
+
+@pytest.mark.parametrize("verb", ["", "   ", "!!!", "---"])
+def test_empty_slug_is_rejected(tmp_path, verb):
+    root = str(tmp_path)
+    with pytest.raises(ValueError):
+        R.save(root, verb, "./t.sh")
+    with pytest.raises(ValueError):
+        R.remove(root, verb)
+    with pytest.raises(ValueError):
+        R.decline(root, verb)
+    assert not (tmp_path / ".aiforge").exists()
+
+
+def test_empty_command_is_rejected(tmp_path):
+    with pytest.raises(ValueError):
+        R.save(str(tmp_path), "test", "   ")
+    assert R.get(str(tmp_path), "test") is None
+
+
+def test_load_drops_rows_with_an_empty_slug_and_lowercases_aliases(tmp_path):
+    d = tmp_path / ".aiforge"
+    d.mkdir()
+    (d / "recipes.json").write_text(json.dumps({
+        "!!!": {"cmd": "./x.sh"},
+        "": {"cmd": "./y.sh"},
+        "test": {"cmd": "./t.sh", "aliases": ["T", " Run-All "]},
+    }))
+    recs = R.load(str(tmp_path))
+    assert list(recs) == ["test"]
+    assert recs["test"]["aliases"] == ["t", "run-all"]
+
+
+def test_corrupt_store_is_moved_aside_on_first_write(tmp_path, caplog):
+    d = tmp_path / ".aiforge"
+    d.mkdir()
+    (d / "recipes.json").write_text("{not json")
+    with caplog.at_level("WARNING", logger="aiforge.recipes"):
+        assert R.load(str(tmp_path)) == {}
+        R.save(str(tmp_path), "test", "./t.sh")
+    assert (d / "recipes.json.bad").read_text() == "{not json"
+    assert list(json.loads((d / "recipes.json").read_text())) == ["test"]
+    assert any("recipes.json" in r.getMessage() for r in caplog.records)
+
+
+def test_block_text_follows_the_replace_switch(tmp_path, monkeypatch):
+    R.save(str(tmp_path), "test", "./t.sh")
+    assert "the harness replaces a raw command with it" in R.block(str(tmp_path))
+    monkeypatch.setenv("AIFORGE_CHAT_RECIPE_REPLACE", "0")
+    block = R.block(str(tmp_path))
+    assert "not a raw equivalent" in block and "replaces a raw command" not in block
+
+
+def test_alias_that_means_a_builtin_verb_is_rejected(tmp_path):
+    root = str(tmp_path)
+    for alias in ("tests", "run tests", "compile", "Build It"):
+        with pytest.raises(ValueError):
+            R.save(root, "run-job", "python main.py", aliases=[alias])
+    assert R.get(root, "run-job") is None
+    # a verb's own phrase is not a collision
+    R.save(root, "test", "./t.sh", aliases=["tests"])
+    assert R.get(root, "test")["aliases"] == ["tests"]
+
+
+def test_builtin_verbs_win_over_custom_aliases(tmp_path):
+    d = tmp_path / ".aiforge"
+    d.mkdir()
+    (d / "recipes.json").write_text(json.dumps({
+        "job": {"cmd": "./job.sh", "aliases": ["run tests", "job"]},
+        "test": {"cmd": "./t.sh"},
+    }))
+    assert R.verb_for_phrase(str(tmp_path), "run tests") == "test"
+    assert R.verb_for_phrase(str(tmp_path), "job") == "job"
+
+
+@pytest.mark.parametrize("text", [
+    "please just run tests", "ok please run the tests", "run tests,", "Tests.",
+])
+def test_polite_prefixes_are_stripped_repeatedly(tmp_path, text):
+    R.save(str(tmp_path), "test", "./t.sh")
+    assert R.verb_for_phrase(str(tmp_path), text) == "test"
+
+
+def test_offers_carry_the_step_cwd(tmp_path):
+    steps = [{"type": "tool", "name": "run_command", "args": {"cmd": "npm test", "cwd": "web"},
+              "result": {"ok": True, "code": 0}}]
+    assert R.offers(str(tmp_path), steps) == [{"verb": "test", "cmd": "npm test", "cwd": "web"}]
+
+
+@pytest.mark.parametrize("cwd", ["/abs/path", "../up", "web/../..", "/"])
+def test_cwd_outside_the_project_is_rejected(tmp_path, cwd):
+    with pytest.raises(ValueError):
+        R.save(str(tmp_path), "test", "./t.sh", cwd=cwd)
+    assert R.get(str(tmp_path), "test") is None
+    R.save(str(tmp_path), "test", "./t.sh", cwd="web")
+    assert R.get(str(tmp_path), "test")["cwd"] == "web"
 
 
 def test_offers_pick_successful_family_commands_without_a_recipe(tmp_path):
