@@ -274,6 +274,13 @@ def _canon(verb: str) -> str:
     return s
 
 
+def canon(verb: str) -> str:
+    """Public form of ``_canon`` for callers outside this module (the recipe
+    endpoints): a verb typed as "compile" is stored as ``build``, the same way
+    a recipe sentence stores it."""
+    return _canon(verb)
+
+
 def _norm(cmd: str) -> str:
     return " ".join(str(cmd or "").split())
 
