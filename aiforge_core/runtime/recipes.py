@@ -320,7 +320,8 @@ def family_of(cmd: str) -> str | None:
     return None
 
 
-def _match(root: str, cmd: str, run_root: str | None = None) -> tuple[str, str] | None:
+def _match(root: str, cmd: str, run_root: str | None = None,
+           here: str | None = None) -> tuple[str, str] | None:
     verb = family_of(cmd)
     if not verb:
         return None
@@ -332,19 +333,23 @@ def _match(root: str, cmd: str, run_root: str | None = None) -> tuple[str, str] 
         # "cd sub && npm test" in another folder than the recipe's is another
         # project's command: never swapped for this one.
         base = run_root or root
-        there = where if os.path.isabs(where) else os.path.join(base, where)
+        # The cd runs from the call's own folder, not the checkout's top.
+        there = where if os.path.isabs(where) else os.path.join(here or base, where)
         if os.path.normpath(there) != os.path.normpath(os.path.join(base, rec.get("cwd") or ".")):
             return None
     return verb, rec["cmd"]
 
 
-def rewrite(root: str, cmd: str, run_root: str | None = None) -> tuple[str, str] | None:
+def rewrite(root: str, cmd: str, run_root: str | None = None,
+            here: str | None = None) -> tuple[str, str] | None:
     """(verb, recipe command) when a raw family command must run as the
     recipe. ``run_root``: the checkout the command runs in (:func:`exec_root`),
-    against which a leading ``cd <dir>`` is placed; defaults to ``root``."""
+    which the recipe's folder is relative to; ``here``: the folder the call
+    runs from, which a leading relative ``cd <dir>`` starts at. Both default
+    to ``root``."""
     if not replace_enabled():
         return None
-    return _match(root, cmd, run_root)
+    return _match(root, cmd, run_root, here)
 
 
 def warn(root: str, cmd: str) -> str | None:
@@ -443,6 +448,9 @@ def offers(root: str, steps, run_root: str | None = None) -> list[dict]:
             continue
         args = s.get("args") if isinstance(s.get("args"), dict) else {}
         where, cmd = split_cd(args.get("cmd") or args.get("command"))
+        step_cwd = args.get("cwd")
+        if where and step_cwd and not os.path.isabs(where):
+            where = os.path.join(str(step_cwd), where)   # "cd sub" from cwd=pkg is pkg/sub
         verb = family_of(cmd)
         if not verb or verb in have or verb in declined or verb in seen:
             continue

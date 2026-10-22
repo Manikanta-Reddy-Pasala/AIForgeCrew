@@ -15,7 +15,8 @@
 #
 #   scripts/awake-bridge.sh <heartbeat file> [container name]
 #
-# It exits by itself when the container is no longer running.
+# It exits by itself when the container has not been running for 30 minutes
+# (a Docker Desktop restart or a restart policy brings the box back sooner).
 set -uo pipefail
 
 FILE="${1:?usage: awake-bridge.sh <heartbeat file> [container]}"
@@ -48,7 +49,7 @@ while true; do
     misses=0
   else
     misses=$((misses + 1))
-    (( misses >= 4 )) && exit 0             # the box is gone: so is this
+    (( misses >= ${AIFORGE_AWAKE_GIVE_UP_CHECKS:-120} )) && exit 0   # ~30 min: the box is gone
   fi
   fresh=0
   if [[ -f "$FILE" ]]; then

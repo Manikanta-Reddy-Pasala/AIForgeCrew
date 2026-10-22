@@ -77,6 +77,10 @@ _proc: "subprocess.Popen | None" = None
 #: than three of these as released.
 BEAT_S = 20
 _beat: "threading.Event | None" = None
+_beat_path: "str | None" = None
+#: Serialises a heartbeat touch against the release's remove: a beat that
+#: woke just as the run ended must not write the file back after it is gone.
+_beat_lock = threading.Lock()
 
 
 def enabled() -> bool:
@@ -144,32 +148,34 @@ def _touch(path: str) -> None:
 
 
 def _start_file_locked(path: str) -> None:
-    global _beat
+    global _beat, _beat_path
     if _beat is not None:
         return
     stop = threading.Event()
-    _beat = stop
+    _beat, _beat_path = stop, path
     _touch(path)
 
     def beat():
         while not stop.wait(BEAT_S):
-            _touch(path)
+            with _beat_lock:
+                if not stop.is_set():
+                    _touch(path)
     threading.Thread(target=beat, daemon=True, name="keep-awake-beat").start()
     log.info("keep_awake.acquired via %s (host bridge)", path)
 
 
 def _stop_file_locked() -> None:
-    global _beat
-    stop, _beat = _beat, None
+    global _beat, _beat_path
+    stop, path, _beat, _beat_path = _beat, _beat_path, None, None
     if stop is None:
         return
-    stop.set()
-    path = awake_file()
-    if path:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+    with _beat_lock:
+        stop.set()
+        if path:                    # the file this hold wrote, whatever the env says now
+            try:
+                os.remove(path)
+            except OSError:
+                pass
     log.info("keep_awake.released (host bridge)")
 
 
@@ -177,11 +183,15 @@ def _start_locked() -> None:
     global _proc
     if _proc is not None and _proc.poll() is None:
         return
+    # In the sandbox no process of the box can hold the HOST awake (a
+    # systemd-inhibit installed there has no host D-Bus): the heartbeat file
+    # is the only hold that works, whatever _command() finds.
+    path = awake_file()
+    if path:
+        _start_file_locked(path)
+        return
     cmd = _command()
     if not cmd:
-        path = awake_file()
-        if path:
-            _start_file_locked(path)
         return
     try:
         _proc = subprocess.Popen(          # noqa: S603

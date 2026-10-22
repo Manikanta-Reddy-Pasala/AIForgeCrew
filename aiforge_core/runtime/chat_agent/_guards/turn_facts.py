@@ -288,10 +288,25 @@ def _programs(cmd: str) -> set:
 
 #: The shell itself refused the line (a bash-ism under sh, a program that is
 #: not installed): the line's check never ran, so it did not fail — the model
-#: rewrites the line, and that one is what counts.
+#: rewrites the line, and that one is what counts. Read on the FIRST stderr
+#: line only, and a "not found" must name the program the line itself runs:
+#: `npm test` whose script calls a missing jest ("sh: 1: jest: not found") is a
+#: real failure of the tests.
 _SHELL_LEVEL_RE = re.compile(
-    r"(?:^|\n)\S*\bsh: (?:\d+: )?(?:Syntax error|[^\n]*: not found|Bad substitution"
-    r"|[^\n]*syntax error near unexpected token)", re.I)
+    r"^\S*\b(?:ba|da|z)?sh: (?:line \d+: |\d+: )?"
+    r"(?:(?P<syntax>Syntax error|syntax error near unexpected token|Bad substitution)"
+    r"|(?P<prog>[^\s:]+): (?:command )?not found)", re.I)
+
+
+def _shell_refused(cmd: str, stderr: str) -> bool:
+    first = (stderr or "").lstrip().split("\n", 1)[0]
+    m = _SHELL_LEVEL_RE.match(first)
+    if not m:
+        return False
+    if m.group("syntax"):
+        return True
+    prog = m.group("prog").rsplit("/", 1)[-1]
+    return prog == _program(cmd)
 
 
 def unpassed_failures(steps: list) -> list:
@@ -324,7 +339,7 @@ def unpassed_failures(steps: list) -> list:
         body = " ".join(str(res.get(k) or "") for k in ("stdout", "stderr", "error"))
         if not _ERRORISH.search(body):
             continue             # grep found nothing, `test -f`: not an error
-        if code in (2, 127) and _SHELL_LEVEL_RE.search(str(res.get("stderr") or "")):
+        if code in (2, 127) and _shell_refused(cmd, str(res.get("stderr") or "")):
             continue             # the shell refused the line: nothing was checked
         prog = _program(cmd)
         if any(r.get("code") == 0 and prog in _programs(c) for _, c, r in cmds[n + 1:]):

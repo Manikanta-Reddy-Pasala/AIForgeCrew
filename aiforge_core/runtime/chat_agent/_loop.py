@@ -303,7 +303,10 @@ def _apply_recipe(name: str, args: dict, cwd: str) -> None:
         return
     root = repo_ident.git_toplevel(cwd) or cwd
     run_root = recipes.exec_root(cwd) if recipes.split_cd(cmd)[0] is not None else None
-    hit = recipes.rewrite(root, cmd, run_root)
+    here = args.get("cwd") or cwd
+    if here and not os.path.isabs(str(here)):
+        here = os.path.join(cwd, str(here))
+    hit = recipes.rewrite(root, cmd, run_root, here)
     if hit:
         verb, _new = hit
         rec = recipes.get(root, verb) or {"cmd": _new}

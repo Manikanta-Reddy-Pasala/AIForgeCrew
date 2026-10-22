@@ -161,3 +161,19 @@ def test_test_runner_finds_a_pytest_ini_project_and_runs_it(tmp_path, monkeypatc
     out = test_runner.run_tests(mode="all")
     assert out.get("language") == "python", out
     assert out["ok"] is True, out
+
+
+def test_a_node_repo_with_a_helper_requirements_txt_stays_node(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("AIFORGE_REPO_ROOT", str(tmp_path))
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "requirements.txt").write_text("requests\n")
+    (tmp_path / "setup.cfg").write_text("")
+    assert test_runner._pick_runner() == ("node", "npm")
+
+
+def test_no_pytest_anywhere_is_a_missing_tool(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("AIFORGE_REPO_ROOT", str(tmp_path))
+    (tmp_path / "pytest.ini").write_text("[pytest]\n")
+    monkeypatch.setattr(test_runner.shutil, "which", lambda name, *a, **k: None)
+    out = test_runner.run_tests()
+    assert out["ok"] is False and out["error"] == "missing_tool"

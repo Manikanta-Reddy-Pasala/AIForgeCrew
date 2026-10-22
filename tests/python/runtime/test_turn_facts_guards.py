@@ -322,3 +322,22 @@ def test_handle_final_runs_both_checks_and_a_same_restores_each_answer(
     assert message.startswith(_ANSWER)
     assert "(Changed on disk in this turn: `pipeline.py`. Not changed: `database.py`.)" in message
     assert "was not run again successfully.)" in message
+
+
+@pytest.mark.parametrize("cmd,code,err", [
+    ("npm test", 127, "> t\n> jest\n\nsh: 1: jest: not found"),        # the script's tool is missing
+    ("npm test", 127, "sh: 1: jest: not found"),                        # first line, not the line's program
+    ("make test", 2, "make: *** [test] Error 2\n/bin/sh: 1: Syntax error: x"),
+])
+def test_a_failure_inside_the_program_is_still_a_failure(cmd, code, err):
+    steps = [_write("a.py"), _cmd(cmd, code, err + "\nerror")]
+    assert tf.unpassed_failures(steps), cmd
+
+
+@pytest.mark.parametrize("cmd,code,err", [
+    ("python -m pytest -q", 127, "/bin/sh: 1: python: not found"),
+    ("pytest -q", 127, "bash: pytest: command not found"),
+    ("diff <(a) b", 2, 'bash: line 1: syntax error near unexpected token `("'),
+])
+def test_the_shell_refusing_the_line_is_not_a_failed_check(cmd, code, err):
+    assert tf._shell_refused(cmd, err)

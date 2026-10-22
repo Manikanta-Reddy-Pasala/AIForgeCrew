@@ -395,3 +395,18 @@ def test_a_cd_into_the_recipe_folder_is_rewritten_another_folder_is_not(tmp_path
     assert R.rewrite(root, "cd . && pytest -q") == ("test", "./t.sh")
     assert R.rewrite(root, f"cd {root}/other && pytest -q") is None
     assert R.rewrite(root, f"cd {root} && ./t.sh") is None          # already the recipe
+
+
+def test_a_relative_cd_starts_at_the_calls_own_folder(tmp_path):
+    """"cd sub && npm test" from repo/pkg is repo/pkg/sub, not repo/sub."""
+    root = str(tmp_path)
+    R.save(root, "test", "npm test", cwd="sub")
+    assert R.rewrite(root, "cd sub && npm test", root, here=root) is None   # already the recipe line
+    R.save(root, "test", "./t.sh", cwd="sub")
+    assert R.rewrite(root, "cd sub && npm test", root, here=root) == ("test", "./t.sh")
+    assert R.rewrite(root, "cd sub && npm test", root, here=f"{root}/pkg") is None
+    steps = [{"type": "tool", "name": "run_command",
+              "args": {"cmd": "cd sub && python3 -m pytest -q", "cwd": "pkg"},
+              "result": {"ok": True, "code": 0}}]
+    R.remove(root, "test")
+    assert R.offers(root, steps)[0]["cwd"] == "pkg/sub"

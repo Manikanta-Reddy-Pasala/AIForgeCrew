@@ -52,6 +52,14 @@ def build_test_command(
     return cmd
 
 
+def _has_module(py: str, name: str) -> bool:
+    try:
+        return subprocess.run([py, "-c", f"import {name}"], capture_output=True,
+                              timeout=20).returncode == 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _pick_runner() -> tuple[str, str] | None:
     """Return (language, base_command). First marker hit wins."""
     repo = root()
@@ -59,15 +67,17 @@ def _pick_runner() -> tuple[str, str] | None:
         ("pyproject.toml", "python",       "pytest"),
         ("setup.py",       "python",       "pytest"),
         ("pytest.ini",     "python",       "pytest"),
-        ("setup.cfg",      "python",       "pytest"),
-        ("tox.ini",        "python",       "pytest"),
-        ("conftest.py",    "python",       "pytest"),
-        ("requirements.txt", "python",     "pytest"),
         ("package.json",   "node",         "npm"),
         ("pom.xml",        "java-maven",   "mvn"),
         ("build.gradle",   "java-gradle",  "./gradlew"),
         ("Cargo.toml",     "rust",         "cargo"),
         ("go.mod",         "go",           "go"),
+        # Weak Python markers last: a Node/Maven/Go repo with a helper
+        # requirements.txt or a setup.cfg is still that stack.
+        ("setup.cfg",      "python",       "pytest"),
+        ("tox.ini",        "python",       "pytest"),
+        ("conftest.py",    "python",       "pytest"),
+        ("requirements.txt", "python",     "pytest"),
     ]
     for marker, lang, tool in table:
         if (repo / marker).is_file():
@@ -156,9 +166,10 @@ def run_tests(
     lang, tool = pick
     prefix: list = []
     if lang == "python" and shutil.which(tool) is None:
-        # No pytest script on PATH: the module through the box's python.
+        # No pytest script on PATH: the module through the box's python, when
+        # that python has it (else it is still a missing tool, not a failure).
         py = shutil.which("python3") or shutil.which("python")
-        if py:
+        if py and _has_module(py, "pytest"):
             prefix, tool = [py, "-m"], "pytest"
     if not prefix and shutil.which(tool.split("/")[-1]) is None and shutil.which(tool) is None:
         return {"ok": False, "error": "missing_tool", "tool": tool}

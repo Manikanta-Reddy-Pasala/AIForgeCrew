@@ -41,6 +41,7 @@ def _clean(monkeypatch):
     ka._holders = 0
     ka._proc = None
     ka._beat = None
+    ka._beat_path = None
     monkeypatch.delenv("AIFORGE_KEEP_AWAKE", raising=False)
     monkeypatch.delenv("AIFORGE_SANDBOX", raising=False)
     monkeypatch.delenv("AIFORGE_AWAKE_FILE", raising=False)
@@ -193,3 +194,24 @@ def test_outside_the_sandbox_no_heartbeat_file_is_written(monkeypatch, tmp_path)
     monkeypatch.setattr(ka, "_command", lambda: None)
     with ka.keep_awake("a run"):
         assert not (tmp_path / "run").exists()
+
+
+def test_in_the_sandbox_the_file_wins_over_a_box_local_power_api(monkeypatch, tmp_path):
+    """A systemd-inhibit apt-installed in the box cannot reach the host."""
+    monkeypatch.setenv("AIFORGE_SANDBOX", "1")
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    made = _spawned(monkeypatch)
+    monkeypatch.setattr(ka, "_command", lambda: ["systemd-inhibit", "sleep", "infinity"])
+    with ka.keep_awake("a run"):
+        assert (tmp_path / "run" / "keep-awake").exists()
+    assert made == [] and not (tmp_path / "run" / "keep-awake").exists()
+
+
+def test_release_removes_the_file_it_wrote_even_if_the_env_moved(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_SANDBOX", "1")
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "a"))
+    monkeypatch.setattr(ka, "_command", lambda: None)
+    ka.acquire()
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "b"))
+    ka.release()
+    assert not (tmp_path / "a" / "run" / "keep-awake").exists()
