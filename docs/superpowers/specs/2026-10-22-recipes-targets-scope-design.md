@@ -127,18 +127,18 @@ In `_native_prompt.py`, `_prompt_text.py` and `_plan_llm._RULES`, replace "When 
 
 `runtime/chat_agent/_guards/scope_net.py`, run in `_finish._handle_final` after the existing guards, no model call:
 
-1. Changed files of the turn = the facts-line set (git diff names + untracked files the turn created), minus helper scripts already held by `chat_run_only`, minus `targets/` and `scratch/`.
-2. Attached files = the union of file hashes recorded as item evidence by `_items` for items that are `from_request` or came from a user steer (`msg-N`).
-3. Unattached = changed − attached. If not empty, the answer gets:
+1. Changed files of the turn = the facts-line set (`turn_facts_line.changed_paths`: git diff names + untracked files the turn created, minus the harness's own files and the user's pre-existing dirty files), relative to the repository's top level. Item files are relative to the work folder; `git rev-parse --show-prefix` puts both in one space, and the answer names files the way the items do.
+2. Attribution is by board item window, not by hash: when an item closes, `_items.review_progress` records the files edited in its window as `files`. Files of `self_added` items (below) are *own*; files of every other item (request parts, plan steps, harness adds for a steer) are *asked*.
+3. Unrequested = (own − asked) ∩ changed. Edits a request item also touched belong to the request. Two cases report nothing: item logging inactive (board under 3 items — no item records files), and no request item recorded any files (the harness closes request items at FINAL without evidence; nothing to compare against). If the set is not empty, the answer gets:
 
    > ⚠ Unrequested changes: `src/util.py`, `README.md` [Revert these]
 
-   The button calls `POST /api/chat/sessions/{id}/revert` with the paths: `git checkout -- <path>` for tracked files, delete for untracked. Nothing is reverted without the click.
-4. Items the model added itself (`plan_progress add` with no matching user cue, see below) count as unattached for their files.
+   (12 paths shown, then "(+N more)"), and a `scope_net` event `{paths, head0}` follows `done`. Nothing is reverted without the click.
+4. `POST /api/chat/sessions/{id}/revert` `{paths, head0}`, one plain file at a time, pathspecs literal: a file `head0` held goes back to that content (`git checkout <head0> -- path`); one it did not hold is deleted and, when the chat's worktree already committed it (`seal_for_session` runs at the end of every turn, before any click), taken out of the index (`git rm --cached`). Refused: paths outside the work folder (links resolved), symlinks, folders, patterns. A chat with a worktree refuses a missing or unknown `head0` (400: its HEAD already holds the turn's work, so HEAD is never a fallback there); a plain folder falls back to HEAD. The call waits for a turn that has answered to finish its bookkeeping (`chat_runs.settle`) and answers 409 only while a turn is really working. `st.head0` is read once at every turn start.
 
 ### Board rule
 
-`plan_progress add` from the model: `_tasks.apply_progress` tags the item `self_added` when neither `_same_work` maps it to a planned item nor the title shares a noun with the request or any steer. The dock shows it as "(added by agent)". Its files are unattached for the scope net. Tagging is deterministic (word overlap), no model call.
+`plan_progress add` from the model: `_tasks.apply_progress` tags the item `self_added` when `_same_work` maps it to no harness item **and** its title shares no content word (`_words`: stemmed, stop words dropped) with the request, any mid-run steer, or any `from_request` / `by_harness` item title (`_tasks.context_words`, computed by `_action.py` per call). A big request the model writes as small tasks on its own board (the prompt's `_DECOMPOSE`) shares the request's words and is not tagged; "refactor utils" under "add login + logout + docs" is. The `repos` item and harness adds are never tagged. The dock shows a tagged item as "(added by agent)". Its files are *own* for the scope net. Tagging is deterministic (word overlap), no model call.
 
 ### Enhancer
 

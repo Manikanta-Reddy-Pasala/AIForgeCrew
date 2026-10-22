@@ -449,10 +449,10 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
         # at the end of the answer, with a revert offer in the UI.
         try:
             if _sn.enabled() and not readonly_mode:
-                _changed = _facts._changed(cwd, getattr(st, "head0", None),
-                                           getattr(st, "session_id", None),
-                                           _wt_fp0 or "") or set()
-                _sn_paths = _sn.unrequested(st, _changed)
+                _changed = _facts.changed_paths(cwd, getattr(st, "head0", None),
+                                                getattr(st, "session_id", None),
+                                                _wt_fp0 or "") or set()
+                _sn_paths = _sn.unrequested(st, _changed, _sn.prefix_of(cwd))
                 _bg_note = _bg_note + _sn.block(_sn_paths)
         except Exception:  # noqa: BLE001 — the net never blocks an answer
             _sn_paths = []

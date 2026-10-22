@@ -60,10 +60,12 @@ def _written(session_id, cwd) -> set:
     return set(_write_paths(action_log.live_steps(session_id), cwd))
 
 
-def _changed(cwd, head0, session_id=None, dirty0: str = "") -> "set | None":
-    """Files that differ from the turn's first commit — without the harness's
-    own files, and without a file that was already uncommitted when the turn
-    began, is in the same state now, and that no write call of the turn named."""
+def changed_paths(cwd, head0, session_id=None, dirty0: str = "") -> "set | None":
+    """Files that differ from the turn's first commit, relative to the
+    repository's top level — without the harness's own files, and without a
+    file that was already uncommitted when the turn began, is in the same
+    state now, and that no write call of the turn named. None when git
+    cannot say."""
     from aiforge_core.runtime.chat_agent._guards.turn_facts import _git, changed_files
     found = changed_files(cwd, head0)
     if found is None:
@@ -77,6 +79,9 @@ def _changed(cwd, head0, session_id=None, dirty0: str = "") -> "set | None":
         found = {p for p in found
                  if p in written or before.get(p) is None or before.get(p) != now.get(p)}
     return found
+
+
+_changed = changed_paths      # the older name
 
 
 def _commits(cwd, head0) -> list:
@@ -231,4 +236,4 @@ def strip_copied(text: str) -> str:
     return "\n".join(kept)
 
 
-__all__ = ["HEAD", "enabled", "parts", "strip_copied", "suffix"]
+__all__ = ["HEAD", "changed_paths", "enabled", "parts", "strip_copied", "suffix"]

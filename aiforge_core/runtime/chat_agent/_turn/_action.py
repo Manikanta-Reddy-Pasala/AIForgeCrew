@@ -38,7 +38,7 @@ from ._shared import (
     _ACTION_SIG_MAX,
 )
 from ._items import note_evidence, review_progress
-from ._tasks import apply_progress
+from ._tasks import apply_progress, context_words
 
 
 def _action_stall_guard(st, name, args, sig, _long_chain_help):
@@ -196,7 +196,10 @@ def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
         # A part of the user's request is never taken off by the model: it is
         # marked skipped, so the user sees what happened to it. (The harness's
         # own revise for a message the user sent mid-run removes dropped work.)
-        result, events = apply_progress(st.board, args)
+        result, events = apply_progress(
+            st.board, args,
+            context_words=context_words(st.board, getattr(st, "goal", ""),
+                                        getattr(st, "steers", None)))
         result, events = review_progress(st, result, events)
         st.board_used = st.board_used or any(
             ev["type"] == "subtasks" for ev in events)
