@@ -87,7 +87,7 @@ def _wire(monkeypatch, rec: _Rec, route_pipeline: bool, seen: dict):
 
     for name in ("_early_route_events", "_prelude_notices",
                  "_note_staleness_notice", "_rule_capture_pass",
-                 "_post_run_events"):
+                 "_recipe_pass", "_post_run_events"):
         monkeypatch.setattr(_producer, name, _none)
     monkeypatch.setattr(_producer, "_warm_repo_map", lambda _cwd: None)
     monkeypatch.setattr(_producer, "_decide_chat_route", rec.decide(route_pipeline))
