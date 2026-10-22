@@ -346,11 +346,12 @@ def _append_context_blocks(add, cwd, last_user, messages, session_id, role, cave
 
 
 def _prepend_priority_blocks(sys_msg, asks, prefs, rules, analyze_mode,
-                             plan_mode, builder):
+                             plan_mode, builder, *, recipes_text: str = "",
+                             targets_text: str = ""):
     """Prepend the highest-priority prompt blocks in drop order (multi-ask
-    checklist, standing prefs, user rule book, analyze/plan banner, builder
-    charter) — each pushed to the FRONT so it survives a tight window. Returns
-    the augmented ``sys_msg``."""
+    checklist, standing prefs, user targets, project recipes, user rule book,
+    analyze/plan banner, builder charter) — each pushed to the FRONT so it
+    survives a tight window. Returns the augmented ``sys_msg``."""
     _asks = asks
     if _asks:
         sys_msg = ("MULTI-PART REQUEST — the user's CURRENT message contains "
@@ -364,6 +365,10 @@ def _prepend_priority_blocks(sys_msg, asks, prefs, rules, analyze_mode,
                    + "\n\n" + sys_msg)
     if prefs:                       # standing user preferences — always applied
         sys_msg = prefs + "\n\n" + sys_msg
+    if targets_text:                # user-given targets — must be matched, on disk
+        sys_msg = targets_text + "\n\n" + sys_msg
+    if recipes_text:                # project recipes — fixed commands
+        sys_msg = recipes_text + "\n\n" + sys_msg
     if rules:                       # user rule book first — highest priority
         sys_msg = rules + "\n\n" + sys_msg
     if analyze_mode:                # read-only ANALYSIS (findings, not a plan)

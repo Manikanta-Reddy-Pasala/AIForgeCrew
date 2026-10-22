@@ -451,6 +451,10 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
         yield {"type": "message",
                "text": _strip_reasoning_prefix(step["text"]) + _bg_note}
         yield {"type": "done"}
+        # Offer to save this turn's green build/test commands as recipes —
+        # after done so the card never delays the answer.
+        if not (strict_finish or builder or plan_mode or readonly_mode):
+            yield from _recipe_offer_events(st, cwd)
         # The run stays open after done until the producer finishes, and the
         # UI applies a suggestion that arrives then. Wait out the rest of the
         # grace here: the answer is already on screen.
@@ -458,6 +462,20 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
     finally:
         _cancel_suggestion(_sugg)
     return "return"
+
+
+def _recipe_offer_events(st, cwd: str):
+    """Cards offering to save this turn's green build/test commands as recipes."""
+    try:
+        from aiforge_core.runtime import action_log, recipes, repo_ident
+        if not recipes.enabled():
+            return
+        root = repo_ident.git_toplevel(cwd) or cwd
+        offers = recipes.offers(root, action_log.live_steps(getattr(st, "session_id", None)))
+    except Exception:  # noqa: BLE001 — an offer never breaks an accepted answer
+        return
+    for offer in offers:
+        yield {"type": "recipe_offer", **offer}
 
 
 #: An answer that defers the work to a command still running.

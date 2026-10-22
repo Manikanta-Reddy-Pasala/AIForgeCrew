@@ -201,6 +201,25 @@ def _request_only(words: str) -> str:
     return text
 
 
+def _recipes_text(cwd) -> str:
+    """The RECIPES block for the project ``cwd`` is in ("" when none / off).
+    Looked up at the main checkout's root, so a chat worktree shares them."""
+    try:
+        from aiforge_core.runtime import recipes, repo_ident
+        return recipes.block(repo_ident.git_toplevel(cwd) or cwd)
+    except Exception:  # noqa: BLE001 — a recipes read never breaks prompt build
+        return ""
+
+
+def _targets_text(session_id) -> str:
+    """The TARGETS block for this session ("" when none / off)."""
+    try:
+        from aiforge_core.runtime import targets
+        return targets.block(session_id) if session_id is not None else ""
+    except Exception:  # noqa: BLE001 — targets module lands in Task 5
+        return ""
+
+
 def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
                  analyze_mode, builder, strict_finish, session_id, native=False,
                  unlimited=False, stable_system=False, carried=False):
@@ -225,7 +244,9 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
         else _task_list(role, _own_words(last_user), messages, cwd, session_id,
                         act=not (readonly_mode or plan_mode or analyze_mode))
     sys_msg = _prepend_priority_blocks(
-        sys_msg, _asks, prefs, rules, analyze_mode, plan_mode, builder)
+        sys_msg, _asks, prefs, rules, analyze_mode, plan_mode, builder,
+        recipes_text=_recipes_text(cwd),
+        targets_text=_targets_text(session_id))
     # Reply language (Settings): part of the protected core, never trimmed —
     # a half-kept block said "write in X" and lost its "never change code or
     # protocol markers" clause. (llm.client adds it for every other call.)
