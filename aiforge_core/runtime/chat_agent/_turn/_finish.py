@@ -26,6 +26,7 @@ from .._guards import (
     run_guards,
 )
 from .._guards.rules import RuleBreakGuard
+from .._guards.targets import TargetReaskGuard
 from .._prompt import _strip_reasoning_prefix
 from .._registry import (
     _BUILDER_FINALIZE_TOOL,
@@ -379,7 +380,9 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
         UnchangedFileClaimGuard(cwd, readonly_mode, builder, plan_mode),
         UnpassedCheckGuard(readonly_mode, builder, plan_mode),
         # A command that did what one of the user's rules forbids.
-        RuleBreakGuard(cwd, readonly_mode, builder, plan_mode)])
+        RuleBreakGuard(cwd, readonly_mode, builder, plan_mode),
+        # The answer asks the user for a target that is already on disk.
+        TargetReaskGuard()])
     if _sig == "continue":
         return "continue"
     _sig = yield from _verify_on_final(st, step, cwd, plan_mode, builder)
