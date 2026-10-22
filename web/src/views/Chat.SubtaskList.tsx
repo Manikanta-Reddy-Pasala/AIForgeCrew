@@ -75,17 +75,23 @@ export function SubtaskList({ items, onViewSpec, onDismiss }: Readonly<{
         // one key blind is what took the whole chat view down when the panel
         // was expanded.
         const label = String(s.goal || s.title || s.slug || '');
+        // Flags sit OUTSIDE the truncation so a long label cannot eat them:
+        // 🔒 = a stored user target the harness enforces; "(added by agent)"
+        // = an item no request asked for.
+        const flagged = (s.enforced ? '🔒 ' : '') + label + (s.self_added ? ' (added by agent)' : '');
         return (
         <div key={s.slug || i} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, padding: '2px 0' }}>
           <span style={{ flexShrink: 0, width: 58, textAlign: 'center', fontSize: 10, fontWeight: 600,
             color: SUBTASK_COLORS[s.status] || SUBTASK_COLORS.pending,
             border: `1px solid ${SUBTASK_COLORS[s.status] || SUBTASK_COLORS.pending}`, borderRadius: 4, padding: '1px 3px' }}>{STATUS_LABEL[s.status] || s.status}</span>
-          <span title={s.slug ? `${s.slug}: ${label}` : label}
+          <span title={s.slug ? `${s.slug}: ${flagged}` : flagged}
             style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
             {/* Numbered in board order (the agent can insert, move and remove
                 items); the slug is an id, shown on hover. */}
             <span style={{ color: '#8892a0', fontFamily: 'monospace', marginRight: 6 }}>{i + 1}.</span>
+            {s.enforced && <span title="enforced: a stored target of yours" aria-label="enforced" style={{ marginRight: 4 }}>🔒</span>}
             <span style={{ color: '#8892a0' }}>{label.length > 60 ? label.slice(0, 60) + '…' : label}</span>
+            {s.self_added && <span style={{ color: 'var(--warn, #d4a72c)', marginLeft: 6 }}>(added by agent)</span>}
           </span>
         </div>
         );

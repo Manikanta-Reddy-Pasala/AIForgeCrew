@@ -50,7 +50,7 @@ _REPO_SUBDIRS = (".aiforge/commands", ".claude/commands")
 _NAME_RE = re.compile(r"^/([A-Za-z0-9_.-]+)")
 _POSITIONAL_RE = re.compile(r"\$(\d+)")
 # Built-in commands that need no user file (so /help works with zero files).
-_BUILTINS = ("help", "commands")
+_BUILTINS = ("help", "commands", "recipes")
 
 
 @dataclass(frozen=True)
@@ -167,6 +167,7 @@ def _help_text(cmds: dict[str, Command]) -> str:
         lines.append("  (no custom commands yet — add markdown files under "
                      ".aiforge/commands/ or .claude/commands/)")
     lines.append("  /help — list available commands")
+    lines.append("  /recipes — list this project's command recipes")
     return "\n".join(lines)
 
 
@@ -187,6 +188,9 @@ def expand(text: str, cwd: str | None = None) -> str | None:
     cmds = load(cwd)
     if name in cmds:
         return _substitute(cmds[name].body, arg_str)
+    if name == "recipes":
+        from aiforge_core.runtime import recipes
+        return recipes.help_text(_repo_root(cwd) or cwd or "")
     if name in _BUILTINS:
         return _help_text(cmds)
     return None
@@ -200,7 +204,7 @@ def list_commands(cwd: str | None = None) -> list[dict]:
 
 
 def is_builtin(name: str) -> bool:
-    """True for the zero-file built-ins (``help`` / ``commands``)."""
+    """True for the zero-file built-ins (``help`` / ``commands`` / ``recipes``)."""
     return name in _BUILTINS
 
 

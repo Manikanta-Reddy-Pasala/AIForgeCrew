@@ -394,6 +394,70 @@ def chat_session_compact_context(session_id: int) -> dict:
     return out
 
 
+class _RecipeBody(BaseModel):
+    verb: str
+    cmd: str = ""
+    cwd: str = "."
+    aliases: list[str] | None = None
+
+
+def _recipe_root(session_id: int) -> str:
+    """The project whose recipes the session uses: the toplevel of the chat's
+    worktree when it has one, else of its cwd (runtime/recipes)."""
+    from aiforge_core.runtime import chat_store, chat_worktree, repo_ident
+    sess = chat_store.get_session(session_id)
+    if not sess:
+        raise HTTPException(404, f"session {session_id} not found")
+    cwd = chat_worktree.workdir_of(sess) or sess.get("cwd") or _default_cwd()
+    return repo_ident.git_toplevel(cwd) or cwd
+
+
+@router.get("/api/chat/sessions/{session_id}/recipes", responses={404: {"description": "Not found"}})
+def chat_session_recipes(session_id: int) -> dict:
+    """This project's command recipes: verb → {cmd, cwd, aliases, saved}."""
+    from aiforge_core.runtime import recipes
+    return {"ok": True, "recipes": recipes.load(_recipe_root(session_id))}
+
+
+@router.post("/api/chat/sessions/{session_id}/recipes", responses={404: {"description": "Not found"}, 400: {"description": "Bad recipe"}})
+def chat_session_recipe_save(session_id: int, body: _RecipeBody) -> dict:
+    """Save (or replace) a recipe. The verb is canonicalised the way a recipe
+    sentence is ("compile" → build)."""
+    from aiforge_core.runtime import recipes
+    if not body.cmd.strip():
+        raise HTTPException(400, "cmd is required")
+    root = _recipe_root(session_id)
+    verb = recipes.canon(body.verb)
+    try:
+        row = recipes.save(root, verb, body.cmd, cwd=body.cwd, aliases=body.aliases)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "verb": verb, "recipe": row}
+
+
+@router.post("/api/chat/sessions/{session_id}/recipes/decline", responses={404: {"description": "Not found"}, 400: {"description": "Bad verb"}})
+def chat_session_recipe_decline(session_id: int, body: _RecipeBody) -> dict:
+    """The user declined the offer for this verb: it is not offered again."""
+    from aiforge_core.runtime import recipes
+    root = _recipe_root(session_id)
+    try:
+        recipes.decline(root, recipes.canon(body.verb))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True}
+
+
+@router.delete("/api/chat/sessions/{session_id}/recipes/{verb}", responses={404: {"description": "Not found"}, 400: {"description": "Bad verb"}})
+def chat_session_recipe_remove(session_id: int, verb: str) -> dict:
+    """Drop a recipe; ``ok`` is False when there was none for the verb."""
+    from aiforge_core.runtime import recipes
+    root = _recipe_root(session_id)
+    try:
+        return {"ok": recipes.remove(root, recipes.canon(verb))}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @router.delete("/api/chat/sessions/{session_id}", status_code=204, responses={404: {"description": "Not found"}})
 def chat_session_delete(session_id: int) -> None:
     from aiforge_core.runtime import (

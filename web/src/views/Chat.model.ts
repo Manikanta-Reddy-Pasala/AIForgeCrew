@@ -18,7 +18,13 @@ export type AgentStep =
 // `slug` and `status` are the only fields every producer sets. The label is
 // `goal` for most of them and `title` for the simple-mode split-asks path, so
 // both are optional and callers must fall back (see Chat.SubtaskList).
-export type SubtaskItem = { slug: string; status: string; goal?: string; title?: string };
+// `enforced`: a stored user target the harness pinned (the run cannot close
+// it without proof). `self_added`: the agent put it on the board itself — no
+// request asked for it, so the dock says so.
+export type SubtaskItem = {
+  slug: string; status: string; goal?: string; title?: string;
+  enforced?: boolean; self_added?: boolean;
+};
 
 // A captured Rule / Memory / Feedback (deterministic capture pass). Rendered
 // as an inline pill with change-scope / undo affordances.

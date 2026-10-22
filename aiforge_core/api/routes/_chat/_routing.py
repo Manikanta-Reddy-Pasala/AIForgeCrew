@@ -477,3 +477,91 @@ def _rule_capture_pass(prompt, cwd, session_id, _pctx):
                     return
     except Exception as _exc:  # noqa: BLE001 — capture must never break a turn
         _af_log.debug("rule_capture pre-agent pass failed: %s", _exc)
+
+
+def _run_recipe(cmd: str, cwd: str) -> dict:
+    from aiforge_core.runtime.tools.project_runner import _exec
+    return _exec(cmd, cwd, 1800)
+
+
+def _recipe_root(cwd: str) -> str:
+    """The project whose recipes.json the chat uses: ``git_toplevel`` maps a
+    chat worktree to its main repo, which is right for the LOOKUP only — the
+    recipe RUNS in the checkout ``cwd`` is in (``recipes.exec_root``)."""
+    from aiforge_core.runtime import repo_ident
+    return repo_ident.git_toplevel(cwd) or cwd
+
+
+def _recipe_pass(prompt: str, cwd: str, session_id, pctx: dict):
+    """Model-free recipe handling (runtime/recipes): a recipe sentence is saved
+    or removed and acknowledged; a bare verb phrase runs the recipe and answers
+    with its output. A failing recipe hands the output to the agent as the
+    request (``pctx["prompt"]``). A recipe the command-risk check does not
+    clear as safe is left to the model and its approval gate (``pctx["note"]``).
+    Anything else passes through untouched. FAILS OPEN on store errors."""
+    from aiforge_core.runtime import recipes
+    if not recipes.enabled():
+        return
+    root = _recipe_root(cwd)
+    parsed = recipes.parse_sentence(prompt)
+    if parsed:
+        what, verb, cmd = parsed
+        try:
+            if what == "remove":
+                text = (f"Removed the `{verb}` recipe." if recipes.remove(root, verb)
+                        else f"There is no `{verb}` recipe.")
+            else:
+                recipes.save(root, verb, cmd)
+                text = f"Got it — saved recipe `{verb}` = `{cmd}` for this project."
+        except ValueError as exc:
+            text = f"Could not save that recipe: {exc}"
+        except Exception as exc:  # noqa: BLE001 — a store error leaves the turn to the model
+            _af_log.debug("recipe sentence pass failed: %s", exc)
+            return
+        yield {"type": "message", "text": text}
+        yield {"type": "done"}
+        pctx["done"] = True
+        return
+    verb = recipes.verb_for_phrase(root, prompt)
+    if not verb:
+        return
+    rec = recipes.get(root, verb)
+    if not rec:
+        return
+    # The recipe runs in the checkout the chat works in (a chat worktree stays
+    # a worktree), from the recipe's own folder — as the tool path does.
+    exec_root = recipes.exec_root(cwd)
+    cmd = recipes.recipe_command(rec, exec_root)
+    # The approval gate's risk check on the line that will run: only a command
+    # it would auto-approve runs here without the model; anything above safe
+    # goes the normal road, where the gate asks the user.
+    from aiforge_core.runtime.tools import command_risk
+    try:
+        level = command_risk.assess(cmd)["level"]
+    except Exception as exc:  # noqa: BLE001 — unknown risk = not auto-approvable
+        _af_log.debug("recipe risk check failed: %s", exc)
+        level = command_risk.DANGEROUS
+    if level != command_risk.SAFE:
+        pctx["note"] = "recipe needs approval"
+        return
+    res = _run_recipe(cmd, exec_root)
+    out = str(res.get("output") or res.get("error") or "")
+    code = res.get("code")
+    yield {"type": "tool", "name": "run_command", "args": {"cmd": cmd, "_recipe": verb},
+           "result": {"ok": bool(res.get("ok")), "code": code, "stdout": out[-4000:],
+                      "stderr": "", "recipe": verb}}
+    if res.get("ok"):
+        yield {"type": "message",
+               "text": f"`{verb}` recipe: `{cmd}` — exit {code}\n\n```\n{out[-4000:]}\n```"}
+        yield {"type": "done"}
+        pctx["done"] = True
+        return
+    if res.get("stopped"):
+        # The user pressed Stop while it ran: end the turn like any stopped
+        # pre-agent wait — handing the partial output on would start the agent.
+        yield {"type": "error", "text": "stopped by user"}
+        yield {"type": "done"}
+        pctx["done"] = True
+        return
+    pctx["prompt"] = (f"The recipe `{verb}` failed (exit {code}; command: `{cmd}`). "
+                      f"Fix the cause; do not rerun it blindly.\n\nOutput:\n```\n{out[-6000:]}\n```")

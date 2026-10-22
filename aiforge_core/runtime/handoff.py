@@ -108,12 +108,24 @@ def build_chat(st) -> dict:
                                            getattr(st, "cwd", None))
     except Exception:  # noqa: BLE001 — a handoff is still built without it
         cleanup = []
+    # The targets the user gave, and whether a compare proved each one.
+    tg: list = []
+    try:
+        from aiforge_core.runtime import targets
+        sid = getattr(st, "session_id", None)
+        if sid is not None:
+            tg = [f"{r['id']} ({r['label']}): "
+                  + ("matched" if r.get("verified") else "not yet compared")
+                  for r in targets.list(sid)]
+    except Exception:  # noqa: BLE001
+        tg = []
     return {
         **({"cleanup": cleanup} if cleanup else {}),
         "goal": str(getattr(st, "goal", "") or "").strip()[:1200],
         "done": done[-12:],
         "open": open_[:12],
         "files": [f for f in files][-20:],
+        **({"targets": tg} if tg else {}),
         "failed": list(getattr(st, "failed_approaches", []) or [])[-MAX_FAILED:],
         "error": err,
     }
@@ -163,6 +175,9 @@ def render(h: dict, offload_id: "str | None" = None,
         lines.append("DONE (verified): " + "; ".join(h["done"]))
     if h.get("files"):
         lines.append("FILES CHANGED SO FAR: " + ", ".join(h["files"]))
+    if h.get("targets"):
+        lines.append("targets: " + "; ".join(h["targets"])
+                     + " — files pinned in TARGETS block")
     if h.get("failed"):
         lines.append("ALREADY TRIED AND FAILED — choose something different:\n"
                      + render_failed(h["failed"]))

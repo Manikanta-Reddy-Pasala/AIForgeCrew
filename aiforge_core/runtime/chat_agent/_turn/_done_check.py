@@ -187,6 +187,15 @@ def _measured(st) -> str:
             lines.append("TASK BOARD, STILL OPEN: " + "; ".join(left[:8]))
     except Exception:  # noqa: BLE001
         pass
+    try:
+        from aiforge_core.runtime import targets as _targets
+        unproved = [r["id"] for r in _targets.list(getattr(st, "session_id", None))
+                    if not r.get("verified")]
+        if unproved:
+            lines.append("TARGETS NOT PROVED: " + ", ".join(unproved)
+                         + " — a compare command must run and pass")
+    except Exception:  # noqa: BLE001
+        pass
     return "\n".join(lines)[:4000]
 
 

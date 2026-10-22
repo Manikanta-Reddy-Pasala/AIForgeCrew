@@ -18,6 +18,7 @@ from ._prep import (
 from ._routing import (
     _decide_chat_route,
     _plan_mode_route,
+    _recipe_pass,
     _rule_capture_pass,
     _should_skip_enhance,
 )
@@ -134,9 +135,25 @@ def _events(pc):
     # any error here is swallowed and the normal run proceeds.
     # A long message carries its own task, so it is never a pure capture: its
     # classify runs in the background and never holds up routing.
-    pctx = {"done": False}
     from aiforge_core.runtime import chat_private as _cp
-    if getattr(pc, "_wake", False) or _cp.is_temporary(pc.session_id):
+    _harness_or_temp = getattr(pc, "_wake", False) or _cp.is_temporary(pc.session_id)
+    # Recipes (runtime/recipes), model-free: a recipe sentence is saved and
+    # acknowledged, a bare verb phrase runs the recipe and answers with its
+    # output — both end the turn here. A failing recipe becomes the request
+    # the agent gets (the prompt and the last user row of the history).
+    pctx_r = {"done": False}
+    if not _harness_or_temp:
+        yield from _recipe_pass(pc.prompt, pc.cwd, pc.session_id, pctx_r)
+        if pctx_r["done"]:
+            return
+        if pctx_r.get("prompt"):
+            pc.prompt = pctx_r["prompt"]
+            if pc.history and pc.history[-1].get("role") == "user":
+                pc.history[-1] = {**pc.history[-1], "content": pc.prompt}
+        elif pctx_r.get("note"):
+            _af_log.debug("recipe route skipped: %s", pctx_r["note"])
+    pctx = {"done": False}
+    if _harness_or_temp:
         pass        # a harness note (no rule of the user's), or a temporary chat
     elif _capture_bg.inline_needed(pc.prompt):
         yield from _rule_capture_pass(pc.prompt, pc.cwd, pc.session_id, pctx)
