@@ -99,12 +99,19 @@ def _t_ensure_runtime(args: dict, _cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+# Verbs the project tool may run from a recipe. This tool is not a shell tool,
+# so its recipe path skips the command risk gate: deploy and custom slugs run
+# only through the raw-command rewrite (gated) or the recipe route.
+_PROJECT_RECIPE_VERBS = frozenset({"test", "build", "run", "lint"})
+
+
 def _t_project(args: dict, cwd: str) -> dict:
     """Project-level build/test/run. A saved recipe for the action wins over
     stack auto-detection (the user confirmed it once)."""
     action = str(args.get("action", "detect"))
     base = str(args.get("cwd") or cwd)
-    hit = _recipe_run(action, base)
+    hit = (_recipe_run(action, base, timeout=args.get("timeout"))
+           if action in _PROJECT_RECIPE_VERBS else None)
     if hit is not None:
         return hit
     try:
@@ -115,9 +122,11 @@ def _t_project(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-def _recipe_run(verb: str, cwd: str) -> dict | None:
+def _recipe_run(verb: str, cwd: str, timeout=None) -> dict | None:
     """Run the project's recipe for ``verb`` through the shell tool; None when
-    there is none (caller falls back to auto-detection)."""
+    there is none (caller falls back to auto-detection). The recipe is looked
+    up under the project (a chat worktree maps to its main repo) but RUNS in
+    the checkout ``cwd`` is in, from the recipe's own folder."""
     import os
     from aiforge_core.runtime import recipes, repo_ident
     root = repo_ident.git_toplevel(cwd) or cwd
@@ -125,8 +134,12 @@ def _recipe_run(verb: str, cwd: str) -> dict | None:
     if not rec:
         return None
     from .. import _shell
-    where = os.path.normpath(os.path.join(root, rec.get("cwd") or "."))
-    res = dict(_shell._t_run_command({"cmd": rec["cmd"]}, where) or {})
+    exec_root = recipes.exec_root(cwd)
+    where = os.path.normpath(os.path.join(exec_root, rec.get("cwd") or "."))
+    call = {"cmd": recipes.recipe_command(rec, exec_root)}
+    if timeout not in (None, ""):
+        call["timeout"] = timeout
+    res = dict(_shell._t_run_command(call, where) or {})
     res["recipe"] = verb
     return res
 

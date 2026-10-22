@@ -290,7 +290,11 @@ def _run_action_path(st, step, n, cwd, session_id):
 
 def _apply_recipe(name: str, args: dict, cwd: str) -> None:
     """Before any gate: a raw family command (pytest, mvn test…) becomes the
-    project's recipe for that verb. Marks the args so the observation says so."""
+    project's recipe for that verb. Marks the args so the observation says so.
+    The ``_recipe*`` marks are read by ``_turn/_action._post_tool`` (copied
+    onto the result) and shown by ``_obs_text.render_command``; ``_call_sig``
+    ignores them. The recipe is looked up under the project but runs in the
+    checkout ``cwd`` is in, from its own folder (``recipes.recipe_command``)."""
     from aiforge_core.runtime import recipes, repo_ident, shell_writes
     if name not in shell_writes.SHELL_TOOLS or not isinstance(args, dict):
         return
@@ -300,10 +304,11 @@ def _apply_recipe(name: str, args: dict, cwd: str) -> None:
     root = repo_ident.git_toplevel(cwd) or cwd
     hit = recipes.rewrite(root, cmd)
     if hit:
-        verb, new = hit
-        key = "cmd" if "cmd" in args else "command"
+        verb, _new = hit
+        rec = recipes.get(root, verb) or {"cmd": _new}
+        key = "cmd" if args.get("cmd") else "command"
         args["_recipe_was"] = cmd
-        args[key] = new
+        args[key] = recipes.recipe_command(rec, recipes.exec_root(cwd))
         args["_recipe"] = verb
         return
     warn = recipes.warn(root, cmd)

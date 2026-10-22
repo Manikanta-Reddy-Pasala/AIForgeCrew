@@ -321,3 +321,35 @@ def test_block_is_short(tmp_path):
     block = R.block(str(tmp_path))
     assert block.startswith("RECIPES")
     assert block.count("\n") <= 12 and "more:" in block
+
+
+def test_load_drops_rows_whose_cwd_leaves_the_project(tmp_path):
+    d = tmp_path / ".aiforge"
+    d.mkdir()
+    (d / "recipes.json").write_text(json.dumps({
+        "test": {"cmd": "./t.sh", "cwd": "../out"},
+        "build": {"cmd": "make", "cwd": "/abs/dir"},
+        "lint": {"cmd": "ruff", "cwd": "sub"},
+    }))
+    assert list(R.load(str(tmp_path))) == ["lint"]
+
+
+@pytest.mark.parametrize("cwd", [".", "", None, "./"])
+def test_recipe_command_at_the_root_is_the_bare_command(cwd):
+    assert R.recipe_command({"cmd": "./t.sh", "cwd": cwd}, "/repo") == "./t.sh"
+
+
+def test_recipe_command_in_a_folder_changes_into_it():
+    assert R.recipe_command({"cmd": "./t.sh", "cwd": "svc"}, "/repo") == "cd /repo/svc && ./t.sh"
+    assert R.recipe_command({"cmd": "./t.sh", "cwd": "my svc"}, "/re po") == "cd '/re po/my svc' && ./t.sh"
+
+
+def test_exec_root_is_the_checkout_of_cwd_or_cwd_itself(tmp_path):
+    import subprocess
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert R.exec_root(str(plain)) == str(plain)
+    repo = tmp_path / "repo"
+    (repo / "sub").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    assert os.path.realpath(R.exec_root(str(repo / "sub"))) == os.path.realpath(str(repo))
