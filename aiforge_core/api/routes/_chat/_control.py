@@ -70,6 +70,98 @@ def chat_session_checkpoint_restore(session_id: int, body: _RestoreBody) -> dict
                                delete_orphans=bool(body.delete_orphans))
 
 
+class _RevertBody(BaseModel):
+    paths: list[str] = Field(..., description="paths the scope net named, relative to the work folder")
+    head0: str | None = Field(None, description="the commit the turn started on (the scope_net event's "
+                                                "head0); a chat with a worktree needs it")
+
+
+def _revert_target(root: str, path: str) -> "str | None":
+    """The file ``path`` names inside ``root``, or None when the revert must
+    not touch it: an empty or absolute path, one that leaves the root (every
+    link on the way resolved), a symlink, a folder, or a pattern — the path
+    is used literally, one plain file at a time. A file no longer on disk
+    passes (its restore from ``ref`` is the revert)."""
+    if (not path or os.path.isabs(path) or any(c in path for c in "*?[")
+            or path != os.path.normpath(path)):
+        # The same spelling goes to git: "src/../a.py" is inside the root
+        # but names nothing in a tree, and would read as a file to delete.
+        return None
+    lexical = os.path.join(root, path)
+    real = os.path.realpath(lexical)
+    if not real.startswith(root + os.sep) or os.path.islink(lexical):
+        return None
+    if os.path.lexists(lexical) and not os.path.isfile(lexical):
+        return None
+    return lexical
+
+
+def _git_ok(root: str, *args) -> bool:
+    import subprocess
+    return subprocess.run(["git", "--literal-pathspecs", *args], cwd=root,
+                          capture_output=True).returncode == 0
+
+
+def _revert_ref(root: str, head0: "str | None") -> "str | None":
+    """``head0`` when it names a commit of the repo at ``root``, else None."""
+    sha = (head0 or "").strip()
+    if not sha or not sha.isalnum():
+        return None
+    return sha if _git_ok(root, "cat-file", "-e", f"{sha}^{{commit}}") else None
+
+
+@router.post("/api/chat/sessions/{session_id}/revert",
+             responses={400: {"description": "head0 missing or unknown"},
+                        404: {"description": "Not found"}, 409: {"description": "A turn is running"}})
+def chat_session_revert(session_id: int, body: _RevertBody) -> dict:
+    """Undo the unrequested changes the scope net listed, one plain file at a
+    time: a file the turn's first commit (``head0``) held goes back to that
+    content; one it did not hold is deleted (and untracked, when the chat's
+    worktree already committed it at the end of the turn). Paths outside the
+    chat's work folder, symlinks, folders and patterns are refused. A chat
+    with a worktree refuses a missing or unknown ``head0`` (its HEAD already
+    holds the turn's work); a plain folder falls back to HEAD. A click right
+    after the answer waits for the turn's bookkeeping instead of a 409."""
+    from aiforge_core.runtime import chat_runs, chat_store, chat_worktree
+    session = chat_store.get_session(session_id)
+    if not session:
+        raise HTTPException(404, f"session {session_id} not found")
+    if not chat_runs.settle(session_id):
+        raise HTTPException(409, "a turn is running")
+    workdir = chat_worktree.workdir_of(session)
+    root = os.path.realpath(workdir or session.get("cwd") or _default_cwd())
+    ref = _revert_ref(root, body.head0)
+    if ref is None:
+        if workdir:
+            raise HTTPException(400, "head0 missing or not a commit of this chat's worktree: "
+                                     "nothing reverted")
+        ref = "HEAD"
+    reverted, refused = [], []
+    for p in body.paths:
+        lexical = _revert_target(root, p)
+        if lexical is None:
+            refused.append(p)
+            continue
+        if _git_ok(root, "cat-file", "-e", f"{ref}:{p}"):
+            ok = _git_ok(root, "checkout", ref, "--", p)
+        elif not os.path.lexists(lexical):
+            refused.append(p)              # neither on disk nor at ref: nothing to revert
+            continue
+        else:
+            # Not there when the turn began: off the disk, and out of the
+            # index when the worktree's seal already committed it.
+            ok = True
+            if os.path.lexists(lexical):
+                try:
+                    os.remove(lexical)
+                except OSError:
+                    ok = False
+            if ok and _git_ok(root, "ls-files", "--error-unmatch", "--", p):
+                ok = _git_ok(root, "rm", "-q", "--cached", "--", p)
+        (reverted if ok else refused).append(p)
+    return {"ok": not refused, "reverted": reverted, "refused": refused}
+
+
 class _SessionTicketBody(BaseModel):
     content: str = Field(..., min_length=1)
     project: str | None = Field(None, description="target repo; defaults to session cwd name")

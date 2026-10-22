@@ -14,6 +14,9 @@ import re
 
 _BOARD_OPEN = "<<AIFORGE_TASK_BOARD>>"
 _BOARD_CLOSE = "<</AIFORGE_TASK_BOARD>>"
+#: The item that records the chat's repository roles (runtime/repo_roles.SLUG):
+#: the harness's record, not work the model added.
+_ROLES_SLUG = "repos"
 _STATUSES = ("pending", "running", "done", "failed", "skipped")
 #: Words models use for the same statuses.
 _ALIASES = {"todo": "pending", "open": "pending", "queued": "pending",
@@ -97,9 +100,9 @@ def revised_note(board: dict, changes: list) -> str:
 def board_items(board: dict) -> list[dict]:
     """The board as the UI's subtasks dock reads it."""
     return [{"slug": s, "goal": it["title"], "title": it["title"],
-             "status": it["status"],
-             "enforced": bool(it.get("enforced")),
-             } for s, it in board.items()]
+             "status": it["status"], "enforced": bool(it.get("enforced")),
+             "self_added": bool(it.get("self_added"))}
+            for s, it in board.items()]
 
 
 def open_items(board: dict) -> list[str]:
@@ -140,6 +143,20 @@ def _words(title: str) -> set:
     head = re.split(r"\s[—–-]+\s*check:|\(done when", title, maxsplit=1,
                     flags=re.I)[0]
     return {_stem(w.strip("./-:").lower()) for w in _WORD.findall(head)} - _STOP - {""}
+
+
+def context_words(board: dict, goal: str = "", steers=None) -> set:
+    """The content words of what the user asked for in this turn: the request,
+    every mid-run steer, and the items the harness put on the board (the
+    request's parts, a plan's steps, work a later message added). A model-added
+    item that shares none of them is work the user did not ask for."""
+    out = _words(goal or "")
+    for s in steers or ():
+        out |= _words(str(s))
+    for it in (board or {}).values():
+        if it.get("from_request") or it.get("by_harness"):
+            out |= _words(it.get("title") or "")
+    return out
 
 
 def _names(words: set) -> set:
@@ -261,7 +278,8 @@ def _enforced_refusal(board: dict, slug: str, status: str, args: dict) -> dict |
 
 
 def apply_progress(board: dict, args: dict, *,
-                   allow_request_removal: bool = False) -> tuple[dict, list[dict]]:
+                   allow_request_removal: bool = False,
+                   context_words: "set | None" = None) -> tuple[dict, list[dict]]:
     """Apply one ``plan_progress`` call. Returns ``(result, ui_events)``.
 
     Besides adding an item (new slug + title) and moving one (known slug +
@@ -269,7 +287,13 @@ def apply_progress(board: dict, args: dict, *,
     ``removed``), place an item (``after`` / ``before`` a slug, or
     ``position``, 1 = first) and put the whole board in an ``order`` (a list
     of slugs). A part of the user's request is removed only when the user
-    dropped it (``allow_request_removal``: a message arrived mid-run)."""
+    dropped it (``allow_request_removal``: a message arrived mid-run).
+
+    ``context_words`` (:func:`context_words`): an item the model adds whose
+    title shares no content word with them is tagged ``self_added`` — work
+    the user did not ask for, whose files the scope net names at FINAL. A
+    model told to write a big request as small tasks on its board shares
+    the request's words; it is not tagged. None: no tagging."""
     if isinstance(args.get("order"), list) and not args.get("slug"):
         before = list(board)
         _reorder(board, args["order"])
@@ -311,6 +335,13 @@ def apply_progress(board: dict, args: dict, *,
             return {"ok": False, "slug": slug,
                     "error": f"the task board is full ({_MAX_ITEMS} items)"}, []
         board[slug] = {"title": title[:_MAX_TITLE], "status": status or "pending"}
+        mine = _words(title) if context_words is not None else set()
+        if (mine and not (mine & context_words) and slug != _ROLES_SLUG
+                and not _truthy(args.get("by_harness"))):
+            # Work the model put on the board itself: nothing the user asked
+            # for (request, steers, harness items) names it. The scope net
+            # names the files changed under it at FINAL.
+            board[slug]["self_added"] = True
     else:
         placing = any(args.get(k) not in (None, "") for k in ("after", "before", "position"))
         new_status = status or ("done" if not (title or placing) else
