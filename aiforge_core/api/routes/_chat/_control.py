@@ -2,6 +2,7 @@
 suggestion feedback."""
 from __future__ import annotations
 
+import json
 import os
 
 from fastapi import HTTPException, Request
@@ -80,10 +81,12 @@ def _revert_target(root: str, path: str) -> "str | None":
     """The file ``path`` names inside ``root``, or None when the revert must
     not touch it: an empty or absolute path, one that leaves the root (every
     link on the way resolved), a symlink, a folder, or a pattern — the path
-    is used literally, one plain file at a time. A file no longer on disk
-    passes (its restore from ``ref`` is the revert)."""
+    is used literally, one plain file at a time. Nothing under ``.git`` (in
+    a worktree ``.git`` is a plain file). A file no longer on disk passes
+    (its restore from ``ref`` is the revert)."""
     if (not path or os.path.isabs(path) or any(c in path for c in "*?[")
-            or path != os.path.normpath(path)):
+            or path != os.path.normpath(path)
+            or ".git" in path.replace(os.sep, "/").split("/")):
         # The same spelling goes to git: "src/../a.py" is inside the root
         # but names nothing in a tree, and would read as a file to delete.
         return None
@@ -100,6 +103,27 @@ def _git_ok(root: str, *args) -> bool:
     import subprocess
     return subprocess.run(["git", "--literal-pathspecs", *args], cwd=root,
                           capture_output=True).returncode == 0
+
+
+def _offered_paths(session_id: int, head0: "str | None") -> set:
+    """The paths the scope net offered for revert in this session's answers
+    (persisted ``scope_net`` steps) for the turn that started on ``head0``.
+    Only these may be reverted: the request body names, the server decides."""
+    from aiforge_core.runtime import chat_store
+    want = (head0 or "").strip() or None
+    out: set = set()
+    for m in chat_store.get_messages(session_id) or []:
+        steps = m.get("steps") or []
+        if isinstance(steps, str):
+            try:
+                steps = json.loads(steps)
+            except ValueError:
+                steps = []
+        for st in steps:
+            if (isinstance(st, dict) and st.get("type") == "scope_net"
+                    and ((st.get("head0") or None) == want)):
+                out.update(p for p in (st.get("paths") or []) if isinstance(p, str))
+    return out
 
 
 def _revert_ref(root: str, head0: "str | None") -> "str | None":
@@ -120,8 +144,10 @@ def chat_session_revert(session_id: int, body: _RevertBody) -> dict:
     worktree already committed it at the end of the turn). Paths outside the
     chat's work folder, symlinks, folders and patterns are refused. A chat
     with a worktree refuses a missing or unknown ``head0`` (its HEAD already
-    holds the turn's work); a plain folder falls back to HEAD. A click right
-    after the answer waits for the turn's bookkeeping instead of a 409."""
+    holds the turn's work); a plain folder falls back to HEAD; a folder
+    outside git is refused. Only paths a persisted ``scope_net`` step of this
+    session offered for that ``head0`` are touched. A click right after the
+    answer waits for the turn's bookkeeping instead of a 409."""
     from aiforge_core.runtime import chat_runs, chat_store, chat_worktree
     session = chat_store.get_session(session_id)
     if not session:
@@ -130,19 +156,27 @@ def chat_session_revert(session_id: int, body: _RevertBody) -> dict:
         raise HTTPException(409, "a turn is running")
     workdir = chat_worktree.workdir_of(session)
     root = os.path.realpath(workdir or session.get("cwd") or _default_cwd())
+    if not _git_ok(root, "rev-parse", "--is-inside-work-tree"):
+        # Outside git there is no record of what the turn began with: every
+        # file would read as new and be deleted.
+        raise HTTPException(400, "the work folder is not a git repository: nothing reverted")
     ref = _revert_ref(root, body.head0)
     if ref is None:
         if workdir:
             raise HTTPException(400, "head0 missing or not a commit of this chat's worktree: "
                                      "nothing reverted")
         ref = "HEAD"
+    offered = _offered_paths(session_id, body.head0)
     reverted, refused = [], []
     for p in body.paths:
-        lexical = _revert_target(root, p)
+        lexical = _revert_target(root, p) if p in offered else None
         if lexical is None:
             refused.append(p)
             continue
-        if _git_ok(root, "cat-file", "-e", f"{ref}:{p}"):
+        # "<rev>:./<p>" reads <p> relative to the work folder; "<rev>:<p>"
+        # would read it from the repository top and miss every file of a
+        # subfolder work folder — which then reads as new and is deleted.
+        if _git_ok(root, "cat-file", "-e", f"{ref}:./{p}"):
             ok = _git_ok(root, "checkout", ref, "--", p)
         elif not os.path.lexists(lexical):
             refused.append(p)              # neither on disk nor at ref: nothing to revert

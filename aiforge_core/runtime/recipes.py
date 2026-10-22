@@ -352,14 +352,16 @@ def verb_for_phrase(root: str, text: str) -> str | None:
     return None
 
 
-def _looks_like_command(verb: str, cmd: str) -> bool:
-    """A plain "<verb> is <cmd>" (no lead-in, no = or backticks) only counts
-    when the verb is a built-in or a coined slug (run-job) and the command is
-    a tool head with arguments or a path — "build is slow", "run with docker",
-    "go with docker compose" and "url is https://x" are prose."""
+def _looks_like_command(verb: str, cmd: str, any_verb: bool = False) -> bool:
+    """A "<verb> is <cmd>" with no = or backticks only counts when the
+    command is a tool head with arguments or a path — "build is slow", "run
+    with docker", "go with docker compose" and "url is https://x" are prose.
+    Without a lead-in (``any_verb`` False) the verb must also be a built-in
+    or a coined slug (run-job); a lead-in ("remember:", "always") lifts only
+    that: "Always deploy with care." is still prose."""
     if "://" in cmd:
         return False
-    if verb not in BUILTIN_VERBS and "-" not in verb:
+    if not any_verb and verb not in BUILTIN_VERBS and "-" not in verb:
         return False
     parts = cmd.split()
     head = parts[0].lower() if parts else ""
@@ -386,15 +388,18 @@ def parse_sentence(text: str) -> tuple[str, str, str] | None:
         return None
     if " is what " in t or " says" in t or verb in ("remember", "always"):
         return None
-    explicit = bool(m.group("lead")) or m.group("sep") == "=" or bool(m.group("q"))
-    if not explicit and not _looks_like_command(verb, cmd):
+    explicit = m.group("sep") == "=" or bool(m.group("q"))
+    if not explicit and not _looks_like_command(verb, cmd, any_verb=bool(m.group("lead"))):
         return None
     return "save", verb, cmd
 
 
-def offers(root: str, steps) -> list[dict]:
+def offers(root: str, steps, run_root: str | None = None) -> list[dict]:
     """Recipe offers for this turn: one per family verb that ran green and has
-    no recipe and was not declined. Order = first success."""
+    no recipe and was not declined. Order = first success. ``root`` is the
+    store's lookup root (a chat worktree maps to its main repo); an offer's
+    cwd is made relative to ``run_root`` (:func:`exec_root`, the checkout the
+    commands ran in), defaulting to ``root``."""
     if not enabled():
         return []
     have, declined, out, seen = load(root), _declined(root), [], set()
@@ -412,7 +417,7 @@ def offers(root: str, steps) -> list[dict]:
         if not verb or verb in have or verb in declined or verb in seen:
             continue
         seen.add(verb)
-        out.append({"verb": verb, "cmd": cmd, "cwd": _offer_cwd(root, args.get("cwd"))})
+        out.append({"verb": verb, "cmd": cmd, "cwd": _offer_cwd(run_root or root, args.get("cwd"))})
         if len(out) == 3:
             break
     return out

@@ -1125,8 +1125,12 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
     setMedia([]);               // reset attachments while the session loads
     setPendingApproval(null);   // don't carry a card across sessions/loads
     setPlanReady(null);         // don't let session A's plan execute in session B
-    setRecipeOffers(null);      // nor its recipe offers / scope net show there
-    setScopeNet(null);
+    // Another session's recipe offers / scope net never show here. The same
+    // session's are kept: the reload right after a turn (finishSend) would
+    // otherwise drop the scope net that arrived after `done`, and the scope
+    // net is not rehydrated from the stored steps.
+    setRecipeOffers(prev => (prev && prev.sessionId === id ? prev : null));
+    setScopeNet(prev => (prev && prev.sessionId === id ? prev : null));
     setCheckpoints(null);
     loadMedia(id);              // pull this session's attached images
     try {

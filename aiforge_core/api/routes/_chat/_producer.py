@@ -143,7 +143,8 @@ def _events(pc):
     # the agent gets (the prompt and the last user row of the history).
     pctx_r = {"done": False}
     _recipe_failed = False
-    if not _harness_or_temp:
+    # Plan mode runs nothing: "build" there is a request to plan, not to run.
+    if not _harness_or_temp and getattr(pc, "agent_mode", None) != "plan":
         yield from _recipe_pass(pc.prompt, pc.cwd, pc.session_id, pctx_r)
         if pctx_r["done"]:
             return

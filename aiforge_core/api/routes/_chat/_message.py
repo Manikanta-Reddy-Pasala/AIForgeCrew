@@ -143,12 +143,15 @@ def _message_turn_locked(session_id: int, body: _SessionMsgBody,
     _user_msg_id = chat_store.add_message(session_id, "user", body.content,
                                           mode=_turn_mode)
     # A target the message carries ("match this output: ```…```") is stored
-    # verbatim now; the board seed reads the store (runtime/targets).
+    # verbatim now; the board seed reads the store (runtime/targets). A
+    # temporary chat keeps nothing on disk, so it stores no target.
     try:
+        from aiforge_core.runtime import chat_private as _cp_t
         from aiforge_core.runtime import targets as _targets
-        _turn_no = sum(1 for r in chat_store.get_messages(session_id)
-                       if r.get("role") == "user")
-        _targets.capture(session_id, body.content, turn=_turn_no)
+        if not _cp_t.is_temporary(session_id):
+            _turn_no = sum(1 for r in chat_store.get_messages(session_id)
+                           if r.get("role") == "user")
+            _targets.capture(session_id, body.content, turn=_turn_no)
     except Exception as exc:  # noqa: BLE001 — never block the turn on target storage
         _af_log.warning("target capture failed: %s", exc)
     # Provisional title now (instant), upgraded to a model-generated one after

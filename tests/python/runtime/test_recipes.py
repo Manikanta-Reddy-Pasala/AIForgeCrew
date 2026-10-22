@@ -135,6 +135,9 @@ def test_parse_sentence_removes(text, verb):
     # a tool name alone, an unknown verb, or a URL is prose too
     "run with docker", "go with docker compose", "start with npm install",
     "url is https://x", "endpoint is http://localhost:8080",
+    # a lead-in word alone does not turn prose into a recipe
+    "Always deploy with care.", "remember: build is broken on CI",
+    "from now on test with caution", "always lint using common sense",
 ])
 def test_parse_sentence_ignores_other_text(text):
     assert R.parse_sentence(text) is None
@@ -353,3 +356,17 @@ def test_exec_root_is_the_checkout_of_cwd_or_cwd_itself(tmp_path):
     (repo / "sub").mkdir(parents=True)
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     assert os.path.realpath(R.exec_root(str(repo / "sub"))) == os.path.realpath(str(repo))
+
+
+def test_offer_cwd_is_relative_to_the_checkout_the_command_ran_in(tmp_path):
+    """A chat worktree's absolute cwd is made relative to the worktree, not to
+    the main repo the store lives under (which would give
+    ".aiforge-worktrees/…" — a folder that does not exist in the worktree)."""
+    main = tmp_path / "proj"
+    wt = main / ".aiforge-worktrees" / "chat-1" / "work"
+    (wt / "svc").mkdir(parents=True)
+    steps = [{"type": "tool", "name": "run_command",
+              "args": {"cmd": "pytest -q", "cwd": str(wt / "svc")},
+              "result": {"ok": True, "code": 0}}]
+    assert R.offers(str(main), steps, run_root=str(wt)) == [
+        {"verb": "test", "cmd": "pytest -q", "cwd": "svc"}]

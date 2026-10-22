@@ -491,7 +491,10 @@ def _recipe_offer_events(st, cwd: str):
         if not recipes.enabled():
             return
         root = repo_ident.git_toplevel(cwd) or cwd
-        offers = recipes.offers(root, action_log.live_steps(getattr(st, "session_id", None)))
+        # The cwd is made relative to the checkout the commands ran in: the
+        # chat worktree, not the main repo the store is looked up under.
+        offers = recipes.offers(root, action_log.live_steps(getattr(st, "session_id", None)),
+                                run_root=recipes.exec_root(cwd))
     except Exception:  # noqa: BLE001 — an offer never breaks an accepted answer
         return
     for offer in offers:
