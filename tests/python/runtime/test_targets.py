@@ -86,6 +86,7 @@ def test_disabled_switch(monkeypatch):
     ("python compare.py {p} out.json", True), ("python -c 'import json; assert json.load(open(\"{p}\")) == x'", True),
     ("sort out.csv | diff - {p}", True), ("git diff --no-index {p} out.json", True),
     ("cat {p}", False), ("diff a b", False), ("ls", False), ("python run.py", False),
+    ("jq . {p}", False), ("jq -S . {p} > a", False),
 ])
 def test_is_compare(cmd, ok):
     T.capture(5, "match this output:\n```\n" + JSON + "\n```")
@@ -116,9 +117,12 @@ def test_reask_regex(text, hit):
 def test_board_item_for_a_target():
     T.capture(5, "match this output:\n```\n" + JSON + "\n```")
     items = T.board_items(5)
+    p = T.list(5)[0]["path"]
+    assert os.path.isabs(p) and p.endswith("/targets/target-1.json")
     assert items == {"target-1": {"title": "output matches target-1 — check: a compare command on "
-                                           "targets/target-1.json ran and passed",
+                                           f"{p} ran and passed",
                                   "status": "pending", "enforced": True, "proof": "target-1"}}
+    assert f"file_read {p}" in T.block(5)
     T.mark_verified(5, "target-1", "ok")
     assert T.board_items(5) == {}
 
@@ -162,7 +166,73 @@ def test_is_compare_ignores_old_versions_and_other_files_with_the_name():
     assert T.is_compare(f"diff out.json {v1}", 5) is None
     assert T.is_compare(f"diff out.json {v2}", 5) == "target-1"
     assert T.is_compare("diff out.json target-1.v2.json", 5) == "target-1"
+    assert T.is_compare("diff out.json ./target-1.v2.json", 5) == "target-1"
+    assert T.is_compare("diff out.json other/target-1.v2.json", 5) is None
     assert T.is_compare("cat target-1.v2.json | head", 5) is None
+
+
+# --- review round 1 ----------------------------------------------------------
+
+def test_unfenced_payload_after_a_prose_tail_starts_on_the_next_line():
+    got = T.capture(5, "The parser must match this input exactly\n" + "x,y\n" * 120)
+    assert got[0]["label"] == "input" and got[0]["path"].endswith(".csv")
+    with open(got[0]["path"]) as fh:
+        assert fh.read() == "x,y\n" * 120
+
+
+@pytest.mark.parametrize("msg", [
+    "write it to the target file, then run:\n```\nmake test\n```",
+    "the result should be exactly like before. Run:\n```bash\nmake test\n```",
+    "the output should look like the input\n"
+    + "It reads the config. Then it opens the socket. It writes the rows. " * 6,
+    "match this output, but only the first two keys, see below:\n```\n" + JSON + "\n```",
+])
+def test_prose_cue_lines_and_prose_pastes_are_not_targets(msg):
+    assert T.capture(5, msg) == []
+    assert T.list(5) == []
+
+
+def test_csv_paste_after_a_colon_still_captured():
+    got = T.capture(5, "expected output:\n" + "x,y\n" * 120)
+    assert got and got[0]["path"].endswith(".csv")
+
+
+def test_note_compare_differs_then_matched():
+    T.capture(5, "match this output:\n```\n" + JSON + "\n```")
+    T.note_compare(5, "target-1", False, "1c1\n< a\n> b")
+    row = T.list(5)[0]
+    assert row["verified"] is None
+    assert row["last_compare"]["ok"] is False and row["last_compare"]["evidence"].startswith("1c1")
+    assert T.facts(5) == ["target-1: differs"]
+    assert "verified: no (last compare differed)" in T.block(5)
+    assert "target-1" in T.board_items(5)
+    T.note_compare(5, "target-1", True, "diff -q: no output")
+    row = T.list(5)[0]
+    assert row["verified"]["evidence"] == "diff -q: no output" and row["last_compare"]["ok"] is True
+    assert T.facts(5) == ["target-1: matched"] and T.board_items(5) == {}
+    # a new version of the target forgets the old compare
+    T.capture(5, "match this output:\n```\n" + JSON.replace("1", "2") + "\n```")
+    assert T.list(5)[0]["last_compare"] is None and T.facts(5) == ["target-1: not yet compared"]
+
+
+def test_read_drops_rows_missing_required_keys():
+    T.capture(5, "match this output:\n```\n" + JSON + "\n```")
+    idx = os.path.join(T.dir(5), "targets.json")
+    with open(idx) as fh:
+        rows = json.load(fh)
+    rows += [{"id": "target-9"}, {"label": "x", "path": "/nowhere"}, "junk",
+             {"id": "t", "label": "l"}]
+    with open(idx, "w") as fh:
+        json.dump(rows, fh)
+    assert [r["id"] for r in T.list(5)] == ["target-1"]
+    assert T.block(5).count("\n- ") == 1 and list(T.board_items(5)) == ["target-1"]
+
+
+def test_cue_after_the_fence_may_end_with_a_period():
+    got = T.capture(5, "```\n" + JSON + "\n```\nThe API must match this output.")
+    assert got and got[0]["label"] == "output"
+    msg = "```\n" + JSON + "\n```\nThe API must match this output, then deploy."
+    assert T.capture(6, msg) == []
 
 
 def test_unreadable_index_reads_empty_logs_once_and_refuses_to_write(caplog):
