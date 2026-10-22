@@ -479,27 +479,62 @@ def _rule_capture_pass(prompt, cwd, session_id, _pctx):
         _af_log.debug("rule_capture pre-agent pass failed: %s", _exc)
 
 
+#: Hard cap on a recipe run when the operator set no wall clock: ``_exec`` has
+#: no idle detector, so unlike the shell tool it cannot run unbounded.
+_RECIPE_WALL_S = 1800.0
+
+
 def _run_recipe(cmd: str, cwd: str) -> dict:
+    """Run the recipe line in ``cwd`` and return ``_exec``'s result.
+
+    Deviation from the tool path: this calls ``project_runner._exec`` directly
+    rather than ``_shell._t_run_command`` — the recipe is a command the user
+    confirmed, and this route has no model to hand a check-in / job to. The
+    gates ``_t_run_command`` applies first (``_run_refusal``, the risk check)
+    run in ``_recipe_pass`` before this, and the same wall clock applies: the
+    operator's ``AIFORGE_CHAT_CMD_TIMEOUT_S`` when set, else the hard cap above
+    (the shell's "no wall clock, idle detector decides" has no equivalent here).
+    Stop reaches the run because ``_recipe_pass`` binds the session with
+    ``chat_cancel.set_active`` around this call."""
+    from aiforge_core.runtime.cmd_idle import wall_cap_s
     from aiforge_core.runtime.tools.project_runner import _exec
-    return _exec(cmd, cwd, 1800)
+    timeout = wall_cap_s(None, "AIFORGE_CHAT_CMD_TIMEOUT_S") or _RECIPE_WALL_S
+    return _exec(cmd, cwd, timeout)
 
 
 def _recipe_root(cwd: str) -> str:
-    """The project whose recipes.json the chat uses: ``git_toplevel`` maps a
-    chat worktree to its main repo, which is right for the LOOKUP only — the
+    """The project whose recipes.json the chat uses (``recipes.lookup_root``:
+    a chat worktree maps to its main repo) — right for the LOOKUP only; the
     recipe RUNS in the checkout ``cwd`` is in (``recipes.exec_root``)."""
-    from aiforge_core.runtime import repo_ident
-    return repo_ident.git_toplevel(cwd) or cwd
+    from aiforge_core.runtime import recipes
+    return recipes.lookup_root(cwd)
+
+
+def _recipe_refusal(cmd: str, exec_root: str) -> str | None:
+    """What the shell tool's pre-flight gates would refuse this line for
+    (``server_start``, ``delete``, ``blanket_git``, ``missing_path``), or None
+    when it may run. A gate error counts as a refusal."""
+    try:
+        from aiforge_core.runtime.chat_agent import _shell
+        refusal = _shell._run_refusal(cmd, {}, exec_root)
+    except Exception as exc:  # noqa: BLE001 — a broken gate never lets a line through
+        _af_log.debug("recipe refusal check failed: %s", exc)
+        return "gate error"
+    if refusal is None:
+        return None
+    return str(refusal.get("blocked") or "blocked")
 
 
 def _recipe_pass(prompt: str, cwd: str, session_id, pctx: dict):
     """Model-free recipe handling (runtime/recipes): a recipe sentence is saved
     or removed and acknowledged; a bare verb phrase runs the recipe and answers
     with its output. A failing recipe hands the output to the agent as the
-    request (``pctx["prompt"]``). A recipe the command-risk check does not
-    clear as safe is left to the model and its approval gate (``pctx["note"]``).
+    request (``pctx["prompt"]``). A recipe the shell tool's pre-flight gates
+    would refuse (a server start, a delete, …) or the command-risk check does
+    not clear as safe is left to the model and its gates (``pctx["note"]``).
     Anything else passes through untouched. FAILS OPEN on store errors."""
-    from aiforge_core.runtime import recipes
+    import time
+    from aiforge_core.runtime import chat_cancel, recipes
     if not recipes.enabled():
         return
     root = _recipe_root(cwd)
@@ -532,9 +567,16 @@ def _recipe_pass(prompt: str, cwd: str, session_id, pctx: dict):
     # a worktree), from the recipe's own folder — as the tool path does.
     exec_root = recipes.exec_root(cwd)
     cmd = recipes.recipe_command(rec, exec_root)
-    # The approval gate's risk check on the line that will run: only a command
-    # it would auto-approve runs here without the model; anything above safe
-    # goes the normal road, where the gate asks the user.
+    # The shell tool's pre-flight gates on the line that will run: a server
+    # start would never return, a delete needs the user's confirm — those go
+    # the normal road, where the tool path refuses or asks.
+    blocked = _recipe_refusal(cmd, exec_root)
+    if blocked:
+        pctx["note"] = f"recipe refused: {blocked}"
+        return
+    # The approval gate's risk check: only a command it would auto-approve
+    # runs here without the model; anything above safe goes the normal road,
+    # where the gate asks the user.
     from aiforge_core.runtime.tools import command_risk
     try:
         level = command_risk.assess(cmd)["level"]
@@ -544,15 +586,26 @@ def _recipe_pass(prompt: str, cwd: str, session_id, pctx: dict):
     if level != command_risk.SAFE:
         pctx["note"] = "recipe needs approval"
         return
-    res = _run_recipe(cmd, exec_root)
+    # Bind the run to the session, as the ReAct loop does (_turn/_state), so
+    # Stop reaches it: _exec registers its process group and polls the
+    # session's cancel flag under chat_cancel.active().
+    prev_active = chat_cancel.active()
+    chat_cancel.set_active(session_id)
+    t0 = time.monotonic()
+    try:
+        res = _run_recipe(cmd, exec_root)
+    finally:
+        chat_cancel.set_active(prev_active)
+    elapsed_s = round(time.monotonic() - t0, 1)
     out = str(res.get("output") or res.get("error") or "")
     code = res.get("code")
     yield {"type": "tool", "name": "run_command", "args": {"cmd": cmd, "_recipe": verb},
            "result": {"ok": bool(res.get("ok")), "code": code, "stdout": out[-4000:],
-                      "stderr": "", "recipe": verb}}
+                      "stderr": "", "recipe": verb, "elapsed_s": elapsed_s}}
     if res.get("ok"):
         yield {"type": "message",
-               "text": f"`{verb}` recipe: `{cmd}` — exit {code}\n\n```\n{out[-4000:]}\n```"}
+               "text": f"`{verb}` recipe: `{cmd}` — exit {code} in {elapsed_s} s"
+                       f"\n\n```\n{out[-4000:]}\n```"}
         yield {"type": "done"}
         pctx["done"] = True
         return
@@ -562,6 +615,21 @@ def _recipe_pass(prompt: str, cwd: str, session_id, pctx: dict):
         yield {"type": "error", "text": "stopped by user"}
         yield {"type": "done"}
         pctx["done"] = True
+        return
+    if res.get("steered"):
+        # A new message of the user's cut it short: that message's turn takes
+        # over; starting the model on this one would answer twice.
+        yield {"type": "message",
+               "text": f"Stopped the `{verb}` recipe — your new message takes over."}
+        yield {"type": "done"}
+        pctx["done"] = True
+        return
+    if code is None:
+        # Popen failed, or the wall clock hit: there is no exit code to report.
+        why = str(res.get("error") or "no exit code")
+        pctx["prompt"] = (f"The recipe `{verb}` could not start or finish (command: `{cmd}`): "
+                          f"{why}. Fix the cause; do not rerun it blindly."
+                          + (f"\n\nOutput:\n```\n{out[-6000:]}\n```" if res.get("output") else ""))
         return
     pctx["prompt"] = (f"The recipe `{verb}` failed (exit {code}; command: `{cmd}`). "
                       f"Fix the cause; do not rerun it blindly.\n\nOutput:\n```\n{out[-6000:]}\n```")

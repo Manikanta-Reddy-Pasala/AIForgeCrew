@@ -142,19 +142,23 @@ def _events(pc):
     # output — both end the turn here. A failing recipe becomes the request
     # the agent gets (the prompt and the last user row of the history).
     pctx_r = {"done": False}
+    _recipe_failed = False
     if not _harness_or_temp:
         yield from _recipe_pass(pc.prompt, pc.cwd, pc.session_id, pctx_r)
         if pctx_r["done"]:
             return
         if pctx_r.get("prompt"):
+            _recipe_failed = True
             pc.prompt = pctx_r["prompt"]
             if pc.history and pc.history[-1].get("role") == "user":
                 pc.history[-1] = {**pc.history[-1], "content": pc.prompt}
         elif pctx_r.get("note"):
             _af_log.debug("recipe route skipped: %s", pctx_r["note"])
     pctx = {"done": False}
-    if _harness_or_temp:
-        pass        # a harness note (no rule of the user's), or a temporary chat
+    if _harness_or_temp or _recipe_failed:
+        # A harness note (no rule of the user's), a temporary chat, or a
+        # failed recipe's log standing in as the request: nothing to classify.
+        pass
     elif _capture_bg.inline_needed(pc.prompt):
         yield from _rule_capture_pass(pc.prompt, pc.cwd, pc.session_id, pctx)
     else:

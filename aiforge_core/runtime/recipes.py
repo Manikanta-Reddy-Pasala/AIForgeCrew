@@ -230,6 +230,15 @@ def _cwd_ok(cwd: str) -> bool:
     return not (os.path.isabs(cwd) or ".." in cwd)
 
 
+def lookup_root(cwd: str) -> str:
+    """Where a project's recipes.json is LOOKED UP for ``cwd``: the main repo
+    (``repo_ident.git_toplevel`` maps a chat worktree to it, so every chat of
+    a project shares one store), else ``cwd``. The route, the ``/recipes``
+    command and the session endpoints all resolve the store through this."""
+    from aiforge_core.runtime import repo_ident
+    return repo_ident.git_toplevel(cwd) or cwd
+
+
 def exec_root(cwd: str) -> str:
     """Where a recipe RUNS: the toplevel of the checkout ``cwd`` is in (a chat
     worktree stays a worktree — unlike ``repo_ident.git_toplevel``, which maps

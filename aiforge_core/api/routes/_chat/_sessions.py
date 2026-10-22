@@ -404,12 +404,12 @@ class _RecipeBody(BaseModel):
 def _recipe_root(session_id: int) -> str:
     """The project whose recipes the session uses: the toplevel of the chat's
     worktree when it has one, else of its cwd (runtime/recipes)."""
-    from aiforge_core.runtime import chat_store, chat_worktree, repo_ident
+    from aiforge_core.runtime import chat_store, chat_worktree, recipes
     sess = chat_store.get_session(session_id)
     if not sess:
         raise HTTPException(404, f"session {session_id} not found")
     cwd = chat_worktree.workdir_of(sess) or sess.get("cwd") or _default_cwd()
-    return repo_ident.git_toplevel(cwd) or cwd
+    return recipes.lookup_root(cwd)
 
 
 @router.get("/api/chat/sessions/{session_id}/recipes", responses={404: {"description": "Not found"}})

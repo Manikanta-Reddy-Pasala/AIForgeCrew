@@ -48,7 +48,9 @@ def test_a_bare_phrase_runs_the_recipe_without_the_agent(tmp_path, monkeypatch):
     evs = _drain(RT._recipe_pass("run tests", str(tmp_path), 1, pctx))
     assert seen == {"cmd": "echo hi", "cwd": str(tmp_path)}
     assert evs[0]["type"] == "tool" and evs[0]["name"] == "run_command"
-    assert evs[1]["type"] == "message" and "exit 0" in evs[1]["text"] and "hi" in evs[1]["text"]
+    assert evs[1]["type"] == "message" and "exit 0 in " in evs[1]["text"] and "hi" in evs[1]["text"]
+    assert evs[1]["text"].split("exit 0 in ", 1)[1].startswith(f"{evs[0]['result']['elapsed_s']} s")
+    assert isinstance(evs[0]["result"]["elapsed_s"], float)
     assert evs[-1] == {"type": "done"}
     assert pctx["done"] is True
 
@@ -61,7 +63,7 @@ def test_the_recipe_runs_in_the_chats_checkout_from_its_own_folder(tmp_path, mon
     from aiforge_core.runtime import repo_ident
     from aiforge_core.runtime.tools import command_risk
     main, work = tmp_path / "main", tmp_path / "chat-1" / "work"
-    work.mkdir(parents=True)
+    (work / "web").mkdir(parents=True)
     monkeypatch.setattr(repo_ident, "git_toplevel", lambda cwd: str(main))
     R.save(str(main), "build", "make", cwd="web")
     monkeypatch.setattr(command_risk, "assess",
@@ -81,6 +83,7 @@ def test_the_recipe_runs_in_the_chats_checkout_from_its_own_folder(tmp_path, mon
 def test_the_risk_check_sees_the_line_that_runs(tmp_path, monkeypatch):
     from aiforge_core.api.routes._chat import _routing as RT
     from aiforge_core.runtime.tools import command_risk
+    (tmp_path / "web").mkdir()
     R.save(str(tmp_path), "build", "make", cwd="web")
     assessed = []
     monkeypatch.setattr(command_risk, "assess",
@@ -118,6 +121,134 @@ def test_a_risky_recipe_is_left_to_the_approval_gate(tmp_path, monkeypatch):
     assert ran == []
     assert pctx["done"] is False and "prompt" not in pctx
     assert pctx["note"] == "recipe needs approval"
+
+
+def test_stop_reaches_a_running_recipe(tmp_path):
+    """The route binds the session for the run (chat_cancel.set_active) so a
+    Stop pressed while the recipe runs kills it and ends the turn — and the
+    binding is restored afterwards."""
+    from aiforge_core.api.routes._chat import _routing as RT
+    from aiforge_core.runtime import chat_cancel
+    R.save(str(tmp_path), "test", "sleep 5")
+    sid = 777_001
+    chat_cancel.start(sid)
+    chat_cancel.cancel(sid)
+    try:
+        chat_cancel.set_active(None)
+        pctx = {"done": False}
+        evs = _drain(RT._recipe_pass("run tests", str(tmp_path), sid, pctx))
+    finally:
+        chat_cancel.finish(sid)
+    assert evs[0]["type"] == "tool" and evs[0]["result"]["ok"] is False
+    assert evs[1] == {"type": "error", "text": "stopped by user"} and evs[-1] == {"type": "done"}
+    assert pctx["done"] is True and "prompt" not in pctx
+    assert chat_cancel.active() is None
+
+
+@pytest.mark.parametrize("verb,cmd,blocked", [
+    ("run", "python -m http.server 8000", "server_start"),
+    ("clean", "rm -rf build", "delete"),
+])
+def test_a_recipe_the_shell_gates_refuse_is_left_to_the_model(tmp_path, monkeypatch, verb, cmd, blocked):
+    from aiforge_core.api.routes._chat import _routing as RT
+    monkeypatch.delenv("AIFORGE_CHAT_ALLOW_DELETE", raising=False)
+    monkeypatch.delenv("AIFORGE_ALLOW_DELETE", raising=False)
+    R.save(str(tmp_path), verb, cmd)
+    ran = []
+    monkeypatch.setattr(RT, "_run_recipe", lambda c, cwd: ran.append(c) or {"ok": True, "code": 0})
+    pctx = {"done": False}
+    assert _drain(RT._recipe_pass(verb, str(tmp_path), 1, pctx)) == []
+    assert ran == [] and pctx["done"] is False and "prompt" not in pctx
+    assert pctx["note"] == f"recipe refused: {blocked}"
+
+
+def test_a_steered_recipe_ends_the_turn_without_the_model(tmp_path, monkeypatch):
+    from aiforge_core.api.routes._chat import _routing as RT
+    from aiforge_core.runtime.run_interrupt import steered
+    R.save(str(tmp_path), "test", "echo hi")
+    monkeypatch.setattr(RT, "_run_recipe", lambda cmd, cwd: steered(cmd=cmd))
+    pctx = {"done": False}
+    evs = _drain(RT._recipe_pass("run tests", str(tmp_path), 1, pctx))
+    assert evs[0]["type"] == "tool" and evs[-1] == {"type": "done"}
+    assert evs[1]["type"] == "message" and "new message" in evs[1]["text"]
+    assert pctx["done"] is True and "prompt" not in pctx
+
+
+def test_a_recipe_that_could_not_start_says_so(tmp_path, monkeypatch):
+    from aiforge_core.api.routes._chat import _routing as RT
+    R.save(str(tmp_path), "test", "echo hi")
+    monkeypatch.setattr(RT, "_run_recipe",
+                        lambda cmd, cwd: {"cmd": cmd, "ok": False, "error": "No such file"})
+    pctx = {"done": False}
+    evs = _drain(RT._recipe_pass("run tests", str(tmp_path), 1, pctx))
+    assert evs[0]["type"] == "tool" and evs[0]["result"]["code"] is None
+    assert "could not start" in pctx["prompt"] and "No such file" in pctx["prompt"]
+    assert "exit None" not in pctx["prompt"] and pctx["done"] is False
+
+
+def test_the_run_uses_the_shell_tools_wall_clock(tmp_path, monkeypatch):
+    from aiforge_core.api.routes._chat import _routing as RT
+    from aiforge_core.runtime.tools import project_runner
+    seen = []
+    monkeypatch.setattr(project_runner, "_exec",
+                        lambda cmd, cwd, timeout: seen.append(timeout) or {"ok": True, "code": 0, "output": ""})
+    monkeypatch.setenv("AIFORGE_CHAT_CMD_TIMEOUT_S", "7")
+    RT._run_recipe("echo hi", str(tmp_path))
+    monkeypatch.delenv("AIFORGE_CHAT_CMD_TIMEOUT_S")
+    RT._run_recipe("echo hi", str(tmp_path))
+    assert seen == [7.0, RT._RECIPE_WALL_S]
+
+
+def test_a_recipe_in_a_folder_is_safe_for_the_risk_check():
+    from aiforge_core.runtime.tools import command_risk
+    line = R.recipe_command({"cmd": "make", "cwd": "web"}, "/x")
+    assert command_risk.assess(line)["level"] == command_risk.SAFE
+
+
+def test_recipes_command_shares_the_lookup_root(tmp_path, monkeypatch):
+    """``/recipes`` from a sub-folder (or a chat worktree) lists the project's
+    store, resolved the same way as the route and the endpoints."""
+    from aiforge_core.runtime import commands as C, repo_ident
+    monkeypatch.setattr(repo_ident, "git_toplevel", lambda cwd: str(tmp_path))
+    sub = tmp_path / "svc" / "api"
+    sub.mkdir(parents=True)
+    R.save(str(tmp_path), "test", "./t.sh")
+    assert R.lookup_root(str(sub)) == str(tmp_path)
+    assert "test → ./t.sh" in C.expand("/recipes", str(sub))
+
+
+def test_a_failed_recipe_log_is_not_rule_classified(monkeypatch):
+    """After a failing recipe hands its output to the agent, the producer
+    neither classifies that log inline nor starts the background capture."""
+    import types
+    from aiforge_core.api.routes._chat import _capture_bg, _producer
+
+    def _none(*_a, **_k):
+        return iter(())
+    for name in ("_early_route_events", "_prelude_notices", "_note_staleness_notice"):
+        monkeypatch.setattr(_producer, name, _none)
+    monkeypatch.setattr(_producer, "_warm_repo_map", lambda _cwd: None)
+    monkeypatch.setattr(_producer._overlap, "warm_slots", lambda: None)
+
+    def _fail(prompt, cwd, session_id, pctx):
+        pctx["prompt"] = "The recipe `test` failed (exit 1; command: `pytest`).\n\nOutput:\n```\nboom\n```"
+        yield {"type": "tool", "name": "run_command", "args": {}, "result": {"ok": False}}
+    monkeypatch.setattr(_producer, "_recipe_pass", _fail)
+    captured = []
+    monkeypatch.setattr(_capture_bg, "inline_needed", lambda p: captured.append(("inline", p)) or True)
+    monkeypatch.setattr(_capture_bg, "begin", lambda pc: captured.append(("bg", pc.prompt)))
+    monkeypatch.setattr(_producer, "_rule_capture_pass",
+                        lambda p, *a: captured.append(("rule", p)) or iter(()))
+    stops = iter([False, True])
+    monkeypatch.setattr(_producer, "_turn_was_stopped", lambda sid: next(stops))
+    pc = types.SimpleNamespace(
+        _cmd_help_text=None, body=None, history=[{"role": "user", "content": "run tests"}],
+        cwd="/tmp", role="chat", session_id=778_001, _resume_brief="", _cmd_expanded=None,
+        prompt="run tests", team=False, _wake=False)
+    evs = list(_producer._events(pc))
+    assert evs[0]["type"] == "tool" and evs[-1] == {"type": "done"}
+    assert captured == []
+    assert pc.prompt.startswith("The recipe `test` failed") and pc.history[-1]["content"] == pc.prompt
 
 
 def test_other_messages_pass_through(tmp_path):

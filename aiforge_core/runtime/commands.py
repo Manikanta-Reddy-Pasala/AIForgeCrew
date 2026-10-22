@@ -190,7 +190,7 @@ def expand(text: str, cwd: str | None = None) -> str | None:
         return _substitute(cmds[name].body, arg_str)
     if name == "recipes":
         from aiforge_core.runtime import recipes
-        return recipes.help_text(_repo_root(cwd) or cwd or "")
+        return recipes.help_text(recipes.lookup_root(_repo_root(cwd) or cwd or ""))
     if name in _BUILTINS:
         return _help_text(cmds)
     return None
