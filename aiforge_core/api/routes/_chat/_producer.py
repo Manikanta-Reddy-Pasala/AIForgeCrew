@@ -144,7 +144,10 @@ def _events(pc):
     pctx_r = {"done": False}
     _recipe_failed = False
     # Plan mode runs nothing: "build" there is a request to plan, not to run.
-    if not _harness_or_temp and getattr(pc, "agent_mode", None) != "plan":
+    # A folder the user marked read-only is not built or run here either: a
+    # build writes artifacts, and the model's road asks first.
+    if (not _harness_or_temp and getattr(pc, "agent_mode", None) != "plan"
+            and not _read_only_folder(pc.cwd, pc.session_id)):
         yield from _recipe_pass(pc.prompt, pc.cwd, pc.session_id, pctx_r)
         if pctx_r["done"]:
             return
@@ -377,6 +380,16 @@ def _wait_for_slot(pc) -> bool:
             pc.run.finish()
             return False
     return True
+
+
+def _read_only_folder(cwd, session_id) -> bool:
+    """The chat's folder is one the user marked read-only (repo_roles)."""
+    try:
+        from aiforge_core.runtime import repo_roles
+        hit = repo_roles.role_of(cwd, session_id) if cwd else None
+        return bool(hit) and hit[0] == repo_roles.READ
+    except Exception:  # noqa: BLE001 — unknown roles leave the route as it was
+        return False
 
 
 def _ensure_chat_worktree(pc) -> None:

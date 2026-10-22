@@ -67,6 +67,9 @@ _TOOL_HEADS = frozenset((
     "python", "python3", "pytest", "npm", "yarn", "pnpm", "npx", "mvn", "mvnw",
     "gradle", "gradlew", "go", "cargo", "make", "tsc", "ruff", "eslint", "flake8",
     "docker", "bash", "sh"))
+_PROSE_WORDS = frozenset((
+    "a", "an", "the", "in", "on", "of", "to", "for", "and", "or", "is", "it", "its",
+    "sure", "mind", "care", "that", "this", "when", "if", "as", "at", "by", "with"))
 _POLITE = re.compile(r"^(?:please|pls|now|ok|okay|and|then|just|go ahead and)\s+", re.I)
 _SAVE_RE = re.compile(
     r"^(?P<lead>remember:?|always|from now on|recipe:?)?,?\s*"
@@ -390,6 +393,10 @@ def _looks_like_command(verb: str, cmd: str, any_verb: bool = False) -> bool:
     head = parts[0].lower() if parts else ""
     if head.startswith(("./", "/", "~")):
         return True
+    # "docker in mind", "make sure it works": a tool name followed by English
+    # words, not by arguments.
+    if len(parts) >= 2 and parts[1].lower() in _PROSE_WORDS:
+        return False
     return len(parts) >= 2 and head in _TOOL_HEADS
 
 

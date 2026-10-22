@@ -324,3 +324,15 @@ def test_recipe_endpoint_canonicalises_the_verb_and_rejects_bad_input(monkeypatc
     assert client.post(f"/api/chat/sessions/{sid}/recipes",
                        json={"verb": "x", "cmd": "y", "cwd": "../out"}).status_code == 400
     assert client.delete(f"/api/chat/sessions/{sid}/recipes/nothing").json()["ok"] is False
+
+
+def test_the_route_skips_a_read_only_folder(monkeypatch):
+    """A folder the user marked read-only is not built or run model-free."""
+    from aiforge_core.api.routes._chat import _producer
+    from aiforge_core.runtime import repo_roles
+    monkeypatch.setattr(repo_roles, "role_of", lambda cwd, sid: (repo_roles.READ, cwd))
+    assert _producer._read_only_folder("/src/lib", 5) is True
+    monkeypatch.setattr(repo_roles, "role_of", lambda cwd, sid: (repo_roles.WORK, cwd))
+    assert _producer._read_only_folder("/src/app", 5) is False
+    monkeypatch.setattr(repo_roles, "role_of", lambda cwd, sid: None)
+    assert _producer._read_only_folder("/src/app", 5) is False

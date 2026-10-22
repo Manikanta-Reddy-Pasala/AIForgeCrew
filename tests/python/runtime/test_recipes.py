@@ -138,6 +138,7 @@ def test_parse_sentence_removes(text, verb):
     # a lead-in word alone does not turn prose into a recipe
     "Always deploy with care.", "remember: build is broken on CI",
     "from now on test with caution", "always lint using common sense",
+    "Always deploy with docker in mind.", "remember: build with make sure it is clean",
 ])
 def test_parse_sentence_ignores_other_text(text):
     assert R.parse_sentence(text) is None

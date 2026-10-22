@@ -166,7 +166,8 @@ const ARG_CHARS = 72;
 const DETAIL_CHARS = 20000;
 
 function argsPreview(args: Record<string, unknown>): string {
-  const entries = Object.entries(args ?? {});
+  // "_"-keys are the harness's marks (`_recipe_was` …), not the call's own args.
+  const entries = Object.entries(args ?? {}).filter(([k]) => !k.startsWith('_'));
   const shown = entries.slice(0, ARG_PREVIEW)
     .map(([k, v]) => `${k}=${middle(toText(v), ARG_CHARS)}`);
   if (entries.length > ARG_PREVIEW) shown.push(`+${entries.length - ARG_PREVIEW} more`);
