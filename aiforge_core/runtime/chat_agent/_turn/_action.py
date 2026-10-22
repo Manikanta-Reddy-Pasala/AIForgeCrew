@@ -622,20 +622,36 @@ def _record_read(st, name, sig, result, _long_chain_help):
 
 
 def _note_target_compare(st, name, args, result) -> list:
-    """A passing compare command on a target file closes its enforced item."""
-    from aiforge_core.runtime import shell_writes, targets
+    """A compare command on a target file: a pass closes the target's
+    enforced item; a fail is recorded on the target (the facts line says
+    "differs") and the item stays open. A compare left running and checked
+    on later counts as its original command, like a test run."""
+    from aiforge_core.runtime import cmd_finished, shell_writes, targets
+    run = cmd_finished.as_run(name, args, result)
+    if run is None:
+        return []
+    name, args, result = run
     if name not in shell_writes.SHELL_TOOLS or not isinstance(result, dict):
         return []
     sid = getattr(st, "session_id", None)
     cmd = shell_writes.command_of(args or {})
     tid = targets.is_compare(cmd, sid)
-    if not tid or result.get("ok") is not True:
+    if not tid:
+        return []
+    out = str(result.get("stdout") or result.get("stderr") or "")[:400]
+    code = result.get("code")
+    if result.get("ok") is not True:
+        # Only the command's own verdict counts: a job the user or a guard
+        # stopped, or one with no exit code, proves nothing either way.
+        if code is not None and not result.get("stopped"):
+            targets.note_compare(sid, tid, False,
+                                 f"{cmd[:200]} → exit {code}{(' · ' + out) if out else ''}")
         return []
     board = getattr(st, "board", None) or {}
     if tid not in board or board[tid].get("status") == "done":
         return []
-    out = str(result.get("stdout") or "")[:400]
-    targets.mark_verified(sid, tid, f"{cmd[:200]} → exit 0{(' · ' + out) if out else ''}")
+    targets.note_compare(sid, tid, True,
+                         f"{cmd[:200]} → exit 0{(' · ' + out) if out else ''}")
     board[tid]["status"] = "done"
     board[tid]["note"] = "compare passed: " + cmd[:120]
     return [{"type": "subtask_update", "slug": tid, "status": "done"}]

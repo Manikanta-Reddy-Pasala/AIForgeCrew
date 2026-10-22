@@ -47,13 +47,64 @@ def test_a_passing_compare_closes_the_item_and_marks_verified():
     assert evs and evs[0]["type"] == "subtask_update" and evs[0]["status"] == "done"
 
 
-def test_a_failing_compare_keeps_the_item_open():
+def test_a_failing_compare_keeps_the_item_open_and_says_differs():
+    board = _seed()
+    st = types.SimpleNamespace(session_id=5, board=board, cwd="/x", item_log=None)
+    p = T.list(5)[0]["path"]
+    evs = _action._note_target_compare(st, "run_command", {"cmd": f"diff out.json {p}"},
+                                       {"ok": False, "code": 1, "stdout": "< a\n> b"})
+    assert evs == []
+    assert board["target-1"]["status"] == "pending" and T.list(5)[0]["verified"] is None
+    assert T.facts(5) == ["target-1: differs"]
+    last = T.list(5)[0]["last_compare"]
+    assert last["ok"] is False and "exit 1" in last["evidence"] and "< a" in last["evidence"]
+
+
+def test_a_passing_compare_after_a_failing_one_closes_the_item():
     board = _seed()
     st = types.SimpleNamespace(session_id=5, board=board, cwd="/x", item_log=None)
     p = T.list(5)[0]["path"]
     _action._note_target_compare(st, "run_command", {"cmd": f"diff out.json {p}"},
                                  {"ok": False, "code": 1, "stdout": "< a\n> b"})
-    assert board["target-1"]["status"] == "pending" and T.list(5)[0]["verified"] is None
+    evs = _action._note_target_compare(st, "run_command", {"cmd": f"diff out.json {p}"},
+                                       {"ok": True, "code": 0, "stdout": ""})
+    assert board["target-1"]["status"] == "done"
+    assert T.facts(5) == ["target-1: matched"]
+    assert evs and evs[0]["status"] == "done"
+
+
+def test_a_stopped_or_still_running_compare_proves_nothing():
+    board = _seed()
+    st = types.SimpleNamespace(session_id=5, board=board, cwd="/x", item_log=None)
+    p = T.list(5)[0]["path"]
+    cmd = f"diff out.json {p}"
+    assert _action._note_target_compare(st, "run_command", {"cmd": cmd},
+                                        {"ok": False, "running": True, "id": "bg-9"}) == []
+    assert _action._note_target_compare(st, "run_command", {"cmd": cmd},
+                                        {"ok": False, "code": -15, "stopped": True}) == []
+    assert board["target-1"]["status"] == "pending"
+    assert T.facts(5) == ["target-1: not yet compared"]
+
+
+def test_a_compare_left_running_and_checked_on_later_still_closes():
+    from aiforge_core.runtime import cmd_finished
+    cmd_finished.reset()
+    board = _seed()
+    st = types.SimpleNamespace(session_id=5, board=board, cwd="/x", item_log=None)
+    p = T.list(5)[0]["path"]
+    cmd = f"diff out.json {p}"
+    # The hand-off: the compare was started and left running.
+    assert _action._note_target_compare(st, "run_command", {"cmd": cmd},
+                                        {"ok": True, "running": True, "id": "bg-1"}) == []
+    assert board["target-1"]["status"] == "pending"
+    # It ended; a check-in reports the recorded end under the original command.
+    cmd_finished.record("bg-1", cmd, 0, "", "")
+    evs = _action._note_target_compare(st, "command_wait", {"id": "bg-1"},
+                                       {"ok": True, "running": False, "id": "bg-1"})
+    assert board["target-1"]["status"] == "done"
+    assert evs and evs[0]["slug"] == "target-1" and evs[0]["status"] == "done"
+    assert T.list(5)[0]["verified"]["evidence"].startswith("diff out.json")
+    cmd_finished.reset()
 
 
 def test_turn_pin_carries_the_targets_block():
