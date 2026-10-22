@@ -108,3 +108,15 @@ def test_a_flat_mapping_list_is_not_asks():
             "- mtu: 1500\n"
             "- version: 2\n")
     assert _split_asks(text) == []
+
+
+def test_a_connector_inside_parentheses_is_not_a_new_ask():
+    """Live: "(keys in this order, plus a pow key = a**b):" became a board
+    item of its own, "plus a pow key = a**b):"."""
+    from aiforge_core.runtime.chat_agent._context._recall import _split_asks
+    msg = ("Change calc/report.py so that running `python3 -m calc.report 6 3` prints "
+           "exactly this output (keys in this order, values rounded to 2 decimals, "
+           "plus a pow key = a**b):\n```\n{\"add\": 9.0}\n```")
+    assert _split_asks(msg) == []
+    assert _split_asks("Fix the login bug in auth.py. Also add a test for the expired token case.") == [
+        "Fix the login bug in auth.py", "Also add a test for the expired token case"]

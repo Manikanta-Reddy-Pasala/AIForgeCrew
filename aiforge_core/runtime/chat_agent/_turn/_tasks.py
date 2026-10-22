@@ -272,6 +272,8 @@ def _enforced_refusal(board: dict, slug: str, status: str, args: dict) -> dict |
     which calls with ``_harness``). None when the write may go ahead."""
     if status != "done" or not board[slug].get("enforced") or args.get("_harness"):
         return None
+    if board[slug].get("status") == "done":
+        return None          # the harness already closed it on a passing compare
     return {"ok": False, "slug": slug, "status": board[slug]["status"],
             "error": "target items close only on a passing compare command "
                      "(diff/cmp/jq/python) on the target file — run one"}

@@ -131,3 +131,12 @@ def test_facts_line_mentions_targets(monkeypatch):
                                                                "args": {"cmd": "ls"}, "result": {"ok": True}}])
     monkeypatch.setattr(F, "_changed", lambda *a, **k: set())
     assert "target-1: not yet compared" in F.suffix(5, "/x", None)
+
+
+def test_done_on_an_item_the_harness_already_closed_is_accepted():
+    """After a passing compare the harness closes the item; the model's own
+    "done" for it then is a no-op, not a refusal it keeps retrying."""
+    board = _seed()
+    board["target-1"]["status"] = "done"
+    res, _ = _tasks.apply_progress(board, {"slug": "target-1", "status": "done"})
+    assert res["ok"] and board["target-1"]["status"] == "done"

@@ -47,6 +47,10 @@ from ._shared import _log
 _CALLS_PER_TURN = 30
 #: How often in a row one turn is sent back by the verdict.
 _SEND_BACKS = 3
+#: In all, per turn. Each send-back is two model calls, and a model that runs
+#: one more command between them resets the in-a-row count: live, one turn
+#: was sent back 14 times on a stale failure the answer had moved past.
+_SEND_BACKS_TOTAL = 6
 
 _SYSTEM = (
     "You check whether an AI coding agent may end its turn. You are given the "
@@ -328,7 +332,8 @@ def gate(st, step, builder=None, strict_finish=False):
                    later=later, session_id=getattr(st, "session_id", None),
                    earlier=_earlier_request(st, goal))
     st.done_check_unfinished = said == "unfinished"
-    if said != "unfinished" or not _budget_left(st, "done_check_nudges", _SEND_BACKS):
+    if said != "unfinished" or not _budget_left(st, "done_check_nudges", _SEND_BACKS,
+                                                   per_turn=_SEND_BACKS_TOTAL):
         return None
     st.done_check_unfinished = False          # sent back: the next reply is judged anew
     yield {"type": "thought", "text": text}

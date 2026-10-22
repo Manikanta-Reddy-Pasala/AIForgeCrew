@@ -96,7 +96,8 @@ def test_send_backs_and_calls_are_bounded(monkeypatch):
     for i in range(60):
         st.action_counts[f"read|{i}"] = 1
         sent += _drain(_done_check.gate(st, {"text": "Two errors left."}))[1] == "continue"
-    assert sent == _finish._SEND_BACKS_PER_TURN
+    assert sent == _done_check._SEND_BACKS_TOTAL      # its own per-turn cap, below the shared one
+    assert _done_check._SEND_BACKS_TOTAL < _finish._SEND_BACKS_PER_TURN
     assert len(seen) == _done_check._CALLS_PER_TURN
 
 

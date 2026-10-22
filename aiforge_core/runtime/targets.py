@@ -39,6 +39,8 @@ _CUE = re.compile(
     r"|expected (?P<n2>output|result|response)\b"
     r"|should (?:look|be) (?:like|exactly)\b"
     r"|compare (?:with|against|to) this\b"
+    r"|exactly (?:this|the following|these) (?P<n5>output|result|response|data|lines?|json)\b"
+    r"|(?:prints?|outputs?|returns?) exactly\b"
     r"|set target:?(?:[ \t]+(?P<n3>[a-z][a-z0-9_-]*)(?=[ \t]*(?:[=:]|$)))?"
     r"|^target:(?:[ \t]*(?P<n4>[a-z][a-z0-9_-]*)(?=[ \t]*(?:[=:]|$)))?"
     r")", re.I | re.M)
@@ -48,6 +50,12 @@ _FENCE = re.compile(r"```[^\n`]*\n(.*?)```", re.S)
 # ("the expected output is wrong, fix it", "…exactly like before. Run:") is
 # not a capture, fenced or not.
 _TAIL = re.compile(r"[^\n.,;!?]{0,40}[:=]?[ \t]*")
+# A cue line with a fence right after it may run longer ("prints exactly this
+# output (keys in this order, values rounded):") when it ends in ":" and says
+# nothing that makes the match partial or loose.
+_FENCED_TAIL = re.compile(r"[^\n]{0,200}:[ \t]*")
+_HEDGE = re.compile(r"\b(?:but|only|except|apart|similar|roughly|approximately|"
+                    r"partly|partial|some of|like|before|after)\b", re.I)
 # Unfenced text that is not json/csv/xml/yaml and reads as sentences is prose.
 _SENTENCE_END = re.compile(r"[.!?](?=\s|$)")
 _REASK = re.compile(
@@ -170,7 +178,7 @@ def _sniff(text: str) -> str:
 
 
 def _label(m: re.Match) -> str:
-    for g in ("n1", "n2", "n3", "n4"):
+    for g in ("n1", "n2", "n3", "n4", "n5"):
         word = m.group(g)
         if word:
             word = word.lower()
@@ -189,11 +197,15 @@ def _tail(text: str, m: re.Match) -> str:
     return text[m.end():_line_end(text, m.end())]
 
 
-def _tail_ok(text: str, m: re.Match, *, allow_period: bool = False) -> bool:
+def _tail_ok(text: str, m: re.Match, *, allow_period: bool = False,
+             fenced: bool = False) -> bool:
     tail = _tail(text, m)
     if allow_period and tail.rstrip().endswith("."):
         tail = tail.rstrip()[:-1]
-    return _TAIL.fullmatch(tail) is not None
+    if _TAIL.fullmatch(tail) is not None:
+        return True
+    return (fenced and _FENCED_TAIL.fullmatch(tail) is not None
+            and not _HEDGE.search(tail))
 
 
 def _is_prose(rest: str) -> bool:
@@ -217,13 +229,13 @@ def _payloads(text: str) -> builtins.list[tuple[str, str]]:
     out: builtins.list[tuple[str, str]] = []
     used: set[int] = set()
     for i, m in enumerate(cues):
-        if not _tail_ok(text, m):
-            continue
         region_end = cues[i + 1].start() if i + 1 < len(cues) else len(text)
         label = _label(m)
         fence = next((f for f in fences
                       if f.start() not in used and m.end() <= f.start() < region_end
                       and f.start() - m.end() <= _GAP), None)
+        if not _tail_ok(text, m, fenced=fence is not None):
+            continue
         if fence is not None:
             used.add(fence.start())
             out.append((label, fence.group(1)))
@@ -350,7 +362,9 @@ def block(session_id) -> str:
     lines = ["TARGETS — data the user gave to match. Each is on disk, verbatim. Read it "
              "with file_read. Never ask the user to paste or repeat it. A target counts "
              "as matched only after you run a compare command (diff/cmp/python assert) on "
-             "the file and it passes; the harness closes the board item from that command."]
+             "the file and it passes; the harness closes the board item from that command. "
+             "Compare without writing files into the project: pipe the output in, "
+             "e.g. `<command> | diff - <target file>`."]
     for r in rows:
         state = _state(r)
         ok = "yes" if state == "matched" else "no"

@@ -153,14 +153,26 @@ _CONSTRAINT_LEAD_RE = re.compile(
     re.IGNORECASE)
 
 
+_QUOTED_RE = re.compile(r"`[^`\n]*`|\([^()\n]*\)")
+
+
 def _sentence_asks(t: str) -> list:
     """Sentence segments that look like a question or an imperative, also
-    splitting on "also" / "and then" style connectors."""
+    splitting on "also" / "and then" style connectors. Text in backticks or
+    parentheses is never split: "(…, plus a pow key)" qualifies its sentence,
+    and "`python3 -m calc.report`" is a command, not two sentences."""
+    held: list[str] = []
+
+    def hold(m):
+        held.append(m.group(0))
+        return f"\x00{len(held) - 1}\x00"
+    masked = _QUOTED_RE.sub(hold, t)
     segs: list[str] = []
-    for chunk in re.split(r"(?<=[?.!;])\s+|\n+", t):
+    for chunk in re.split(r"(?<=[?.!;])\s+|\n+", masked):
         segs.extend(re.split(
             r"\s+(?=(?:also|and then|and also|plus|additionally)\b)",
             chunk, flags=re.IGNORECASE))
+    segs = [re.sub(r"\x00(\d+)\x00", lambda m: held[int(m.group(1))], seg) for seg in segs]
     out: list[str] = []
     for seg in segs:
         seg = seg.strip(" .")

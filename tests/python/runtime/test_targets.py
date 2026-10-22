@@ -286,3 +286,23 @@ def test_mark_verified_unknown_id_does_not_touch_the_index():
     assert T.facts(5) == ["target-1: not yet compared"]
     T.mark_verified(5, "target-1", "ok")
     assert T.facts(5) == ["target-1: matched"]
+
+
+@pytest.mark.parametrize("msg", [
+    "Change report.py so that running `python3 -m calc.report 6 3` prints exactly this output "
+    "(keys in this order, values rounded to 2 decimals, plus a pow key = a**b):\n"
+    "```\n{\"add\": 9.0, \"pow\": 216.0}\n```",
+    "make the endpoint return exactly this json:\n```\n{\"ok\": true}\n```",
+    "it should output exactly:\n```\nA,B\n1,2\n```",
+])
+def test_a_short_fenced_payload_after_an_exact_cue_line_is_a_target(msg):
+    """A fenced payload counts at any size; a cue line that runs on and ends
+    in ":" introduces it, unless it makes the match partial."""
+    got = T.capture(5, msg)
+    assert len(got) == 1, msg
+
+
+def test_a_hedged_long_cue_line_is_still_not_a_target():
+    msg = ("it prints exactly the same thing apart from the timestamp, roughly like this:\n"
+           "```\n{\"a\": 1}\n```")
+    assert T.capture(5, msg) == []

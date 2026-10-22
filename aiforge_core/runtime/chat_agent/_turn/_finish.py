@@ -623,7 +623,8 @@ def _acted_mark(st):
         return None
 
 
-def _budget_left(st, name: str, limit: int, take: bool = True) -> bool:
+def _budget_left(st, name: str, limit: int, take: bool = True,
+                 per_turn: int = _SEND_BACKS_PER_TURN) -> bool:
     """Take one of ``limit`` send-backs counted in ``st.<name>`` (``take=False``
     only says whether one is left). The count is
     for send-backs in a row: once the model has run an action since the last
@@ -635,7 +636,7 @@ def _budget_left(st, name: str, limit: int, take: bool = True) -> bool:
     if used and mark != getattr(st, name + "_at", mark):
         used = 0
     # (the total bounds a model that alternates the slip with a trivial action)
-    if used >= limit or total >= _SEND_BACKS_PER_TURN:
+    if used >= limit or total >= per_turn:
         return False
     if not take:
         return True

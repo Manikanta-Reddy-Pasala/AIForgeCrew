@@ -275,6 +275,25 @@ def _program(cmd: str) -> str:
     return ""
 
 
+def _programs(cmd: str) -> set:
+    """Every program a shell line runs, pipeline stages included:
+    ``python3 -m x | diff - t.json`` → ``{"python3", "diff"}``."""
+    out = set()
+    for part in re.split(r"&&|\|\||;|\n|\|", cmd or ""):
+        prog = _program(part)
+        if prog:
+            out.add(prog)
+    return out
+
+
+#: The shell itself refused the line (a bash-ism under sh, a program that is
+#: not installed): the line's check never ran, so it did not fail — the model
+#: rewrites the line, and that one is what counts.
+_SHELL_LEVEL_RE = re.compile(
+    r"(?:^|\n)\S*\bsh: (?:\d+: )?(?:Syntax error|[^\n]*: not found|Bad substitution"
+    r"|[^\n]*syntax error near unexpected token)", re.I)
+
+
 def unpassed_failures(steps: list) -> list:
     """``[(command, headline)]``: commands run after the turn's last file write
     that ended with an error and that no later passing run of the same program
@@ -305,8 +324,10 @@ def unpassed_failures(steps: list) -> list:
         body = " ".join(str(res.get(k) or "") for k in ("stdout", "stderr", "error"))
         if not _ERRORISH.search(body):
             continue             # grep found nothing, `test -f`: not an error
+        if code in (2, 127) and _SHELL_LEVEL_RE.search(str(res.get("stderr") or "")):
+            continue             # the shell refused the line: nothing was checked
         prog = _program(cmd)
-        if any(r.get("code") == 0 and _program(c) == prog for _, c, r in cmds[n + 1:]):
+        if any(r.get("code") == 0 and prog in _programs(c) for _, c, r in cmds[n + 1:]):
             continue
         err = action_log._first_error(res)
         out.append((action_log._clip(cmd, 100), f"exit {code}" + (f": {err}" if err else "")))

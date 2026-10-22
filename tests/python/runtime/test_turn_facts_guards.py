@@ -217,6 +217,14 @@ def test_the_live_sequence_reports_the_checks_that_failed_after_the_last_write()
      _cmd("cd . && python3 -m pytest -q -x", 0)],           # same program passed later
     [_write("a.py"), _cmd("grep -n foo a.py", 1)],           # no match is not an error
     [_cmd("python3 -m pytest -q", 1, "FAILED test_a.py")],   # nothing was written
+    # live: a bash-ism under sh never ran its diff; the rewritten pipe passed
+    [_write("r.py"), _cmd("cd w && diff <(python3 -m r) t.json", 2,
+                          '/bin/sh: 1: Syntax error: "(" unexpected'),
+     _cmd("cd w && python3 -m r | diff - t.json", 0)],
+    [_write("r.py"), _cmd("python -m pytest -q", 127, "/bin/sh: 1: python: not found")],
+    # the failed program passed later as a pipeline stage
+    [_write("r.py"), _cmd("diff out.json t.json", 1, "error: < 1\n---\n> 2"),
+     _cmd("python3 -m r | diff - t.json", 0)],
     [],
 ])
 def test_no_finding_when_the_failure_is_not_the_last_word(steps):
