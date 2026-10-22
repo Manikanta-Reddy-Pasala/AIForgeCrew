@@ -86,7 +86,7 @@ def _revert_target(root: str, path: str) -> "str | None":
     (its restore from ``ref`` is the revert)."""
     if (not path or os.path.isabs(path) or any(c in path for c in "*?[")
             or path != os.path.normpath(path)
-            or ".git" in path.replace(os.sep, "/").split("/")):
+            or ".git" in path.replace(os.sep, "/").lower().split("/")):
         # The same spelling goes to git: "src/../a.py" is inside the root
         # but names nothing in a tree, and would read as a file to delete.
         return None
@@ -108,11 +108,15 @@ def _git_ok(root: str, *args) -> bool:
 def _offered_paths(session_id: int, head0: "str | None") -> set:
     """The paths the scope net offered for revert in this session's answers
     (persisted ``scope_net`` steps) for the turn that started on ``head0``.
-    Only these may be reverted: the request body names, the server decides."""
+    Only these may be reverted: the request body names, the server decides.
+    Only the LAST answer counts: a plain folder's turns share one head0, and
+    an older offer would revert to HEAD over later work."""
     from aiforge_core.runtime import chat_store
     want = (head0 or "").strip() or None
     out: set = set()
-    for m in chat_store.get_messages(session_id) or []:
+    last = next((m for m in reversed(chat_store.get_messages(session_id) or [])
+                 if m.get("role") == "assistant"), None)
+    for m in [last] if last else []:
         steps = m.get("steps") or []
         if isinstance(steps, str):
             try:

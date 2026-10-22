@@ -58,6 +58,23 @@ def unrequested(st, changed, prefix: str = "") -> list[str]:
     return sorted(own[p] for p in hit)
 
 
+def without_prior_work(paths, prefix: str, dirty0: str) -> list[str]:
+    """``paths`` minus the files already uncommitted (or untracked) when the
+    turn began (``dirty0``: that moment's ``git status --porcelain``). Their
+    revert would go back to the commit and throw away the user's own work
+    (an untracked one would be deleted), so the net never offers them."""
+    from aiforge_core.runtime.turn_facts_line import _dirty_lines
+    before = set(_dirty_lines(dirty0 or ""))
+    if not before:
+        return list(paths or ())
+    # An untracked folder shows as one "dir/" line: everything under it was there.
+    dirs = tuple(b for b in before if b.endswith("/"))
+
+    def prior(top: str) -> bool:
+        return top in before or (bool(dirs) and top.startswith(dirs))
+    return [p for p in (paths or ()) if not prior(_top(prefix, p))]
+
+
 def block(paths) -> str:
     """The line the answer ends with, or ""."""
     paths = list(paths or ())
@@ -73,4 +90,4 @@ def event(st, paths) -> dict:
     return {"type": "scope_net", "paths": list(paths), "head0": getattr(st, "head0", None)}
 
 
-__all__ = ["block", "enabled", "event", "prefix_of", "unrequested"]
+__all__ = ["block", "enabled", "event", "prefix_of", "unrequested", "without_prior_work"]

@@ -268,6 +268,22 @@ def test_revert_never_touches_git_internals(app, tmp_path):
     r, head0 = _repo(tmp_path)
     sid = _session(r)
     client = TestClient(app.app)
-    res = _post(client, sid, [".git/HEAD", ".git/config"], head0)
-    assert res.json()["refused"] == [".git/HEAD", ".git/config"]
+    res = _post(client, sid, [".git/HEAD", ".git/config", ".GIT/config"], head0)
+    assert res.json()["refused"] == [".git/HEAD", ".git/config", ".GIT/config"]
     assert (r / ".git" / "HEAD").exists()
+
+
+def test_only_the_last_answer_offer_counts(app, tmp_path):
+    """A plain folder's turns share one head0: an older offer the user kept
+    must not revert to HEAD over later work."""
+    r, head0 = _repo(tmp_path)
+    (r / "a.py").write_text("x = 2\n")
+    sid = _session(r)
+    from aiforge_core.runtime import chat_store
+    chat_store.add_message(sid, "assistant", "turn 1",
+                           [{"type": "scope_net", "paths": ["a.py"], "head0": head0}])
+    chat_store.add_message(sid, "user", "next")
+    chat_store.add_message(sid, "assistant", "turn 2", [])
+    client = TestClient(app.app)
+    res = client.post(f"/api/chat/sessions/{sid}/revert", json={"paths": ["a.py"], "head0": head0})
+    assert res.json()["refused"] == ["a.py"] and (r / "a.py").read_text() == "x = 2\n"

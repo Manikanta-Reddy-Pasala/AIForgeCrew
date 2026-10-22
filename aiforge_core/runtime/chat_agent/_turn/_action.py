@@ -196,9 +196,11 @@ def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
         # A part of the user's request is never taken off by the model: it is
         # marked skipped, so the user sees what happened to it. (The harness's
         # own revise for a message the user sent mid-run removes dropped work.)
-        # "_"-keys are the harness's own flags (``_harness`` closes a target
-        # item); the model's call never carries them.
-        args = {k: v for k, v in args.items() if not str(k).startswith("_")}
+        # "_"-keys and ``by_harness`` are the harness's own flags (``_harness``
+        # closes a target item, ``by_harness`` keeps an item off the scope
+        # net); the model's call never carries them.
+        args = {k: v for k, v in args.items()
+                if not str(k).startswith("_") and k != "by_harness"}
         result, events = apply_progress(
             st.board, args,
             context_words=context_words(st.board, getattr(st, "goal", ""),

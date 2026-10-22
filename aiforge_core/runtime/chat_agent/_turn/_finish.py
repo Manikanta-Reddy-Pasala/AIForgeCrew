@@ -452,7 +452,9 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
                 _changed = _facts.changed_paths(cwd, getattr(st, "head0", None),
                                                 getattr(st, "session_id", None),
                                                 _wt_fp0 or "") or set()
-                _sn_paths = _sn.unrequested(st, _changed, _sn.prefix_of(cwd))
+                _sn_prefix = _sn.prefix_of(cwd)
+                _sn_paths = _sn.without_prior_work(
+                    _sn.unrequested(st, _changed, _sn_prefix), _sn_prefix, _wt_fp0 or "")
                 _bg_note = _bg_note + _sn.block(_sn_paths)
         except Exception:  # noqa: BLE001 — the net never blocks an answer
             _sn_paths = []

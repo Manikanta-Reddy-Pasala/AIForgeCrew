@@ -168,3 +168,13 @@ def test_review_progress_records_item_files(monkeypatch):
     b["part-1"]["status"] = "done"
     _items.review_progress(st, {"ok": True, "slug": "part-1", "status": "done"}, [])
     assert b["part-1"]["files"] == ["src/a.py"]
+
+
+def test_files_uncommitted_before_the_turn_are_never_offered():
+    """Their revert would reset the user's own edits (or delete an untracked
+    file the user had), so the net leaves them out."""
+    from aiforge_core.runtime.chat_agent._guards import scope_net as SN
+    dirty0 = " M src/mine.py\n?? notes.txt\n?? scratch/\n"
+    assert SN.without_prior_work(["mine.py", "fresh.py"], "src/", dirty0) == ["fresh.py"]
+    assert SN.without_prior_work(["notes.txt", "scratch/a.py", "new.py"], "", dirty0) == ["new.py"]
+    assert SN.without_prior_work(["mine.py", "fresh.py"], "src/", "") == ["mine.py", "fresh.py"]
