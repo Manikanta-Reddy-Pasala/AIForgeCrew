@@ -10,8 +10,18 @@ laptop awake indefinitely, which the user notices days later as a battery
 mystery and never connects to us.
 """
 import importlib
+import time
 
 import pytest
+
+
+def _settled(events, timeout=5.0):
+    """The stream ends at the turn's ``done``; the producer's ``finally``
+    (where the release lives) runs a moment later on its own thread."""
+    until = time.monotonic() + timeout
+    while time.monotonic() < until and events.count("acquire") != events.count("release"):
+        time.sleep(0.02)
+    return events
 from fastapi.testclient import TestClient
 
 
@@ -62,6 +72,7 @@ def test_a_turn_holds_the_machine_awake_and_releases_it(app_client, monkeypatch)
     assert client.post(f"/api/chat/sessions/{sid}/message",
                        json={"content": "hello"}).status_code == 200
 
+    _settled(events)
     assert events[0] == "acquire"
     assert "release" in events, "a turn that never releases leaves the box awake"
     assert events.count("acquire") == events.count("release")
@@ -89,4 +100,5 @@ def test_a_turn_that_blows_up_still_releases(app_client, monkeypatch):
     client = app_client
     sid = client.post("/api/chat/sessions", json={"title": "t"}).json()["id"]
     client.post(f"/api/chat/sessions/{sid}/message", json={"content": "hi"})
+    _settled(events)
     assert events.count("release") == events.count("acquire") >= 1

@@ -665,10 +665,29 @@ if ! _in_box; then
   done
   export AIFORGE_RUN_ARGS="${_pass[*]:-}"
 
+  # Host half of keep-awake (scripts/awake-bridge.sh): the box cannot hold
+  # this machine's power assertion itself, so a run in flight writes a
+  # heartbeat file into the mounted config dir and this holds it for the box.
+  _AWAKE_PID="$AIFORGE_CONFIG_DIR/run/awake-bridge.pid"
+  _stop_awake_bridge() {
+    if [[ -f "$_AWAKE_PID" ]]; then
+      kill "$(cat "$_AWAKE_PID")" 2>/dev/null || true
+      rm -f "$_AWAKE_PID"
+    fi
+  }
+  _start_awake_bridge() {
+    [[ "${AIFORGE_KEEP_AWAKE:-1}" =~ ^(0|false|no)$ ]] && return 0
+    _stop_awake_bridge
+    mkdir -p "$AIFORGE_CONFIG_DIR/run"
+    nohup "$PWD/scripts/awake-bridge.sh" "$AIFORGE_CONFIG_DIR/run/keep-awake" aiforge \
+      >>"$AIFORGE_CONFIG_DIR/run/awake-bridge.log" 2>&1 </dev/null &
+    echo $! >"$_AWAKE_PID"
+  }
+
   case "$DOCKER_ACTION" in
     # stop, not down: the container keeps what the agent installed in it
     # (apt, npm -g …) until the image is rebuilt.
-    stop)  exec "${DC[@]}" stop ;;
+    stop)  _stop_awake_bridge; exec "${DC[@]}" stop ;;
     logs)  exec "${DC[@]}" logs -f aiforge ;;
     shell) exec docker exec -it -u "$AIFORGE_UID:$AIFORGE_GID" \
              -w "${AIFORGE_REPOS_DIR:-$AIFORGE_HOME/.aiforge/repos}" aiforge bash ;;
@@ -679,6 +698,7 @@ if ! _in_box; then
   fi
   echo "==> docker mode: building the sandbox image (first time: a few minutes)…"
   "${DC[@]}" up -d --build
+  _start_awake_bridge
   echo ""
   echo "  AIForge sandbox → $(_ui_scheme)://${HOST}:${PORT}/ui/"
   echo "  sees from this machine: ${AIFORGE_MOUNTS//:/, }"

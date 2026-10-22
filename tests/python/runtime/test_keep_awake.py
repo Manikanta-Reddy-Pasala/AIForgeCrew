@@ -40,10 +40,16 @@ class _FakeProc:
 def _clean(monkeypatch):
     ka._holders = 0
     ka._proc = None
+    ka._beat = None
     monkeypatch.delenv("AIFORGE_KEEP_AWAKE", raising=False)
+    monkeypatch.delenv("AIFORGE_SANDBOX", raising=False)
+    monkeypatch.delenv("AIFORGE_AWAKE_FILE", raising=False)
     yield
+    if ka._beat is not None:
+        ka._beat.set()
     ka._holders = 0
     ka._proc = None
+    ka._beat = None
 
 
 def _spawned(monkeypatch):
@@ -164,3 +170,26 @@ def test_a_child_that_ignores_terminate_is_killed(monkeypatch):
     proc = ka._proc
     ka.release()
     assert proc.killed, "a stuck assertion would keep the machine awake forever"
+
+
+def test_in_the_sandbox_a_heartbeat_file_asks_the_host_to_hold(monkeypatch, tmp_path):
+    """The docker box has no power API of the host's: it keeps a heartbeat
+    file in the mounted config dir that scripts/awake-bridge.sh on the host
+    holds the assertion for, and removes it when the last run ends."""
+    monkeypatch.setenv("AIFORGE_SANDBOX", "1")
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(ka, "_command", lambda: None)
+    beat = tmp_path / "run" / "keep-awake"
+    with ka.keep_awake("a run"):
+        assert beat.exists() and ka.active()
+        with ka.keep_awake("a second run"):
+            assert beat.exists()
+        assert beat.exists()               # the first run is still going
+    assert not beat.exists() and not ka.active()
+
+
+def test_outside_the_sandbox_no_heartbeat_file_is_written(monkeypatch, tmp_path):
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(ka, "_command", lambda: None)
+    with ka.keep_awake("a run"):
+        assert not (tmp_path / "run").exists()

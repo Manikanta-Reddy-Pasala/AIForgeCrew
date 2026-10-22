@@ -35,6 +35,14 @@ Three properties this deliberately has:
   ``systemd-inhibit`` and no interop simply runs as it did before — a missing
   power API must never be the reason a ticket fails.
 
+Inside the docker sandbox none of these reach the host: the box is Linux with
+no systemd, and a Mac that sleeps pauses the whole Docker VM under the run.
+There the hold is a HEARTBEAT FILE in the mounted config dir
+(``<config>/run/keep-awake``, touched every 20 s while a run is in flight,
+removed after it), and ``scripts/awake-bridge.sh`` — started on the host by
+``./run.sh`` — holds the host's own assertion while the file is fresh. A box
+killed -9 stops touching the file, so the host lets go within a minute.
+
 ``AIFORGE_KEEP_AWAKE=0`` turns it off for an operator who wants the machine's
 own policy to win.
 """
@@ -65,6 +73,10 @@ _PS_SCRIPT = (
 _lock = threading.Lock()
 _holders = 0
 _proc: "subprocess.Popen | None" = None
+#: Heartbeat period of the sandbox file; the host bridge treats a file older
+#: than three of these as released.
+BEAT_S = 20
+_beat: "threading.Event | None" = None
 
 
 def enabled() -> bool:
@@ -107,12 +119,69 @@ def _command() -> "list[str] | None":
     return None
 
 
+def awake_file() -> "str | None":
+    """The heartbeat file a host bridge watches, or None outside the sandbox.
+    ``AIFORGE_AWAKE_FILE`` names it explicitly."""
+    explicit = os.environ.get("AIFORGE_AWAKE_FILE", "").strip()
+    if explicit:
+        return explicit
+    if os.environ.get("AIFORGE_SANDBOX", "") != "1":
+        return None
+    try:
+        from aiforge_core.config.paths import config_dir
+        return os.path.join(str(config_dir()), "run", "keep-awake")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _touch(path: str) -> None:
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(f"{os.getpid()}\n")
+    except OSError as exc:
+        log.debug("keep_awake file %s: %s", path, exc)
+
+
+def _start_file_locked(path: str) -> None:
+    global _beat
+    if _beat is not None:
+        return
+    stop = threading.Event()
+    _beat = stop
+    _touch(path)
+
+    def beat():
+        while not stop.wait(BEAT_S):
+            _touch(path)
+    threading.Thread(target=beat, daemon=True, name="keep-awake-beat").start()
+    log.info("keep_awake.acquired via %s (host bridge)", path)
+
+
+def _stop_file_locked() -> None:
+    global _beat
+    stop, _beat = _beat, None
+    if stop is None:
+        return
+    stop.set()
+    path = awake_file()
+    if path:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    log.info("keep_awake.released (host bridge)")
+
+
 def _start_locked() -> None:
     global _proc
     if _proc is not None and _proc.poll() is None:
         return
     cmd = _command()
     if not cmd:
+        path = awake_file()
+        if path:
+            _start_file_locked(path)
         return
     try:
         _proc = subprocess.Popen(          # noqa: S603
@@ -130,6 +199,7 @@ def _start_locked() -> None:
 
 def _stop_locked() -> None:
     global _proc
+    _stop_file_locked()
     p, _proc = _proc, None
     if p is None:
         return
@@ -194,7 +264,7 @@ def keep_awake(reason: str = ""):
 def active() -> bool:
     """Is an assertion currently held? (Test/diagnostic seam.)"""
     with _lock:
-        return _proc is not None and _proc.poll() is None
+        return (_proc is not None and _proc.poll() is None) or _beat is not None
 
 
-__all__ = ["keep_awake", "acquire", "release", "active", "enabled"]
+__all__ = ["keep_awake", "acquire", "release", "active", "enabled", "awake_file"]

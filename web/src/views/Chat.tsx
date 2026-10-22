@@ -1465,12 +1465,32 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   useEffect(() => {
     if (!busy) return;
     lastSignalRef.current = Date.now();
+    // A tab in the background, a locked screen or a sleeping laptop throttles
+    // or freezes this page: no timer runs and no stream chunk is read, so on
+    // wake-up the last signal looks minutes old while the run went on fine on
+    // the server. Silence measured across such a pause is not silence of the
+    // stream — start the window again and let the buffered events arrive.
+    let lastTick = Date.now();
+    const freshWindow = () => { lastSignalRef.current = Date.now(); lastTick = Date.now(); };
+    const onVisible = () => { if (document.visibilityState === 'visible') freshWindow(); };
+    document.addEventListener('visibilitychange', onVisible);
+    document.addEventListener('resume', freshWindow);
+    window.addEventListener('online', freshWindow);
+    window.addEventListener('pageshow', freshWindow);
     const h = setInterval(async () => {
+      const now = Date.now();
+      const paused = now - lastTick > 15000;        // the tick ran ≥3× late
+      lastTick = now;
+      if (paused || document.visibilityState === 'hidden') {
+        // Hidden: the server keeps running the turn either way; nothing to
+        // decide until the page is looked at again.
+        if (paused) lastSignalRef.current = now;
+        return;
+      }
       const sid = activeIdRef.current;
-      const silent = (Date.now() - lastSignalRef.current) / 1000;
+      const silent = (now - lastSignalRef.current) / 1000;
       if (sid === null || silent < LOST_SIGNAL_S) return;
-      lastSignalRef.current = Date.now();          // one check per window
-      setLiveTurn(prev => prev ? { ...prev, quiet: { seconds: Math.round(silent), phase: '', lost: true } } : prev);
+      lastSignalRef.current = now;                  // one check per window
       try {
         const st = await chatSideTasks(sid);
         if (activeIdRef.current !== sid) return;
@@ -1487,10 +1507,18 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
           toast('That run had already ended — the chat was reloaded.');
         }
       } catch {
-        // the server did not answer either: keep the notice, try again next window
+        // The server did not answer either: only now is it "no signal".
+        // Try again next window.
+        setLiveTurn(prev => prev ? { ...prev, quiet: { seconds: Math.round(silent), phase: '', lost: true } } : prev);
       }
     }, 5000);
-    return () => clearInterval(h);
+    return () => {
+      clearInterval(h);
+      document.removeEventListener('visibilitychange', onVisible);
+      document.removeEventListener('resume', freshWindow);
+      window.removeEventListener('online', freshWindow);
+      window.removeEventListener('pageshow', freshWindow);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy]);
 
