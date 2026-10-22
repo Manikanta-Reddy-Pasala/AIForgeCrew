@@ -60,6 +60,11 @@ os.environ.setdefault("AIFORGE_CHAT_DONE_CHECK", "0")
 # The task list a model writes at turn start and revises on a mid-run message
 # is one more call a scripted model has no reply for; the tests of it turn it on.
 os.environ.setdefault("AIFORGE_CHAT_LLM_PLAN", "0")
+# Recipes, targets and the scope net are harness features that add prompt
+# blocks and board items; the tests of each turn its switch on.
+os.environ.setdefault("AIFORGE_CHAT_RECIPES", "0")
+os.environ.setdefault("AIFORGE_CHAT_TARGETS", "0")
+os.environ.setdefault("AIFORGE_CHAT_SCOPE_NET", "0")
 # A background command that finishes starts a chat turn by itself; the tests
 # of that turn it on.
 os.environ.setdefault("AIFORGE_CHAT_WAKE_ON_JOB", "0")
