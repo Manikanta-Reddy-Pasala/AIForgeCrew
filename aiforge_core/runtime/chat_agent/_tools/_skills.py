@@ -238,6 +238,10 @@ def _t_lsp(args: dict, _cwd: str) -> dict:
                line=_coerce_int(args.get("line"), 0), character=_coerce_int(args.get("character"), 0))
 
 
-def _t_run_tests(args: dict, _cwd: str) -> dict:
+def _t_run_tests(args: dict, cwd: str) -> dict:
+    from ._misc import _recipe_run
+    hit = _recipe_run("test", cwd)
+    if hit is not None:
+        return hit
     from aiforge_core.runtime.tools.test_runner import run_tests
     return run_tests(mode=str(args.get("mode") or "fast"), pattern=str(args.get("pattern") or ""))

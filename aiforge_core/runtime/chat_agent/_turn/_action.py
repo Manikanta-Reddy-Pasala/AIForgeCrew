@@ -681,6 +681,12 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     # the stderr tail then the stdout tail). Other tools stay JSON so a
     # structured field such as next_step is still parseable. Deduped
     # bodies (same skill/OKF/memory hit already in this turn) stay short.
+    # A recipe rewrite (or ignored recipe) marked the args in the loop; the
+    # observation header reads the marks off the result.
+    if isinstance(model_result, dict) and isinstance(args, dict):
+        for k in ("_recipe", "_recipe_was", "_recipe_warn"):
+            if args.get(k):
+                model_result[k.lstrip("_")] = args[k]
     obs = render_observation(name, model_result, _obs_cap)
     _note_green_tests(st, name, args, result, cwd)
     note_evidence(st, name, args, result)

@@ -100,15 +100,35 @@ def _t_ensure_runtime(args: dict, _cwd: str) -> dict:
 
 
 def _t_project(args: dict, cwd: str) -> dict:
-    """Detect/install/build/test/run any common stack (maven, gradle,
-    node/react/next/vite, python, go, rust) with the canonical command."""
+    """Project-level build/test/run. A saved recipe for the action wins over
+    stack auto-detection (the user confirmed it once)."""
+    action = str(args.get("action", "detect"))
+    base = str(args.get("cwd") or cwd)
+    hit = _recipe_run(action, base)
+    if hit is not None:
+        return hit
     try:
         from aiforge_core.runtime.tools.project_runner import project
-        return project(action=args.get("action", "detect"),
-                       cwd=args.get("cwd") or cwd,
+        return project(action=action, cwd=base,
                        timeout=int(args.get("timeout", 1800)))
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
+
+
+def _recipe_run(verb: str, cwd: str) -> dict | None:
+    """Run the project's recipe for ``verb`` through the shell tool; None when
+    there is none (caller falls back to auto-detection)."""
+    import os
+    from aiforge_core.runtime import recipes, repo_ident
+    root = repo_ident.git_toplevel(cwd) or cwd
+    rec = recipes.get(root, verb)
+    if not rec:
+        return None
+    from .. import _shell
+    where = os.path.normpath(os.path.join(root, rec.get("cwd") or "."))
+    res = dict(_shell._t_run_command({"cmd": rec["cmd"]}, where) or {})
+    res["recipe"] = verb
+    return res
 
 
 def _t_set_repo_folder(args: dict, _cwd: str) -> dict:

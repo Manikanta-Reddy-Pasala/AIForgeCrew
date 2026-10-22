@@ -269,6 +269,9 @@ def _run_action_path(st, step, n, cwd, session_id):
     # which parses to None/non-dict; every tool does `args.get(...)` and would
     # crash. An empty dict lets the tool return its own instructive error.
     args = step["args"] if isinstance(step["args"], dict) else {}
+    # A raw family command becomes the project's recipe BEFORE the signature
+    # and every gate (stall, approval, risk) so they all judge what runs.
+    _apply_recipe(name, args, cwd)
     sig = _call_sig(name, args)
     # A wait/peek on a running command is keyed on the job's progress too:
     # waiting on a job that keeps working is not a repeat, one on a job that
@@ -283,6 +286,29 @@ def _run_action_path(st, step, n, cwd, session_id):
         # for the model to read why.
         _drop_batch(st, "an earlier call was blocked")
     return _sig
+
+
+def _apply_recipe(name: str, args: dict, cwd: str) -> None:
+    """Before any gate: a raw family command (pytest, mvn test…) becomes the
+    project's recipe for that verb. Marks the args so the observation says so."""
+    from aiforge_core.runtime import recipes, repo_ident, shell_writes
+    if name not in shell_writes.SHELL_TOOLS or not isinstance(args, dict):
+        return
+    cmd = str(args.get("cmd") or args.get("command") or "")
+    if not cmd:
+        return
+    root = repo_ident.git_toplevel(cwd) or cwd
+    hit = recipes.rewrite(root, cmd)
+    if hit:
+        verb, new = hit
+        key = "cmd" if "cmd" in args else "command"
+        args["_recipe_was"] = cmd
+        args[key] = new
+        args["_recipe"] = verb
+        return
+    warn = recipes.warn(root, cmd)
+    if warn:
+        args["_recipe_warn"] = warn
 
 
 def _gated_action(st, step, name, args, sig, n, cwd, session_id):

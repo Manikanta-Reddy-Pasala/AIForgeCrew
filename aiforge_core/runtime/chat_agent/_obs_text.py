@@ -107,6 +107,15 @@ def render_command(result: dict, cap: int) -> str:
     err = str(result.get("stderr") or "")
     out = str(result.get("stdout") or result.get("output") or "")
     header = f"exit {code}\n"
+    # A recipe ran (or was ignored): say so first, so the model knows the
+    # project's own command is what produced this result.
+    head = ""
+    if result.get("recipe"):
+        head = (f"[recipe {result['recipe']} replaced: {result['recipe_was']}]\n"
+                if result.get("recipe_was") else f"[recipe {result['recipe']}]\n")
+    elif result.get("recipe_warn"):
+        head = (f"[this project has a {result['recipe_warn']} recipe — use it next time]\n")
+    header = head + header
     spare = max(0, cap - len(header))
     err_budget = spare // 2 if out else spare
     err_tail = _tail(err, err_budget)
