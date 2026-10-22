@@ -41,11 +41,11 @@ All three fixes are harness enforcement. Prompt text changes too, but no fix dep
 
 ### Capture
 
-At FINAL, `recipes.offers(turn)` scans the turn's action log for commands with exit 0 that the existing `session_ledger.capture_working_workflow` classifier already calls build/test/run commands. For each verb that has no recipe yet, the answer gets a card:
+At FINAL, `recipes.offers(turn)` scans the turn's action log for commands with exit 0 that belong to a command family (`recipes.family_of`: whole commands like `pytest -q`, `./mvnw test`, `npm run build`; a command with a path or a test selector is not a family command). For each verb that has no recipe yet, the answer gets a card:
 
 > Save `mvn -q test` as this project's **test** recipe? [Save] [Not this]
 
-- Card = a `recipe_offer` event on the SSE stream with `{verb, cmd, cwd}`; the web UI renders two buttons. `POST /api/chat/sessions/{id}/recipes` with `{verb, cmd, cwd, aliases?}` saves; "Not this" writes `verb` into `recipes-declined.json` in the same folder so the same command is not offered again this chat.
+- Card = a `recipe_offer` event on the SSE stream with `{verb, cmd, cwd}`; the web UI renders two buttons. `POST /api/chat/sessions/{id}/recipes` with `{verb, cmd, cwd, aliases?}` saves; "Not this" writes `verb` into `recipes-declined.json` in the same folder so that verb is not offered again for this project (a later "remember: test = …" sentence or `/recipes` save still works).
 - One offer per verb per turn, at most three per turn.
 - Explicit sentence: "remember: compile = ./build.sh", "always run tests with ./t.sh", "from now on build is make". The existing `rule_capture` cue regex fires; a new pre-check `recipes.parse_sentence(text)` claims the message before the rule classifier when it matches `<verb> (=|is|means|with|using) <command>`. The reply is the model-free "Got it — saved" path that `rule_capture` already uses. A command that does not exist on disk is still saved; the first run tells.
 
