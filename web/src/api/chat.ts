@@ -124,6 +124,30 @@ export const chatApi = {
       `/chat/sessions/${id}/compact-context`, { method: 'POST' }),
   freshContext: (id: number) =>
     j<{ ok: boolean }>(`/chat/sessions/${id}/transcript`, { method: 'DELETE' }),
+
+  // ── Recipes + scope net (per-project command recipes; unrequested changes).
+  // Save an offered command as this project's recipe for `verb` (test, build…).
+  saveRecipe: (id: number, body: { verb: string; cmd: string; cwd?: string }) =>
+    j<{ ok: boolean }>(`/chat/sessions/${id}/recipes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  // Decline the offer: the project stops being asked about this verb.
+  declineRecipe: (id: number, verb: string) =>
+    j<{ ok: boolean }>(`/chat/sessions/${id}/recipes/decline`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ verb, cmd: '' }),
+    }),
+  // Put files the agent changed without being asked back to how they were at
+  // the start of the turn (`head0`, null when the turn started unversioned).
+  revertPaths: (id: number, paths: string[], head0: string | null) =>
+    j<{ ok: boolean; reverted: string[]; refused: string[] }>(`/chat/sessions/${id}/revert`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths, head0 }),
+    }),
   worktreeMerge: (id: number) =>
     j<{ ok: boolean; message: string; reason?: string; merged?: number }>(
       `/chat/sessions/${id}/worktree/merge`, { method: 'POST' }),

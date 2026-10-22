@@ -11,6 +11,8 @@ import { pickChatModel } from '../chatModelPick';
 import { SubtaskList } from './Chat.SubtaskList';
 import { SideTasks } from './Chat.SideTasks';
 import SuggestionChip from './Chat.SuggestionChip';
+import RecipeOfferCard, { type RecipeOffer } from './Chat.RecipeOfferCard';
+import ScopeNetCard, { type ScopeNet } from './Chat.ScopeNetCard';
 import type { Suggestion } from '../api/chat';
 import { ModeBadge } from './Chat.ModeBadge';
 import { CtxReload } from './Chat.CtxReload';
@@ -914,6 +916,12 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   // than state: send() must observe it in the same tick, and a state update
   // would not have landed yet.
   const sentFromSuggestion = useRef(false);
+  // Recipe offers and the scope net for the turn that just ended — same slot
+  // and lifetime as `suggestion`: set by the events after `done`, cleared the
+  // moment a new send starts. Keyed to the session the events came from so a
+  // card never acts on another chat.
+  const [recipeOffers, setRecipeOffers] = useState<{ sessionId: number; offers: RecipeOffer[] } | null>(null);
+  const [scopeNet, setScopeNet] = useState<{ sessionId: number; net: ScopeNet } | null>(null);
   const [checkpoints, setCheckpoints] = useState<Array<{ sha: string; label: string; when: string }> | null>(null);
   // Edit-and-resend: the user-message id whose turn we're replacing (history is
   // truncated there + workspace restored to that turn's checkpoint on send).
@@ -1729,6 +1737,29 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
         return;
       }
 
+      // A command family the project has no recipe for yet — offered after
+      // the reply, zero or more per turn. Same verb twice keeps the latest.
+      if (evt.type === 'recipe_offer') {
+        const verb = String(evt.verb || '').trim();
+        const cmd = String(evt.cmd || '').trim();
+        if (!verb || !cmd) return;
+        const offer: RecipeOffer = { verb, cmd, cwd: String(evt.cwd || '.') };
+        setRecipeOffers(prev => {
+          const kept = (prev && prev.sessionId === sessionId) ? prev.offers.filter(o => o.verb !== verb) : [];
+          return { sessionId, offers: [...kept, offer] };
+        });
+        return;
+      }
+
+      // Files the agent changed that no requested item claimed — at most one
+      // per turn; an empty net is no net.
+      if (evt.type === 'scope_net') {
+        const paths = Array.isArray(evt.paths) ? evt.paths.map(String).filter(Boolean) : [];
+        if (!paths.length) { setScopeNet(null); return; }
+        setScopeNet({ sessionId, net: { paths, head0: typeof evt.head0 === 'string' && evt.head0 ? evt.head0 : null } });
+        return;
+      }
+
       // Plan ready (Gap B): a plan-mode run produced an approvable spec.
       if (evt.type === 'plan_ready') {
         setPlanReady({ spec: evt.spec || '', plan: evt.plan || '' });
@@ -1817,6 +1848,10 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
     // A suggestion is about the turn that just ended. Leaving it under a new
     // question is worse than showing none at all.
     setSuggestion(null);
+    // ... and so are the recipe offers and the scope net: they are about the
+    // files and commands of the turn that just ended, not the one starting.
+    setRecipeOffers(null);
+    setScopeNet(null);
     // Only a send the chip made counts as chained; a send the user typed does
     // not, so typing after an auto-action restores normal behaviour.
     fromSuggestion.current = sentFromSuggestion.current;
@@ -2777,6 +2812,29 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                                   send(text);
                                 }} />
               )}
+
+              {/* Files the run changed without being asked — one card, with a
+                  revert of exactly those paths. Beside the suggestion because
+                  it is the same kind of thing: about the turn that just ended. */}
+              {scopeNet && !busy && activeId !== null && scopeNet.sessionId === activeId && (
+                <ScopeNetCard sessionId={activeId} net={scopeNet.net}
+                              onDone={(msg) => {
+                                setScopeNet(null);
+                                if (msg) toast.success(msg);
+                              }} />
+              )}
+
+              {/* Commands the run used that this project has no recipe for —
+                  one card per verb; saving or declining removes that card. */}
+              {recipeOffers && !busy && activeId !== null && recipeOffers.sessionId === activeId
+                && recipeOffers.offers.map(offer => (
+                <RecipeOfferCard key={offer.verb} sessionId={activeId} offer={offer}
+                                 onDone={() => setRecipeOffers(prev => {
+                                   if (!prev) return prev;
+                                   const offers = prev.offers.filter(o => o.verb !== offer.verb);
+                                   return offers.length ? { ...prev, offers } : null;
+                                 })} />
+              ))}
             </div>
             )}
 
