@@ -444,13 +444,37 @@ def _capped_rules(blocks: list[str]) -> str:
             "(\"rules\") for the full list before acting")
 
 
-def user_rule_lines(cwd: str) -> list[str]:
+def _session_rule_bullets(session_id) -> list[str]:
+    """Rules captured for THIS chat (``rule_capture`` session scope). They
+    live only in the process; without a session there are none."""
+    if session_id is None:
+        return []
+    from aiforge_core.runtime.rule_capture._base import _SESSION_ITEMS
+    out = []
+    for it in _SESSION_ITEMS.get(str(session_id), []):
+        if it.get("undone"):
+            continue
+        text = str(it.get("canonical") or "").strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def _pair(res) -> tuple[list, list]:
+    """``(always, tagged)`` from a rule-bullet source; anything that is not a
+    pair counts as always-on bullets with no tagged ones."""
+    if isinstance(res, tuple) and len(res) == 2:
+        return list(res[0] or []), list(res[1] or [])
+    return list(res or []), []
+
+
+def user_rule_lines(cwd: str, session_id=None) -> list[str]:
     """The rules the USER set (captured in chat, written in the Library,
-    this project's rule files, stored constraints) — not the shipped
-    defaults. What a turn's actions are checked against."""
+    this project's rule files, stored constraints, rules for THIS chat) —
+    not the shipped defaults. What a turn's actions are checked against."""
     out: list[str] = []
     try:
-        always, tagged = _md_rule_bullets(cwd)
+        always, tagged = _pair(_md_rule_bullets(cwd))
         out += always + ["- " + getattr(t, "body", "") for t in tagged]
     except Exception:  # noqa: BLE001
         pass
@@ -470,21 +494,26 @@ def user_rule_lines(cwd: str) -> list[str]:
         out += _constraint_bullets(cwd)
     except Exception:  # noqa: BLE001
         pass
+    try:
+        out += ["- " + b for b in _session_rule_bullets(session_id)]
+    except Exception:  # noqa: BLE001
+        pass
     return list(dict.fromkeys(x for x in out if x.strip("- ").strip()))
 
 
-def _rules_context(cwd: str, query: str = "") -> str:
+def _rules_context(cwd: str, query: str = "", session_id=None) -> str:
     """The user's persistent rule book (global + this-repo) plus the stored
     CONSTRAINT units, injected into EVERY session so the rules are always
     honoured. Untagged bullets are always-on (legacy). Bullets tagged with an
     inline '[triggers: ...]' prefix are gated by relevance to ``query`` via the
     shared scorer; a
     near-tie among tagged bullets injects an ASK note instead of silently
-    picking one."""
+    picking one. Rules captured for THIS chat (``session_id``) are added as
+    their own block."""
     try:
-        always, tagged = _md_rule_bullets(cwd)
+        always, tagged = _pair(_md_rule_bullets(cwd))
         try:
-            repo_always, repo_tagged = _repo_rule_bullets(cwd)
+            repo_always, repo_tagged = _pair(_repo_rule_bullets(cwd))
         except Exception:  # noqa: BLE001 — repo_rules read is best-effort
             repo_always, repo_tagged = [], []
         always += repo_always
@@ -493,6 +522,9 @@ def _rules_context(cwd: str, query: str = "") -> str:
         selected, ambiguous_note = (_select_tagged(tagged, query) if tagged
                                     else ([], ""))
         blocks = list(dict.fromkeys(always + selected))
+        sess = _session_rule_bullets(session_id)
+        if sess:
+            blocks.append("Rules for THIS chat:\n" + "\n".join(f"- {b}" for b in sess))
         if not blocks:
             return ""
         return ("RULES — MANDATORY, non-negotiable: the user ordered these "

@@ -325,9 +325,10 @@ link and what changed, not a retelling.
 - SESSION START: on your FIRST turn you already have, above, the repo map \
 (files/folders), the project summary, and any memory recalled for this \
 request — read them first so you start informed by prior sessions. If the \
-request is clear, proceed. When a choice can be undone or one default is \
-reasonable, state the assumption and continue. ASK only when the choices \
-cannot be undone and lead to different results.
+request is clear, proceed. Do only what it says; anything else you \
+think is needed goes under "Suggested, not done" at the end of the answer, \
+not into the code. ASK only when the choices cannot be undone and lead to \
+different results.
 - RESOLVE REFERENCES FIRST — FETCH, don't ask for what you can retrieve: if the \
 request names a ticket / issue / PR / page / file / symbol by id or title \
 (e.g. "CLR-2067", a Jira/Confluence/GitLab ref, a path), call the matching \

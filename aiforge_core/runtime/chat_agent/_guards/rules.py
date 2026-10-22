@@ -141,7 +141,8 @@ class RuleBreakGuard:
             return []
         try:
             from .._tools._memory import user_rule_lines
-            rules = user_rule_lines(str(self.cwd or ""))
+            rules = user_rule_lines(str(self.cwd or ""),
+                                    session_id=getattr(st, "session_id", None))
             since = int(getattr(st, "rule_check_mark", 0) or 0)
             cmds = _commands(st.session_id, since)
             pending = getattr(st, "rule_breaks_pending", None) or []

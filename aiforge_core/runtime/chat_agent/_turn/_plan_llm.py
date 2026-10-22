@@ -57,8 +57,10 @@ _RULES = (
     "(a test or command that passes, a file that exists, the answer given).\n"
     "- A rule about how to work (\"don't push\", \"don't edit the tests\") "
     "is not a task.\n"
-    "- Do not add work the user did not ask for. Split a big piece of work "
-    "into its natural steps only when it really has several.\n")
+    "- Do not add work the user did not ask for; extra work the agent thinks "
+    "is needed is reported as \"Suggested, not done\", never planned. Split a "
+    "big piece of work into its natural steps only when it really has "
+    "several.\n")
 
 _PLAN_SYSTEM = (
     "You write the task list an AI coding agent works through for the "

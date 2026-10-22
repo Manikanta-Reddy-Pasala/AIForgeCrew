@@ -3,6 +3,7 @@ agent dispatch."""
 from __future__ import annotations
 
 import os
+import re
 
 from . import _team_route
 from ._core import (
@@ -127,10 +128,36 @@ _PUBLISH_INTENT_RE = (
     r"actually (publish|create the (page|confluence))|post it to confluence)\b")
 
 
+_ADD_VERBS = ("add", "create", "write", "refactor", "rename", "remove", "delete", "update",
+              "install", "configure", "migrate", "deploy", "document", "introduce", "extract", "split")
+_SENT = re.compile(r"(?<=[.!?])\s+")
+
+
+def _first_verb(sentence: str) -> str:
+    words = re.findall(r"[a-zA-Z]+", sentence)
+    return words[0].lower() if words else ""
+
+
+def _trim_added_work(raw: str, enriched: str) -> str:
+    """Drop restatement sentences that start with an added-work verb the user's
+    own message does not use. The restatement may clarify, never add steps."""
+    if os.environ.get("AIFORGE_CHAT_ENHANCE_ADDS", "0").strip().lower() in ("1", "true", "yes", "on"):
+        return enriched
+    asked = {w.lower() for w in re.findall(r"[a-zA-Z]+", raw)}
+    keep = []
+    for s in _SENT.split(enriched.strip()):
+        v = _first_verb(s)
+        if v in _ADD_VERBS and v not in asked and not any(a.startswith(v) for a in asked):
+            continue
+        keep.append(s)
+    return " ".join(keep).strip()
+
+
 def _augment_user_turn(m: dict, enriched, resume_brief, prompt, doc_task) -> None:
     """Augment one user turn IN PLACE with the enhancer's interpretation (verbatim
     words kept + a labelled restatement block, resume brief LAST) and, for a doc
-    task with no EXPLICIT publish intent, the DRAFT-ONLY guard."""
+    task with no EXPLICIT publish intent, the DRAFT-ONLY guard. The restatement
+    is trimmed of steps the user did not ask for (see ``_trim_added_work``)."""
     raw = (m.get("content") or "").strip()
     # Keep the resume brief LAST: the restatement is of the WHOLE job, so after
     # the brief it made the final thing the model reads "build everything" —
@@ -139,6 +166,7 @@ def _augment_user_turn(m: dict, enriched, resume_brief, prompt, doc_task) -> Non
     if resume_brief and raw.endswith(resume_brief):
         raw = raw[:-len(resume_brief)].rstrip().rstrip("-").rstrip()
         brief_tail = f"\n\n---\n{resume_brief}"
+    enriched = _trim_added_work(raw, enriched or "")
     if enriched and enriched.strip() and enriched.strip() != raw:
         m["content"] = (
             f"{raw}\n\n---\n[Interpreted request — a context-enriched "
