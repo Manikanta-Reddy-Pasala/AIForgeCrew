@@ -43,7 +43,7 @@ function Step({ s }: { s: EvidenceStep }) {
  *  actually did while it was open — recorded by the harness, not claimed. */
 export function TaskEvidenceView({ ev }: { ev: TaskEvidence }) {
   return (
-    <div className="task-evidence" style={{ margin: '2px 0 6px 66px', padding: '4px 8px',
+    <div className="task-evidence" style={{ margin: '2px 0 6px 20px', padding: '4px 8px',
                                             borderLeft: '2px solid var(--border-1)', fontSize: 11 }}>
       {ev.check && (
         <div style={{ marginBottom: 2 }}><span style={{ color: '#8892a0' }}>check:</span> {ev.check}</div>
@@ -69,4 +69,49 @@ export function TaskEvidenceView({ ev }: { ev: TaskEvidence }) {
 export function evidenceSummary(ev?: TaskEvidence): string {
   if (!ev) return '';
   return ev.summary || ev.note || '';
+}
+
+const STATUS_COLOR: Record<string, string> = { done: '#3fb950', failed: '#e5534b' };
+
+/** Under the answer: every task this turn closed, each with its proof in one
+ *  line (expand for the commands and their output). Shown without asking. */
+export function EvidenceCard({ items }: {
+  items: ReadonlyArray<{ slug: string; title?: string; goal?: string; status: string; evidence?: TaskEvidence }>;
+}) {
+  const closed = items.filter(s => s.evidence);
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  if (closed.length === 0) return null;
+  const weak = closed.filter(s => s.evidence!.note || s.evidence!.status === 'failed').length;
+  return (
+    <div className="evidence-card" style={{ marginTop: 8, padding: '6px 10px', border: '1px solid var(--border-1)',
+                                            borderRadius: 6, background: 'var(--bg-1)' }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
+        Evidence <span className="muted xs" style={{ fontWeight: 400 }}>
+          — what was run and changed for each finished task, recorded by AIForge
+          {weak ? ` · ${weak} need${weak === 1 ? 's' : ''} a look` : ''}
+        </span>
+      </div>
+      {closed.map(s => {
+        const ev = s.evidence!;
+        const label = String(s.title || s.goal || s.slug).replace(/\s[—–-]{1,2}\s*check:.*$/i, '');
+        const isOpen = !!open[s.slug];
+        return (
+          <div key={s.slug} style={{ fontSize: 12 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', cursor: 'pointer', padding: '1px 0' }}
+                 onClick={() => setOpen(m => ({ ...m, [s.slug]: !m[s.slug] }))}
+                 title={isOpen ? 'Hide the detail' : 'Show the commands, output and checks'}>
+              <span style={{ color: STATUS_COLOR[ev.status] || '#8892a0', fontWeight: 600, flexShrink: 0 }}>
+                {ev.status === 'done' ? '✓' : '✗'}
+              </span>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{label}</span>
+              <span style={{ marginLeft: 'auto', flexShrink: 0, color: ev.note ? 'var(--warn, #d4a72c)' : '#8892a0' }}>
+                {evidenceSummary(ev)} {isOpen ? '▾' : '▸'}
+              </span>
+            </div>
+            {isOpen && <TaskEvidenceView ev={ev} />}
+          </div>
+        );
+      })}
+    </div>
+  );
 }

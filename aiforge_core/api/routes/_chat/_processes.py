@@ -115,9 +115,11 @@ def chat_process_download(session_id: int, key: str,
             raise HTTPException(404, f"{path!r} is not a log file of {key!r}")
         real, fh, _running = opened
         name = _download_name(os.path.basename(real))
+        from starlette.background import BackgroundTask
         return StreamingResponse(
             proc_logs.file_chunks(fh), media_type="text/plain",
-            headers={"Content-Disposition": f'attachment; filename="{name}"'})
+            headers={"Content-Disposition": f'attachment; filename="{name}"'},
+            background=BackgroundTask(fh.close))   # also when never started
     chunks = proc_logs.output_chunks(session_id, key)
     if chunks is None:
         raise HTTPException(404, f"no process {key!r} in session {session_id}")

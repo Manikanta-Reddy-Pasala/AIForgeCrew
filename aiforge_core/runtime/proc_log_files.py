@@ -48,6 +48,7 @@ def _words(cmd: str) -> list[str]:
     (``grep '>' file``); :func:`_unquote` strips them from a file name."""
     lex = shlex.shlex(cmd or "", posix=False, punctuation_chars="<>&|;")
     lex.whitespace_split = True
+    lex.commenters = ""            # a '#' inside a URL is not a comment
     try:
         return list(lex)
     except ValueError:
@@ -71,10 +72,10 @@ def _from_cmd(cmd: str, cwd: str) -> list[str]:
                 prev in (">", ">>") and i >= 2 and words[i - 2].isdigit()):
             cand = w
         elif w.startswith("-") and "=" in w:
-            cand = w.split("=", 1)[1]
+            cand = _unquote(w.split("=", 1)[1])
             if not _LOG_NAME.search(cand):
                 cand = None
-        elif _LOG_NAME.search(w):
+        elif _LOG_NAME.search(_unquote(w)):
             cand = w
         cand = _unquote(cand) if cand else cand
         if not cand or cand.startswith("&") or cand == "/dev/null" \
@@ -96,7 +97,9 @@ def _roots(job) -> list[str]:
                 "/tmp"):
         if raw:
             out.append(os.path.realpath(os.path.expanduser(str(raw))))
-    return out
+    # A root as wide as / or the home folder would show anything at all.
+    broad = {"/", os.path.realpath(os.path.expanduser("~"))}
+    return [r for r in out if r not in broad]
 
 
 def _workspace() -> str | None:
@@ -118,11 +121,19 @@ def _showable(real: str, job, follow: str | None) -> bool:
     inside a hidden folder (~/.ssh, ~/.aws, ~/.config ...)."""
     if real == follow:
         return True
+    if _hidden(real):              # ~/.ssh, ~/.aws, ~/.config ... never
+        return False
     if any(_under(real, r) for r in _roots(job)):
         return True
-    if not _LOG_NAME.search(real):
-        return False
-    return not any(part.startswith(".") for part in real.split(os.sep)[:-1])
+    return bool(_LOG_NAME.search(real))
+
+
+def _hidden(real: str) -> bool:
+    """Inside a hidden folder outside the job's own work (a repo's .git is
+    covered by _NOT_LOG_NAME)."""
+    return any(part.startswith(".") and part not in (".", "..")
+               and not part.startswith(".aiforge")
+               for part in real.split(os.sep)[:-1])
 
 
 def _ident(path: str):
@@ -204,7 +215,11 @@ def detect(job) -> list[str]:
                         writable and not _NOT_LOG_NAME.search(path)):
                     found.append(path)
     own = _spool_paths(job)
-    ids: dict = dict(getattr(job, "log_ids", None) or {})
+    # Re-check what was listed before FIRST: a file deleted or replaced since
+    # is dropped, so a rotated log found again below is listed anew.
+    ids: dict = {p: i for p, i in (getattr(job, "log_ids", None) or {}).items()
+                 if _ident(p) == i}
+    seen = [p for p in seen if p in ids]
     follow_real = os.path.realpath(follow) if follow else None
     for path in found:
         real = os.path.realpath(path)
@@ -214,10 +229,7 @@ def detect(job) -> list[str]:
         ident = _ident(real)
         if ident is not None:
             ids[real] = ident
-    # Re-check what was listed before: a file deleted or replaced since is
-    # dropped (a replaced one comes back if it is found again).
-    ids = {p: i for p, i in ids.items() if _ident(p) == i}
-    seen = [p for p in seen if p in ids] + [p for p in ids if p not in seen]
+    seen = seen + [p for p in ids if p not in seen]
     seen = seen[:MAX_FILES]
     job.log_ids = {p: ids[p] for p in seen}
     job.log_files = seen
@@ -234,7 +246,9 @@ def open_listed(ids: dict, path: str):
     if want is None:
         return None
     try:
-        fd = os.open(real, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        # O_NONBLOCK: a listed file swapped for a FIFO must not hang the read.
+        fd = os.open(real, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                     | getattr(os, "O_NONBLOCK", 0))
     except OSError:
         return None
     try:

@@ -407,41 +407,70 @@ def for_session(session_id) -> list[dict]:
 STOP_GRACE_S = 1.5
 
 
+def _group_alive(pgid) -> bool:
+    if not isinstance(pgid, int) or pgid <= 1:
+        return False
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except OSError:
+        return False
+
+
 def stop_gracefully(jobs, why: str, grace_s: float | None = None) -> int:
     """Stop ``jobs`` the way a person would: Ctrl-C (SIGINT) to every one at
     once — a dev server, ``docker compose up`` or a test runner shuts down
     cleanly on it — then, after at most ``grace_s``, TERM and KILL whatever is
-    left of each process group. Returns how many were running."""
+    left of each process group. A job already being stopped is not signalled
+    again (a second Ctrl-C means "force quit" to many tools); the caller just
+    waits for it. Returns how many were running."""
     import signal
     from aiforge_core.runtime import proc_signals
     live = [j for j in jobs if j.alive()]
     if not live:
         return 0
-    for job in live:
+    with _LOCK:
+        fresh = [j for j in live if not getattr(j, "_stopping", False)]
+        for j in fresh:
+            j._stopping = True
+    for job in fresh:
         job.killed = job.killed or why
-        proc_signals.kill_group(job.pgid, signal.SIGINT)
+        if not proc_signals.kill_group(job.pgid, signal.SIGINT):
+            pid = getattr(job.proc, "pid", None)
+            if isinstance(pid, int) and job.alive():
+                proc_signals.kill_process(pid, signal.SIGINT)
     end = time.monotonic() + (STOP_GRACE_S if grace_s is None else grace_s)
     while time.monotonic() < end and any(j.alive() for j in live):
         time.sleep(0.05)
-    # What is left (and a group whose leader exited but left children) is
-    # terminated, all jobs side by side so a Stop never takes N × the pauses.
-    threads = []
-    for job in live:
-        def _end(j=job):
-            try:
+
+    def _end(j):
+        try:
+            if j.alive():
                 if j._kill is not None:
                     j._kill()
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                j.proc.wait(timeout=5)
-            except Exception:  # noqa: BLE001
-                pass
-        t = threading.Thread(target=_end, daemon=True)
+                if j.alive():          # its _kill failed part-way
+                    proc_signals.stop_group(j.pgid, pid=j.proc.pid)
+            elif _group_alive(j.pgid):
+                # The leader exited on Ctrl-C but left children: signal the
+                # GROUP only — never a pid that may already be reused.
+                proc_signals.stop_group(j.pgid)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            j.proc.wait(timeout=5)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Side by side, so a Stop never takes N × the pauses.
+    threads = [threading.Thread(target=_end, args=(j,), daemon=True)
+               for j in fresh]
+    for t in threads:
         t.start()
-        threads.append(t)
     for t in threads:
         t.join(timeout=8)
+    while time.monotonic() < end + 8 and any(j.alive() for j in live
+                                              if j not in fresh):
+        time.sleep(0.05)        # stopped by another caller: wait for it
     return len(live)
 
 
@@ -567,7 +596,8 @@ def wait(job: Job, max_s: float | None = None, session_id=None) -> dict:
         # whole wait (up to 5 minutes). Only a message that says to stop kills.
         why = attention(session_id) if session_id else None
         if why == "stop":
-            job.kill()
+            # The Stop route owns the kill (Ctrl-C first); this only waits.
+            stop_gracefully([job], "stopped by user")
             _forget(job)
             return {"ok": False, "stopped": True, "error": "stopped by user"}
         if why == "steer":

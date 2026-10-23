@@ -1,3 +1,4 @@
+import { EvidenceCard } from './Chat.TaskEvidence';
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { MdLite, copyText as mdCopyText } from '../mdlite';
@@ -57,6 +58,7 @@ export function AssistantBubble({
   quiet,
   status,
   subtasks,
+  evidenceItems,
   captured,
   onRegenerate,
   stopped,
@@ -77,6 +79,8 @@ export function AssistantBubble({
   /** the reply to a status question asked while the run goes on */
   status?: { question: string; text: string };
   subtasks?: SubtaskItem[];
+  /** the turn's tasks; those that closed with evidence show it under the answer */
+  evidenceItems?: SubtaskItem[];
   captured?: CapturedItem[];
   onRegenerate?: () => void;
   /** the turn ended on a stop — offer Resume instead of Regenerate */
@@ -170,6 +174,8 @@ export function AssistantBubble({
           <MdLite text={text} />
         </div>
       )}
+      {/* Evidence for every task this turn finished — shown, not asked for. */}
+      {!streaming && evidenceItems && evidenceItems.some(s => s.evidence) && <EvidenceCard items={evidenceItems} />}
       {/* Changes diff — always visible (the deliverable), below the answer. */}
       {changeSteps.length > 0 && (
         <div style={{ marginTop: text ? 8 : 0, display: 'flex', flexDirection: 'column', gap: 8 }}>

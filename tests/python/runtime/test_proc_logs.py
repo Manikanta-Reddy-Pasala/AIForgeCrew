@@ -463,3 +463,63 @@ def test_downloading_a_growing_file_stops_at_its_size_then(env):
     data = first + b"".join(gen)
     assert before <= len(data) <= fixed
     assert os.path.getsize(path) > len(data)   # it kept growing; we did not follow
+
+
+# ── round-4 review fixes ─────────────────────────────────────────────────
+
+
+def test_a_second_stop_does_not_send_a_second_ctrl_c(env, tmp_path):
+    import threading
+    counter = tmp_path / "ints"
+    # Counts SIGINTs; exits on the 2nd one, so a double Ctrl-C would show as 2.
+    script = tmp_path / "trap.sh"
+    script.write_text(f"trap 'echo x >> {counter}' INT\nwhile true; do sleep 0.1; done\n")
+    key = _bg(f"sh {script}", env)
+    job = cmd_jobs._JOBS[key]
+    time.sleep(0.3)
+    ts = [threading.Thread(target=cmd_jobs.stop_gracefully, args=([job], "t"),
+                           kwargs={"grace_s": 0.6}) for _ in range(2)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(15)
+    assert not job.alive()
+    assert counter.read_text().count("x") == 1
+
+
+def test_ctrl_c_lets_a_command_shut_down_cleanly(env, tmp_path):
+    flag = tmp_path / "clean"
+    script = tmp_path / "srv.sh"
+    script.write_text(f"trap 'echo bye > {flag}; exit 0' INT\nwhile true; do sleep 0.1; done\n")
+    key = _bg(f"sh {script}", env)
+    time.sleep(0.3)
+    assert proc_logs.kill(SID, key) is True              # the dock's Stop
+    assert flag.read_text() == "bye\n"
+
+
+def test_a_hidden_folder_is_never_listed_even_inside_the_folder(env):
+    from aiforge_core.runtime import proc_log_files as F
+    (env / ".secrets").mkdir()
+    (env / ".secrets" / "token.log").write_text("t\n")
+    (env / "app.log").write_text("a\n")
+    _bg("sleep 30; cat .secrets/token.log > app.log", env)
+    files = proc_logs.list_for_session(SID)[0]["log_files"]
+    assert files == [str((env / "app.log").resolve())]
+    assert F._roots(type("J", (), {"cwd": "/"})()) .count("/") == 0
+
+
+def test_a_hash_in_a_url_does_not_hide_the_redirect(env):
+    from aiforge_core.runtime import proc_log_files as F
+    assert F._from_cmd("curl http://h/#x > out.log", str(env)) == [str(env / "out.log")]
+    assert F._from_cmd('run --out="x.log"', str(env)) == [str(env / "x.log")]
+
+
+def test_a_listed_file_swapped_for_a_fifo_does_not_hang(env):
+    key = _bg("sleep 30 > pipe.log", env)
+    assert proc_logs.list_for_session(SID)[0]["log_files"]
+    p = env / "pipe.log"
+    p.unlink()
+    os.mkfifo(p)
+    t0 = time.monotonic()
+    assert proc_logs.read_file(SID, key, str(p), 0) is None
+    assert time.monotonic() - t0 < 2

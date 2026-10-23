@@ -315,6 +315,9 @@ def chat_session_stop(session_id: int) -> dict:
     loop / ADK pipeline to halt and kills any subprocess groups it
     spawned (builds, test runs). Idempotent."""
     from aiforge_core.runtime import chat_approve, chat_cancel
+    # The run stops taking steps NOW; its processes then get Ctrl-C and a
+    # moment, and only after that the instant kills below.
+    chat_cancel.request(session_id)
     jobs_n = 0
     try:
         # FIRST, before the instant kills below: every process the chat

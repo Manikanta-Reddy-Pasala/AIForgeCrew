@@ -78,6 +78,18 @@ def track_pgid(session_id: int, pgid: int) -> None:
             tok.pgids.add(pgid)
 
 
+def request(session_id: int) -> bool:
+    """Tell the run to stop (no new step starts) without signalling its
+    processes yet — the chat's Stop first gives them Ctrl-C and a moment
+    (cmd_jobs.stop_session), then :func:`cancel` kills what is left.
+    Returns True if a run was active."""
+    tok = get(session_id)
+    if tok is None:
+        return False
+    tok.event.set()
+    return True
+
+
 def cancel(session_id: int) -> bool:
     """Signal the run to stop and SIGTERM/SIGKILL its subprocess groups.
 

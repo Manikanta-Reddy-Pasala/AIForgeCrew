@@ -365,7 +365,9 @@ def kill(session_id, key: str) -> bool:
     job = _find_live(session_id, key)
     if job is None or not job.alive():
         return False
-    job.kill("stopped: the user stopped it from the Processes panel")
+    from aiforge_core.runtime import cmd_jobs
+    cmd_jobs.stop_gracefully(
+        [job], "stopped: the user stopped it from the Processes panel")
     return True
 
 
