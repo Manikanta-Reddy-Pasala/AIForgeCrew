@@ -103,8 +103,9 @@ def record(name: str, args, result) -> dict | None:
     ok = res.get("ok")
     row = {"tool": name, "kind": kind, "what": _what(name, args),
            "ok": None if ok is None else bool(ok), "at": round(time.time(), 3)}
-    if res.get("code") is not None:
-        row["code"] = res.get("code")
+    code = res.get("code", res.get("exit_code"))
+    if code is not None:
+        row["code"] = code
     if res.get("running"):
         row["running"] = True
     if kind == "command":

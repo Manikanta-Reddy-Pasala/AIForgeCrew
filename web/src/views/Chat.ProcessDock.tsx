@@ -295,7 +295,14 @@ export function ProcessDock({ sessionId }: { sessionId: number | null }) {
       ? o.filter(x => tileKey(x) !== tileKey(s)) : o.concat(s)));
     setExpanded(true);
   };
-  const withFiles = procs.filter(p => (p.log_files || []).length > 0);
+  // One chip per file: the same log is often written by one command and
+  // followed by another (show_logs) — list it once, under a running one.
+  const fileChips: { p: ChatProcess; f: string }[] = [];
+  for (const p of [...procs].sort((a, b) => Number(b.running) - Number(a.running))) {
+    for (const f of p.log_files || []) {
+      if (!fileChips.some(c => c.f === f)) fileChips.push({ p, f });
+    }
+  }
   const viewProc = viewing ? byId.get(viewing.proc) : undefined;
 
   return (
@@ -334,10 +341,10 @@ export function ProcessDock({ sessionId }: { sessionId: number | null }) {
           <button type="button" className="ghost sm" onClick={() => setOpen([])}>close all</button>
         )}
       </div>
-      {withFiles.length > 0 && (
+      {fileChips.length > 0 && (
         <div className="row" style={{ gap: 6, flexWrap: 'wrap', alignItems: 'center', padding: '0 10px 6px' }}>
           <span className="muted xs">Log files</span>
-          {withFiles.map(p => p.log_files.map(f => {
+          {fileChips.map(({ p, f }) => {
             const src = { proc: p.id, path: f };
             const on = isOpen(src);
             return (
@@ -353,7 +360,7 @@ export function ProcessDock({ sessionId }: { sessionId: number | null }) {
                         style={{ ...btnReset, opacity: 0.75 }}>⬇</button>
               </span>
             );
-          }))}
+          })}
         </div>
       )}
       {expanded && tiles.length > 0 && (

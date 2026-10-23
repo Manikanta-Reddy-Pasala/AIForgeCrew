@@ -207,3 +207,8 @@ def test_a_harness_closed_target_gets_evidence():
     from aiforge_core.runtime.chat_agent._turn import _action as A
     import inspect
     assert "on_status(st, tid, before, \"done\")" in inspect.getsource(A)
+
+
+def test_run_tests_exit_code_counts():
+    row = E.record("run_tests", {"mode": "fast"}, {"ok": True, "exit_code": 0, "stdout": "4 passed"})
+    assert row["code"] == 0 and row["kind"] == "command" and "4 passed" in row["output"]
