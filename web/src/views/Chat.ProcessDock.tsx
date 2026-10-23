@@ -46,6 +46,7 @@ function LogTile({ sessionId, proc, onClose }: {
   useEffect(() => {
     let live = true;
     let timer: number | undefined;
+    let misses = 0;
     offsets.current = [];
     setLines([]);
     setGone(false);
@@ -54,11 +55,14 @@ function LogTile({ sessionId, proc, onClose }: {
         const offs = offsets.current.length ? offsets.current : [FIRST_READ, FIRST_READ];
         const r = await chatProcessLog(sessionId, proc.id, offs);
         if (!live) return;
+        misses = 0;
         offsets.current = r.streams.map(s => s.next);
         const add: Line[] = [];
         r.streams.forEach((s, i) => {
-          if (s.skipped) add.push({ err: i > 0, text: `… ${s.skipped} bytes not shown …` });
-          if (s.text) add.push({ err: i > 0, text: s.text.replace(/\n$/, '') });
+          if (s.skipped) add.push({ err: i > 0, text: `… ${s.skipped} bytes not shown …\n` });
+          // The server sends whole lines while the command runs; a finished
+          // command's last line may have no newline — end it here.
+          if (s.text) add.push({ err: i > 0, text: s.text.endsWith('\n') || r.running ? s.text : s.text + '\n' });
         });
         if (add.length) {
           setLines(prev => {
@@ -72,7 +76,8 @@ function LogTile({ sessionId, proc, onClose }: {
         if (!r.running && !running.current) return;
       } catch (e: any) {
         if (!live) return;
-        if (String(e?.message || '').startsWith('404')) { setGone(true); return; }
+        // A job being collected can miss one read: give up only after a few.
+        if (String(e?.message || '').startsWith('404') && ++misses >= 3) { setGone(true); return; }
       }
       if (live) timer = window.setTimeout(tick, document.hidden ? LOG_POLL_MS * 5 : LOG_POLL_MS);
     }
@@ -125,7 +130,7 @@ function LogTile({ sessionId, proc, onClose }: {
         {lines.length === 0
           ? <span className="muted">{gone ? 'This command is gone — its output was not kept.' : 'No output yet.'}</span>
           : lines.map((l, i) => (
-              <span key={i} style={l.err ? { color: 'var(--err)' } : undefined}>{l.text}{'\n'}</span>
+              <span key={i} style={l.err ? { color: 'var(--err)' } : undefined}>{l.text}</span>
             ))}
       </pre>
     </div>
@@ -155,8 +160,8 @@ export function ProcessDock({ sessionId }: { sessionId: number | null }) {
         if (!live) return;
         setProcs(r.processes);
         const top = Math.max(0, ...r.processes.map(p => p.shown || 0));
-        if (first.current) {
-          // Asks from before the chat was opened are not replayed.
+        if (first.current || top < seenShown.current) {
+          // First look, or the server restarted: asks from before are not replayed.
           first.current = false;
           seenShown.current = top;
         } else if (top > seenShown.current) {

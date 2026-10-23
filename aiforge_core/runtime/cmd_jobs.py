@@ -247,10 +247,15 @@ def progress_suffix(name: str, args) -> str:
 
 def _forget(job: Job) -> None:
     with _LOCK:
-        gone = _JOBS.pop(job.key, None) is not None
-    if gone:                     # the Processes dock keeps its output tail
+        present = _JOBS.get(job.key) is job
+    if present:
+        # The Processes dock keeps its output tail. Kept BEFORE it leaves the
+        # table, so a reader never finds the job in neither place.
         from aiforge_core.runtime import proc_logs
         proc_logs.remember(job)
+    with _LOCK:
+        if _JOBS.get(job.key) is job:
+            _JOBS.pop(job.key, None)
     job.close()
 
 

@@ -225,3 +225,88 @@ def test_api_lists_reads_and_kills(client, env):
 def test_api_404s(client):
     assert client.get("/api/chat/sessions/1/processes").status_code == 404
     assert client.get(f"/api/chat/sessions/{SID}/processes/bg-0/log").status_code == 404
+
+
+# ── review fixes ─────────────────────────────────────────────────────────
+
+
+def test_a_running_commands_partial_line_waits_for_its_newline(env):
+    key = _bg("printf 'whole\\nhal'; sleep 1; printf 'f done\\n'; sleep 30", env)
+    assert _until(lambda: "whole" in proc_logs.read(SID, key)["streams"][0]["text"])
+    r = proc_logs.read(SID, key, [0, 0])
+    assert r["streams"][0]["text"] == "whole\n"
+    assert r["streams"][0]["next"] == len("whole\n")
+    offs = [s["next"] for s in r["streams"]]
+    assert _until(lambda: proc_logs.read(SID, key, offs)["streams"][0]["text"] == "half done\n")
+
+
+def test_show_logs_on_an_ended_job_reaches_the_list(env):
+    key = _bg("echo bye", env)
+    job = cmd_jobs._JOBS[key]
+    assert _until(lambda: not job.alive())
+    cmd_jobs.look(job)
+    assert T._t_show_logs({"id": key}, str(env))["ok"]
+    assert proc_logs.list_for_session(SID)[0]["shown"] > 0
+
+
+def test_shown_is_per_chat(env):
+    key = _bg("sleep 30", env)
+    proc_logs.mark_shown(SID, key)
+    assert proc_logs._shown(SID, key) > 0
+    assert proc_logs._shown(SID + 1, key) == 0
+
+
+def test_shown_keeps_rising(env):
+    a, b = _bg("sleep 30", env), _bg("sleep 30", env)
+    proc_logs.mark_shown(SID, a)
+    proc_logs.mark_shown(SID, b)
+    assert proc_logs._shown(SID, b) > proc_logs._shown(SID, a) > 10 ** 18
+
+
+def test_deleting_a_chat_stops_its_tails_and_keeps_nothing(env):
+    (env / "app.log").write_text("x\n")
+    tail = T._t_show_logs({"path": "app.log"}, str(env))["id"]
+    other = _bg("sleep 30", env)
+    proc_logs.forget_session(SID)
+    job = cmd_jobs._JOBS.get(tail)
+    assert job is None or not job.alive()
+    assert cmd_jobs._JOBS[other].alive()              # other commands untouched
+    if tail in cmd_jobs._JOBS:
+        cmd_jobs._forget(cmd_jobs._JOBS[tail])     # its end keeps nothing
+    assert [r["id"] for r in proc_logs.list_for_session(SID)] == [other]
+
+
+def test_show_logs_path_stays_inside_the_workspace(env, monkeypatch, tmp_path):
+    from pathlib import Path
+    ws = env / "ws"
+    ws.mkdir()
+    (ws / "in.log").write_text("ok\n")
+    outside = tmp_path / "secret.txt"
+    outside.write_text("s\n")
+    monkeypatch.setattr(S, "_workspace_root", lambda: Path(ws).resolve())
+    bad = T._t_show_logs({"path": str(outside)}, str(ws))
+    assert bad["ok"] is False and "escapes" in bad["error"]
+    assert T._t_show_logs({"path": "in.log"}, str(ws))["ok"]
+
+
+def test_a_follow_tail_has_a_deadline(env, monkeypatch):
+    (env / "app.log").write_text("x\n")
+    key = T._t_show_logs({"path": "app.log"}, str(env))["id"]
+    job = cmd_jobs._JOBS[key]
+    assert job.follow_path == str(env / "app.log")
+    assert job.watch_opts["deadline"] > time.monotonic() + 60
+
+
+def test_a_job_is_kept_before_it_leaves_the_table(env, monkeypatch):
+    key = _bg("echo x", env)
+    job = cmd_jobs._JOBS[key]
+    assert _until(lambda: not job.alive())
+    seen = {}
+    real = proc_logs.remember
+
+    def spy(j):
+        seen["in_table"] = j.key in cmd_jobs._JOBS
+        real(j)
+    monkeypatch.setattr(proc_logs, "remember", spy)
+    cmd_jobs._forget(job)
+    assert seen["in_table"] is True and key not in cmd_jobs._JOBS

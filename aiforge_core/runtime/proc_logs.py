@@ -20,7 +20,6 @@ agent's own look position, so watching a log here does not change what
 from __future__ import annotations
 
 import collections
-import itertools
 import threading
 import time
 
@@ -35,12 +34,26 @@ READ_MAX_BYTES = 256 * 1024
 
 _LOCK = threading.Lock()
 _ENDED: dict[str, collections.deque] = {}
-_SHOWN: dict[str, int] = {}          # job key → show sequence number
-_SEQ = itertools.count(1)
+#: (chat, job key) → when the agent asked to show it. Wall-clock nanoseconds,
+#: so the number keeps rising across a server restart (a tab left open
+#: compares it with the last one it saw).
+_SHOWN: dict[tuple[str, str], int] = {}
+_LAST_SEQ = [0]
+#: Chats deleted: a job of theirs that ends later keeps nothing here.
+_FORGOTTEN: set[str] = set()
 
 
 def _sid(session_id) -> str:
     return str(session_id)
+
+
+def _shown(session_id, key: str) -> int:
+    return _SHOWN.get((_sid(session_id), key), 0)
+
+
+def _next_seq() -> int:
+    _LAST_SEQ[0] = max(_LAST_SEQ[0] + 1, time.time_ns())
+    return _LAST_SEQ[0]
 
 
 def _started_at(job) -> float:
@@ -62,7 +75,7 @@ def _status(job) -> dict:
         "stopped": job.killed,
         "background": bool(job.explicit),
         "bytes": [sig.file_size(s) for s in job.streams],
-        "shown": _SHOWN.get(job.key, 0),
+        "shown": _shown(job.session_id, job.key),
     }
 
 
@@ -93,7 +106,7 @@ def remember(job) -> None:
     """Keep the output tail of a job that is being collected. Called by
     ``cmd_jobs._forget`` while the streams are still open; never raises."""
     try:
-        if job.session_id is None:
+        if job.session_id is None or _sid(job.session_id) in _FORGOTTEN:
             return
         status = _status(job)
         tails = []
@@ -109,6 +122,8 @@ def remember(job) -> None:
                                   collections.deque(maxlen=ENDED_PER_SESSION))
             for old in [r for r in q if r["id"] == job.key]:
                 q.remove(old)
+            if len(q) == q.maxlen:              # the oldest drops out
+                _SHOWN.pop((_sid(job.session_id), q[0]["id"]), None)
             q.append(status)
     except Exception:  # noqa: BLE001 — collecting a job must never fail here
         pass
@@ -125,7 +140,8 @@ def list_for_session(session_id) -> list[dict]:
             continue
     live_ids = {j["id"] for j in live}
     with _LOCK:
-        ended = [{k: v for k, v in r.items() if k != "_tails"}
+        ended = [{**{k: v for k, v in r.items() if k != "_tails"},
+                  "shown": _shown(session_id, r["id"])}
                  for r in _ENDED.get(_sid(session_id), ())
                  if r["id"] not in live_ids]
     running = sorted((j for j in live if j["running"]),
@@ -140,7 +156,21 @@ def _chunk(raw: bytes, start: int, end: int, size: int) -> dict:
             "size": size, "skipped": 0}
 
 
-def _read_stream(stream, offset: int, max_bytes: int) -> dict:
+#: A running command's unfinished last line is held back until it ends with
+#: a newline — unless this much is pending (a progress bar, a prompt).
+_PARTIAL_HOLD_BYTES = 4096
+
+
+def _whole_lines(raw: bytes, start: int) -> tuple[bytes, int]:
+    """``raw`` cut after its last newline, and where the next read starts.
+    A line (or a UTF-8 character) split across two polls stays in one."""
+    cut = raw.rfind(b"\n") + 1
+    if cut == 0 and len(raw) >= _PARTIAL_HOLD_BYTES:
+        return raw, start + len(raw)
+    return raw[:cut], start + cut
+
+
+def _read_stream(stream, offset: int, max_bytes: int, running: bool) -> dict:
     size = sig.file_size(stream)
     start = max(0, min(int(offset), size))
     if offset < 0:                          # negative: the last N bytes
@@ -149,7 +179,10 @@ def _read_stream(stream, offset: int, max_bytes: int) -> dict:
     if size - start > max_bytes:
         skipped = size - start - max_bytes
         start = size - max_bytes
-    out = _chunk(sig.read_range(stream, start, size), start, size, size)
+    raw, end = sig.read_range(stream, start, size), size
+    if running:
+        raw, end = _whole_lines(raw, start)
+    out = _chunk(raw, start, end, size)
     out["skipped"] = skipped
     return out
 
@@ -177,20 +210,23 @@ def read(session_id, key: str, offsets: list[int] | None = None,
     max_bytes = max(1024, min(int(max_bytes or READ_MAX_BYTES),
                               READ_MAX_BYTES))
     job = _find_live(session_id, key)
-    if job is not None:
+    if job is not None and not job.closed:
         status = _status(job)
         offs = list(offsets or [])
         streams = []
         for i, s in enumerate(job.streams):
             off = offs[i] if i < len(offs) else -max_bytes
-            streams.append(_read_stream(s, off, max_bytes))
+            streams.append(_read_stream(s, off, max_bytes, status["running"]))
         status["streams"] = streams
-        return status
+        if not job.closed:
+            return status
+        # Collected while we read (a closed stream reads as empty): answer
+        # from the kept tail instead, so the offsets never go backwards.
     rec = _find_ended(session_id, key)
     if rec is None:
         return None
     status = {k: v for k, v in rec.items() if k != "_tails"}
-    status["shown"] = _SHOWN.get(key, status.get("shown", 0))
+    status["shown"] = _shown(session_id, key)
     offs = list(offsets or [])
     status["streams"] = [
         _read_tail(t, offs[i] if i < len(offs) else -max_bytes, max_bytes)
@@ -215,7 +251,7 @@ def mark_shown(session_id, key: str) -> bool:
             and _find_ended(session_id, key) is None:
         return False
     with _LOCK:
-        _SHOWN[key] = next(_SEQ)
+        _SHOWN[(_sid(session_id), key)] = _next_seq()
         if len(_SHOWN) > 512:
             for old in sorted(_SHOWN, key=_SHOWN.get)[:256]:
                 _SHOWN.pop(old, None)
@@ -223,15 +259,26 @@ def mark_shown(session_id, key: str) -> bool:
 
 
 def forget_session(session_id) -> None:
-    """Drop what is kept for a deleted chat."""
+    """A chat was deleted: stop the log tails ``show_logs`` started for it
+    (nothing else could reach them now) and drop what is kept for it. Its
+    other commands keep running as before; their output is not kept."""
+    sid = _sid(session_id)
     with _LOCK:
-        _ENDED.pop(_sid(session_id), None)
+        _FORGOTTEN.add(sid)
+    for job in _live_jobs(session_id):
+        if getattr(job, "follow_path", None) and job.alive():
+            job.kill("stopped: its chat was deleted")
+    with _LOCK:
+        _ENDED.pop(sid, None)
+        for k in [k for k in _SHOWN if k[0] == sid]:
+            _SHOWN.pop(k, None)
 
 
 def _reset_for_tests() -> None:
     with _LOCK:
         _ENDED.clear()
         _SHOWN.clear()
+        _FORGOTTEN.clear()
 
 
 __all__ = ["ENDED_KEEP_BYTES", "ENDED_PER_SESSION", "READ_MAX_BYTES",
