@@ -163,6 +163,8 @@ def _route_produce_event(ev, st: dict, steps: list) -> None:
         for row in st["subtasks"]:
             if row.get("slug") == ev.get("slug"):
                 row["status"] = ev.get("status")
+                if ev.get("evidence"):
+                    row["evidence"] = ev["evidence"]
     if etype == "done":
         st["emitted_done"] = True
 

@@ -2904,7 +2904,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
               <div className="chat-subtask-dock" style={{
                 borderTop: '1px solid var(--border,#2a2f3a)',
                 background: 'var(--bg-0,#0d1017)',
-                padding: '6px 10px', maxHeight: 180, overflowY: 'auto',
+                padding: '6px 10px', maxHeight: '40vh', overflowY: 'auto',
               }}>
                 {/* Its OWN boundary. This dock is fed by six different
                     producers' event payloads, and a single bad field in one of

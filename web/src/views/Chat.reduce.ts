@@ -33,8 +33,9 @@ function reduceMessageEvent(prev: LiveTurn, evt: any, onAwaiting: () => void): L
 
 // Apply a subtask status update by slug (named so it stays off reduceTurn's
 // complexity budget).
-function withSubtaskStatus(subtasks: SubtaskItem[], slug: string, status: string): SubtaskItem[] {
-  return subtasks.map(s => s.slug === slug ? { ...s, status } : s);
+function withSubtaskStatus(subtasks: SubtaskItem[], slug: string, status: string,
+                           evidence?: SubtaskItem['evidence']): SubtaskItem[] {
+  return subtasks.map(s => s.slug === slug ? { ...s, status, ...(evidence ? { evidence } : {}) } : s);
 }
 
 // Append a plain step (thought/tool_start/changes) — the simple, guard-free
@@ -135,7 +136,7 @@ function reduceStep(prev: LiveTurn, evt: any, onAwaiting: () => void): LiveTurn 
     return { ...prev, subtasks: evt.items || [] };
   }
   if (evt.type === 'subtask_update' && prev.subtasks) {
-    return { ...prev, subtasks: withSubtaskStatus(prev.subtasks, evt.slug, evt.status) };
+    return { ...prev, subtasks: withSubtaskStatus(prev.subtasks, evt.slug, evt.status, evt.evidence) };
   }
   if (evt.type === 'tool') {
     return reduceToolEvent(prev, evt);

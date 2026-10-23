@@ -101,7 +101,8 @@ def board_items(board: dict) -> list[dict]:
     """The board as the UI's subtasks dock reads it."""
     return [{"slug": s, "goal": it["title"], "title": it["title"],
              "status": it["status"], "enforced": bool(it.get("enforced")),
-             "self_added": bool(it.get("self_added"))}
+             "self_added": bool(it.get("self_added")),
+             **({"evidence": it["evidence"]} if it.get("evidence") else {})}
             for s, it in board.items()]
 
 

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { SubtaskItem } from './Chat.types';
 import { clickable } from '../a11y';
+import { TaskEvidenceView, evidenceSummary } from './Chat.TaskEvidence';
 
 const SUBTASK_COLORS: Record<string, string> = {
   done: '#3fb950', skipped: '#5a6472', running: '#6aa6ff',
@@ -21,6 +22,8 @@ export function SubtaskList({ items, onViewSpec, onDismiss }: Readonly<{
   // Default COLLAPSED — the header line is the crisp, live at-a-glance view;
   // click to expand the full list.
   const [open, setOpen] = useState(false);
+  // Evidence rows the user opened (by slug); closed items show a one-line summary.
+  const [shown, setShown] = useState<Record<string, boolean>>({});
   const counts = items.reduce((m, s) => { m[s.status] = (m[s.status] || 0) + 1; return m; }, {} as Record<string, number>);
   const done = (counts['done'] || 0) + (counts['won'] || 0) + (counts['skipped'] || 0);
   const order = ['done', 'won', 'running', 'failed', 'left', 'cancelled', 'planned', 'pending', 'skipped'];
@@ -30,6 +33,9 @@ export function SubtaskList({ items, onViewSpec, onDismiss }: Readonly<{
     || items.find(s => !SETTLED.includes(s.status));
   const allSettled = items.every(s => SETTLED.includes(s.status));
   const pct = items.length ? Math.round((done / items.length) * 100) : 0;
+  // The newest closed item with evidence, for the collapsed header.
+  const lastProved = [...items].filter(s => s.evidence)
+    .sort((a, b) => (b.evidence!.closed_at || 0) - (a.evidence!.closed_at || 0))[0];
   return (
     <div style={{ border: '1px solid var(--border-1)', borderRadius: 6, padding: '6px 10px', margin: '4px 0', background: 'var(--bg-1,#0d1117)' }}>
       <div {...clickable(() => setOpen(v => !v))}
@@ -39,6 +45,12 @@ export function SubtaskList({ items, onViewSpec, onDismiss }: Readonly<{
           {!open && current && (
             <span style={{ color: SUBTASK_COLORS[current.status] || SUBTASK_COLORS.running, fontWeight: 500, marginLeft: 8 }}>
               ▸ {current.slug}
+            </span>
+          )}
+          {!open && !current && lastProved && (
+            <span style={{ color: '#8892a0', fontWeight: 500, marginLeft: 8 }}
+                  title="Evidence recorded by the harness — open the list to see each task's">
+              ✓ {lastProved.slug}: {evidenceSummary(lastProved.evidence)}
             </span>
           )}
         </span>
@@ -79,8 +91,11 @@ export function SubtaskList({ items, onViewSpec, onDismiss }: Readonly<{
         // 🔒 = a stored user target the harness enforces; "(added by agent)"
         // = an item no request asked for.
         const flagged = (s.enforced ? '🔒 ' : '') + label + (s.self_added ? ' (added by agent)' : '');
+        const ev = s.evidence;
+        const evOpen = !!(ev && shown[s.slug]);
         return (
-        <div key={s.slug || i} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, padding: '2px 0' }}>
+        <div key={s.slug || i}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, padding: '2px 0' }}>
           <span style={{ flexShrink: 0, width: 58, textAlign: 'center', fontSize: 10, fontWeight: 600,
             color: SUBTASK_COLORS[s.status] || SUBTASK_COLORS.pending,
             border: `1px solid ${SUBTASK_COLORS[s.status] || SUBTASK_COLORS.pending}`, borderRadius: 4, padding: '1px 3px' }}>{STATUS_LABEL[s.status] || s.status}</span>
@@ -93,6 +108,18 @@ export function SubtaskList({ items, onViewSpec, onDismiss }: Readonly<{
             <span style={{ color: '#8892a0' }}>{label.length > 60 ? label.slice(0, 60) + '…' : label}</span>
             {s.self_added && <span style={{ color: 'var(--warn, #d4a72c)', marginLeft: 6 }}>(added by agent)</span>}
           </span>
+          {ev && (
+            <button type="button" className="ghost xs"
+                    title={evOpen ? 'Hide the evidence' : 'What was run and changed for this task (recorded by the harness)'}
+                    onClick={() => setShown(m => ({ ...m, [s.slug]: !m[s.slug] }))}
+                    style={{ marginLeft: 'auto', flexShrink: 0, cursor: 'pointer', padding: '0 6px', fontSize: 10,
+                             color: ev.note ? 'var(--warn, #d4a72c)' : undefined, maxWidth: 260,
+                             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {evOpen ? '▾' : '▸'} evidence{evidenceSummary(ev) ? ` · ${evidenceSummary(ev)}` : ''}
+            </button>
+          )}
+        </div>
+        {evOpen && ev && <TaskEvidenceView ev={ev} />}
         </div>
         );
       })}

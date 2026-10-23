@@ -21,9 +21,20 @@ export type AgentStep =
 // `enforced`: a stored user target the harness pinned (the run cannot close
 // it without proof). `self_added`: the agent put it on the board itself — no
 // request asked for it, so the dock says so.
+/** One action the harness recorded while a task was open. */
+export type EvidenceStep = {
+  tool: string; kind: 'command' | 'edit' | 'read' | 'tool'; what: string;
+  ok: boolean | null; at: number; code?: number | null; running?: boolean;
+  output?: string; passed?: number; failed?: number; errors?: number;
+};
+/** What the run did for a task, pinned when the task closed (not the model's say-so). */
+export type TaskEvidence = {
+  check: string; steps: EvidenceStep[]; closed_at: number; status: string;
+  summary?: string; note?: string; verdict?: string; files?: string[]; shared_with?: string;
+};
 export type SubtaskItem = {
   slug: string; status: string; goal?: string; title?: string;
-  enforced?: boolean; self_added?: boolean;
+  enforced?: boolean; self_added?: boolean; evidence?: TaskEvidence;
 };
 
 // A captured Rule / Memory / Feedback (deterministic capture pass). Rendered

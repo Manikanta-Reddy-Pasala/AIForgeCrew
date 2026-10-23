@@ -201,11 +201,13 @@ def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
         # net); the model's call never carries them.
         args = {k: v for k, v in args.items()
                 if not str(k).startswith("_") and k != "by_harness"}
+        _before = {s: it.get("status") for s, it in st.board.items()}
         result, events = apply_progress(
             st.board, args,
             context_words=context_words(st.board, getattr(st, "goal", ""),
                                         getattr(st, "steers", None)))
         result, events = review_progress(st, result, events)
+        events = _with_evidence(st, result, events, _before)
         st.board_used = st.board_used or any(
             ev["type"] == "subtasks" for ev in events)
         # The model is working the board (also an item that came from the
@@ -349,6 +351,33 @@ def _team_repo_guard(st, name, args, cwd):
     st.convo.append({"role": "user",
                      "content": f"OBSERVATION: {json.dumps(result)}"})
     return "continue"
+
+
+def _with_evidence(st, result, events, before) -> list:
+    """An item that just closed carries what the run did while it was open
+    (:mod:`._evidence`); the dock's events carry it to the UI."""
+    try:
+        from ._evidence import on_status
+        from ._tasks import board_items
+        slug = result.get("slug") if isinstance(result, dict) else None
+        if not (result.get("ok") and slug in st.board):
+            return events
+        ev = on_status(st, slug, before.get(slug), st.board[slug]["status"])
+        if ev is None:
+            return events
+        out = []
+        for e in events:
+            if e.get("type") == "subtask_update" and e.get("slug") == slug:
+                e = {**e, "evidence": ev}
+            elif e.get("type") == "subtasks":
+                e = {**e, "items": board_items(st.board)}
+            out.append(e)
+        if not any(e.get("type") in ("subtask_update", "subtasks") for e in out):
+            out.append({"type": "subtask_update", "slug": slug,
+                        "status": st.board[slug]["status"], "evidence": ev})
+        return out
+    except Exception:  # noqa: BLE001 — evidence must never break a turn
+        return events
 
 
 def _repo_roles_call(args) -> bool:
@@ -684,6 +713,8 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     # the verify-on-final loop — a 0-edit Q&A turn is never test-gated).
     # Remember a successful read so a later identical re-read short-circuits.
     _record_read(st, name, sig, result, _long_chain_help)
+    from ._evidence import note as _note_evidence
+    _note_evidence(st, name, args, result)
     if name in _READ_OBS_TOOLS:
         _safely(note_read, st, args, result, cwd)
     _safely(note_command, st, name, result, cwd)
