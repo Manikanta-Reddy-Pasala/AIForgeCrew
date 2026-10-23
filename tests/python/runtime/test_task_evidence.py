@@ -212,3 +212,30 @@ def test_a_harness_closed_target_gets_evidence():
 def test_run_tests_exit_code_counts():
     row = E.record("run_tests", {"mode": "fast"}, {"ok": True, "exit_code": 0, "stdout": "4 passed"})
     assert row["code"] == 0 and row["kind"] == "command" and "4 passed" in row["output"]
+
+
+def test_a_very_long_turn_keeps_its_failures(monkeypatch):
+    monkeypatch.setattr(E, "MAX_ROWS", 20)
+    st = _st(a={"title": "A", "status": "pending"})
+    _progress(st, slug="a", status="running")
+    E.note(st, "run_command", {"cmd": "boom"}, {"ok": False, "code": 1})
+    for i in range(40):
+        E.note(st, "run_command", {"cmd": f"ok{i}"}, {"ok": True, "code": 0})
+    _progress(st, slug="a", status="done")
+    ev = st.board["a"]["evidence"]
+    assert ev["steps"][0]["what"] == "boom" and "1 failed" in ev["summary"]
+    assert ev["lost"] == 21 and ev["shown_of"][1] == 41
+
+
+def test_a_refused_reopen_still_drops_old_evidence():
+    st = _st(a={"title": "A", "status": "failed", "evidence": {"status": "failed"}})
+    st.board["a"]["status"] = "running"          # what review_progress does on refusal
+    _with_evidence(st, {"ok": False, "slug": "a"}, [], {"a": "failed"})
+    assert "evidence" not in st.board["a"]
+
+
+def test_no_empty_shared_line_when_nothing_ran():
+    st = _st(**{"part-1": {"title": "A", "status": "running"},
+                "part-2": {"title": "B", "status": "running"}})
+    got = dict(E.for_parts(st, ["part-1", "part-2"]))
+    assert "shared_with" not in got["part-2"] and got["part-2"]["note"]

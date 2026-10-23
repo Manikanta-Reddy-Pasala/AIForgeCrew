@@ -359,6 +359,12 @@ def _with_evidence(st, result, events, before) -> list:
     try:
         from ._evidence import on_status
         slug = result.get("slug") if isinstance(result, dict) else None
+        if slug in st.board and before.get(slug) in ("done", "failed") \
+                and st.board[slug]["status"] not in ("done", "failed"):
+            # Opened again — also when the close the model tried was refused:
+            # the evidence of its earlier close no longer stands.
+            from ._evidence import forget
+            forget(st.board[slug])
         if not (result.get("ok") and slug in st.board):
             return events
         ev = on_status(st, slug, before.get(slug), st.board[slug]["status"])

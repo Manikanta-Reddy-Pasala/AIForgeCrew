@@ -143,10 +143,34 @@ def note(st, name: str, args, result) -> None:
         rows = _rows(st)
         rows.append(row)
         if len(rows) > MAX_ROWS:
-            del rows[:-MAX_ROWS]
+            _trim(st, rows)
         st.evidence_last = None          # a tool ran: no longer a joint close
     except Exception:  # noqa: BLE001 — evidence must never break a turn
         pass
+
+
+def _trim(st, rows: list) -> None:
+    """Drop the oldest actions that did NOT fail (a failure is always kept),
+    remembering which were dropped so a window can say so."""
+    over = len(rows) - MAX_ROWS
+    drop = set()
+    for r in rows:
+        if len(drop) >= over:
+            break
+        if not _failed(r):
+            drop.add(id(r))
+    lost = getattr(st, "evidence_lost", None)
+    if lost is None:
+        lost = st.evidence_lost = []
+    lost.extend(r["seq"] for r in rows if id(r) in drop)
+    del lost[:-5000]
+    rows[:] = [r for r in rows if id(r) not in drop]
+
+
+def _lost_since(st, start: int, claimed_too: bool = True) -> int:
+    claimed = getattr(st, "evidence_claimed", None) or set()
+    return sum(1 for q in (getattr(st, "evidence_lost", None) or ())
+               if q >= start and (claimed_too or q not in claimed))
 
 
 def _failed(r: dict) -> bool:
@@ -184,15 +208,18 @@ def _last_outcome(cmds: list) -> str:
     return ""
 
 
-def _build(rows: list, check: str, status: str) -> dict:
+def _build(rows: list, check: str, status: str, lost: int = 0) -> dict:
     """The evidence for ``rows``. Counts and failures are over ALL of them,
-    not only the steps shown."""
+    not only the steps shown; ``lost`` older actions (none failed) were not
+    kept in a very long turn."""
     steps = _pick(rows)
     ev = {"check": check, "steps": steps,
           "closed_at": round(time.time(), 3), "status": status}
-    if len(steps) < len(rows):
-        ev["shown_of"] = [len(steps), len(rows)]
-    if not rows:
+    if len(steps) < len(rows) or lost:
+        ev["shown_of"] = [len(steps), len(rows) + lost]
+    if lost:
+        ev["lost"] = lost
+    if not rows and not lost:
         ev["note"] = "nothing was run or changed while this item was open"
         return ev
     cmds = [r for r in rows if r["kind"] == "command"]
@@ -250,7 +277,8 @@ def on_status(st, slug: str, before: str | None, after: str) -> dict | None:
         # Closed in the same breath as the item before it (no tool call in
         # between): the work that proved that one is the work behind this.
         shared, rows = last[0], list(last[1])
-    ev = _build(rows, check_of(item.get("title", "")), after)
+    lost = 0 if shared else _lost_since(st, start)
+    ev = _build(rows, check_of(item.get("title", "")), after, lost)
     if shared:
         ev["shared_with"] = shared
     _claim(st, rows)
@@ -296,7 +324,7 @@ def for_parts(st, slugs) -> list:
         if first is None:
             first = slug
             _claim(st, rows)
-        else:
+        elif rows:
             ev["shared_with"] = first
         item["evidence"] = ev
         out.append((slug, ev))

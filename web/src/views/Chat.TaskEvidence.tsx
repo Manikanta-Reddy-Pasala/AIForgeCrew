@@ -59,7 +59,10 @@ export function TaskEvidenceView({ ev }: { ev: TaskEvidence }) {
       )}
       {ev.steps.map((s, i) => <Step key={i} s={s} />)}
       {ev.shown_of && (
-        <div style={{ color: '#8892a0' }}>showing {ev.shown_of[0]} of {ev.shown_of[1]} actions (every failure is shown)</div>
+        <div style={{ color: '#8892a0' }}>
+          showing {ev.shown_of[0]} of {ev.shown_of[1]} actions (every failure is shown)
+          {ev.lost ? ` · ${ev.lost} older successful actions were not kept` : ''}
+        </div>
       )}
       {ev.files && ev.files.length > 0 && (
         <div style={{ color: '#8892a0', marginTop: 2 }}>files changed: {ev.files.join(', ')}</div>

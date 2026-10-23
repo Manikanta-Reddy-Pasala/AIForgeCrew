@@ -344,9 +344,13 @@ export function ProcessDock({ sessionId }: { sessionId: number | null }) {
       {fileChips.length > 0 && (
         <div className="row" style={{ gap: 6, flexWrap: 'wrap', alignItems: 'center', padding: '0 10px 6px' }}>
           <span className="muted xs">Log files</span>
-          {fileChips.map(({ p, f }) => {
-            const src = { proc: p.id, path: f };
-            const on = isOpen(src);
+          {fileChips.map(({ p: chipProc, f }) => {
+            // A tile already open on this file (maybe from another command
+            // that wrote or followed it) is this chip's tile.
+            const openSrc = open.find(x => x.path === f && byId.has(x.proc));
+            const p = openSrc ? byId.get(openSrc.proc)! : chipProc;
+            const src = openSrc || { proc: p.id, path: f };
+            const on = !!openSrc;
             return (
               <span key={`${p.id}:${f}`} className={`chip${p.running ? ' info' : ''}`}
                     style={{ maxWidth: 300, outline: on ? '1px solid currentColor' : undefined }}>

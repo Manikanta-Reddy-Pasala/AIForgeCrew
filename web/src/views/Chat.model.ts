@@ -31,7 +31,7 @@ export type EvidenceStep = {
 export type TaskEvidence = {
   check: string; steps: EvidenceStep[]; closed_at: number; status: string;
   summary?: string; note?: string; verdict?: string; files?: string[]; shared_with?: string;
-  shown_of?: [number, number];
+  shown_of?: [number, number]; lost?: number;
 };
 export type SubtaskItem = {
   slug: string; status: string; goal?: string; title?: string;
