@@ -324,6 +324,13 @@ def chat_session_stop(session_id: int) -> dict:
     except Exception:  # noqa: BLE001
         bg_n = 0
     try:
+        # Every process the chat started, also those with no background row
+        # (services, pane commands): Ctrl-C, then TERM, then KILL.
+        from aiforge_core.runtime import cmd_jobs
+        bg_n += cmd_jobs.stop_session(session_id)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         from aiforge_core.jobs import scheduler as jobs_scheduler
         if jobs_scheduler.request_stop_session(session_id):
             active = True

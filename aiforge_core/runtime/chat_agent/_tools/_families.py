@@ -47,6 +47,10 @@ FAMILY_CUE = (
     ("services", re.compile(
         r"\bserve\b|\bdev server\b|\bnpm run dev\b|\bstart the (?:app|server)\b",
         re.I)),
+    ("logs", re.compile(
+        r"\bshow_logs\b|\blogs?\b|\blog ?files?\b|\btail\b|"
+        r"\b(?:show|see|watch|follow|stream|display)\b[^.?!\n]{0,40}\boutput\b",
+        re.I)),
     ("ui", re.compile(r"\bui_check\b|\bscreenshot\b", re.I)),
     ("codegraph", re.compile(
         r"\bcodegraph\b|\bcallers\b|\bcallees\b|\bcall graph\b|\bwho calls\b|"
@@ -57,6 +61,7 @@ FAMILY_TOOLS = {
     "watch": ("watch_until",),
     "schedule": ("schedule_task",),
     "services": ("serve", "stop_service", "list_services"),
+    "logs": ("show_logs",),
     "ui": ("ui_check", "ui_ask"),
     "codegraph": (
         "codegraph_query", "codegraph_callers", "codegraph_callees",
@@ -85,6 +90,7 @@ FAMILY_BLURB = {
     "watch": "wait for a condition (a port, a file, a job)",
     "schedule": "run something later or on a timer",
     "services": "start, list and stop a background app",
+    "logs": "show a command's or a file's live log to the user",
     "ui": "screenshot a running page and check it",
     "codegraph": "symbol callers, callees and impact",
 }

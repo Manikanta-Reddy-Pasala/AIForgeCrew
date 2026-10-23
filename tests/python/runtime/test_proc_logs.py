@@ -187,7 +187,7 @@ def test_show_logs_is_a_core_read_only_tool():
     from aiforge_core.runtime.tools import tool_policy
     assert "show_logs" in TOOLS
     assert "show_logs" in _schemas.NATIVE_TOOL_NAMES
-    assert "show_logs" in _schemas._CORE_ACT
+    assert "show_logs" not in _schemas._CORE_ACT      # added by cue
     assert "show_logs" in tool_policy._READONLY_ALWAYS_ALLOW
 
 
@@ -260,7 +260,8 @@ def test_shown_keeps_rising(env):
     a, b = _bg("sleep 30", env), _bg("sleep 30", env)
     proc_logs.mark_shown(SID, a)
     proc_logs.mark_shown(SID, b)
-    assert proc_logs._shown(SID, b) > proc_logs._shown(SID, a) > 10 ** 18
+    assert proc_logs._shown(SID, b) > proc_logs._shown(SID, a) > 10 ** 15
+    assert proc_logs._shown(SID, b) < 2 ** 53          # exact in a JS number
 
 
 def test_deleting_a_chat_stops_its_tails_and_keeps_nothing(env):
@@ -310,3 +311,101 @@ def test_a_job_is_kept_before_it_leaves_the_table(env, monkeypatch):
     monkeypatch.setattr(proc_logs, "remember", spy)
     cmd_jobs._forget(job)
     assert seen["in_table"] is True and key not in cmd_jobs._JOBS
+
+
+@pytest.mark.parametrize("text", [
+    "show me the logs of the api", "tail the build log",
+    "Show me the output of the heartbeat process", "follow app.log"])
+def test_show_logs_is_added_when_the_user_asks_for_logs(text):
+    from aiforge_core.runtime.chat_agent._tools import _families
+    assert "logs" in _families.named_families(text)
+
+
+def test_show_logs_is_not_added_for_unrelated_text():
+    from aiforge_core.runtime.chat_agent._tools import _families
+    assert "logs" not in _families.named_families("what is 2+2")
+
+
+# ── log files, whole-log view and download ───────────────────────────────
+
+
+def test_a_redirect_target_is_a_log_file(env):
+    key = _bg("while true; do echo tick; sleep 0.2; done > run.log 2>&1", env)
+    assert _until(lambda: (env / "run.log").exists())
+    files = proc_logs.list_for_session(SID)[0]["log_files"]
+    assert files == [str((env / "run.log").resolve())]
+    assert _until(lambda: "tick" in (proc_logs.read_file(SID, key, files[0]) or {}).get("text", ""))
+
+
+def test_a_file_the_process_keeps_open_is_found(env):
+    script = env / "w.py"
+    script.write_text("import time\nf = open('server.out', 'a')\n"
+                      "while True:\n    f.write('up\\n'); f.flush(); time.sleep(0.2)\n")
+    key = _bg(f"python3 {script}", env)
+    want = str((env / "server.out").resolve())
+    assert _until(lambda: want in proc_logs.list_for_session(SID)[0]["log_files"], s=15)
+    r = proc_logs.read_file(SID, key, want, 0)
+    assert r["text"].startswith("up\n") and r["running"] is True
+
+
+def test_only_listed_files_can_be_read(env, tmp_path):
+    key = _bg("sleep 30 > a.log", env)
+    other = tmp_path / "secret.txt"
+    other.write_text("s\n")
+    assert proc_logs.read_file(SID, key, str(other)) is None
+    assert proc_logs.file_path(SID, key, str(other)) is None
+    assert proc_logs.read_file(SID + 1, key, str(env / "a.log")) is None
+    assert proc_logs.file_path(SID, key, str(env / "a.log")) == str((env / "a.log").resolve())
+
+
+def test_an_ended_job_keeps_its_log_files(env):
+    key = _bg("echo hi > done.log", env)
+    job = cmd_jobs._JOBS[key]
+    assert _until(lambda: not job.alive())
+    cmd_jobs.look(job)
+    row = proc_logs.list_for_session(SID)[0]
+    assert row["log_files"] == [str((env / "done.log").resolve())]
+    assert proc_logs.read_file(SID, key, row["log_files"][0], 0)["text"] == "hi\n"
+
+
+def test_download_is_the_whole_output(env):
+    key = _bg("seq 1 50000; echo bad >&2; sleep 30", env)
+    assert _until(lambda: proc_logs.read(SID, key)["bytes"][1] > 0)
+    data = b"".join(proc_logs.output_chunks(SID, key, chunk=4096)).decode()
+    assert data.startswith("1\n2\n") and "\n50000\n" in data
+    assert data.rstrip().endswith("----- stderr -----\nbad")
+    assert proc_logs.output_chunks(SID + 1, key) is None
+
+
+def test_a_prompt_without_newline_shows_once_output_goes_quiet(env, monkeypatch):
+    monkeypatch.setattr(proc_logs, "_PARTIAL_QUIET_S", 0.3)
+    key = _bg("printf 'Password: '; sleep 30", env)
+    assert _until(lambda: proc_logs.read(SID, key, [0, 0])["streams"][0]["text"] == "Password: ")
+
+
+def test_remember_skips_a_job_already_closed(env):
+    key = _bg("echo x", env)
+    job = cmd_jobs._JOBS[key]
+    assert _until(lambda: not job.alive())
+    cmd_jobs.look(job)
+    good = proc_logs.read(SID, key)["streams"][0]["text"]
+    proc_logs.remember(job)                      # a late second collector
+    assert proc_logs.read(SID, key)["streams"][0]["text"] == good == "x\n"
+
+
+def test_api_file_and_download(client, env):
+    key = _bg("while true; do echo line; sleep 0.2; done > api.log", env)
+    path = str((env / "api.log").resolve())
+    assert _until(lambda: (env / "api.log").stat().st_size > 0 if (env / "api.log").exists() else False)
+    assert _until(lambda: path in client.get(
+        f"/api/chat/sessions/{SID}/processes").json()["processes"][0]["log_files"])
+    r = client.get(f"/api/chat/sessions/{SID}/processes/{key}/file",
+                   params={"path": path, "offset": 0})
+    assert r.status_code == 200 and r.json()["text"].startswith("line\n")
+    assert client.get(f"/api/chat/sessions/{SID}/processes/{key}/file",
+                      params={"path": "/etc/passwd"}).status_code == 404
+    d = client.get(f"/api/chat/sessions/{SID}/processes/{key}/download", params={"path": path})
+    assert d.status_code == 200 and d.text.startswith("line\n")
+    assert "attachment" in d.headers["content-disposition"]
+    out = client.get(f"/api/chat/sessions/{SID}/processes/{key}/download")
+    assert out.status_code == 200 and "attachment" in out.headers["content-disposition"]

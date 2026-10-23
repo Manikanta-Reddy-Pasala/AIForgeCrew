@@ -273,7 +273,8 @@ def _register(job: Job) -> Job:
 def adopt_spooled(proc, spool, cmd: str, cwd: str, *, explicit: bool,
                   session_id=None, idle_s: float = 0.0,
                   deadline: float | None = None,
-                  started: float | None = None) -> Job:
+                  started: float | None = None,
+                  announce: bool | None = None) -> Job:
     """Track a spooled shell command as a job (see bg_work.track_command for
     the Stop wiring and the end-of-run chat line). ``started`` is when the
     command began (monotonic), so elapsed time is not counted from the
@@ -281,7 +282,8 @@ def adopt_spooled(proc, spool, cmd: str, cwd: str, *, explicit: bool,
     from aiforge_core.runtime import bg_work
     handle = bg_work.track_command(
         session_id, cwd, cmd, proc, spool, close_spool=False,
-        announce=explicit, idle_s=idle_s, deadline=deadline,
+        announce=explicit if announce is None else announce,
+        idle_s=idle_s, deadline=deadline,
         owner=_OWNER.get())
     key = handle.get("handle") or f"pid-{proc.pid}"
 
@@ -401,6 +403,24 @@ def for_session(session_id) -> list[dict]:
         return []
 
 
+def stop_session(session_id) -> int:
+    """The chat's Stop: every live process this chat started — handed-off,
+    background, services, pane commands — is stopped (Ctrl-C, then TERM,
+    then KILL). Returns how many."""
+    if session_id is None:
+        return 0
+    with _LOCK:
+        mine = [j for j in _JOBS.values()
+                if j.session_id is not None
+                and str(j.session_id) == str(session_id)]
+    n = 0
+    for job in mine:
+        if job.alive():
+            job.kill("stopped: the user pressed Stop")
+            n += 1
+    return n
+
+
 def running() -> list[Job]:
     """The caller's own live jobs."""
     caller = _caller()
@@ -410,15 +430,18 @@ def running() -> list[Job]:
 
 
 def stop_for_text(session_id, text: str) -> int:
-    """A typed message that stops the work ("stop", "kill it", "stop the
-    build") kills this chat's handed-off jobs; one aimed at background work
-    ("stop the server", "stop everything") kills its explicit background
-    jobs too. Returns how many were killed."""
+    """A typed message that stops the work kills this chat's commands. A stop
+    aimed at everything ("stop", "stop it", "kill it", "stop everything") or
+    at background work ("stop the server") kills every process the chat
+    started, background ones included; one naming a single thing ("stop the
+    build") kills only the commands the run is waiting on. Returns how many
+    were killed."""
     if session_id is None or not text:
         return 0
     from aiforge_core.runtime import _stop_phrases
     cut = _stop_phrases.cuts_run(text)
-    background = _stop_phrases.cuts_background(text)
+    background = (_stop_phrases.cuts_background(text)
+                  or _stop_phrases.cuts_all(text))
     if not (cut or background):
         return 0
     with _LOCK:
@@ -561,4 +584,4 @@ def wait(job: Job, max_s: float | None = None, session_id=None) -> dict:
 __all__ = ["Job", "adopt_service", "adopt_spooled", "begin_turn",
            "checkin_s", "current_owner", "default_wait_s", "end_owner",
            "end_turn", "find", "look", "progress_suffix", "reset_owner",
-           "running", "set_label", "set_owner", "stop_for_text", "stuck_s", "wait"]
+           "running", "set_label", "set_owner", "stop_for_text", "stop_session", "stuck_s", "wait"]

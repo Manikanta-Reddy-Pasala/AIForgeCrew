@@ -450,10 +450,11 @@ def _without_trailing_amp(cmd: str) -> str:
     return cmd
 
 
-def _start_background(cmd: str, base: str,
-                      deadline: float | None = None) -> dict:
+def _start_background(cmd: str, base: str, deadline: float | None = None,
+                      announce: bool | None = None) -> dict:
     """Spawn ``cmd`` and return a handle. Do not kill it on the way out
-    (``deadline``: a ``time.monotonic()`` at which it is stopped)."""
+    (``deadline``: a ``time.monotonic()`` at which it is stopped;
+    ``announce=False``: no chat line when it ends)."""
     from aiforge_core.runtime import chat_cancel
     cmd = _without_trailing_amp(cmd)
     spool = Spool()
@@ -472,7 +473,8 @@ def _start_background(cmd: str, base: str,
         sid = None
     from aiforge_core.runtime import cmd_jobs
     job = cmd_jobs.adopt_spooled(proc, spool, cmd, base, explicit=True,
-                                 session_id=sid, deadline=deadline)
+                                 session_id=sid, deadline=deadline,
+                                 announce=announce)
     out = dict(getattr(job, "handle", {}) or {})
     out["id"] = job.key
     out["note"] = (out.get("note", "") + f" Check on it any time with "

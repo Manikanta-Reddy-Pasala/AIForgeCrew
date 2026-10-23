@@ -1,14 +1,24 @@
 import { useEffect, useRef, useState } from 'react';
-import { chatProcesses, chatProcessLog, chatProcessKill, ChatProcess } from '../api';
+import {
+  chatProcesses, chatProcessLog, chatProcessFile, chatProcessKill, chatProcessDownload,
+  ChatProcess, ChatProcessChunk,
+} from '../api';
 
 const LIST_POLL_MS = 2000;
 const LOG_POLL_MS = 1000;
 /** Characters kept per open log (the oldest are dropped first). */
 const KEEP_CHARS = 200_000;
-/** First read of a log: its last 64 KB per stream. */
+/** First read of a tile: the last 64 KB. */
 const FIRST_READ = -64 * 1024;
+/** The pop-up view: the last 256 KB. */
+const VIEW_READ = -256 * 1024;
 
 type Line = { err: boolean; text: string };
+/** What a tile shows: the command's own output, or one of its log files. */
+type Source = { proc: string; path?: string };
+
+const tileKey = (s: Source) => (s.path ? `file:${s.proc}:${s.path}` : `out:${s.proc}`);
+const baseName = (p: string) => p.split('/').pop() || p;
 
 function since(epochS: number, untilS?: number): string {
   const s = Math.max(0, Math.round((untilS ?? Date.now() / 1000) - epochS));
@@ -28,20 +38,130 @@ function title(p: ChatProcess): string {
   return p.label || p.cmd;
 }
 
-/** One live log: tails the command by byte offset, newest at the bottom. */
-function LogTile({ sessionId, proc, onClose }: {
+/** One read of a source from `offsets` on: the chunks per stream, and whether
+ *  it is still being written. */
+async function readSource(sessionId: number, src: Source, offsets: number[], first: number):
+    Promise<{ streams: ChatProcessChunk[]; running: boolean }> {
+  if (src.path) {
+    const r = await chatProcessFile(sessionId, src.proc, src.path,
+                                    offsets.length ? offsets[0] : first, Math.abs(first));
+    return { streams: [r], running: r.running };
+  }
+  const r = await chatProcessLog(sessionId, src.proc, offsets.length ? offsets : [first, first]);
+  return { streams: r.streams, running: r.running };
+}
+
+function toLines(streams: ChatProcessChunk[], running: boolean): Line[] {
+  const add: Line[] = [];
+  streams.forEach((s, i) => {
+    if (s.skipped) add.push({ err: i > 0, text: `… ${s.skipped} bytes not shown …\n` });
+    // Whole lines arrive while it runs; a finished log's last line may lack its newline.
+    if (s.text) add.push({ err: i > 0, text: s.text.endsWith('\n') || running ? s.text : s.text + '\n' });
+  });
+  return add;
+}
+
+function download(sessionId: number, src: Source) {
+  chatProcessDownload(sessionId, src.proc, src.path).catch(() => undefined);
+}
+
+const btnReset = {
+  background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'inherit',
+  font: 'inherit', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+} as const;
+
+function LogBody({ lines, height, follow, setFollow, empty }: {
+  lines: Line[]; height: number | string; follow: boolean;
+  setFollow: (f: boolean) => void; empty: string;
+}) {
+  const body = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    if (follow && body.current) body.current.scrollTop = body.current.scrollHeight;
+  }, [lines, follow]);
+  return (
+    <pre ref={body}
+         onScroll={e => {
+           const el = e.currentTarget;
+           const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+           if (atEnd !== follow) setFollow(atEnd);
+         }}
+         style={{ margin: 0, padding: '6px 8px', flex: 'none', overflow: 'auto', height,
+                  border: 0, borderRadius: '0 0 6px 6px',
+                  fontSize: 12, lineHeight: 1.35, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+      {lines.length === 0
+        ? <span className="muted">{empty}</span>
+        : lines.map((l, i) => (
+            <span key={i} style={l.err ? { color: 'var(--err)' } : undefined}>{l.text}</span>
+          ))}
+    </pre>
+  );
+}
+
+/** A bigger look at a log: its last 256 KB, refreshed on demand, downloadable. */
+function LogViewer({ sessionId, src, name, onClose }: {
+  sessionId: number; src: Source; name: string; onClose: () => void;
+}) {
+  const [lines, setLines] = useState<Line[]>([]);
+  const [follow, setFollow] = useState(true);
+  const [err, setErr] = useState('');
+  async function load() {
+    try {
+      const r = await readSource(sessionId, src, [], VIEW_READ);
+      setLines(toLines(r.streams, false));
+      setErr('');
+    } catch (e: any) { setErr(String(e?.message || e)); }
+  }
+  useEffect(() => {
+    load();
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, tileKey(src)]);
+  return (
+    <div role="dialog" aria-label={`Log: ${name}`} onClick={onClose}
+         style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,.45)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div className="proc-viewer" onClick={e => e.stopPropagation()}
+           style={{ width: 'min(1100px, 92vw)', height: '80vh', display: 'flex', flexDirection: 'column',
+                    background: 'var(--bg-1)', border: '1px solid var(--border-1)', borderRadius: 8 }}>
+        <div className="row" style={{ gap: 6, alignItems: 'center', padding: '6px 10px',
+                                      borderBottom: '1px solid var(--border-1)' }}>
+          <span style={{ flex: 1, minWidth: 0, fontWeight: 600, overflow: 'hidden',
+                         textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={src.path || name}>
+            {name}
+          </span>
+          <span className="muted xs">last 256 KB</span>
+          <button type="button" className="ghost sm" onClick={load} title="Read it again">↻ Refresh</button>
+          <button type="button" className="ghost sm" onClick={() => download(sessionId, src)}
+                  title="Download the whole log">⬇ Download</button>
+          <button type="button" className="ghost sm" onClick={onClose} title="Close (Esc)">✕</button>
+        </div>
+        {err && <div className="xs" style={{ color: 'var(--err)', padding: '4px 10px' }}>{err}</div>}
+        <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+          <LogBody lines={lines} height="100%" follow={follow} setFollow={setFollow} empty="Empty." />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** One live log tile: tails a source by byte offset, newest at the bottom. */
+function LogTile({ sessionId, proc, src, onClose, onView }: {
   sessionId: number;
   proc: ChatProcess;
+  src: Source;
   onClose: () => void;
+  onView: () => void;
 }) {
   const [lines, setLines] = useState<Line[]>([]);
   const [follow, setFollow] = useState(true);
   const [wide, setWide] = useState(false);
   const [gone, setGone] = useState(false);
   const offsets = useRef<number[]>([]);
-  const body = useRef<HTMLPreElement>(null);
   const running = useRef(proc.running);
   running.current = proc.running;
+  const key = tileKey(src);
 
   useEffect(() => {
     let live = true;
@@ -52,18 +172,11 @@ function LogTile({ sessionId, proc, onClose }: {
     setGone(false);
     async function tick() {
       try {
-        const offs = offsets.current.length ? offsets.current : [FIRST_READ, FIRST_READ];
-        const r = await chatProcessLog(sessionId, proc.id, offs);
+        const r = await readSource(sessionId, src, offsets.current, FIRST_READ);
         if (!live) return;
         misses = 0;
         offsets.current = r.streams.map(s => s.next);
-        const add: Line[] = [];
-        r.streams.forEach((s, i) => {
-          if (s.skipped) add.push({ err: i > 0, text: `… ${s.skipped} bytes not shown …\n` });
-          // The server sends whole lines while the command runs; a finished
-          // command's last line may have no newline — end it here.
-          if (s.text) add.push({ err: i > 0, text: s.text.endsWith('\n') || r.running ? s.text : s.text + '\n' });
-        });
+        const add = toLines(r.streams, r.running);
         if (add.length) {
           setLines(prev => {
             const next = prev.concat(add);
@@ -83,13 +196,11 @@ function LogTile({ sessionId, proc, onClose }: {
     }
     tick();
     return () => { live = false; window.clearTimeout(timer); };
-  }, [sessionId, proc.id]);
-
-  useEffect(() => {
-    if (follow && body.current) body.current.scrollTop = body.current.scrollHeight;
-  }, [lines, follow]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, key]);
 
   const st = stateOf(proc);
+  const name = src.path ? `📄 ${baseName(src.path)}` : title(proc);
   return (
     <div className="proc-tile" style={{
       gridColumn: wide ? '1 / -1' : undefined,
@@ -99,49 +210,41 @@ function LogTile({ sessionId, proc, onClose }: {
       <div className="row" style={{ gap: 6, alignItems: 'center', padding: '4px 8px',
                                     borderBottom: '1px solid var(--border-1)' }}>
         <span className={st.cls}>{st.text}</span>
-        <span title={`${proc.cmd}${proc.cwd ? `\n in ${proc.cwd}` : ''}`}
+        <span title={src.path ? `${src.path}\nwritten by: ${proc.cmd}` : `${proc.cmd}${proc.cwd ? `\n in ${proc.cwd}` : ''}`}
               style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis',
                        whiteSpace: 'nowrap', fontWeight: 600 }}>
-          {title(proc)}
+          {name}
         </span>
         <span className="muted xs">{since(proc.started_at, proc.running ? undefined : proc.ended_at)}</span>
         <button type="button" className={`ghost sm${follow ? ' active' : ''}`}
                 title={follow ? 'Following the end — click to stop scrolling' : 'Follow the end'}
                 onClick={() => setFollow(f => !f)}>⤓</button>
-        <button type="button" className="ghost sm" title="Clear this view (the command is not touched)"
+        <button type="button" className="ghost sm" title="Clear this view (the log is not touched)"
                 onClick={() => setLines([])}>⌫</button>
         <button type="button" className="ghost sm" title={wide ? 'Back to a tile' : 'Full width'}
                 onClick={() => setWide(w => !w)}>{wide ? '▭' : '⬌'}</button>
-        {proc.running && (
-          <button type="button" className="ghost sm" title="Stop this command"
+        <button type="button" className="ghost sm" title="Open in a bigger view" onClick={onView}>⤢</button>
+        <button type="button" className="ghost sm" title="Download the whole log"
+                onClick={() => download(sessionId, src)}>⬇</button>
+        {proc.running && !src.path && (
+          <button type="button" className="ghost sm" title="Stop this command (Ctrl-C, then force kill)"
                   onClick={() => { chatProcessKill(sessionId, proc.id).catch(() => undefined); }}>■</button>
         )}
         <button type="button" className="ghost sm" title="Close this log" onClick={onClose}>✕</button>
       </div>
-      <pre ref={body}
-           onScroll={e => {
-             const el = e.currentTarget;
-             const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-             if (atEnd !== follow) setFollow(atEnd);
-           }}
-           style={{ margin: 0, padding: '6px 8px', flex: 'none', overflow: 'auto', height: wide ? 360 : 220,
-                    border: 0, borderRadius: '0 0 6px 6px',
-                    fontSize: 12, lineHeight: 1.35, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-        {lines.length === 0
-          ? <span className="muted">{gone ? 'This command is gone — its output was not kept.' : 'No output yet.'}</span>
-          : lines.map((l, i) => (
-              <span key={i} style={l.err ? { color: 'var(--err)' } : undefined}>{l.text}</span>
-            ))}
-      </pre>
+      <LogBody lines={lines} height={wide ? 360 : 220} follow={follow} setFollow={setFollow}
+               empty={gone ? 'This log is gone — its output was not kept.' : 'No output yet.'} />
     </div>
   );
 }
 
-/** The chat's running commands at the foot of the chat. Click one to tile its
- *  live log; the agent's show_logs opens a tile by itself. */
+/** The chat's commands at the foot of the chat. Click one to tile its live
+ *  output; click one of its log files to tile that file. The agent's
+ *  show_logs opens a tile by itself. */
 export function ProcessDock({ sessionId }: { sessionId: number | null }) {
   const [procs, setProcs] = useState<ChatProcess[]>([]);
-  const [open, setOpen] = useState<string[]>([]);
+  const [open, setOpen] = useState<Source[]>([]);
+  const [viewing, setViewing] = useState<Source | null>(null);
   const [expanded, setExpanded] = useState(true);
   const seenShown = useRef(0);
   const first = useRef(true);
@@ -149,6 +252,7 @@ export function ProcessDock({ sessionId }: { sessionId: number | null }) {
   useEffect(() => {
     setProcs([]);
     setOpen([]);
+    setViewing(null);
     seenShown.current = 0;
     first.current = true;
     if (sessionId === null) return;
@@ -165,9 +269,9 @@ export function ProcessDock({ sessionId }: { sessionId: number | null }) {
           first.current = false;
           seenShown.current = top;
         } else if (top > seenShown.current) {
-          const fresh = r.processes.filter(p => p.shown > seenShown.current).map(p => p.id);
+          const fresh = r.processes.filter(p => p.shown > seenShown.current).map(p => ({ proc: p.id }));
           seenShown.current = top;
-          setOpen(o => o.concat(fresh.filter(id => !o.includes(id))));
+          setOpen(o => o.concat(fresh.filter(f => !o.some(x => tileKey(x) === tileKey(f)))));
           setExpanded(true);
         }
       } catch { /* a missed poll is retried */ }
@@ -179,9 +283,16 @@ export function ProcessDock({ sessionId }: { sessionId: number | null }) {
 
   if (sessionId === null || procs.length === 0) return null;
   const running = procs.filter(p => p.running).length;
-  const tiles = open.map(id => procs.find(p => p.id === id)).filter(Boolean) as ChatProcess[];
-  const toggle = (id: string) =>
-    setOpen(o => o.includes(id) ? o.filter(x => x !== id) : o.concat(id));
+  const byId = new Map(procs.map(p => [p.id, p]));
+  const tiles = open.filter(s => byId.has(s.proc));
+  const isOpen = (s: Source) => open.some(x => tileKey(x) === tileKey(s));
+  const toggle = (s: Source) => {
+    setOpen(o => (o.some(x => tileKey(x) === tileKey(s))
+      ? o.filter(x => tileKey(x) !== tileKey(s)) : o.concat(s)));
+    setExpanded(true);
+  };
+  const withFiles = procs.filter(p => (p.log_files || []).length > 0);
+  const viewProc = viewing ? byId.get(viewing.proc) : undefined;
 
   return (
     <div className="proc-dock" style={{ borderTop: '1px solid var(--border-1)' }}>
@@ -193,33 +304,67 @@ export function ProcessDock({ sessionId }: { sessionId: number | null }) {
         <span className="muted xs">{running ? `${running} running` : 'none running'}</span>
         {procs.map(p => {
           const st = stateOf(p);
-          const on = open.includes(p.id);
+          const on = isOpen({ proc: p.id });
           return (
             <span key={p.id} className={st.cls}
-                  style={{ maxWidth: 280, outline: on ? '1px solid currentColor' : undefined }}>
+                  style={{ maxWidth: 300, outline: on ? '1px solid currentColor' : undefined }}>
               <button type="button"
-                      title={`${p.cmd}\n${st.text} · ${since(p.started_at, p.running ? undefined : p.ended_at)}${on ? '\nClick to close its log' : '\nClick to open its log'}`}
-                      onClick={() => { toggle(p.id); setExpanded(true); }}
-                      style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer',
-                               color: 'inherit', font: 'inherit', overflow: 'hidden',
-                               textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 260 }}>
+                      title={`${p.cmd}\n${st.text} · ${since(p.started_at, p.running ? undefined : p.ended_at)}${on ? '\nClick to close its output' : '\nClick to watch its output'}`}
+                      onClick={() => toggle({ proc: p.id })} style={{ ...btnReset, maxWidth: 240 }}>
                 {p.running ? '● ' : ''}{title(p)}
               </button>
+              <button type="button" title="Open its output in a bigger view"
+                      onClick={() => setViewing({ proc: p.id })} style={{ ...btnReset, opacity: 0.75 }}>⤢</button>
             </span>
           );
         })}
+        {running > 0 && (
+          <button type="button" className="ghost sm"
+                  title="Stop every command this chat started (Ctrl-C, then force kill)"
+                  onClick={() => {
+                    procs.filter(p => p.running)
+                      .forEach(p => { chatProcessKill(sessionId, p.id).catch(() => undefined); });
+                  }}>■ Stop all</button>
+        )}
         {tiles.length > 1 && expanded && (
           <button type="button" className="ghost sm" onClick={() => setOpen([])}>close all</button>
         )}
       </div>
+      {withFiles.length > 0 && (
+        <div className="row" style={{ gap: 6, flexWrap: 'wrap', alignItems: 'center', padding: '0 10px 6px' }}>
+          <span className="muted xs">Log files</span>
+          {withFiles.map(p => p.log_files.map(f => {
+            const src = { proc: p.id, path: f };
+            const on = isOpen(src);
+            return (
+              <span key={`${p.id}:${f}`} className={`chip${p.running ? ' info' : ''}`}
+                    style={{ maxWidth: 300, outline: on ? '1px solid currentColor' : undefined }}>
+                <button type="button" onClick={() => toggle(src)} style={{ ...btnReset, maxWidth: 220 }}
+                        title={`${f}\nfrom: ${title(p)}${p.running ? '' : ' (ended)'}\nClick to ${on ? 'close' : 'watch'} it`}>
+                  📄 {baseName(f)}
+                </button>
+                <button type="button" title="Open in a bigger view" onClick={() => setViewing(src)}
+                        style={{ ...btnReset, opacity: 0.75 }}>⤢</button>
+                <button type="button" title="Download this file" onClick={() => download(sessionId, src)}
+                        style={{ ...btnReset, opacity: 0.75 }}>⬇</button>
+              </span>
+            );
+          }))}
+        </div>
+      )}
       {expanded && tiles.length > 0 && (
         <div style={{ display: 'grid', gap: 8, padding: '0 10px 8px',
                       gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))',
                       maxHeight: '45vh', overflow: 'auto' }}>
-          {tiles.map(p => (
-            <LogTile key={p.id} sessionId={sessionId} proc={p} onClose={() => toggle(p.id)} />
+          {tiles.map(s => (
+            <LogTile key={tileKey(s)} sessionId={sessionId} proc={byId.get(s.proc)!} src={s}
+                     onClose={() => toggle(s)} onView={() => setViewing(s)} />
           ))}
         </div>
+      )}
+      {viewing && viewProc && (
+        <LogViewer sessionId={sessionId} src={viewing} onClose={() => setViewing(null)}
+                   name={viewing.path ? baseName(viewing.path) : title(viewProc)} />
       )}
     </div>
   );

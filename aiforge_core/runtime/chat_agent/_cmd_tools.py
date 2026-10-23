@@ -74,7 +74,7 @@ def _log_file(raw: str, cwd: str):
     root = _workspace_root()
     base = str(root) if root is not None else cwd
     try:
-        path = str(_resolve(base, str(raw).strip()))
+        path = str(_resolve(cwd or base, str(raw).strip()))
     except PermissionError as exc:
         return None, base, {"ok": False, "error": str(exc)}
     if not os.path.isfile(path):
@@ -122,7 +122,7 @@ def _t_show_logs(args: dict, cwd: str) -> dict:
         from ._shell import _start_background
         res = _start_background(
             f"tail -n {lines} -F {shlex.quote(path)}", base,
-            deadline=time.monotonic() + ttl)
+            deadline=time.monotonic() + ttl, announce=False)
         if not res.get("id"):
             return res
         job = cmd_jobs.find(res["id"])

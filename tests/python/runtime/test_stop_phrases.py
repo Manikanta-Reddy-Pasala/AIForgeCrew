@@ -88,3 +88,19 @@ def test_a_change_of_plan_replaces_the_work(text):
 ])
 def test_an_extra_detail_does_not_replace_the_work(text):
     assert replaces(text) is False
+
+
+@pytest.mark.parametrize("text", [
+    "stop", "stop it", "Stop it!", "kill it", "ok stop everything", "kill all the processes",
+    "stop all processes you started", "please stop it now", "abort"])
+def test_cuts_all(text):
+    from aiforge_core.runtime import _stop_phrases
+    assert _stop_phrases.cuts_all(text)
+
+
+@pytest.mark.parametrize("text", [
+    "stop the build", "add a stop button", "how do I kill it?", "kill -9 1234 for me",
+    "don't stop", "stop the watch on the pipeline"])
+def test_not_cuts_all(text):
+    from aiforge_core.runtime import _stop_phrases
+    assert not _stop_phrases.cuts_all(text)

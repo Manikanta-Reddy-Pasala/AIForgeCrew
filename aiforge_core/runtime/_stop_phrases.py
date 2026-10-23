@@ -93,6 +93,19 @@ _BACKGROUND_RE = re.compile(
     r"^" + _FILLER + _CUT_VERB + r"\s+" + _BACKGROUND_OBJECT + _WHERE + _TAIL
     + _END, re.IGNORECASE)
 
+# A stop aimed at everything it is doing, not at one named thing: "stop",
+# "stop it", "kill it", "stop everything", "kill all the processes". It
+# ends the commands left running in the background too.
+_ALL_OBJECT = (
+    r"(?:it|that|this|them|everything|all(?:\s+of\s+(?:it|them))?|"
+    r"all\s+(?:the\s+|your\s+|of\s+the\s+)?(?:process(?:es)?|commands?|jobs?)"
+    r"(?:\s+you\s+started)?|"
+    r"(?:the|your)\s+process(?:es)?\s+you\s+started)"
+)
+_ALL_RE = re.compile(
+    r"^" + _FILLER + _CUT_VERB + r"(?:\s+" + _ALL_OBJECT + r")?" + _TAIL + _END,
+    re.IGNORECASE)
+
 _QUESTION_START_RE = re.compile(
     r"^(?:how|what|why|when|where|which|who|whose|is|are|was|were|does|did|"
     r"do\s+(?:i|we|you)|should|shall|may|might)\b",
@@ -134,6 +147,15 @@ def cuts_background(text: str) -> bool:
     background (a server, a background job) or everything."""
     for s in _sentences(text):
         if not _is_question(s) and _BACKGROUND_RE.match(s):
+            return True
+    return False
+
+
+def cuts_all(text: str) -> bool:
+    """True when ``text`` stops everything the run is doing ("stop", "stop
+    it", "kill everything") — not one named thing ("stop the build")."""
+    for s in _sentences(text):
+        if not _is_question(s) and _ALL_RE.match(s):
             return True
     return False
 

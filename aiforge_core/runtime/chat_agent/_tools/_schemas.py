@@ -512,7 +512,7 @@ _CORE_ACT = frozenset({
     "file_read", "read_files", "read_lines", "list_dir", "find", "grep",
     "file_patch", "multi_edit", "file_write", "file_create", "editor",
     "run_command", "run_tests", "spawn_task",
-    "command_wait", "command_output", "command_kill", "show_logs",
+    "command_wait", "command_output", "command_kill",
     "memory_lookup", "memory_write",
     "git_status", "git_diff", "repo_map",
     "session_actions",

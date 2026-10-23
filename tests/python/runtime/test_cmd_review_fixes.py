@@ -242,6 +242,34 @@ def test_stop_it_kills_handed_off_jobs_not_background_ones(env):
     assert not b.alive()
 
 
+def test_stop_it_kills_every_process_the_chat_started(env):
+    """The user: "when I say stop it, it should kill all the processes it
+    started" — background ones included."""
+    for n, text in enumerate(("stop it", "kill it", "stop", "Stop all the processes you started",
+                              "please stop everything now")):
+        sid = 4110 + n
+        chat_cancel.set_active(sid)
+        h = cmd_jobs.find(_run("echo x; sleep 60", env)["id"])
+        b = cmd_jobs.find(_run("sleep 60", env, background=True)["id"])
+        assert cmd_jobs.stop_for_text(sid, text) == 2, text
+        assert not h.alive() and not b.alive()
+
+
+def test_the_stop_button_kills_every_process_of_the_chat(env):
+    from aiforge_core.api.routes._chat import _message as M
+    chat_cancel.set_active(4120)
+    h = cmd_jobs.find(_run("echo x; sleep 60", env)["id"])
+    b = cmd_jobs.find(_run("sleep 60", env, background=True)["id"])
+    other_sid = 4121
+    chat_cancel.set_active(other_sid)
+    o = cmd_jobs.find(_run("sleep 60", env, background=True)["id"])
+    M.chat_session_stop(4120)
+    assert not h.alive() and not b.alive()
+    assert o.alive()                                    # another chat's keeps running
+    cmd_jobs.stop_session(other_sid)
+    assert not o.alive()
+
+
 def test_stop_everything_kills_both(env):
     chat_cancel.set_active(4102)
     h = cmd_jobs.find(_run("echo x; sleep 60", env)["id"])

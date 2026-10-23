@@ -80,11 +80,11 @@ def test_group_of_reads_the_childs_group(monkeypatch):
 
 # ── the stop sequence ───────────────────────────────────────────────────────
 
-def test_stop_asks_then_insists(monkeypatch):
+def test_stop_sends_ctrl_c_then_asks_then_insists(monkeypatch):
     sent: list = []
     monkeypatch.setattr(ps.os, "killpg", lambda pgid, sig: sent.append(sig))
     assert ps.stop_group(999, pause_s=0.0) is True
-    assert sent == [signal.SIGTERM, signal.SIGKILL]
+    assert sent == [signal.SIGINT, signal.SIGTERM, signal.SIGKILL]
 
 
 def test_stop_falls_back_to_the_pid_when_the_group_cannot_be_reached(monkeypatch):
@@ -97,7 +97,8 @@ def test_stop_falls_back_to_the_pid_when_the_group_cannot_be_reached(monkeypatch
     monkeypatch.setattr(ps.os, "killpg", _no_group)
     monkeypatch.setattr(ps.os, "kill", lambda pid, sig: killed.append((pid, sig)))
     assert ps.stop_group(999, pid=4242, pause_s=0.0) is True
-    assert killed == [(4242, signal.SIGTERM), (4242, signal.SIGKILL)]
+    assert killed == [(4242, signal.SIGINT), (4242, signal.SIGTERM),
+                      (4242, signal.SIGKILL)]
 
 
 def test_kill_process_refuses_init_and_nothing(monkeypatch):

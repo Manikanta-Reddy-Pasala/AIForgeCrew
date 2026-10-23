@@ -384,6 +384,7 @@ export interface ChatProcess {
   background: boolean;
   bytes: number[];         // per stream: stdout, stderr
   shown: number;           // > 0: the agent asked to show it (higher = newer)
+  log_files: string[];     // log files it writes or follows (absolute paths)
 }
 
 export interface ChatProcessChunk {
@@ -407,4 +408,31 @@ export function chatProcessLog(id: number, key: string, offsets: number[]):
 
 export function chatProcessKill(id: number, key: string): Promise<{ ok: boolean }> {
   return j(`/chat/sessions/${id}/processes/${encodeURIComponent(key)}/kill`, { method: 'POST' });
+}
+
+/** A log file of a command from `offset` on (negative = the last N bytes). */
+export function chatProcessFile(id: number, key: string, path: string, offset: number,
+                                maxBytes = 64 * 1024):
+    Promise<ChatProcessChunk & { path: string; running: boolean }> {
+  const q = new URLSearchParams({ path, offset: String(offset), max_bytes: String(maxBytes) });
+  return j(`/chat/sessions/${id}/processes/${encodeURIComponent(key)}/file?${q}`);
+}
+
+/** Save a command's whole output, or one of its log files, as a file. */
+export async function chatProcessDownload(id: number, key: string, path?: string): Promise<void> {
+  const q = path ? `?${new URLSearchParams({ path })}` : '';
+  const r = await apiFetch(`/chat/sessions/${id}/processes/${encodeURIComponent(key)}/download${q}`);
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  const blob = await r.blob();
+  const cd = r.headers.get('Content-Disposition') || '';
+  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
+  const name = m ? decodeURIComponent(m[1]) : (path ? path.split('/').pop() || 'log.txt' : `${key}.log`);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }

@@ -20,10 +20,12 @@ agent's own look position, so watching a log here does not change what
 from __future__ import annotations
 
 import collections
+import os
 import threading
 import time
 
 from aiforge_core.runtime import cmd_signals as sig
+from aiforge_core.runtime import proc_log_files
 
 #: Bytes of each stream kept after a job is collected.
 ENDED_KEEP_BYTES = 64 * 1024
@@ -34,7 +36,7 @@ READ_MAX_BYTES = 256 * 1024
 
 _LOCK = threading.Lock()
 _ENDED: dict[str, collections.deque] = {}
-#: (chat, job key) → when the agent asked to show it. Wall-clock nanoseconds,
+#: (chat, job key) → when the agent asked to show it. Wall-clock microseconds,
 #: so the number keeps rising across a server restart (a tab left open
 #: compares it with the last one it saw).
 _SHOWN: dict[tuple[str, str], int] = {}
@@ -52,7 +54,8 @@ def _shown(session_id, key: str) -> int:
 
 
 def _next_seq() -> int:
-    _LAST_SEQ[0] = max(_LAST_SEQ[0] + 1, time.time_ns())
+    # Microseconds: rises across a restart and stays exact in a JS number.
+    _LAST_SEQ[0] = max(_LAST_SEQ[0] + 1, time.time_ns() // 1000)
     return _LAST_SEQ[0]
 
 
@@ -76,7 +79,16 @@ def _status(job) -> dict:
         "background": bool(job.explicit),
         "bytes": [sig.file_size(s) for s in job.streams],
         "shown": _shown(job.session_id, job.key),
+        "log_files": _log_files(job, alive),
     }
+
+
+def _log_files(job, alive: bool) -> list[str]:
+    try:
+        # A job that ended still names its files on its command line.
+        return proc_log_files.detect(job)
+    except Exception:  # noqa: BLE001 — a listing never fails on this
+        return []
 
 
 def _live_jobs(session_id) -> list:
@@ -106,7 +118,8 @@ def remember(job) -> None:
     """Keep the output tail of a job that is being collected. Called by
     ``cmd_jobs._forget`` while the streams are still open; never raises."""
     try:
-        if job.session_id is None or _sid(job.session_id) in _FORGOTTEN:
+        if job.session_id is None or _sid(job.session_id) in _FORGOTTEN \
+                or job.closed:
             return
         status = _status(job)
         tails = []
@@ -115,6 +128,10 @@ def remember(job) -> None:
             start = max(0, end - ENDED_KEEP_BYTES)
             tails.append({"base": start,
                           "data": sig.read_range(s, start, end)})
+        if job.closed:
+            # Another thread collected and closed it while we read: what we
+            # read is empty, and its own record is the good one.
+            return
         status.update(running=False, ended_at=round(time.time(), 3),
                       _tails=tails)
         with _LOCK:
@@ -157,15 +174,29 @@ def _chunk(raw: bytes, start: int, end: int, size: int) -> dict:
 
 
 #: A running command's unfinished last line is held back until it ends with
-#: a newline — unless this much is pending (a progress bar, a prompt).
+#: a newline — unless this much is pending, or the output has been quiet
+#: this long (a prompt such as "Password: ", a progress bar waiting).
 _PARTIAL_HOLD_BYTES = 4096
+_PARTIAL_QUIET_S = 1.5
 
 
-def _whole_lines(raw: bytes, start: int) -> tuple[bytes, int]:
+def _quiet_for(stream) -> float:
+    try:
+        mtime = (os.path.getmtime(stream) if isinstance(stream, str)
+                 else os.fstat(stream.fileno()).st_mtime)
+    except (OSError, ValueError):
+        return 0.0
+    return time.time() - mtime
+
+
+def _whole_lines(raw: bytes, start: int, stream=None) -> tuple[bytes, int]:
     """``raw`` cut after its last newline, and where the next read starts.
     A line (or a UTF-8 character) split across two polls stays in one."""
     cut = raw.rfind(b"\n") + 1
-    if cut == 0 and len(raw) >= _PARTIAL_HOLD_BYTES:
+    if cut == len(raw):
+        return raw, start + len(raw)
+    if len(raw) - cut >= _PARTIAL_HOLD_BYTES or (
+            stream is not None and _quiet_for(stream) >= _PARTIAL_QUIET_S):
         return raw, start + len(raw)
     return raw[:cut], start + cut
 
@@ -181,7 +212,7 @@ def _read_stream(stream, offset: int, max_bytes: int, running: bool) -> dict:
         start = size - max_bytes
     raw, end = sig.read_range(stream, start, size), size
     if running:
-        raw, end = _whole_lines(raw, start)
+        raw, end = _whole_lines(raw, start, stream)
     out = _chunk(raw, start, end, size)
     out["skipped"] = skipped
     return out
@@ -234,6 +265,72 @@ def read(session_id, key: str, offsets: list[int] | None = None,
     return status
 
 
+def _files_of(session_id, key: str) -> tuple[list[str], bool] | None:
+    """The log files listed for job ``key`` of this chat, and whether the job
+    still runs. None when the chat has no such job."""
+    job = _find_live(session_id, key)
+    if job is not None:
+        alive = job.alive()
+        return _log_files(job, alive), alive
+    rec = _find_ended(session_id, key)
+    if rec is None:
+        return None
+    return list(rec.get("log_files") or []), False
+
+
+def file_path(session_id, key: str, path: str) -> str | None:
+    """``path`` when it is a log file listed for that job; else None."""
+    got = _files_of(session_id, key)
+    return proc_log_files.allowed(got[0], path) if got else None
+
+
+def read_file(session_id, key: str, path: str, offset: int = -64 * 1024,
+              max_bytes: int = READ_MAX_BYTES) -> dict | None:
+    """A log file of job ``key`` from ``offset`` on (negative: the last N
+    bytes), whole lines while the job runs. None when ``path`` is not one of
+    that job's log files."""
+    got = _files_of(session_id, key)
+    real = proc_log_files.allowed(got[0], path) if got else None
+    if real is None:
+        return None
+    max_bytes = max(1024, min(int(max_bytes or READ_MAX_BYTES),
+                              READ_MAX_BYTES))
+    out = _read_stream(real, int(offset), max_bytes, got[1])
+    out.update(path=real, running=got[1])
+    return out
+
+
+def output_chunks(session_id, key: str, chunk: int = 256 * 1024):
+    """The job's whole output for a download: stdout, then stderr (marked).
+    An ended job has only its kept tail. None when the chat has no such job."""
+    job = _find_live(session_id, key)
+    if job is not None and not job.closed:
+        streams = [(s, 0, sig.file_size(s)) for s in job.streams]
+        def gen():
+            for i, (s, start, end) in enumerate(streams):
+                if i and end > start:
+                    yield b"\n----- stderr -----\n"
+                pos = start
+                while pos < end:
+                    data = sig.read_range(s, pos, min(end, pos + chunk))
+                    if not data:
+                        break
+                    pos += len(data)
+                    yield data
+        return gen()
+    rec = _find_ended(session_id, key)
+    if rec is None:
+        return None
+    def gen_ended():
+        for i, t in enumerate(rec["_tails"]):
+            if i and t["data"]:
+                yield b"\n----- stderr -----\n"
+            if t["base"]:
+                yield f"... (first {t['base']} bytes not kept) ...\n".encode()
+            yield t["data"]
+    return gen_ended()
+
+
 def kill(session_id, key: str) -> bool:
     """Stop a running job of this chat (the dock's Stop). False when there is
     no such running job."""
@@ -282,5 +379,5 @@ def _reset_for_tests() -> None:
 
 
 __all__ = ["ENDED_KEEP_BYTES", "ENDED_PER_SESSION", "READ_MAX_BYTES",
-           "forget_session", "kill", "list_for_session", "mark_shown",
-           "read", "remember"]
+           "file_path", "forget_session", "kill", "list_for_session",
+           "mark_shown", "output_chunks", "read", "read_file", "remember"]
