@@ -113,6 +113,12 @@ def note(st, name: str, args, result) -> None:
             return
         buf = _buf(st)
         buf.append(row)
+        every = getattr(st, "evidence_all", None)
+        if every is None:
+            every = st.evidence_all = []
+        every.append(row)
+        if len(every) > MAX_STEPS * 6:
+            del every[:-MAX_STEPS * 6]
         st.evidence_last = None          # a tool ran: no longer a joint close
         if len(buf) > MAX_STEPS * 4:
             del buf[:-MAX_STEPS * 4]
@@ -153,8 +159,7 @@ def on_status(st, slug: str, before: str | None, after: str) -> dict | None:
         # Closed in the same breath as the item before it (no tool call in
         # between): the work that proved that one is the work behind this.
         shared, steps = last[0], list(last[1])
-    ev = {"check": check_of(item.get("title", "")), "steps": steps,
-          "closed_at": round(time.time(), 3), "status": after}
+    ev = _build(steps, check_of(item.get("title", "")), after)
     if shared:
         ev["shared_with"] = shared
     st.evidence_last = (slug, steps) if steps else None
@@ -162,6 +167,13 @@ def on_status(st, slug: str, before: str | None, after: str) -> dict | None:
         ev["verdict"] = str(item["note"])[:320]
     if item.get("files"):
         ev["files"] = list(item["files"])[:20]
+    item["evidence"] = ev
+    return ev
+
+
+def _build(steps: list, check: str, status: str) -> dict:
+    ev = {"check": check, "steps": steps,
+          "closed_at": round(time.time(), 3), "status": status}
     if not steps:
         ev["note"] = "nothing was run or changed while this item was open"
     else:
@@ -180,8 +192,37 @@ def on_status(st, slug: str, before: str | None, after: str) -> dict | None:
         if failed:
             bits.append(f"{len(failed)} failed")
         ev["summary"] = " · ".join(bits) or f"{len(steps)} lookups"
-    item["evidence"] = ev
     return ev
 
 
-__all__ = ["MAX_STEPS", "check_of", "note", "on_status", "record"]
+def for_answer(st) -> dict | None:
+    """Evidence for the final answer itself: what the turn did that no closed
+    task already shows (the whole turn when no task carries evidence). None
+    when the turn ran nothing at all (a plain answer)."""
+    board = getattr(st, "board", None) or {}
+    proved = any(it.get("evidence") for it in board.values())
+    rows = list(_buf(st)) if proved else list(getattr(st, "evidence_all", None) or [])
+    if not rows:
+        return None
+    return _build(_pick(rows), "", "done")
+
+
+def for_parts(st, slugs) -> list:
+    """Parts of the request the harness closes at FINAL (the model never
+    marked them): each gets the turn's evidence, shared."""
+    board = getattr(st, "board", None) or {}
+    rows = list(getattr(st, "evidence_all", None) or [])
+    out = []
+    for slug in slugs:
+        item = board.get(slug)
+        if item is None or item.get("evidence"):
+            continue
+        ev = _build(_pick(rows), check_of(item.get("title", "")), "done")
+        ev["shared_with"] = "the whole answer"
+        item["evidence"] = ev
+        out.append((slug, ev))
+    return out
+
+
+__all__ = ["MAX_STEPS", "check_of", "for_answer", "for_parts", "note",
+           "on_status", "record"]

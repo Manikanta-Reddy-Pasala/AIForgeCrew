@@ -132,6 +132,9 @@ export function reduceTurn(prev: LiveTurn | null, evt: any, onAwaiting: () => vo
 }
 
 function reduceStep(prev: LiveTurn, evt: any, onAwaiting: () => void): LiveTurn | null {
+  if (evt.type === 'turn_evidence') {
+    return evt.evidence ? { ...prev, turnEvidence: evt.evidence } : prev;
+  }
   if (evt.type === 'subtasks') {
     return { ...prev, subtasks: evt.items || [] };
   }

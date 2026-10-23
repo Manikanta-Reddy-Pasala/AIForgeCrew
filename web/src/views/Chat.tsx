@@ -11,6 +11,7 @@ import { pickChatModel } from '../chatModelPick';
 import { SubtaskList } from './Chat.SubtaskList';
 import { SideTasks } from './Chat.SideTasks';
 import { ProcessDock } from './Chat.ProcessDock';
+import { evidenceItemsOf } from './Chat.TaskEvidence';
 import SuggestionChip from './Chat.SuggestionChip';
 import RecipeOfferCard, { type RecipeOffer } from './Chat.RecipeOfferCard';
 import ScopeNetCard, { type ScopeNet } from './Chat.ScopeNetCard';
@@ -2599,7 +2600,9 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                           streaming={false}
                           elapsedSec={msg.elapsedSec}
                           /* subtasks render in the pinned bottom dock; only their evidence shows here */
-                          evidenceItems={((msg.steps || []).find((s: any) => s?.type === 'subtasks') as any)?.items}
+                          evidenceItems={evidenceItemsOf(
+                            ((msg.steps || []).find((s: any) => s?.type === 'subtasks') as any)?.items,
+                            ((msg.steps || []).find((s: any) => s?.type === 'turn_evidence') as any)?.evidence) as any}
                           captured={(msg.steps || []).filter((s: any) => s?.type === 'captured').map((s: any) => ({
                             id: s.id, category: s.category, scope: s.scope, text: s.text || '',
                             repo: s.repo, gate_intent: s.gate_intent,
@@ -2663,7 +2666,8 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                       quiet={liveTurn.streaming ? liveTurn.quiet : undefined}
                       status={liveTurn.status}
                       /* subtasks render in the pinned bottom dock; evidence shows once the turn ends */
-                      evidenceItems={liveTurn.streaming ? undefined : liveTurn.subtasks}
+                      evidenceItems={liveTurn.streaming ? undefined
+                        : evidenceItemsOf(liveTurn.subtasks, liveTurn.turnEvidence) as any}
                       captured={liveTurn.captured}
                       stageNames={stages(liveTurn.steps as any[])}
                     />

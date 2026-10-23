@@ -54,6 +54,8 @@ export type CapturedItem = {
 export type LiveTurn = {
   role: 'assistant';
   text: string;
+  /** what the answer is based on (the harness's record), shown under it */
+  turnEvidence?: TaskEvidence;
   steps: AgentStep[];
   streaming: boolean;
   // The reply as the model writes it ('delta' events): shown until the step

@@ -105,3 +105,35 @@ def test_the_panel_keeps_evidence_after_the_turn():
     import inspect
     src = inspect.getsource(T)
     assert 'row["evidence"] = ev["evidence"]' in src
+
+
+def test_the_answer_carries_the_turns_work_when_no_task_did():
+    st = _st()
+    E.note(st, "file_patch", {"path": "a.py"}, {"ok": True})
+    E.note(st, "run_command", {"cmd": "pytest -q"}, {"ok": True, "code": 0, "stdout": "4 passed"})
+    ev = E.for_answer(st)
+    assert [s["tool"] for s in ev["steps"]] == ["file_patch", "run_command"]
+    assert ev["summary"] == "1 command, last exit 0 · 1 edit"
+
+
+def test_the_answer_shows_only_what_no_task_shows():
+    st = _st(a={"title": "A", "status": "running"})
+    E.note(st, "run_command", {"cmd": "make"}, {"ok": True, "code": 0})
+    _progress(st, slug="a", status="done")
+    assert E.for_answer(st) is None                       # all of it is under task a
+    E.note(st, "run_command", {"cmd": "git status"}, {"ok": True, "code": 0})
+    assert [s["what"] for s in E.for_answer(st)["steps"]] == ["git status"]
+
+
+def test_a_plain_answer_has_no_evidence():
+    assert E.for_answer(_st()) is None
+
+
+def test_parts_closed_at_final_share_the_turns_work():
+    st = _st(**{"part-1": {"title": "Fix it — check: tests pass", "status": "running"}})
+    E.note(st, "run_command", {"cmd": "pytest"}, {"ok": True, "code": 0})
+    got = E.for_parts(st, ["part-1", "missing"])
+    assert [s for s, _ in got] == ["part-1"]
+    ev = st.board["part-1"]["evidence"]
+    assert ev["check"] == "tests pass" and ev["shared_with"] == "the whole answer"
+    assert E.for_parts(st, ["part-1"]) == []               # not twice

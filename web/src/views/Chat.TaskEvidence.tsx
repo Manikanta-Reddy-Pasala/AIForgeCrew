@@ -115,3 +115,16 @@ export function EvidenceCard({ items }: {
     </div>
   );
 }
+
+/** The items an answer's Evidence card lists: the tasks that closed with
+ *  evidence, then the answer's own record (work no task shows). */
+export function evidenceItemsOf(subtasks: ReadonlyArray<SubtaskLike> | undefined,
+                                turn: TaskEvidence | undefined): SubtaskLike[] {
+  const items: SubtaskLike[] = [...(subtasks || []).filter(s => s.evidence)];
+  if (turn) {
+    items.push({ slug: '__answer', status: 'done', evidence: turn,
+                 title: items.length ? 'Other work in this answer' : 'This answer' });
+  }
+  return items;
+}
+type SubtaskLike = { slug: string; title?: string; goal?: string; status: string; evidence?: TaskEvidence };

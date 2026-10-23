@@ -405,7 +405,15 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
             if st.board.get(_slug, {}).get("redo") \
                     and st.board[_slug].get("status") != "done":
                 continue            # the user asked for it again; not redone
-            yield {"type": "subtask_update", "slug": _slug, "status": "done"}
+            _ev = None
+            try:
+                from ._evidence import for_parts
+                _got = for_parts(st, [_slug])
+                _ev = _got[0][1] if _got else None
+            except Exception:  # noqa: BLE001 — evidence never blocks an answer
+                pass
+            yield {"type": "subtask_update", "slug": _slug, "status": "done",
+                   **({"evidence": _ev} if _ev else {})}
     _fire_stop("final", cwd)
     if plan_mode:
         try:
@@ -467,6 +475,16 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
                                       step.get("text") or "")
     except Exception:  # noqa: BLE001 — the note never blocks an answer
         pass
+    if not (builder or plan_mode):
+        # What this answer is based on, from the harness's own record — shown
+        # under it so "done" never has to be taken on the model's word.
+        try:
+            from ._evidence import for_answer
+            _tev = for_answer(st)
+            if _tev:
+                yield {"type": "turn_evidence", "evidence": _tev}
+        except Exception:  # noqa: BLE001
+            pass
     try:
         yield {"type": "message",
                "text": _strip_reasoning_prefix(step["text"]) + _bg_note}

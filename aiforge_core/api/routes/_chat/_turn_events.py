@@ -155,7 +155,8 @@ def _route_produce_event(ev, st: dict, steps: list) -> None:
         st["awaiting"] = bool(ev.get("awaiting_input"))
     elif (etype == "message" and ev.get("supplementary")
           or etype in ("thought", "tool", "error", "changes", "stopped",
-                       "plan_ready", "captured", "recipe_offer", "scope_net")):
+                       "plan_ready", "captured", "recipe_offer", "scope_net",
+                       "turn_evidence")):
         steps.append(slim_event(ev))
     elif etype == "subtasks":
         st["subtasks"] = list(ev.get("items") or [])
