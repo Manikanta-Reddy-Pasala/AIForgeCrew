@@ -358,21 +358,19 @@ def _with_evidence(st, result, events, before) -> list:
     (:mod:`._evidence`); the dock's events carry it to the UI."""
     try:
         from ._evidence import on_status
-        from ._tasks import board_items
         slug = result.get("slug") if isinstance(result, dict) else None
         if not (result.get("ok") and slug in st.board):
             return events
         ev = on_status(st, slug, before.get(slug), st.board[slug]["status"])
         if ev is None:
             return events
-        out = []
-        for e in events:
-            if e.get("type") == "subtask_update" and e.get("slug") == slug:
-                e = {**e, "evidence": ev}
-            elif e.get("type") == "subtasks":
-                e = {**e, "items": board_items(st.board)}
-            out.append(e)
-        if not any(e.get("type") in ("subtask_update", "subtasks") for e in out):
+        # Evidence travels only on its item's subtask_update (a whole-list
+        # event would resend every item's evidence on each board change).
+        out = [{**e, "evidence": ev}
+               if e.get("type") == "subtask_update" and e.get("slug") == slug
+               else e for e in events]
+        if not any(e.get("type") == "subtask_update" and e.get("slug") == slug
+                   for e in out):
             out.append({"type": "subtask_update", "slug": slug,
                         "status": st.board[slug]["status"], "evidence": ev})
         return out
@@ -689,9 +687,17 @@ def _note_target_compare(st, name, args, result) -> list:
         return []
     targets.note_compare(sid, tid, True,
                          f"{cmd[:200]} → exit 0{(' · ' + out) if out else ''}")
+    before = board[tid].get("status")
     board[tid]["status"] = "done"
     board[tid]["note"] = "compare passed: " + cmd[:120]
-    return [{"type": "subtask_update", "slug": tid, "status": "done"}]
+    ev = None
+    try:
+        from ._evidence import on_status
+        ev = on_status(st, tid, before, "done")
+    except Exception:  # noqa: BLE001
+        pass
+    return [{"type": "subtask_update", "slug": tid, "status": "done",
+             **({"evidence": ev} if ev else {})}]
 
 
 def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):

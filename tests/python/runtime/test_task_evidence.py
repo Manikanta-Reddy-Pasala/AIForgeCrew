@@ -43,7 +43,7 @@ def test_a_closed_item_carries_what_ran_since_it_started():
     assert ev["summary"] == "1 command, last exit 0 · 1 edit"
     upd = [e for e in events if e["type"] == "subtask_update"]
     assert upd and upd[0]["evidence"] is ev
-    assert board_items(st.board)[0]["evidence"] is ev
+    assert "evidence" not in board_items(st.board)[0]     # only on its update
 
 
 def test_an_item_closed_with_nothing_done_says_so():
@@ -129,11 +129,81 @@ def test_a_plain_answer_has_no_evidence():
     assert E.for_answer(_st()) is None
 
 
-def test_parts_closed_at_final_share_the_turns_work():
-    st = _st(**{"part-1": {"title": "Fix it — check: tests pass", "status": "running"}})
+def test_parts_closed_at_final_share_the_turns_work_once():
+    st = _st(**{"part-1": {"title": "Fix it — check: tests pass", "status": "running"},
+                "part-2": {"title": "Test it", "status": "running"}})
     E.note(st, "run_command", {"cmd": "pytest"}, {"ok": True, "code": 0})
-    got = E.for_parts(st, ["part-1", "missing"])
-    assert [s for s, _ in got] == ["part-1"]
-    ev = st.board["part-1"]["evidence"]
-    assert ev["check"] == "tests pass" and ev["shared_with"] == "the whole answer"
-    assert E.for_parts(st, ["part-1"]) == []               # not twice
+    got = E.for_parts(st, ["part-1", "part-2", "missing"])
+    assert [s for s, _ in got] == ["part-1", "part-2"]
+    assert st.board["part-1"]["evidence"]["check"] == "tests pass"
+    assert st.board["part-1"]["evidence"]["steps"][0]["what"] == "pytest"
+    assert st.board["part-2"]["evidence"]["shared_with"] == "part-1"
+    assert E.for_answer(st) is None                         # not shown a third time
+    assert E.for_parts(st, ["part-1"]) == []                # not twice
+
+
+def test_a_reopened_item_loses_its_old_evidence():
+    st = _st(a={"title": "A", "status": "running"})
+    E.note(st, "run_command", {"cmd": "make"}, {"ok": True, "code": 0})
+    _progress(st, slug="a", status="done")
+    assert "evidence" in st.board["a"]
+    _, events = _progress(st, slug="a", status="running")
+    assert "evidence" not in st.board["a"]
+
+
+def test_two_items_running_each_keep_their_own_work():
+    st = _st(a={"title": "A", "status": "pending"}, b={"title": "B", "status": "pending"})
+    _progress(st, slug="a", status="running")
+    E.note(st, "run_command", {"cmd": "for-a"}, {"ok": True, "code": 0})
+    _progress(st, slug="b", status="running")
+    E.note(st, "run_command", {"cmd": "for-b"}, {"ok": True, "code": 0})
+    _progress(st, slug="a", status="done")
+    _progress(st, slug="b", status="done")
+    assert [x["what"] for x in st.board["a"]["evidence"]["steps"]] == ["for-a", "for-b"]
+    assert [x["what"] for x in st.board["b"]["evidence"]["steps"]] == ["for-b"]
+
+
+def test_work_between_items_goes_under_the_answer():
+    st = _st(a={"title": "A", "status": "running"}, b={"title": "B", "status": "pending"})
+    E.note(st, "run_command", {"cmd": "for-a"}, {"ok": True, "code": 0})
+    _progress(st, slug="a", status="done")
+    E.note(st, "run_command", {"cmd": "stray"}, {"ok": False, "code": 2})
+    _progress(st, slug="b", status="running")
+    E.note(st, "run_command", {"cmd": "for-b"}, {"ok": True, "code": 0})
+    _progress(st, slug="b", status="done")
+    ans = E.for_answer(st)
+    assert [x["what"] for x in ans["steps"]] == ["stray"] and "1 failed" in ans["summary"]
+
+
+def test_a_failure_is_never_cut_from_the_evidence():
+    st = _st(a={"title": "A", "status": "running"})
+    E.note(st, "run_command", {"cmd": "pytest"}, {"ok": False, "code": 1, "stdout": "1 failed"})
+    for i in range(15):
+        E.note(st, "run_command", {"cmd": f"ok{i}"}, {"ok": True, "code": 0})
+    _progress(st, slug="a", status="done")
+    ev = st.board["a"]["evidence"]
+    assert ev["steps"][0]["what"] == "pytest" and len(ev["steps"]) == E.MAX_STEPS
+    assert ev["shown_of"] == [E.MAX_STEPS, 16]
+    assert ev["summary"] == "16 commands, last exit 0 · 1 failed"
+
+
+def test_a_job_peek_is_not_the_last_verdict():
+    st = _st(a={"title": "A", "status": "running"})
+    E.note(st, "run_command", {"cmd": "npm test"}, {"ok": False, "code": 1})
+    E.note(st, "command_output", {"id": "bg-1"}, {"ok": True})
+    _progress(st, slug="a", status="done")
+    assert "last exit 1" in st.board["a"]["evidence"]["summary"]
+
+
+def test_tool_kinds():
+    assert E._kind("str_replace", {}) == "edit" and E._kind("write_file", {}) == "edit"
+    assert E._kind("git_commit", {}) == "edit"
+    assert E._kind("shell", {}) == "command" and E._kind("ui_check", {}) == "command"
+    assert E._kind("editor", {"command": "view", "path": "a"}) == "read"
+    assert E._what("editor", {"command": "str_replace", "path": "a.py"}) == "a.py"
+
+
+def test_a_harness_closed_target_gets_evidence():
+    from aiforge_core.runtime.chat_agent._turn import _action as A
+    import inspect
+    assert "on_status(st, tid, before, \"done\")" in inspect.getsource(A)

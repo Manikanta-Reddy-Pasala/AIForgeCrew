@@ -274,6 +274,8 @@ def _merged(board: dict, tasks: list) -> tuple[dict, list]:
                 # and is not closed for the agent when its answer is taken.
                 item["from_request"] = False
                 item["redo"] = True
+                from ._evidence import forget
+                forget(item)             # its earlier close no longer stands
             if status == "skipped" and status != item["status"]:
                 # Dropped by the user's message: off the board, not left on it
                 # as a struck-out line.

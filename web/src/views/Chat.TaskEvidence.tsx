@@ -49,12 +49,18 @@ export function TaskEvidenceView({ ev }: { ev: TaskEvidence }) {
         <div style={{ marginBottom: 2 }}><span style={{ color: '#8892a0' }}>check:</span> {ev.check}</div>
       )}
       {ev.verdict && (
-        <div style={{ marginBottom: 2 }}><span style={{ color: '#8892a0' }}>verified:</span> {ev.verdict}</div>
+        <div style={{ marginBottom: 2, color: /^(FAILED|UNVERIFIED)|no file changes or checks/i.test(ev.verdict)
+                        ? 'var(--warn, #d4a72c)' : undefined }}>
+          <span style={{ color: '#8892a0' }}>verifier:</span> {ev.verdict}
+        </div>
       )}
       {ev.shared_with && (
         <div style={{ color: '#8892a0', marginBottom: 2 }}>closed together with {ev.shared_with} — same work:</div>
       )}
       {ev.steps.map((s, i) => <Step key={i} s={s} />)}
+      {ev.shown_of && (
+        <div style={{ color: '#8892a0' }}>showing {ev.shown_of[0]} of {ev.shown_of[1]} actions (every failure is shown)</div>
+      )}
       {ev.files && ev.files.length > 0 && (
         <div style={{ color: '#8892a0', marginTop: 2 }}>files changed: {ev.files.join(', ')}</div>
       )}
@@ -78,10 +84,10 @@ const STATUS_COLOR: Record<string, string> = { done: '#3fb950', failed: '#e5534b
 export function EvidenceCard({ items }: {
   items: ReadonlyArray<{ slug: string; title?: string; goal?: string; status: string; evidence?: TaskEvidence }>;
 }) {
-  const closed = items.filter(s => s.evidence);
+  const closed = items.filter(s => s.evidence && (s.status === 'done' || s.status === 'failed'));
   const [open, setOpen] = useState<Record<string, boolean>>({});
   if (closed.length === 0) return null;
-  const weak = closed.filter(s => s.evidence!.note || s.evidence!.status === 'failed').length;
+  const weak = closed.filter(s => s.evidence!.note || s.status === 'failed').length;
   return (
     <div className="evidence-card" style={{ marginTop: 8, padding: '6px 10px', border: '1px solid var(--border-1)',
                                             borderRadius: 6, background: 'var(--bg-1)' }}>
@@ -100,8 +106,8 @@ export function EvidenceCard({ items }: {
             <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', cursor: 'pointer', padding: '1px 0' }}
                  onClick={() => setOpen(m => ({ ...m, [s.slug]: !m[s.slug] }))}
                  title={isOpen ? 'Hide the detail' : 'Show the commands, output and checks'}>
-              <span style={{ color: STATUS_COLOR[ev.status] || '#8892a0', fontWeight: 600, flexShrink: 0 }}>
-                {ev.status === 'done' ? '✓' : '✗'}
+              <span style={{ color: STATUS_COLOR[s.status] || '#8892a0', fontWeight: 600, flexShrink: 0 }}>
+                {s.status === 'done' ? '✓' : '✗'}
               </span>
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{label}</span>
               <span style={{ marginLeft: 'auto', flexShrink: 0, color: ev.note ? 'var(--warn, #d4a72c)' : '#8892a0' }}>
@@ -120,7 +126,8 @@ export function EvidenceCard({ items }: {
  *  evidence, then the answer's own record (work no task shows). */
 export function evidenceItemsOf(subtasks: ReadonlyArray<SubtaskLike> | undefined,
                                 turn: TaskEvidence | undefined): SubtaskLike[] {
-  const items: SubtaskLike[] = [...(subtasks || []).filter(s => s.evidence)];
+  const items: SubtaskLike[] = [...(subtasks || []).filter(
+    s => s.evidence && (s.status === 'done' || s.status === 'failed'))];
   if (turn) {
     items.push({ slug: '__answer', status: 'done', evidence: turn,
                  title: items.length ? 'Other work in this answer' : 'This answer' });

@@ -1,33 +1,47 @@
 """Evidence for a finished task: what the run DID while the item was open.
 
 When the model marks a board item done (or failed), the user should not have
-to ask "show me the evidence". The harness keeps a short record of every
-action since the item started — the commands with their exit codes and the
-end of their output, test runs, edits, reads — and pins it to the item at the
-moment it closes, beside the item's own ``check:`` (the condition it was
-meant to meet). The UI shows it under the item.
+to ask "show me the evidence". The harness keeps one record of every action
+of the turn — the commands with their exit codes and the end of their output,
+test runs, edits, reads — and when an item closes it pins the actions taken
+since that item started, beside the item's own ``check:`` (the condition it
+was meant to meet). Actions no item claims go under the answer itself. The UI
+shows both.
 
 This is the harness's record, not the model's say-so: an item closed with no
-action since it started says so ("nothing was run or changed").
+action since it started says so ("nothing was run or changed"); a failure in
+its window is always shown and counted, however many actions came after; an
+item that is opened again loses the evidence of its earlier close.
 """
 from __future__ import annotations
 
 import re
 import time
 
-#: Actions kept per open item (the newest win).
+#: Actions shown per item (failures are always kept on top of these).
 MAX_STEPS = 12
+#: Actions kept for the whole turn.
+MAX_ROWS = 400
 #: Output kept per command (its end matters most).
 TAIL_CHARS = 1200
 #: Tools that are bookkeeping, not work.
 _SKIP = frozenset({"plan_progress", "tool_help", "think", "session_actions"})
-_EDITS = frozenset({"file_patch", "file_write", "file_create", "multi_edit",
-                    "editor", "format", "rename_symbol"})
-_COMMANDS = frozenset({"run_command", "run_tests", "command_wait",
-                       "command_output", "command_kill", "typecheck",
-                       "project", "bash", "run_shell", "execute_ipython_cell",
-                       "serve", "watch_until"})
+_COMMIT_TOOLS = frozenset({"git_commit", "git_add_commit", "commit",
+                           "github_pr", "gitlab_mr_create"})
+_JOB_TOOLS = frozenset({"command_wait", "command_output", "command_kill"})
 _CHECK_RE = re.compile(r"\s[—–-]{1,2}\s*check:\s*(.+)$", re.I)
+
+
+def _edit_tools() -> frozenset:
+    from aiforge_core.runtime.tools.mutating import FILE_WRITE_TOOLS
+    return frozenset(FILE_WRITE_TOOLS) | {"multi_edit", "format",
+                                          "rename_symbol"}
+
+
+def _command_tools() -> frozenset:
+    from aiforge_core.runtime.tools.tool_policy import _CMD_TOOLS
+    return frozenset(_CMD_TOOLS) | _JOB_TOOLS | {
+        "run_tests", "typecheck", "project", "execute_ipython_cell", "run"}
 
 
 def check_of(title: str) -> str:
@@ -43,17 +57,25 @@ def _tail(text, n: int = TAIL_CHARS) -> str:
 
 def _what(name: str, args: dict) -> str:
     a = args if isinstance(args, dict) else {}
-    for key in ("cmd", "command", "code", "path", "file", "pattern", "query",
-                "id", "mode", "action", "url", "name"):
+    keys = ("path", "file", "cmd", "command", "code", "pattern", "query",
+            "message", "id", "mode", "action", "url", "name")
+    for key in keys:
         if a.get(key) not in (None, ""):
             return " ".join(str(a[key]).split())[:300]
     return ""
 
 
-def _kind(name: str) -> str:
-    if name in _EDITS:
+def _kind(name: str, args) -> str:
+    if name in _COMMIT_TOOLS:
         return "edit"
-    if name in _COMMANDS or name.startswith("run_"):
+    if name in _edit_tools():
+        if name == "editor":
+            from aiforge_core.runtime.tools.mutating import EDITOR_READONLY_CMDS
+            cmd = str((args or {}).get("command") or "") if isinstance(args, dict) else ""
+            if cmd in EDITOR_READONLY_CMDS:
+                return "read"
+        return "edit"
+    if name in _command_tools() or name.startswith("run_"):
         return "command"
     return "read" if name.startswith(("file_read", "read_", "list_", "grep",
                                       "find", "git_", "repo_")) else "tool"
@@ -77,7 +99,7 @@ def record(name: str, args, result) -> dict | None:
     if name in _SKIP:
         return None
     res = result if isinstance(result, dict) else {"output": str(result)}
-    kind = _kind(name)
+    kind = _kind(name, args)
     ok = res.get("ok")
     row = {"tool": name, "kind": kind, "what": _what(name, args),
            "ok": None if ok is None else bool(ok), "at": round(time.time(), 3)}
@@ -97,132 +119,188 @@ def record(name: str, args, result) -> dict | None:
     return row
 
 
-def _buf(st) -> list:
-    buf = getattr(st, "evidence_buf", None)
-    if buf is None:
-        buf = []
-        st.evidence_buf = buf
-    return buf
+def _rows(st) -> list:
+    rows = getattr(st, "evidence_rows", None)
+    if rows is None:
+        rows = st.evidence_rows = []
+    return rows
+
+
+def _seq(st) -> int:
+    """How many actions the turn has taken (the next row's number)."""
+    return int(getattr(st, "evidence_seq", 0) or 0)
 
 
 def note(st, name: str, args, result) -> None:
-    """Keep this tool call for the item that closes next. Never raises."""
+    """Record this tool call for the turn. Never raises."""
     try:
         row = record(name, args, result)
         if row is None:
             return
-        buf = _buf(st)
-        buf.append(row)
-        every = getattr(st, "evidence_all", None)
-        if every is None:
-            every = st.evidence_all = []
-        every.append(row)
-        if len(every) > MAX_STEPS * 6:
-            del every[:-MAX_STEPS * 6]
+        row["seq"] = _seq(st)
+        st.evidence_seq = row["seq"] + 1
+        rows = _rows(st)
+        rows.append(row)
+        if len(rows) > MAX_ROWS:
+            del rows[:-MAX_ROWS]
         st.evidence_last = None          # a tool ran: no longer a joint close
-        if len(buf) > MAX_STEPS * 4:
-            del buf[:-MAX_STEPS * 4]
     except Exception:  # noqa: BLE001 — evidence must never break a turn
         pass
 
 
+def _failed(r: dict) -> bool:
+    if r.get("running"):
+        return False
+    code = r.get("code")
+    return r.get("ok") is False or (code is not None and code != 0)
+
+
 def _pick(rows: list) -> list:
-    """The steps worth showing: every command and edit (newest last), then
-    reads to fill up, at most MAX_STEPS, in the order they ran."""
-    strong = [r for r in rows if r["kind"] in ("command", "edit")]
-    if len(strong) >= MAX_STEPS:
-        return strong[-MAX_STEPS:]
-    room = MAX_STEPS - len(strong)
-    weak = [r for r in rows if r["kind"] not in ("command", "edit")][-room:]
-    keep = {id(r) for r in strong + weak}
+    """What to show: every failure, then commands and edits (newest), then
+    reads to fill up — at most MAX_STEPS besides the failures — in the order
+    they ran."""
+    bad = [r for r in rows if _failed(r)]
+    strong = [r for r in rows if r["kind"] in ("command", "edit") and not _failed(r)]
+    room = max(0, MAX_STEPS - len(bad))
+    strong = strong[-room:] if room else []
+    room -= len(strong)
+    weak = ([r for r in rows if r["kind"] not in ("command", "edit")
+             and not _failed(r)][-room:] if room > 0 else [])
+    keep = {id(r) for r in bad + strong + weak}
     return [r for r in rows if id(r) in keep]
 
 
+def _last_outcome(cmds: list) -> str:
+    """How the last command that has a verdict ended: its exit code, else
+    ok/failed. Peeks at a job (no code, nothing proven) are skipped."""
+    for r in reversed(cmds):
+        if r.get("running"):
+            return "still running"
+        if r.get("code") is not None:
+            return f"exit {r['code']}"
+        if r["tool"] not in _JOB_TOOLS and r.get("ok") is not None:
+            return "ok" if r["ok"] else "failed"
+    return ""
+
+
+def _build(rows: list, check: str, status: str) -> dict:
+    """The evidence for ``rows``. Counts and failures are over ALL of them,
+    not only the steps shown."""
+    steps = _pick(rows)
+    ev = {"check": check, "steps": steps,
+          "closed_at": round(time.time(), 3), "status": status}
+    if len(steps) < len(rows):
+        ev["shown_of"] = [len(steps), len(rows)]
+    if not rows:
+        ev["note"] = "nothing was run or changed while this item was open"
+        return ev
+    cmds = [r for r in rows if r["kind"] == "command"]
+    edits = [r for r in rows if r["kind"] == "edit"]
+    failed = [r for r in rows if _failed(r)]
+    bits = []
+    if cmds:
+        last = _last_outcome(cmds)
+        bits.append(f"{len(cmds)} command{'s' * (len(cmds) != 1)}"
+                    + (f", last {last}" if last else ""))
+    if edits:
+        bits.append(f"{len(edits)} edit{'s' * (len(edits) != 1)}")
+    if failed:
+        bits.append(f"{len(failed)} failed")
+    ev["summary"] = " · ".join(bits) or f"{len(rows)} lookups"
+    return ev
+
+
+def _claim(st, rows: list) -> None:
+    claimed = getattr(st, "evidence_claimed", None)
+    if claimed is None:
+        claimed = st.evidence_claimed = set()
+    claimed.update(r["seq"] for r in rows)
+
+
+def forget(item: dict) -> None:
+    """An item opened again: the evidence of its earlier close no longer
+    stands."""
+    item.pop("evidence", None)
+    item.pop("_ev_from", None)
+
+
 def on_status(st, slug: str, before: str | None, after: str) -> dict | None:
-    """An item changed status. Starting one (running) begins its record;
-    closing one (done / failed) pins the record to it and returns it."""
+    """An item changed status. Starting one (running) marks where its record
+    begins; reopening one drops its old evidence; closing one (done / failed)
+    pins the actions since it started and returns that evidence."""
     board = getattr(st, "board", None) or {}
     item = board.get(slug)
     if item is None or before == after:
         return None
-    if after == "running":
-        st.evidence_buf = []
-        return None
     if after not in ("done", "failed"):
+        if before in ("done", "failed"):
+            forget(item)
+        if after == "running":
+            item["_ev_from"] = _seq(st)
+            st.evidence_last = None
         return None
-    rows = list(_buf(st))
-    st.evidence_buf = []
-    steps = _pick(rows)
+    start = item.get("_ev_from")
+    if start is None:
+        start = int(getattr(st, "evidence_mark", 0) or 0)
+    rows = [r for r in _rows(st) if r["seq"] >= start]
     shared = None
     last = getattr(st, "evidence_last", None)
-    if not steps and last and last[0] != slug:
+    if not rows and last and last[0] != slug:
         # Closed in the same breath as the item before it (no tool call in
         # between): the work that proved that one is the work behind this.
-        shared, steps = last[0], list(last[1])
-    ev = _build(steps, check_of(item.get("title", "")), after)
+        shared, rows = last[0], list(last[1])
+    ev = _build(rows, check_of(item.get("title", "")), after)
     if shared:
         ev["shared_with"] = shared
-    st.evidence_last = (slug, steps) if steps else None
+    _claim(st, rows)
+    st.evidence_mark = _seq(st)
+    st.evidence_last = (slug, rows) if rows else None
     if item.get("note"):                 # the item verifier's verdict (_items)
         ev["verdict"] = str(item["note"])[:320]
     if item.get("files"):
         ev["files"] = list(item["files"])[:20]
+    item.pop("_ev_from", None)
     item["evidence"] = ev
     return ev
 
 
-def _build(steps: list, check: str, status: str) -> dict:
-    ev = {"check": check, "steps": steps,
-          "closed_at": round(time.time(), 3), "status": status}
-    if not steps:
-        ev["note"] = "nothing was run or changed while this item was open"
-    else:
-        failed = [s for s in steps if s.get("ok") is False]
-        ran = [s for s in steps if s["kind"] == "command"]
-        edits = [s for s in steps if s["kind"] == "edit"]
-        bits = []
-        if ran:
-            last = ran[-1]
-            bits.append(f"{len(ran)} command{'s' * (len(ran) != 1)}, last "
-                        + ("still running" if last.get("running") else
-                           f"exit {last.get('code')}" if last.get("code") is not None
-                           else ("ok" if last.get("ok") else "failed")))
-        if edits:
-            bits.append(f"{len(edits)} edit{'s' * (len(edits) != 1)}")
-        if failed:
-            bits.append(f"{len(failed)} failed")
-        ev["summary"] = " · ".join(bits) or f"{len(steps)} lookups"
-    return ev
+def _unclaimed(st) -> list:
+    claimed = getattr(st, "evidence_claimed", None) or set()
+    return [r for r in _rows(st) if r["seq"] not in claimed]
 
 
 def for_answer(st) -> dict | None:
     """Evidence for the final answer itself: what the turn did that no closed
-    task already shows (the whole turn when no task carries evidence). None
-    when the turn ran nothing at all (a plain answer)."""
-    board = getattr(st, "board", None) or {}
-    proved = any(it.get("evidence") for it in board.values())
-    rows = list(_buf(st)) if proved else list(getattr(st, "evidence_all", None) or [])
+    task claims (the whole turn when no task closed). None when there is
+    nothing left to show (a plain answer, or every action is under a task)."""
+    rows = _unclaimed(st)
     if not rows:
         return None
-    return _build(_pick(rows), "", "done")
+    return _build(rows, "", "done")
 
 
 def for_parts(st, slugs) -> list:
     """Parts of the request the harness closes at FINAL (the model never
-    marked them): each gets the turn's evidence, shared."""
+    marked them). The first gets the turn's unclaimed work; the others say
+    they share it. Returns ``[(slug, evidence)]``."""
     board = getattr(st, "board", None) or {}
-    rows = list(getattr(st, "evidence_all", None) or [])
+    rows = _unclaimed(st)
     out = []
+    first = None
     for slug in slugs:
         item = board.get(slug)
         if item is None or item.get("evidence"):
             continue
-        ev = _build(_pick(rows), check_of(item.get("title", "")), "done")
-        ev["shared_with"] = "the whole answer"
+        ev = _build(rows, check_of(item.get("title", "")), "done")
+        if first is None:
+            first = slug
+            _claim(st, rows)
+        else:
+            ev["shared_with"] = first
         item["evidence"] = ev
         out.append((slug, ev))
     return out
 
 
-__all__ = ["MAX_STEPS", "check_of", "for_answer", "for_parts", "note",
-           "on_status", "record"]
+__all__ = ["MAX_STEPS", "check_of", "for_answer", "for_parts", "forget",
+           "note", "on_status", "record"]

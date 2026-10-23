@@ -34,7 +34,7 @@ export function SubtaskList({ items, onViewSpec, onDismiss }: Readonly<{
   const allSettled = items.every(s => SETTLED.includes(s.status));
   const pct = items.length ? Math.round((done / items.length) * 100) : 0;
   // The newest closed item with evidence, for the collapsed header.
-  const lastProved = [...items].filter(s => s.evidence)
+  const lastProved = [...items].filter(s => s.evidence && (s.status === 'done' || s.status === 'failed'))
     .sort((a, b) => (b.evidence!.closed_at || 0) - (a.evidence!.closed_at || 0))[0];
   return (
     <div style={{ border: '1px solid var(--border-1)', borderRadius: 6, padding: '6px 10px', margin: '4px 0', background: 'var(--bg-1,#0d1117)' }}>
@@ -50,7 +50,7 @@ export function SubtaskList({ items, onViewSpec, onDismiss }: Readonly<{
           {!open && !current && lastProved && (
             <span style={{ color: '#8892a0', fontWeight: 500, marginLeft: 8 }}
                   title="Evidence recorded by the harness — open the list to see each task's">
-              ✓ {lastProved.slug}: {evidenceSummary(lastProved.evidence)}
+              {lastProved.status === 'done' ? '✓' : '✗'} {lastProved.slug}: {evidenceSummary(lastProved.evidence)}
             </span>
           )}
         </span>
@@ -91,7 +91,7 @@ export function SubtaskList({ items, onViewSpec, onDismiss }: Readonly<{
         // 🔒 = a stored user target the harness enforces; "(added by agent)"
         // = an item no request asked for.
         const flagged = (s.enforced ? '🔒 ' : '') + label + (s.self_added ? ' (added by agent)' : '');
-        const ev = s.evidence;
+        const ev = (s.status === 'done' || s.status === 'failed') ? s.evidence : undefined;
         const evOpen = !!(ev && shown[s.slug]);
         return (
         <div key={s.slug || i}>

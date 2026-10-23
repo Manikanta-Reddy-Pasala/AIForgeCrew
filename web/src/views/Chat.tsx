@@ -2602,7 +2602,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                           /* subtasks render in the pinned bottom dock; only their evidence shows here */
                           evidenceItems={evidenceItemsOf(
                             ((msg.steps || []).find((s: any) => s?.type === 'subtasks') as any)?.items,
-                            ((msg.steps || []).find((s: any) => s?.type === 'turn_evidence') as any)?.evidence) as any}
+                            ([...(msg.steps || [])].reverse().find((s: any) => s?.type === 'turn_evidence') as any)?.evidence) as any}
                           captured={(msg.steps || []).filter((s: any) => s?.type === 'captured').map((s: any) => ({
                             id: s.id, category: s.category, scope: s.scope, text: s.text || '',
                             repo: s.repo, gate_intent: s.gate_intent,

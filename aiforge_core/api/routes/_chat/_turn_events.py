@@ -159,13 +159,21 @@ def _route_produce_event(ev, st: dict, steps: list) -> None:
                        "turn_evidence")):
         steps.append(slim_event(ev))
     elif etype == "subtasks":
-        st["subtasks"] = list(ev.get("items") or [])
+        # A whole-list event carries no evidence: keep what each item had.
+        had = {r.get("slug"): r.get("evidence") for r in st["subtasks"]
+               if r.get("evidence")}
+        st["subtasks"] = [dict(r) for r in (ev.get("items") or [])]
+        for row in st["subtasks"]:
+            if row.get("slug") in had and row.get("status") in ("done", "failed"):
+                row.setdefault("evidence", had[row["slug"]])
     elif etype == "subtask_update":
         for row in st["subtasks"]:
             if row.get("slug") == ev.get("slug"):
                 row["status"] = ev.get("status")
                 if ev.get("evidence"):
                     row["evidence"] = ev["evidence"]
+                elif ev.get("status") not in ("done", "failed"):
+                    row.pop("evidence", None)     # opened again
     if etype == "done":
         st["emitted_done"] = True
 

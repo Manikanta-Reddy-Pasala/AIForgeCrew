@@ -35,7 +35,14 @@ function reduceMessageEvent(prev: LiveTurn, evt: any, onAwaiting: () => void): L
 // complexity budget).
 function withSubtaskStatus(subtasks: SubtaskItem[], slug: string, status: string,
                            evidence?: SubtaskItem['evidence']): SubtaskItem[] {
-  return subtasks.map(s => s.slug === slug ? { ...s, status, ...(evidence ? { evidence } : {}) } : s);
+  const closed = status === 'done' || status === 'failed';
+  return subtasks.map(s => {
+    if (s.slug !== slug) return s;
+    if (evidence) return { ...s, status, evidence };
+    if (closed) return { ...s, status };
+    const { evidence: _old, ...rest } = s;     // opened again: its old proof no longer stands
+    return { ...rest, status };
+  });
 }
 
 // Append a plain step (thought/tool_start/changes) — the simple, guard-free
@@ -136,7 +143,12 @@ function reduceStep(prev: LiveTurn, evt: any, onAwaiting: () => void): LiveTurn 
     return evt.evidence ? { ...prev, turnEvidence: evt.evidence } : prev;
   }
   if (evt.type === 'subtasks') {
-    return { ...prev, subtasks: evt.items || [] };
+    // A whole-list event carries no evidence: keep what each closed item had.
+    const had = new Map((prev.subtasks || []).filter(s => s.evidence).map(s => [s.slug, s.evidence]));
+    const items = (evt.items || []).map((s: SubtaskItem) =>
+      (!s.evidence && had.has(s.slug) && (s.status === 'done' || s.status === 'failed'))
+        ? { ...s, evidence: had.get(s.slug) } : s);
+    return { ...prev, subtasks: items };
   }
   if (evt.type === 'subtask_update' && prev.subtasks) {
     return { ...prev, subtasks: withSubtaskStatus(prev.subtasks, evt.slug, evt.status, evt.evidence) };

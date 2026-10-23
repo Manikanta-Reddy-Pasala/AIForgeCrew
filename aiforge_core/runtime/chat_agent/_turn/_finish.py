@@ -398,6 +398,7 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
     # (Not when the check still calls the answer unfinished: the parts it
     # left stay open and are shown as not done.)
     if _asks and not _unfinished:
+        _closing = []
         for _i in range(len(_asks)):
             _slug = f"part-{_i + 1}"
             if st.board.get(_slug, {}).get("status") in ("failed", "skipped"):
@@ -405,15 +406,16 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
             if st.board.get(_slug, {}).get("redo") \
                     and st.board[_slug].get("status") != "done":
                 continue            # the user asked for it again; not redone
-            _ev = None
-            try:
-                from ._evidence import for_parts
-                _got = for_parts(st, [_slug])
-                _ev = _got[0][1] if _got else None
-            except Exception:  # noqa: BLE001 — evidence never blocks an answer
-                pass
+            _closing.append(_slug)
+        _evs = {}
+        try:
+            from ._evidence import for_parts
+            _evs = dict(for_parts(st, _closing))
+        except Exception:  # noqa: BLE001 — evidence never blocks an answer
+            pass
+        for _slug in _closing:
             yield {"type": "subtask_update", "slug": _slug, "status": "done",
-                   **({"evidence": _ev} if _ev else {})}
+                   **({"evidence": _evs[_slug]} if _slug in _evs else {})}
     _fire_stop("final", cwd)
     if plan_mode:
         try:
