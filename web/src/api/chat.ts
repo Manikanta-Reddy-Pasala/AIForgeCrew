@@ -400,10 +400,11 @@ export function chatProcesses(id: number): Promise<{ processes: ChatProcess[] }>
 }
 
 /** Output of one command from `offsets` on (one per stream; negative = last N bytes). */
-export function chatProcessLog(id: number, key: string, offsets: number[]):
+export function chatProcessLog(id: number, key: string, offsets: number[], maxBytes = 64 * 1024):
     Promise<ChatProcess & { streams: ChatProcessChunk[] }> {
-  const q = offsets.length ? `?offsets=${offsets.join(',')}` : '';
-  return j(`/chat/sessions/${id}/processes/${encodeURIComponent(key)}/log${q}`);
+  const q = new URLSearchParams({ max_bytes: String(maxBytes) });
+  if (offsets.length) q.set('offsets', offsets.join(','));
+  return j(`/chat/sessions/${id}/processes/${encodeURIComponent(key)}/log?${q}`);
 }
 
 export function chatProcessKill(id: number, key: string): Promise<{ ok: boolean }> {

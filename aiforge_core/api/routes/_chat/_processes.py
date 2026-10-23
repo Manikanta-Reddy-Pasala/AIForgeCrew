@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 
 from fastapi import HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 
 from ._core import router
 
@@ -110,11 +110,14 @@ def chat_process_download(session_id: int, key: str,
     _session_or_404(session_id)
     from aiforge_core.runtime import proc_logs
     if path:
-        real = proc_logs.file_path(session_id, key, path)
-        if real is None:
+        opened = proc_logs.open_file(session_id, key, path)
+        if opened is None:
             raise HTTPException(404, f"{path!r} is not a log file of {key!r}")
-        return FileResponse(real, media_type="text/plain",
-                            filename=_download_name(os.path.basename(real)))
+        real, fh, _running = opened
+        name = _download_name(os.path.basename(real))
+        return StreamingResponse(
+            proc_logs.file_chunks(fh), media_type="text/plain",
+            headers={"Content-Disposition": f'attachment; filename="{name}"'})
     chunks = proc_logs.output_chunks(session_id, key)
     if chunks is None:
         raise HTTPException(404, f"no process {key!r} in session {session_id}")

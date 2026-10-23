@@ -133,7 +133,8 @@ def remember(job) -> None:
             # read is empty, and its own record is the good one.
             return
         status.update(running=False, ended_at=round(time.time(), 3),
-                      _tails=tails)
+                      _tails=tails,
+                      _log_ids=dict(getattr(job, "log_ids", None) or {}))
         with _LOCK:
             q = _ENDED.setdefault(_sid(job.session_id),
                                   collections.deque(maxlen=ENDED_PER_SESSION))
@@ -157,7 +158,7 @@ def list_for_session(session_id) -> list[dict]:
             continue
     live_ids = {j["id"] for j in live}
     with _LOCK:
-        ended = [{**{k: v for k, v in r.items() if k != "_tails"},
+        ended = [{**{k: v for k, v in r.items() if not k.startswith("_")},
                   "shown": _shown(session_id, r["id"])}
                  for r in _ENDED.get(_sid(session_id), ())
                  if r["id"] not in live_ids]
@@ -256,7 +257,7 @@ def read(session_id, key: str, offsets: list[int] | None = None,
     rec = _find_ended(session_id, key)
     if rec is None:
         return None
-    status = {k: v for k, v in rec.items() if k != "_tails"}
+    status = {k: v for k, v in rec.items() if not k.startswith("_")}
     status["shown"] = _shown(session_id, key)
     offs = list(offsets or [])
     status["streams"] = [
@@ -265,23 +266,28 @@ def read(session_id, key: str, offsets: list[int] | None = None,
     return status
 
 
-def _files_of(session_id, key: str) -> tuple[list[str], bool] | None:
-    """The log files listed for job ``key`` of this chat, and whether the job
-    still runs. None when the chat has no such job."""
+def _ids_of(session_id, key: str) -> tuple[dict, bool] | None:
+    """The log files listed for job ``key`` of this chat (path → identity),
+    and whether the job still runs. None when the chat has no such job."""
     job = _find_live(session_id, key)
     if job is not None:
         alive = job.alive()
-        return _log_files(job, alive), alive
+        _log_files(job, alive)
+        return dict(getattr(job, "log_ids", None) or {}), alive
     rec = _find_ended(session_id, key)
     if rec is None:
         return None
-    return list(rec.get("log_files") or []), False
+    return dict(rec.get("_log_ids") or {}), False
 
 
-def file_path(session_id, key: str, path: str) -> str | None:
-    """``path`` when it is a log file listed for that job; else None."""
-    got = _files_of(session_id, key)
-    return proc_log_files.allowed(got[0], path) if got else None
+def open_file(session_id, key: str, path: str):
+    """``(real path, open file, running)`` for a log file listed for that
+    job and still the same file; None otherwise. The caller closes it."""
+    got = _ids_of(session_id, key)
+    if got is None:
+        return None
+    opened = proc_log_files.open_listed(got[0], path)
+    return (opened[0], opened[1], got[1]) if opened else None
 
 
 def read_file(session_id, key: str, path: str, offset: int = -64 * 1024,
@@ -289,15 +295,35 @@ def read_file(session_id, key: str, path: str, offset: int = -64 * 1024,
     """A log file of job ``key`` from ``offset`` on (negative: the last N
     bytes), whole lines while the job runs. None when ``path`` is not one of
     that job's log files."""
-    got = _files_of(session_id, key)
-    real = proc_log_files.allowed(got[0], path) if got else None
-    if real is None:
+    opened = open_file(session_id, key, path)
+    if opened is None:
         return None
+    real, fh, running = opened
     max_bytes = max(1024, min(int(max_bytes or READ_MAX_BYTES),
                               READ_MAX_BYTES))
-    out = _read_stream(real, int(offset), max_bytes, got[1])
-    out.update(path=real, running=got[1])
+    try:
+        out = _read_stream(fh, int(offset), max_bytes, running)
+    finally:
+        fh.close()
+    out.update(path=real, running=running)
     return out
+
+
+def file_chunks(fh, chunk: int = 256 * 1024):
+    """A whole open file up to its size NOW (a log still being written does
+    not grow the download past what was promised), then closed."""
+    try:
+        end = os.fstat(fh.fileno()).st_size
+        pos = 0
+        while pos < end:
+            data = os.pread(fh.fileno(), min(chunk, end - pos), pos)
+            if not data:
+                yield b"\n... (the file got shorter while it was read) ...\n"
+                break
+            pos += len(data)
+            yield data
+    finally:
+        fh.close()
 
 
 def output_chunks(session_id, key: str, chunk: int = 256 * 1024):
@@ -314,6 +340,8 @@ def output_chunks(session_id, key: str, chunk: int = 256 * 1024):
                 while pos < end:
                     data = sig.read_range(s, pos, min(end, pos + chunk))
                     if not data:
+                        yield (b"\n... (output cut short: the command was "
+                               b"collected while it was read) ...\n")
                         break
                     pos += len(data)
                     yield data
@@ -379,5 +407,6 @@ def _reset_for_tests() -> None:
 
 
 __all__ = ["ENDED_KEEP_BYTES", "ENDED_PER_SESSION", "READ_MAX_BYTES",
-           "file_path", "forget_session", "kill", "list_for_session",
-           "mark_shown", "output_chunks", "read", "read_file", "remember"]
+           "file_chunks", "forget_session", "kill", "list_for_session",
+           "mark_shown", "open_file", "output_chunks", "read", "read_file",
+           "remember"]

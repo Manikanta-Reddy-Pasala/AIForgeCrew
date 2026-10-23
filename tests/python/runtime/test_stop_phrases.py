@@ -100,7 +100,11 @@ def test_cuts_all(text):
 
 @pytest.mark.parametrize("text", [
     "stop the build", "add a stop button", "how do I kill it?", "kill -9 1234 for me",
-    "don't stop", "stop the watch on the pipeline"])
+    "don't stop", "stop the watch on the pipeline",
+    "That flag is useless. Kill it.", "drop it, we don't need the column",
+    "drop that and use sqlite instead", "cancel that, try the other endpoint",
+    "There are 3 flaky tests. Kill them.", "def f():\n  if x:\n    y\n  end\nend",
+    "1. Build\n2. Stop", "end", "SELECT 1; END;"])
 def test_not_cuts_all(text):
     from aiforge_core.runtime import _stop_phrases
     assert not _stop_phrases.cuts_all(text)

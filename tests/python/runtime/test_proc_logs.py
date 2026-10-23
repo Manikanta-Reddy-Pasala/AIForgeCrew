@@ -5,6 +5,7 @@ kept after it is collected, stopped from the dock; show_logs opens a running
 command's log or follows a file; the API routes serve the same."""
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
@@ -353,9 +354,8 @@ def test_only_listed_files_can_be_read(env, tmp_path):
     other = tmp_path / "secret.txt"
     other.write_text("s\n")
     assert proc_logs.read_file(SID, key, str(other)) is None
-    assert proc_logs.file_path(SID, key, str(other)) is None
     assert proc_logs.read_file(SID + 1, key, str(env / "a.log")) is None
-    assert proc_logs.file_path(SID, key, str(env / "a.log")) == str((env / "a.log").resolve())
+    assert proc_logs.read_file(SID, key, str(env / "a.log"), 0)["path"] == str((env / "a.log").resolve())
 
 
 def test_an_ended_job_keeps_its_log_files(env):
@@ -409,3 +409,57 @@ def test_api_file_and_download(client, env):
     assert "attachment" in d.headers["content-disposition"]
     out = client.get(f"/api/chat/sessions/{SID}/processes/{key}/download")
     assert out.status_code == 200 and "attachment" in out.headers["content-disposition"]
+
+
+def test_a_quoted_gt_is_not_a_redirect(env):
+    from aiforge_core.runtime import proc_log_files as F
+    assert F._from_cmd("grep '>' notes.txt", str(env)) == []
+    assert F._from_cmd("run > out.txt 2>> err.txt", str(env)) == [
+        str(env / "out.txt"), str(env / "err.txt")]
+    assert F._from_cmd("cmd &> all.log", str(env)) == [str(env / "all.log")]
+    assert F._from_cmd("cmd > 'my run.txt'", str(env)) == [str(env / "my run.txt")]
+
+
+def test_files_outside_the_folder_must_be_log_named_and_not_hidden(env, tmp_path, monkeypatch):
+    from aiforge_core.runtime import proc_log_files as F
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    key_file = home / ".ssh" / "id_rsa"
+    key_file.write_text("k\n")
+    app_log = home / "app.log"
+    app_log.write_text("a\n")
+    hidden_log = home / ".ssh" / "x.log"
+    hidden_log.write_text("h\n")
+    monkeypatch.setattr(F, "_roots", lambda job: ["/nonexistent-root"])
+    key = _bg(f"sleep 30; echo >> {key_file}; echo > {app_log}; echo > {hidden_log}", env)
+    files = proc_logs.list_for_session(SID)[0]["log_files"]
+    assert str(app_log.resolve()) in files
+    assert str(key_file.resolve()) not in files and str(hidden_log.resolve()) not in files
+    assert proc_logs.read_file(SID, key, str(key_file)) is None
+
+
+def test_a_listed_file_swapped_for_a_symlink_is_not_read(env, tmp_path):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("s\n")
+    key = _bg("sleep 30 > swap.log", env)
+    assert proc_logs.list_for_session(SID)[0]["log_files"]
+    log = env / "swap.log"
+    log.unlink()
+    log.symlink_to(secret)
+    assert proc_logs.read_file(SID, key, str(log), 0) is None
+
+
+def test_downloading_a_growing_file_stops_at_its_size_then(env):
+    key = _bg("while true; do echo grow; done > big.log", env)
+    path = str((env / "big.log").resolve())
+    assert _until(lambda: (env / "big.log").stat().st_size > 100000)
+    opened = proc_logs.open_file(SID, key, path)
+    assert opened is not None
+    fd = opened[1].fileno()
+    before = os.fstat(fd).st_size
+    gen = proc_logs.file_chunks(opened[1], chunk=8192)
+    first = next(gen)                      # the size is fixed on the first read
+    fixed = os.fstat(fd).st_size
+    data = first + b"".join(gen)
+    assert before <= len(data) <= fixed
+    assert os.path.getsize(path) > len(data)   # it kept growing; we did not follow

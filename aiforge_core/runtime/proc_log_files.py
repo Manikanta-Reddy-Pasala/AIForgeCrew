@@ -26,8 +26,6 @@ _CACHE_S = 3.0
 _LOG_NAME = re.compile(
     r"(?:\.(?:log|out|err|trace|jsonl)(?:\.\d+)?|(?:^|/)nohup\.out|"
     r"\.log\.[\w-]+)$", re.I)
-_REDIRECT = re.compile(r"^(?:\d|&)?>>?$")
-_REDIRECT_JOINED = re.compile(r"^(?:\d|&)?>>?(.+)$")
 _NOT_LOGS = ("/proc/", "/sys/", "/dev/")
 #: Files a process writes that are not logs: databases, locks, caches.
 _NOT_LOG_NAME = re.compile(
@@ -44,38 +42,95 @@ def _ok_file(path: str) -> bool:
         return False
 
 
+def _words(cmd: str) -> list[str]:
+    """Shell words with redirect operators as their own tokens. Quotes are
+    kept (non-POSIX mode), so a quoted ``'>'`` stays a word, not a redirect
+    (``grep '>' file``); :func:`_unquote` strips them from a file name."""
+    lex = shlex.shlex(cmd or "", posix=False, punctuation_chars="<>&|;")
+    lex.whitespace_split = True
+    try:
+        return list(lex)
+    except ValueError:
+        return []
+
+
+def _unquote(word: str) -> str:
+    if len(word) >= 2 and word[0] == word[-1] and word[0] in "'\"":
+        return word[1:-1]
+    return word
+
+
 def _from_cmd(cmd: str, cwd: str) -> list[str]:
     """Redirect targets and log-looking arguments of a command line."""
-    try:
-        words = shlex.split(cmd or "", posix=True)
-    except ValueError:
-        words = (cmd or "").split()
+    words = _words(cmd)
     found = []
-    after_redirect = False
-    for w in words:
+    for i, w in enumerate(words):
         cand = None
-        if after_redirect:
-            cand, after_redirect = w, False
-        elif _REDIRECT.match(w):
-            after_redirect = True
-            continue
-        else:
-            m = _REDIRECT_JOINED.match(w)
-            if m and not m.group(1).startswith("&"):
-                cand = m.group(1)
-            elif "=" in w and w.startswith("-"):
-                cand = w.split("=", 1)[1]
-            else:
-                cand = w
-            if cand and not (m or _LOG_NAME.search(cand)):
+        prev = words[i - 1] if i else ""
+        if prev in (">", ">>", "&>", "&>>") or (
+                prev in (">", ">>") and i >= 2 and words[i - 2].isdigit()):
+            cand = w
+        elif w.startswith("-") and "=" in w:
+            cand = w.split("=", 1)[1]
+            if not _LOG_NAME.search(cand):
                 cand = None
-        if not cand or cand.startswith("&") or cand == "/dev/null":
+        elif _LOG_NAME.search(w):
+            cand = w
+        cand = _unquote(cand) if cand else cand
+        if not cand or cand.startswith("&") or cand == "/dev/null" \
+                or not cand.strip() or cand in "<>&|;":
             continue
         path = os.path.expanduser(cand)
         if not os.path.isabs(path):
             path = os.path.join(cwd or ".", path)
         found.append(os.path.normpath(path))
     return found
+
+
+def _roots(job) -> list[str]:
+    """Where any file a command writes may be shown from: its folder, the
+    chat's workspace and the temp folder."""
+    import tempfile
+    out = []
+    for raw in (getattr(job, "cwd", None), _workspace(), tempfile.gettempdir(),
+                "/tmp"):
+        if raw:
+            out.append(os.path.realpath(os.path.expanduser(str(raw))))
+    return out
+
+
+def _workspace() -> str | None:
+    try:
+        from aiforge_core.runtime import request_context
+        return request_context.get_workspace_dir()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _under(path: str, root: str) -> bool:
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def _showable(real: str, job, follow: str | None) -> bool:
+    """A file the dock may show for ``job``: the file show_logs follows (its
+    path was already checked), anything inside the job's folder, the
+    workspace or the temp folder, or elsewhere a LOG-named file that is not
+    inside a hidden folder (~/.ssh, ~/.aws, ~/.config ...)."""
+    if real == follow:
+        return True
+    if any(_under(real, r) for r in _roots(job)):
+        return True
+    if not _LOG_NAME.search(real):
+        return False
+    return not any(part.startswith(".") for part in real.split(os.sep)[:-1])
+
+
+def _ident(path: str):
+    try:
+        st = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
 
 
 def _group_pids(job) -> list[int]:
@@ -149,21 +204,49 @@ def detect(job) -> list[str]:
                         writable and not _NOT_LOG_NAME.search(path)):
                     found.append(path)
     own = _spool_paths(job)
+    ids: dict = dict(getattr(job, "log_ids", None) or {})
+    follow_real = os.path.realpath(follow) if follow else None
     for path in found:
         real = os.path.realpath(path)
-        if real in own or real in seen or not _ok_file(real):
+        if real in own or real in ids or not _ok_file(real) \
+                or not _showable(real, job, follow_real):
             continue
-        seen.append(real)
+        ident = _ident(real)
+        if ident is not None:
+            ids[real] = ident
+    # Re-check what was listed before: a file deleted or replaced since is
+    # dropped (a replaced one comes back if it is found again).
+    ids = {p: i for p, i in ids.items() if _ident(p) == i}
+    seen = [p for p in seen if p in ids] + [p for p in ids if p not in seen]
     seen = seen[:MAX_FILES]
+    job.log_ids = {p: ids[p] for p in seen}
     job.log_files = seen
     job._log_files_at = now
     return seen
 
 
-def allowed(files, path: str) -> str | None:
-    """``path`` when it is one of ``files`` (compared as real paths)."""
+def open_listed(ids: dict, path: str):
+    """Open ``path`` for reading when it is a listed file AND still the very
+    file that was listed (same device and inode, not a symlink now). Returns
+    ``(real path, binary file object)`` or None. The caller closes it."""
     real = os.path.realpath(str(path or ""))
-    return real if real in set(files or ()) and _ok_file(real) else None
+    want = (ids or {}).get(real)
+    if want is None:
+        return None
+    try:
+        fd = os.open(real, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        import stat as _stat
+        if not _stat.S_ISREG(st.st_mode) or (st.st_dev, st.st_ino) != tuple(want):
+            os.close(fd)
+            return None
+        return real, os.fdopen(fd, "rb")
+    except OSError:
+        os.close(fd)
+        return None
 
 
-__all__ = ["MAX_FILES", "allowed", "detect"]
+__all__ = ["MAX_FILES", "detect", "open_listed"]

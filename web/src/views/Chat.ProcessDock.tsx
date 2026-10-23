@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { toast } from 'sonner';
 import {
   chatProcesses, chatProcessLog, chatProcessFile, chatProcessKill, chatProcessDownload,
   ChatProcess, ChatProcessChunk,
@@ -47,7 +48,8 @@ async function readSource(sessionId: number, src: Source, offsets: number[], fir
                                     offsets.length ? offsets[0] : first, Math.abs(first));
     return { streams: [r], running: r.running };
   }
-  const r = await chatProcessLog(sessionId, src.proc, offsets.length ? offsets : [first, first]);
+  const r = await chatProcessLog(sessionId, src.proc, offsets.length ? offsets : [first, first],
+                                 Math.abs(first));
   return { streams: r.streams, running: r.running };
 }
 
@@ -62,7 +64,8 @@ function toLines(streams: ChatProcessChunk[], running: boolean): Line[] {
 }
 
 function download(sessionId: number, src: Source) {
-  chatProcessDownload(sessionId, src.proc, src.path).catch(() => undefined);
+  chatProcessDownload(sessionId, src.proc, src.path)
+    .catch((e: any) => { toast.error(`Download failed: ${e?.message || e}`); });
 }
 
 const btnReset = {
@@ -86,6 +89,7 @@ function LogBody({ lines, height, follow, setFollow, empty }: {
            if (atEnd !== follow) setFollow(atEnd);
          }}
          style={{ margin: 0, padding: '6px 8px', flex: 'none', overflow: 'auto', height,
+                  width: '100%', boxSizing: 'border-box',
                   border: 0, borderRadius: '0 0 6px 6px',
                   fontSize: 12, lineHeight: 1.35, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
       {lines.length === 0

@@ -403,22 +403,59 @@ def for_session(session_id) -> list[dict]:
         return []
 
 
+#: How long a Stop waits after Ctrl-C before it terminates what is left.
+STOP_GRACE_S = 1.5
+
+
+def stop_gracefully(jobs, why: str, grace_s: float | None = None) -> int:
+    """Stop ``jobs`` the way a person would: Ctrl-C (SIGINT) to every one at
+    once — a dev server, ``docker compose up`` or a test runner shuts down
+    cleanly on it — then, after at most ``grace_s``, TERM and KILL whatever is
+    left of each process group. Returns how many were running."""
+    import signal
+    from aiforge_core.runtime import proc_signals
+    live = [j for j in jobs if j.alive()]
+    if not live:
+        return 0
+    for job in live:
+        job.killed = job.killed or why
+        proc_signals.kill_group(job.pgid, signal.SIGINT)
+    end = time.monotonic() + (STOP_GRACE_S if grace_s is None else grace_s)
+    while time.monotonic() < end and any(j.alive() for j in live):
+        time.sleep(0.05)
+    # What is left (and a group whose leader exited but left children) is
+    # terminated, all jobs side by side so a Stop never takes N × the pauses.
+    threads = []
+    for job in live:
+        def _end(j=job):
+            try:
+                if j._kill is not None:
+                    j._kill()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                j.proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001
+                pass
+        t = threading.Thread(target=_end, daemon=True)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join(timeout=8)
+    return len(live)
+
+
 def stop_session(session_id) -> int:
     """The chat's Stop: every live process this chat started — handed-off,
-    background, services, pane commands — is stopped (Ctrl-C, then TERM,
-    then KILL). Returns how many."""
+    background, services, pane commands — gets Ctrl-C, then TERM, then KILL
+    (:func:`stop_gracefully`). Returns how many were running."""
     if session_id is None:
         return 0
     with _LOCK:
         mine = [j for j in _JOBS.values()
                 if j.session_id is not None
                 and str(j.session_id) == str(session_id)]
-    n = 0
-    for job in mine:
-        if job.alive():
-            job.kill("stopped: the user pressed Stop")
-            n += 1
-    return n
+    return stop_gracefully(mine, "stopped: the user pressed Stop")
 
 
 def running() -> list[Job]:
@@ -447,12 +484,8 @@ def stop_for_text(session_id, text: str) -> int:
     with _LOCK:
         mine = [j for j in _JOBS.values()
                 if str(j.session_id) == str(session_id) and j.alive()]
-    n = 0
-    for job in mine:
-        if background if job.explicit else cut:
-            job.kill("stopped: the user asked to stop it")
-            n += 1
-    return n
+    chosen = [j for j in mine if (background if j.explicit else cut)]
+    return stop_gracefully(chosen, "stopped: the user asked to stop it")
 
 
 # ── looking and waiting ──────────────────────────────────────────────────

@@ -29,9 +29,9 @@ import signal as _signal
 
 log = logging.getLogger("aiforge.proc")
 
-# What a stop sends, in order: Ctrl-C (a dev server or a test runner shuts
-# down cleanly on it), then ask, then insist.
-STOP_SEQUENCE = (_signal.SIGINT, _signal.SIGTERM, _signal.SIGKILL)
+# The two orders a stop actually needs: ask, then insist. (The chat's Stop
+# sends Ctrl-C first and waits a moment: cmd_jobs.stop_gracefully.)
+STOP_SEQUENCE = (_signal.SIGTERM, _signal.SIGKILL)
 
 
 def _check_group(pgid: object) -> tuple[int | None, str]:

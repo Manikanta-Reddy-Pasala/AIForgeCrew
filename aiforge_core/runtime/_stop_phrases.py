@@ -93,18 +93,24 @@ _BACKGROUND_RE = re.compile(
     r"^" + _FILLER + _CUT_VERB + r"\s+" + _BACKGROUND_OBJECT + _WHERE + _TAIL
     + _END, re.IGNORECASE)
 
-# A stop aimed at everything it is doing, not at one named thing: "stop",
-# "stop it", "kill it", "stop everything", "kill all the processes". It
-# ends the commands left running in the background too.
-_ALL_OBJECT = (
-    r"(?:it|that|this|them|everything|all(?:\s+of\s+(?:it|them))?|"
+# A stop aimed at everything it is doing, not at one named thing. It ends
+# the commands left running in the background too, so it is read narrowly:
+# "everything" / "all the processes" anywhere, but a bare "stop" or a
+# pronoun ("stop it", "kill it") only when that is the WHOLE message — "That
+# flag is useless. Kill it." or "drop that and use sqlite" are about code.
+_ALL_VERB = r"(?:stop|cancel|abort|halt|kill|terminate)"
+_ALL_NAMED = (
+    r"(?:everything|all\s+of\s+(?:it|them)|"
     r"all\s+(?:the\s+|your\s+|of\s+the\s+)?(?:process(?:es)?|commands?|jobs?)"
     r"(?:\s+you\s+started)?|"
     r"(?:the|your)\s+process(?:es)?\s+you\s+started)"
 )
-_ALL_RE = re.compile(
-    r"^" + _FILLER + _CUT_VERB + r"(?:\s+" + _ALL_OBJECT + r")?" + _TAIL + _END,
+_ALL_NAMED_RE = re.compile(
+    r"^" + _FILLER + _ALL_VERB + r"\s+" + _ALL_NAMED + _TAIL + _END,
     re.IGNORECASE)
+_ALL_BARE_RE = re.compile(
+    r"^" + _FILLER + _ALL_VERB + r"(?:\s+(?:it|that|this|them|all))?" + _TAIL
+    + r"\s*[.!]*\s*$", re.IGNORECASE)
 
 _QUESTION_START_RE = re.compile(
     r"^(?:how|what|why|when|where|which|who|whose|is|are|was|were|does|did|"
@@ -152,12 +158,15 @@ def cuts_background(text: str) -> bool:
 
 
 def cuts_all(text: str) -> bool:
-    """True when ``text`` stops everything the run is doing ("stop", "stop
-    it", "kill everything") — not one named thing ("stop the build")."""
+    """True when ``text`` stops everything the run is doing: "stop
+    everything", "kill all the processes" — or a message that is nothing but
+    "stop" / "stop it" / "kill it". Not one named thing ("stop the build")."""
     for s in _sentences(text):
-        if not _is_question(s) and _ALL_RE.match(s):
+        if not _is_question(s) and _ALL_NAMED_RE.match(s):
             return True
-    return False
+    whole = _plain(text or "").strip()
+    return "\n" not in whole and len(whole) <= 40 and bool(
+        _ALL_BARE_RE.match(whole))
 
 
 def replaces_run(text: str) -> bool:
