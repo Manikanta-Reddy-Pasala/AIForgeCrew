@@ -247,7 +247,10 @@ def progress_suffix(name: str, args) -> str:
 
 def _forget(job: Job) -> None:
     with _LOCK:
-        _JOBS.pop(job.key, None)
+        gone = _JOBS.pop(job.key, None) is not None
+    if gone:                     # the Processes dock keeps its output tail
+        from aiforge_core.runtime import proc_logs
+        proc_logs.remember(job)
     job.close()
 
 
@@ -293,6 +296,7 @@ def adopt_spooled(proc, spool, cmd: str, cwd: str, *, explicit: bool,
               pgid=handle.get("pgid") or proc.pid)
     job.watch_opts = handle.pop("opts", None)   # the bg watcher's (promote)
     job.handle = handle
+    job.cwd = cwd
     if started is not None:
         job.started = started
     return _register(job)
@@ -306,7 +310,20 @@ def adopt_service(proc, cmd: str, log_path: str, pgid=None) -> Job:
         _serve.stop_service({"pid": proc.pid})
     job = Job(f"pid-{proc.pid}", proc, cmd, [log_path], explicit=True,
               kill=_kill, pgid=pgid)
+    job.label = "service"
     return _register(job)
+
+
+def set_label(key, label) -> None:
+    """A few plain words for the Processes dock (run_command's
+    ``description``)."""
+    text = " ".join(str(label or "").split())[:120]
+    if not text:
+        return
+    with _LOCK:
+        job = _JOBS.get(str(key or ""))
+    if job is not None:
+        job.label = text
 
 
 def _caller() -> tuple:
@@ -539,4 +556,4 @@ def wait(job: Job, max_s: float | None = None, session_id=None) -> dict:
 __all__ = ["Job", "adopt_service", "adopt_spooled", "begin_turn",
            "checkin_s", "current_owner", "default_wait_s", "end_owner",
            "end_turn", "find", "look", "progress_suffix", "reset_owner",
-           "running", "set_owner", "stop_for_text", "stuck_s", "wait"]
+           "running", "set_label", "set_owner", "stop_for_text", "stuck_s", "wait"]

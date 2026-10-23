@@ -479,6 +479,14 @@ def _start_background(cmd: str, base: str) -> dict:
     return out
 
 
+def _label_job(res: dict, args: dict) -> dict:
+    """Name a job in the Processes dock with the command's description."""
+    if isinstance(res, dict) and res.get("id") and args.get("description"):
+        from aiforge_core.runtime import cmd_jobs
+        cmd_jobs.set_label(res["id"], args.get("description"))
+    return res
+
+
 def _t_run_command(args: dict, cwd: str) -> dict:
     cmd = args["cmd"]
     root = _workspace_root()
@@ -488,7 +496,7 @@ def _t_run_command(args: dict, cwd: str) -> dict:
     if refusal is not None:
         return refusal
     if background:
-        return _start_background(cmd, base)
+        return _label_job(_start_background(cmd, base), args)
     # No wall clock by default: a build that keeps printing (npm ci, mvn
     # package) runs until it is done. It is stopped when it goes silent — no
     # output, no CPU — for AIFORGE_CMD_IDLE_S, or at the wall clock the model
@@ -518,8 +526,9 @@ def _t_run_command(args: dict, cwd: str) -> dict:
         res = _run_to_end(proc, timeout, spool, idle_s)
         if res.get("_handoff"):
             handed = True
-            return _hand_off(proc, spool, cmd, base, res["_handoff"],
-                             started, timeout, idle_s)
+            return _label_job(_hand_off(proc, spool, cmd, base,
+                                        res["_handoff"], started, timeout,
+                                        idle_s), args)
         return res
     finally:
         if not handed:

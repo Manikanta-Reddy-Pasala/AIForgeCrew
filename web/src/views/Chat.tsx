@@ -10,6 +10,7 @@ import { menuBtn, menuItem, LS_SESSION_KEY, LS_MODEL_KEY, LS_MODE_KEY, BUILDER_K
 import { pickChatModel } from '../chatModelPick';
 import { SubtaskList } from './Chat.SubtaskList';
 import { SideTasks } from './Chat.SideTasks';
+import { ProcessDock } from './Chat.ProcessDock';
 import SuggestionChip from './Chat.SuggestionChip';
 import RecipeOfferCard, { type RecipeOffer } from './Chat.RecipeOfferCard';
 import ScopeNetCard, { type ScopeNet } from './Chat.ScopeNetCard';
@@ -2955,6 +2956,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                           catch (e: any) { toast.error(`Delete failed: ${e.message}`); }
                         }} />
 
+            <ProcessDock sessionId={activeId} />
             {familyId !== null && (
               <SideTasks tasks={sideTasks} viewingId={activeId} parentId={familyId} limit={sideLimit}
                          onOpen={id => selectSession(id)}

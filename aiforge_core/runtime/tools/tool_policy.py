@@ -91,6 +91,9 @@ _READONLY_ALWAYS_ALLOW = {
     # Looking at a command the agent already started (its approval was the
     # run_command call).
     "command_wait", "command_output",
+    # Opens a log in the chat's Processes panel (a `tail -F` of a file at
+    # most: reading, as file_read does).
+    "show_logs",
     # The harness's own record of what this chat did.
     "session_actions",
 }

@@ -23,6 +23,7 @@ from ._chat import (
     _message,  # noqa: F401
     _models,  # noqa: F401
     _prep,  # noqa: F401
+    _processes,  # noqa: F401
     _producer,  # noqa: F401
     _routing,  # noqa: F401
     _sessions,  # noqa: F401

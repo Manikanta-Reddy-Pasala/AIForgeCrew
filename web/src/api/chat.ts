@@ -369,3 +369,42 @@ export interface Suggestion {
   rationale: string;
   verdict: 'ACT' | 'OFFER';
 }
+
+/** One command of a chat in the Processes dock. */
+export interface ChatProcess {
+  id: string;
+  cmd: string;
+  label: string;
+  cwd: string;
+  started_at: number;      // epoch seconds
+  ended_at?: number;
+  running: boolean;
+  code: number | null;
+  stopped: string | null;  // who ended it, when not itself
+  background: boolean;
+  bytes: number[];         // per stream: stdout, stderr
+  shown: number;           // > 0: the agent asked to show it (higher = newer)
+}
+
+export interface ChatProcessChunk {
+  text: string;
+  start: number;
+  next: number;
+  size: number;
+  skipped: number;
+}
+
+export function chatProcesses(id: number): Promise<{ processes: ChatProcess[] }> {
+  return j(`/chat/sessions/${id}/processes`);
+}
+
+/** Output of one command from `offsets` on (one per stream; negative = last N bytes). */
+export function chatProcessLog(id: number, key: string, offsets: number[]):
+    Promise<ChatProcess & { streams: ChatProcessChunk[] }> {
+  const q = offsets.length ? `?offsets=${offsets.join(',')}` : '';
+  return j(`/chat/sessions/${id}/processes/${encodeURIComponent(key)}/log${q}`);
+}
+
+export function chatProcessKill(id: number, key: string): Promise<{ ok: boolean }> {
+  return j(`/chat/sessions/${id}/processes/${encodeURIComponent(key)}/kill`, { method: 'POST' });
+}

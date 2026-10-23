@@ -490,6 +490,8 @@ def chat_session_delete(session_id: int) -> None:
             pass
     from aiforge_core.runtime import chat_transcript
     chat_transcript.drop(session_id)
+    from aiforge_core.runtime import proc_logs
+    proc_logs.forget_session(session_id)
     # Grab the isolated-workspace path BEFORE deleting the row so we can rm -rf
     # it — a lingering workspace's files otherwise leak into a future chat.
     _sess = chat_store.get_session(session_id)

@@ -118,6 +118,14 @@ CATALOG: dict = {
     "command_kill": (
         "Stop a running command (id from run_command) — then fix it and "
         "run it again.", {"id": "s"}, ("id",)),
+    "show_logs": (
+        "Show a log to the user in the Processes panel at the bottom of the "
+        "chat, live. id: a command you started (run_command background:true "
+        "for `docker logs -f app`, `journalctl -fu svc`, a server, a build); "
+        "path: a log file to follow (tail -F, last `lines` lines first); "
+        "neither: every running command of this chat. Use it whenever the "
+        "user asks to see, show, tail or follow logs or output.",
+        {"id": "s", "path": "s", "lines": "i", "description": "s"}, ()),
     "watch_until": (
         "Re-run one command until a condition holds — polling, monitoring, "
         "'wait until it's ready/done/green'. In chat this returns at once "
@@ -504,7 +512,7 @@ _CORE_ACT = frozenset({
     "file_read", "read_files", "read_lines", "list_dir", "find", "grep",
     "file_patch", "multi_edit", "file_write", "file_create", "editor",
     "run_command", "run_tests", "spawn_task",
-    "command_wait", "command_output", "command_kill",
+    "command_wait", "command_output", "command_kill", "show_logs",
     "memory_lookup", "memory_write",
     "git_status", "git_diff", "repo_map",
     "session_actions",
