@@ -70,9 +70,9 @@ export function NetworkAllowlist({ network, suggest, onSaved }: {
     <div style={{ margin: '6px 0 14px' }}>
       <h4 style={{ margin: '4px 0' }}>Network allowlist <span className="chip ok" style={{ fontSize: 11 }}>enforced</span></h4>
       <p style={{ fontSize: 13, opacity: 0.85, margin: '2px 0 6px' }}>
-        The box can reach ONLY these hosts (and their subdomains) — for every command the
-        agent runs: curl, wget, pip, git, scripts. Everything else is refused by the network.
-        Localhost and the model need no entry. The agent cannot change this list.
+        The ONE list for everything the box reaches: web, git (https or ssh), ssh, scp, rsync,
+        pip, npm, scripts — only these hosts (and their subdomains). Everything else is refused
+        by the network. Localhost and the model need no entry. The agent cannot change this list.
       </p>
       <textarea
         aria-label="Network allowlist, one host per line"

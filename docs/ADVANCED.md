@@ -205,7 +205,7 @@ and is never written to — the environment wins. Catalogue: `.env.example`.
 | `AIFORGE_EGRESS_ALLOW_HOSTS` | — | CSV allowlist; under `--isolated` it SEEDS the network allowlist on first start, after that Settings owns it |
 | `AIFORGE_BOX_SUBNET`, `AIFORGE_OUT_SUBNET`, `AIFORGE_EGRESS_IP` | `10.251.250.0/24`, `10.251.251.0/24`, `10.251.251.250` | `--isolated` networks (the allowlist route refuses the box subnet and the proxy address) |
 | `AIFORGE_UI_HOSTS` | `localhost,127.0.0.1` (+ `--host`) | `--isolated`: the names the UI is opened by; the allowlist route refuses any other Host/Origin (DNS rebinding). Add your public name if you open the UI through one |
-| `AIFORGE_SSH_EGRESS`, `AIFORGE_SSH_PORTS` | `any`, `22` | `--isolated`: SSH out — to any host, only allowlisted ones (`allowlist`) or none (`off`), on these ports |
+| `AIFORGE_SSH_EGRESS`, `AIFORGE_SSH_PORTS` | `allowlist`, `22` | `--isolated`: SSH out (ssh/scp/rsync/git@) — only to allowlisted hosts (default), any host (`any`) or none (`off`), on these ports |
 | `AIFORGE_EGRESS_ADMIN_TOKEN` | — (off) | `--isolated`: when set, changing the allowlist needs it |
 | `AIFORGE_EXTRAS` | — | optional Python extras |
 | `AIFORGE_CA_BUNDLE` | — | internal CA, PEM |
@@ -247,8 +247,10 @@ never passes through it. `--isolated` moves the boundary into the network:
   Settings page could in principle make your browser submit a change.
 - **ssh-egress**: the box's SSH exit. `ssh`, `scp`, `rsync` and `git@host:`
   go through it automatically (a ProxyCommand the box's entrypoint writes):
-  SSH ports only (`AIFORGE_SSH_PORTS`, 22), to any host by default
-  (`AIFORGE_SSH_EGRESS=any|allowlist|off`). End-to-end SSH; nothing decrypted.
+  SSH ports only (`AIFORGE_SSH_PORTS`, 22), and only to hosts on the same
+  allowlist as the web (`AIFORGE_SSH_EGRESS=allowlist`, the default; `any` /
+  `off` exist). End-to-end SSH; nothing decrypted. **One list governs
+  everything the box reaches: web, git (https or ssh), ssh, scp, rsync.**
 - **model**: a relay to the model endpoint and nothing else. run.sh points the
   box's model URL at it (`http://model:PORT/...`) and the relay at your real
   `AIFORGE_LM_BASE_URL` (TLS to an https endpoint); a loopback endpoint is

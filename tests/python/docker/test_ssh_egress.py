@@ -29,7 +29,18 @@ def eg(monkeypatch, tmp_path):
     return mod
 
 
-def test_ssh_port_only(eg):
+def test_the_allowlist_is_the_default(eg, tmp_path):
+    """One list for everything: ssh/scp/rsync/git@ only to allowlisted hosts."""
+    assert "not on the network allowlist" in eg.allowed("github.com", 22)
+    (tmp_path / "hosts.json").write_text(json.dumps({"hosts": ["github.com", "10.0.0.5"]}))
+    assert eg.allowed("github.com", 22) is None
+    assert eg.allowed("ssh.github.com", 22) is None               # subdomain, same as the web
+    assert eg.allowed("10.0.0.5", 22) is None
+    assert "not on the network allowlist" in eg.allowed("10.0.0.6", 22)
+
+
+def test_ssh_port_only(eg, monkeypatch):
+    monkeypatch.setenv("AIFORGE_SSH_EGRESS", "any")
     assert eg.allowed("github.com", 22) is None
     assert "only SSH ports" in eg.allowed("github.com", 443)
     assert eg.allowed("10.0.0.5", 22) is None                    # LAN ssh is fine

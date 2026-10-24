@@ -267,7 +267,7 @@ def test_the_relay_listens_unprivileged(tmp_path: Path):
 def test_ssh_goes_out_through_its_own_exit():
     compose = (REPO / "docker-compose.isolated.yml").read_text()
     ssh = compose[compose.index("  ssh-egress:"):compose.index("  model:")]
-    assert "networks: [box, out]" in ssh and "AIFORGE_SSH_EGRESS=${AIFORGE_SSH_EGRESS:-any}" in ssh
+    assert "networks: [box, out]" in ssh and "AIFORGE_SSH_EGRESS=${AIFORGE_SSH_EGRESS:-allowlist}" in ssh
     entry = (REPO / "docker" / "entrypoint.sh").read_text()
     assert "ProxyCommand $_py /opt/aiforge-src/docker/ssh-connect.py %h %p" in entry
     assert '_py="$(command -v python3' in entry

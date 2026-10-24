@@ -75,6 +75,9 @@ export default function EgressCard() {
         network={data.network}
         suggest={data.derived.filter(h => !/^(127\.|localhost$|model$|host\.docker\.internal$)/.test(h))}
         onSaved={() => { api.egressHosts().then(setData).catch(() => undefined); }} />
+      {/* Isolated: the network list above is the ONE list — AIForge's own
+          tools follow it too, so a second list here would only confuse. */}
+      {!data.network && (<>
       <h4 style={{ margin: '10px 0 4px' }}>AIForge's web tools</h4>
       <p style={{ fontSize: 13, opacity: 0.8 }}>
         This machine only talks to the hosts below. Everything else is refused,
@@ -107,6 +110,7 @@ export default function EgressCard() {
         <button type="button" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
         <span style={{ fontSize: 12, opacity: 0.75 }}>{msg}</span>
       </div>
+      </>)}
     </div>
   );
 }

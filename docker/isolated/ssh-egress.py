@@ -6,8 +6,10 @@ The box has no route out. Web traffic leaves through the allowlist proxy;
 client is configured (docker/entrypoint.sh) with a ProxyCommand that asks this
 service to CONNECT host:22.
 
-  AIFORGE_SSH_EGRESS=any        (default) SSH to any host
-  AIFORGE_SSH_EGRESS=allowlist  SSH only to hosts on the network allowlist
+  AIFORGE_SSH_EGRESS=allowlist  (default) SSH only to hosts on the network
+                                allowlist — the ONE list for everything the box
+                                reaches: web, git, ssh, scp, rsync
+  AIFORGE_SSH_EGRESS=any        SSH to any host
   AIFORGE_SSH_EGRESS=off        no SSH out at all
 
 Only CONNECT is served, only to the allowed ports, and the bytes are relayed
@@ -28,7 +30,7 @@ _HOST = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
 
 
 def mode() -> str:
-    m = (os.environ.get("AIFORGE_SSH_EGRESS") or "any").strip().lower()
+    m = (os.environ.get("AIFORGE_SSH_EGRESS") or "allowlist").strip().lower()
     return m if m in ("any", "allowlist", "off") else "off"
 
 

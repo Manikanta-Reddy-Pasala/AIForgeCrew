@@ -150,9 +150,9 @@ services:
     volumes:
       - egress-policy:/policy
 
-  # The box's SSH exit: CONNECT to SSH ports only (AIFORGE_SSH_PORTS, 22),
-  # to any host (AIFORGE_SSH_EGRESS=any) — or only allowlisted ones
-  # (allowlist), or none (off).
+  # The box's SSH exit: CONNECT to SSH ports only (AIFORGE_SSH_PORTS, 22), and
+  # only to hosts on the network allowlist — the same one list as the web
+  # (AIFORGE_SSH_EGRESS=allowlist; `any` / `off` exist but are not the default).
   ssh-egress:
     build: {context: ./docker/isolated, dockerfile: ssh-egress.Dockerfile}
     image: aiforge-isolated-ssh-egress:local
@@ -165,7 +165,7 @@ services:
     pids_limit: 256
     networks: [box, out]
     environment:
-      - AIFORGE_SSH_EGRESS=${AIFORGE_SSH_EGRESS:-any}
+      - AIFORGE_SSH_EGRESS=${AIFORGE_SSH_EGRESS:-allowlist}
       - AIFORGE_SSH_PORTS=${AIFORGE_SSH_PORTS:-22}
     volumes:
       - egress-policy:/policy:ro
