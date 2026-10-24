@@ -25,11 +25,18 @@ RUN_SH = REPO / "run.sh"
 
 _FAKE_DOCKER = r"""#!/bin/sh
 echo "$*" >> "{log}"
+# The box goes away on down / rm and comes back on up.
+case "$*" in
+  *" down"|"rm -f aiforge") : > "{log}.gone" ;;
+  *"up -d"*) rm -f "{log}.gone" ;;
+  "inspect aiforge") [ -f "{log}.gone" ] && exit 1 ;;
+esac
 # Answers for run.sh's post-start isolation check (_verify_isolated).
 case "$*" in
   "inspect aiforge-egress-guard --format"*) echo "{guard}" ;;
   "inspect aiforge-egress-guard") exit 1 ;;
-  *"guard-probe.py"*) echo "{probe}" ;;
+  *"guard-probe.py"*) if [ -s "{seq}" ]; then head -1 "{seq}"; tail -n +2 "{seq}" > "{seq}.n"; mv "{seq}.n" "{seq}"
+                      else echo "{probe}"; fi ;;
   "inspect aiforge --format {{.State.Status}}") echo "{status}" ;;
   "inspect aiforge --format"*) echo "proj_box " ;;
   *"network inspect proj_box"*Internal*) echo true ;;
@@ -46,7 +53,8 @@ exit 0
 
 def _run(tmp_path: Path, args: list[str], extra_env: dict | None = None,
          inhibit: str = "true", getent: int = 2, box_up: bool = True,
-         guard: str = "healthy", probe: str = "NET-BLOCKED", running: str = "isolated"):
+         guard: str = "healthy", probe: str = "NET-BLOCKED", running: str = "isolated",
+         probes: list | None = None):
     """run.sh (from its own checkout folder) with a fake `docker` on PATH that
     records how it was called and answers the isolation check."""
     bindir = tmp_path / "bin"
@@ -56,7 +64,11 @@ def _run(tmp_path: Path, args: list[str], extra_env: dict | None = None,
     text = (_FAKE_DOCKER.replace("{log}", str(log))
             .replace("{inhibit}", inhibit).replace("{getent}", str(getent))
             .replace("{guard}", guard).replace("{probe}", probe)
-            .replace("{status}", "running" if probe else "exited"))
+            .replace("{status}", "running" if probe else "restarting")
+            .replace("{seq}", str(tmp_path / "probes.txt")))
+    (tmp_path / "docker.log.gone").unlink(missing_ok=True)
+    if probes:
+        (tmp_path / "probes.txt").write_text("\n".join(probes) + "\n")
     if not box_up:
         text = text.replace('echo box-up ;;', 'exit 1 ;;')
     if running == "site-bridge":               # an old open box from a site file, not on host
@@ -79,7 +91,7 @@ def _run(tmp_path: Path, args: list[str], extra_env: dict | None = None,
            "XDG_CONFIG_HOME": str(tmp_path / "xdg"),
            # Force the sandbox branch: this suite runs INSIDE a container, where
            # detection would otherwise take the in-box path and never call docker.
-           "AIFORGE_IN_SANDBOX": "0"}
+           "AIFORGE_IN_SANDBOX": "0", "AIFORGE_GUARD_PROBE_TRIES": "3"}
     env.pop("COMPOSE_FILE", None)
     env.pop("AIFORGE_REPOS_DIR", None)
     env.update(extra_env or {})
@@ -124,9 +136,9 @@ def test_unenforceable_guard_falls_back_to_isolated(tmp_path: Path):
     down = [i for i, c in enumerate(calls) if "-f docker-compose.guard.yml down" in c]
     iso = [i for i, c in enumerate(calls) if "-f docker-compose.isolated.yml up -d --build" in c]
     assert down and iso and down[0] < iso[0], calls
-    mark = tmp_path / "cfg" / "network-fallback"
+    mark = tmp_path / "xdg" / "aiforge" / "network-fallback"
     assert "reached the internet directly (1.1.1.1:open)" in mark.read_text()
-    assert "guard-check" in proc.stderr and (tmp_path / "cfg" / "run" / "guard-check.log").exists()
+    assert "guard-check" in proc.stderr and (tmp_path / "xdg" / "aiforge" / "guard-check.log").exists()
     # Remembered: the next plain run goes straight to isolated, no guard tried.
     (tmp_path / "docker.log").unlink()
     proc, calls = _run(tmp_path, [])
@@ -147,14 +159,55 @@ def test_a_timeout_is_not_blocked(tmp_path: Path):
 
 def test_a_box_that_stopped_itself_falls_back(tmp_path: Path):
     proc, calls = _run(tmp_path, [], probe="")
-    assert "stopped itself" in proc.stderr and "switching to the isolated network" in proc.stderr
+    assert "keeps restarting" in proc.stderr and "switching to the isolated network" in proc.stderr
+
+
+def test_the_guard_taking_hold_a_moment_late_is_not_a_failure(tmp_path: Path):
+    """The guard is healthy before the box exists and adds its rule on the next
+    loop: an early "open" must not count (this sent WSL to isolated)."""
+    proc, calls = _run(tmp_path, [], probes=["NET-OPEN 1.1.1.1:open", "NET-BLOCKED"])
+    assert proc.returncode == 0 and "guarded network verified" in proc.stdout, proc.stderr
+    assert not (tmp_path / "xdg" / "aiforge" / "network-fallback").exists()
+
+
+def test_no_route_out_is_not_a_failure(tmp_path: Path):
+    proc, calls = _run(tmp_path, [], probe="NET-NOROUTE")
+    assert proc.returncode == 0 and "no route to the internet" in proc.stderr
+    assert not [c for c in calls if "isolated.yml up" in c]
+
+
+def test_the_box_cannot_plant_the_fallback_note(tmp_path: Path):
+    """The note and the log live outside ~/.aiforge (the box writes there)."""
+    proc, _ = _run(tmp_path, [], probe="NET-OPEN 1.1.1.1:open")
+    assert not (tmp_path / "cfg" / "network-fallback").exists()
+    target = tmp_path / "victim"; target.write_text("keep")
+    note = tmp_path / "xdg" / "aiforge" / "network-fallback"
+    note.unlink(); note.symlink_to(target)
+    (tmp_path / "docker.log").unlink()
+    _run(tmp_path, ["--guarded"], probe="NET-BLOCKED")
+    _run(tmp_path, [], probe="NET-OPEN 1.1.1.1:open")
+    assert target.read_text() == "keep"
+
+
+def test_a_site_compose_file_stops_instead_of_switching(tmp_path: Path):
+    proc, calls = _run(tmp_path, [], {"COMPOSE_FILE": "site.yml"},
+                       running="guarded", probe="NET-OPEN 1.1.1.1:open")
+    assert proc.returncode != 0 and "COMPOSE_FILE is set" in proc.stderr
+    assert not (tmp_path / "xdg" / "aiforge" / "network-fallback").exists()
+
+
+def test_no_switch_when_isolated_could_not_start_either(tmp_path: Path):
+    proc, calls = _run(tmp_path, [], {"AIFORGE_REPOS_DIR": str(tmp_path)},
+                       running="guarded", probe="NET-OPEN 1.1.1.1:open")
+    assert proc.returncode != 0 and "isolated network cannot start either" in proc.stderr
+    assert not [c for c in calls if "isolated.yml up" in c]
 
 
 def test_asked_for_guarded_stops_instead_of_switching(tmp_path: Path):
     proc, calls = _run(tmp_path, ["--guarded"], probe="NET-OPEN 1.1.1.1:open")
     assert proc.returncode != 0 and "the box was stopped" in proc.stderr
     assert not [c for c in calls if "docker-compose.isolated.yml up" in c]
-    assert not (tmp_path / "cfg" / "network-fallback").exists()
+    assert not (tmp_path / "xdg" / "aiforge" / "network-fallback").exists()
     proc, _ = _run(tmp_path, ["--guarded"], guard="starting")
     assert proc.returncode != 0 and "firewall keeper" in proc.stderr
 

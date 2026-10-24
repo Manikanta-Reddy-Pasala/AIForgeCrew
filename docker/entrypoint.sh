@@ -100,11 +100,14 @@ if [[ "${AIFORGE_GUARDED:-0}" == 1 ]]; then
   _guarded=0
   for _i in $(seq 1 60); do
     # Only an immediate refusal (the guard's reject) counts — never a timeout.
-    if [[ "$("$_py" /opt/aiforge-src/docker/guard-probe.py 2>/dev/null)" == NET-BLOCKED ]]; then
-      _guarded=1; break
-    fi
+    _p="$("$_py" /opt/aiforge-src/docker/guard-probe.py 2>/dev/null)"
+    [[ "$_p" == NET-BLOCKED ]] && { _guarded=1; break; }
     sleep 2
   done
+  # No route out at all for the whole wait (offline, or a network still coming
+  # up at boot): nothing can leave now, and the guard has had two minutes to
+  # take hold — start.
+  [[ "$_guarded" != 1 && "$_p" == NET-NOROUTE ]] && _guarded=1
   if [[ "$_guarded" != 1 ]]; then
     echo "!! guarded network: this box can still reach the internet directly — not starting." \
          "See: docker logs aiforge-egress-guard" >&2

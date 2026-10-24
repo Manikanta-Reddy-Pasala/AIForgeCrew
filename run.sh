@@ -315,7 +315,9 @@ _in_box() {
 DOCKER_ACTION=up
 NET=""                                   # guarded | isolated: flags or AIFORGE_NETWORK
 _NET_FLAG=0
-_NET_FALLBACK="$AIFORGE_CONFIG_DIR/network-fallback"   # set when guarded cannot be enforced here
+# Host-only notes, outside everything mounted into the box (~/.aiforge is).
+_HOST_CFG="${XDG_CONFIG_HOME:-$HOME/.config}/aiforge"
+_NET_FALLBACK="$_HOST_CFG/network-fallback"   # set when guarded cannot be enforced here
 _MOUNT_ARGS=()
 _ORIG_ARGS=("$@")
 WITH_GRAPHIFY=0
@@ -552,6 +554,7 @@ if ! _in_box; then
       [[ -n "$why" ]] && break
     done
     [[ -z "$why" ]] && return 0
+    [[ "${1:-}" == check ]] && { echo "$why"; return 1; }
     if [[ "${1:-}" == warn ]]; then
       echo "!! the box can edit this checkout: $why — it could change what runs on" \
            "this machine at the next start. Run AIForge from a checkout outside every" \
@@ -665,19 +668,28 @@ EOF_SEED
     (( ok )) || { _guard_fallback "the firewall keeper (aiforge-egress-guard) did not become healthy"; }
     # The box's own probe (docker/guard-probe.py): only an immediate refusal —
     # the guard's reject — counts as blocked; a timeout means the packet left.
-    for i in $(seq 1 30); do
+    # The guard is healthy before the box exists and adds the box's rule on its
+    # next loop (~2 s), so an early "open" is not final: retry until blocked.
+    local st
+    for i in $(seq 1 "${AIFORGE_GUARD_PROBE_TRIES:-20}"); do
       probe="$(docker exec aiforge sh -c '"$(command -v python3 || command -v python3.12)" /opt/aiforge-src/docker/guard-probe.py' 2>/dev/null)"
-      [[ -n "$probe" ]] && break
-      # The box stops itself when it cannot confirm the block (entrypoint).
-      [[ "$(docker inspect aiforge --format '{{.State.Status}}' 2>/dev/null)" == exited ]] && { probe=EXITED; break; }
+      [[ "$probe" == NET-BLOCKED ]] && break
+      if [[ -z "$probe" ]]; then
+        # The box restarts itself while it cannot confirm the block (entrypoint).
+        st="$(docker inspect aiforge --format '{{.State.Status}}' 2>/dev/null)"
+        [[ "$st" == exited || "$st" == restarting ]] && probe=EXITED
+      fi
       sleep 2
     done
+    probe="$(printf '%s' "$probe" | tr -cd 'A-Za-z0-9.:,_ -' | cut -c1-120)"   # box output: plain text only
     case "$probe" in
-      NET-BLOCKED*)
+      NET-BLOCKED)
         rm -f "$_NET_FALLBACK"
         echo "==> guarded network verified (the internet only through the allowlist)" ;;
+      NET-NOROUTE) echo "!! guarded network: this machine has no route to the internet right now —" \
+                        "nothing to test; checked again at the next start." >&2 ;;
       NET-OPEN*) _guard_fallback "the box reached the internet directly (${probe#NET-OPEN })" ;;
-      EXITED) _guard_fallback "the box could not confirm the firewall blocks it and stopped itself" ;;
+      EXITED) _guard_fallback "the box could not confirm the firewall blocks it (it keeps restarting)" ;;
       *) echo "!! guarded network: could not probe the box (still starting?) — check: docker logs aiforge-egress-guard" >&2 ;;
     esac
   }
@@ -688,24 +700,38 @@ EOF_SEED
   # instead — remembered, so later runs here go straight to it. Asked for
   # explicitly (--guarded / AIFORGE_NETWORK=guarded): stop with the reason.
   _guard_fallback() {
-    local diag="$AIFORGE_CONFIG_DIR/run/guard-check.log" a args=()
-    mkdir -p "$AIFORGE_CONFIG_DIR/run"
-    { echo "== $(date '+%F %T') $1"; uname -a; wslinfo --networking-mode 2>/dev/null || true
-      docker info --format 'driver={{.CgroupDriver}} cgroup=v{{.CgroupVersion}} os={{.OperatingSystem}}'
-      docker exec aiforge-egress-guard sh -c 'iptables -V; iptables -S OUTPUT | grep AIFORGE; iptables -L AIFORGE_EGRESS -v -n'
-      docker logs aiforge-egress-guard --tail 30; docker logs aiforge --tail 30
-    } >>"$diag" 2>&1 || true
-    "${DC[@]}" down >/dev/null 2>&1 || "${DC[@]}" stop >/dev/null 2>&1 || true
-    if [[ "$_NET_FLAG" == 1 || "${AIFORGE_NETWORK:-}" == guarded ]]; then
-      _fatal "guarded network: $1 — the box was stopped (details: $diag)." \
-             "Without --guarded / AIFORGE_NETWORK=guarded, run.sh switches to --isolated here by itself."
+    local diag="$_HOST_CFG/guard-check.log" iso_block="" a args=()
+    if [[ ! -L "$_HOST_CFG" ]] && mkdir -p "$_HOST_CFG" 2>/dev/null; then
+      rm -f "$diag.tmp"
+      { echo "== $(date '+%F %T') $1"; uname -a; wslinfo --networking-mode 2>/dev/null || true
+        docker info --format 'driver={{.CgroupDriver}} cgroup=v{{.CgroupVersion}} os={{.OperatingSystem}}'
+        docker exec aiforge-egress-guard sh -c 'iptables -V; iptables -S OUTPUT | grep AIFORGE; iptables -L AIFORGE_EGRESS -v -n'
+        docker logs aiforge-egress-guard --tail 30; docker logs aiforge --tail 30
+      } >"$diag.tmp" 2>&1 || true
+      mv -f "$diag.tmp" "$diag" 2>/dev/null || true
     fi
-    printf '%s %s\n' "$(date '+%F %T')" "$1" > "$_NET_FALLBACK"
+    "${DC[@]}" down >/dev/null 2>&1 || "${DC[@]}" stop >/dev/null 2>&1 || true
+    if docker inspect aiforge >/dev/null 2>&1; then
+      docker rm -f aiforge >/dev/null 2>&1 || true
+      docker inspect aiforge >/dev/null 2>&1 && _fatal \
+        "guarded network: $1 — and the box could NOT be stopped. Stop it now: docker rm -f aiforge"
+    fi
+    # Isolated would refuse here anyway (the box would see this checkout).
+    iso_block="$(_refuse_box_sees_checkout check)" || true
+    if [[ "$_NET_FLAG" == 1 || "${AIFORGE_NETWORK:-}" == guarded || -n "${COMPOSE_FILE:-}" || -n "$iso_block" ]]; then
+      _fatal "guarded network: $1 — the box was stopped (details: $diag)." \
+             "${iso_block:+The isolated network cannot start either: $iso_block. }${COMPOSE_FILE:+COMPOSE_FILE is set, which --isolated cannot use. }Without these, run.sh switches to --isolated by itself."
+    fi
+    if [[ ! -L "$_NET_FALLBACK" ]]; then
+      printf '%s %s\n' "$(date '+%F %T')" "$1" > "$_NET_FALLBACK" 2>/dev/null || true
+    fi
     echo "!! guarded network: $1 — this machine cannot keep the box off the internet that way." >&2
     echo "==> switching to the isolated network (stricter); later runs here use it too." \
          "Details: $diag. Retry guarded: ./run.sh --guarded" >&2
     for a in ${_ORIG_ARGS[@]+"${_ORIG_ARGS[@]}"}; do [[ "$a" == --guarded ]] || args+=("$a"); done
-    exec bash "$PWD/run.sh" --isolated ${args[@]+"${args[@]}"}
+    # The note makes the default isolated — not "asked for", so nothing else changes.
+    [[ -f "$_NET_FALLBACK" ]] || export AIFORGE_NETWORK=isolated
+    exec bash "$PWD/run.sh" ${args[@]+"${args[@]}"}
   }
 
   _write_isolated_conf() {
@@ -827,7 +853,7 @@ EOF_SEED
         if [[ "$DOCKER_ACTION" != up || $TEST -eq 1 || -n "${MAINT:-}" ]] \
            && [[ "$_running_mode" == isolated ]]; then
           NET=isolated                    # stop / logs / shell / one-offs: the box that runs
-        elif [[ -f "$_NET_FALLBACK" ]]; then
+        elif [[ -f "$_NET_FALLBACK" && -z "${COMPOSE_FILE:-}" ]]; then
           NET=isolated                    # guarded could not be enforced here (remembered)
           [[ "$DOCKER_ACTION" != up ]] || echo "==> isolated network: guarded mode could not be" \
             "enforced on this machine ($(cut -c1-160 "$_NET_FALLBACK")). Retry: ./run.sh --guarded" >&2
@@ -966,7 +992,8 @@ EOF_SEED
   # Host half of keep-awake (scripts/awake-bridge.sh): the box cannot hold
   # this machine's power assertion itself, so a run in flight writes a
   # heartbeat file into the mounted config dir and this holds it for the box.
-  _AWAKE_PID="$AIFORGE_CONFIG_DIR/run/awake-bridge.pid"
+  # Its pid and log are kept host-side (~/.aiforge is the box's to write).
+  _AWAKE_PID="$_HOST_CFG/awake-bridge.pid"; _AWAKE_LOG="$_HOST_CFG/awake-bridge.log"
   _stop_awake_bridge() {
     if [[ -f "$_AWAKE_PID" ]]; then
       local _p; _p="$(cat "$_AWAKE_PID" 2>/dev/null)"
@@ -981,9 +1008,9 @@ EOF_SEED
   _start_awake_bridge() {
     [[ "${AIFORGE_KEEP_AWAKE:-1}" =~ ^(0|false|no)$ ]] && return 0
     _stop_awake_bridge
-    mkdir -p "$AIFORGE_CONFIG_DIR/run"
+    mkdir -p "$AIFORGE_CONFIG_DIR/run" "$_HOST_CFG"
     nohup "$PWD/scripts/awake-bridge.sh" "$AIFORGE_CONFIG_DIR/run/keep-awake" aiforge \
-      >>"$AIFORGE_CONFIG_DIR/run/awake-bridge.log" 2>&1 </dev/null &
+      >>"$_AWAKE_LOG" 2>&1 </dev/null &
     echo $! >"$_AWAKE_PID"
   }
 

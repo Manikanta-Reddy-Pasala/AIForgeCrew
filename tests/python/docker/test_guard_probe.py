@@ -28,6 +28,7 @@ def _run(monkeypatch, capsys, v4, v6):
     (ConnectionRefusedError(), ConnectionRefusedError(), "NET-BLOCKED"),
     (ConnectionRefusedError(), OSError(errno.ENETUNREACH, "no route"), "NET-BLOCKED"),
     (ConnectionRefusedError(), OSError(errno.EADDRNOTAVAIL, "no v6"), "NET-BLOCKED"),
+    (OSError(errno.ENETUNREACH, "x"), OSError(errno.EADDRNOTAVAIL, "y"), "NET-NOROUTE"),
     (None, ConnectionRefusedError(), "NET-OPEN 1.1.1.1:open"),
     (socket.timeout(), ConnectionRefusedError(), "NET-OPEN 1.1.1.1:timeout"),
     (OSError(errno.EHOSTUNREACH, "icmp from upstream"), ConnectionRefusedError(),
