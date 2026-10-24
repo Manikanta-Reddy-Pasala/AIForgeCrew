@@ -89,11 +89,39 @@ def test_isolated_selects_the_isolated_base_file(tmp_path: Path):
     assert "-f docker-compose.yml" not in up[0]
 
 
-def test_the_default_run_is_unchanged(tmp_path: Path):
+def test_isolated_is_the_default(tmp_path: Path):
+    """Plain ./run.sh: the allowlist sandbox."""
     _proc, calls = _run(tmp_path, [])
     up = [c for c in calls if " up " in f" {c} "]
     assert up, calls
-    assert "docker-compose.isolated.yml" not in up[0]
+    assert "-f docker-compose.isolated.yml" in up[0]
+
+
+def test_open_shares_this_machines_network(tmp_path: Path):
+    for args, env in (([ "--open"], {}), ([], {"AIFORGE_NETWORK": "open"})):
+        proc, calls = _run(tmp_path, args, env)
+        up = [c for c in calls if " up " in f" {c} "]
+        assert up and "docker-compose.isolated.yml" not in up[0], (args, env)
+        assert "open network (--open)" in proc.stderr
+
+
+def test_a_site_compose_file_is_used_as_is(tmp_path: Path):
+    proc, calls = _run(tmp_path, [], {"COMPOSE_FILE": "site.yml"})
+    up = [c for c in calls if " up " in f" {c} "]
+    assert up and "docker-compose.isolated.yml" not in up[0]
+    assert "COMPOSE_FILE is set" in proc.stderr
+
+
+def test_first_start_seeds_the_package_registries(tmp_path: Path):
+    """The box must be able to install itself; only the registries run.sh
+    installs from are seeded (once — Settings owns the list after that)."""
+    proc, _ = _run(tmp_path, [], {"AIFORGE_NPM_REGISTRY": "https://npm.corp.example/api/npm/",
+                                  "UV_DEFAULT_INDEX": "https://u:p@pypi.corp.example:8443/simple",
+                                  "AIFORGE_EGRESS_ALLOW_HOSTS": ""})   # conftest sets one
+    out = proc.stdout + proc.stderr
+    assert "first start: npm.corp.example,pypi.corp.example" in out
+    proc, _ = _run(tmp_path, [], {"AIFORGE_EGRESS_ALLOW_HOSTS": "only.example"})
+    assert "first start: only.example" in proc.stdout + proc.stderr
 
 
 def test_nothing_about_the_boundary_is_written_where_the_box_can_write(tmp_path: Path):
@@ -245,8 +273,8 @@ def test_isolated_refuses_a_checkout_the_box_can_see(tmp_path: Path):
     assert proc.returncode != 0
     assert "would see its own boundary" in proc.stderr
     assert not [c for c in calls if " up " in f" {c} "]
-    proc, calls = _run(tmp_path, [], {"AIFORGE_REPOS_DIR": str(tmp_path)})
-    assert "the box can edit this checkout" in proc.stderr          # default mode: warns
+    proc, calls = _run(tmp_path, ["--open"], {"AIFORGE_REPOS_DIR": str(tmp_path)})
+    assert "the box can edit this checkout" in proc.stderr          # open mode: warns
     assert [c for c in calls if " up " in f" {c} "]
 
 

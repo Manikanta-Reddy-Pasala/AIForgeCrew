@@ -94,7 +94,7 @@ The sandbox is an Ubuntu 24.04 container. That is the only mode.
 - **Command** — `aiforge`, or `./run.sh` from a checkout
 - **What the agent can touch** — everything **inside** the box; of this machine only `~/.aiforge` plus folders you approve
 - **Rights** — full: your uid + passwordless sudo, no workspace jail
-- **Network** — outbound open (a checkout's `./run.sh --isolated` closes it)
+- **Network** — isolated by default: everything the agent runs reaches only the hosts on Settings → Egress allowlist (`./run.sh --open` shares this machine's network instead)
 
 ## First run: what gets installed
 
@@ -144,7 +144,8 @@ git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew.git && cd AIForg
 ./run.sh --stop           # stop it (keeps what the agent installed, until a rebuild)
 ./run.sh --repos ~/code   # mount YOUR projects folder as the box's project root
 ./run.sh --mount /srv/x   # also mount /srv/x (repeatable)
-./run.sh --isolated       # no route out except an allowlist proxy
+./run.sh                  # isolated network (default): only the allowlist gets out
+./run.sh --open           # share this machine's network (no allowlist)
 ./run.sh --port 9000      # any other flag is passed to the run.sh inside the box
 ```
 
@@ -217,12 +218,18 @@ and is never written to — the environment wins. Catalogue: `.env.example`.
 `docker volume rm <project>_aiforge-state` (`<project>` is the checkout's folder name; `aiforge` for the binary's box) only forces a reinstall — your data
 is in `~/.aiforge`, never in a volume.
 
-## Isolated network (`--isolated`)
+## Isolated network (the default; `--open` turns it off)
 
-By default the box shares this machine's network stack, so the allowlist in
+With `--open` the box shares this machine's network stack, so the allowlist in
 `aiforge_core/net/egress.py` governs only *declared* destinations (Jira,
 GitLab, SMTP, MCP, telemetry) and page fetches — a `curl` in the agent's shell
-never passes through it. `--isolated` moves the boundary into the network:
+never passes through it. The default (isolated) moves the boundary into the
+network. The first start seeds the allowlist with the package registries run.sh
+installs from (npm, PyPI index), so the box can install itself; everything else
+is yours to add in Settings. **Upgrading an install that ran open:** move the
+checkout out of any folder mounted into the box (isolated refuses to start
+otherwise) and make sure the model listens where docker can reach it — or keep
+`--open` until then.
 
 - **Replaces the compose base**, not an overlay: it selects
   `docker-compose.isolated.yml` *instead of* `docker-compose.yml`, because
@@ -417,7 +424,8 @@ in the real environment, which **overrides** the file. `.env` is not read.
 |---|---|
 | `--port N` / `--host H` | change the bind (off-loopback needs `AIFORGE_API_TOKEN`) |
 | `--dev` | uvicorn hot reload |
-| `--isolated` | internal network, all egress through the allowlist proxy |
+| `--isolated` | (default) internal network, all egress through the allowlist |
+| `--open` | share this machine's network: no allowlist for what the agent runs |
 | `--stop` / `--logs` / `--shell` | stop, follow, or open a shell in the sandbox |
 | `--repos DIR` | mount your projects folder (default `~/.aiforge/repos`) |
 | `--mount DIR` | approve and mount another host folder; repeatable |

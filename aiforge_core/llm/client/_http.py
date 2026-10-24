@@ -203,9 +203,29 @@ def _post_ctx(ep: Endpoint):
     return _ssl_context_for(base)
 
 
+def _proxy_for(url: str) -> "tuple[str, int] | None":
+    """The HTTP(S) proxy the environment says ``url`` goes through (the
+    http_proxy / https_proxy / no_proxy rules urllib applies), or None. In
+    the isolated sandbox that proxy is the only way out."""
+    from urllib.parse import urlparse
+    from urllib.request import getproxies, proxy_bypass
+    p = urlparse(url)
+    proxy = getproxies().get(p.scheme)
+    if not proxy or not p.hostname:
+        return None
+    try:
+        if proxy_bypass(p.hostname):
+            return None
+    except Exception:  # noqa: BLE001 — a lookup failure: decide by the env alone
+        pass
+    q = urlparse(proxy if "://" in proxy else "http://" + proxy)
+    return (q.hostname, q.port or 80) if q.hostname else None
+
+
 def _open_connection(ep: Endpoint, url: str, timeout_s: int):
     """An http.client connection for ``url`` honouring the endpoint's TLS
-    context. Returns ``(conn, path)`` — ``path`` carries any query string."""
+    context and the environment's proxy. Returns ``(conn, path)`` — ``path``
+    carries any query string (the full URL for a plain-HTTP proxy)."""
     import http.client
     from urllib.parse import urlparse
     p = urlparse(url)
@@ -213,9 +233,18 @@ def _open_connection(ep: Endpoint, url: str, timeout_s: int):
     path = p.path or "/"
     if p.query:
         path += "?" + p.query
+    proxy = _proxy_for(url)
     if p.scheme == "https":
-        conn = http.client.HTTPSConnection(host, port, timeout=timeout_s,
-                                           context=_post_ctx(ep))
+        if proxy:
+            conn = http.client.HTTPSConnection(proxy[0], proxy[1], timeout=timeout_s,
+                                               context=_post_ctx(ep))
+            conn.set_tunnel(host, port)      # TLS (and SNI) to the real host
+        else:
+            conn = http.client.HTTPSConnection(host, port, timeout=timeout_s,
+                                               context=_post_ctx(ep))
+    elif proxy:
+        conn = http.client.HTTPConnection(proxy[0], proxy[1], timeout=timeout_s)
+        path = url                           # absolute-form for an HTTP proxy
     else:
         conn = http.client.HTTPConnection(host, port, timeout=timeout_s)
     return conn, path
@@ -503,8 +532,10 @@ def _preflight(base_url: str) -> None:
     skipped = _breaker.is_open(base_url)
     if skipped:
         raise ConnectionError(f"LLM endpoint unreachable ({host}:{port}): {skipped}")
+    # Through a proxy, the reachable thing to probe is the proxy itself.
+    probe = _proxy_for(base_url) or (host, port)
     try:
-        _socket.create_connection((host, port), timeout=ct).close()
+        _socket.create_connection(probe, timeout=ct).close()
     except OSError as exc:
         # This probe is connect-ONLY, so every failure here is a connect
         # failure — including the bare TimeoutError a sleeping host produces,

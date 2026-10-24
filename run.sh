@@ -28,12 +28,14 @@
 #                project root; default ~/.aiforge/repos (or AIFORGE_REPOS_DIR)
 #   --mount DIR  also mount DIR into the sandbox (same path); repeatable, and
 #                remembered in ~/.aiforge/mounts.list — the list Settings edits
-#   --isolated   put the box on an INTERNAL docker network with no route out:
-#                every outbound request goes through a proxy that only allows
-#                AIFORGE_EGRESS_ALLOW_HOSTS, so the allowlist is enforced by the
-#                network rather than only by AIForge's own code. The UI is
-#                published through a small proxy; the model endpoint is then
-#                reached as host.docker.internal, not 127.0.0.1
+#   (default)    the box sits on an INTERNAL docker network with no route out:
+#                web, git, ssh, scp, rsync reach ONLY the hosts on the network
+#                allowlist (Settings → Egress allowlist; first start seeds the
+#                package registries). The UI is published through a small
+#                proxy; the model through a relay (it must listen where docker
+#                can reach it). Same as --isolated.
+#   --open       share this machine's network instead: no allowlist for what
+#                the agent runs (AIFORGE_NETWORK=open does the same)
 #   --skip-web   don't (re)build the web UI
 #   --test       probe the configured model endpoint, then exit
 #   --admin      this box is THE memory admin (exactly one per fleet); it
@@ -325,7 +327,8 @@ while [[ $# -gt 0 ]]; do
     --shell) DOCKER_ACTION=shell ;;
     --repos) AIFORGE_REPOS_DIR="${2:-}"; shift ;;
     --mount) _MOUNT_ARGS+=("${2:-}"); shift ;;
-    --isolated) ISOLATED=1 ;;
+    --isolated) ISOLATED=1 ;;                     # the default in docker mode
+    --open) ISOLATED=0 ;;                          # share this machine's network (no allowlist)
     --lite|--hybrid|--no-build) : ;;                 # legacy no-ops
     --migrate) MIGRATE=1 ;;
     --dedupe) MAINT=dedupe ;;
@@ -654,8 +657,22 @@ if ! _in_box; then
       esac
       export AIFORGE_UI_HOSTS
     fi
-    echo "==> isolated network: model via relay -> $host:$port; anything else only to" \
-         "hosts on the network allowlist (first start: ${AIFORGE_EGRESS_ALLOW_HOSTS:-none})"
+    # First start: the box must be able to install itself, so the package
+    # registries run.sh installs from seed the allowlist (once — after that
+    # Settings owns it, and they can be removed there).
+    if [[ -z "${AIFORGE_EGRESS_ALLOW_HOSTS:-}" ]]; then
+      local _r _h _seed=""
+      for _r in "${npm_config_registry:-${AIFORGE_NPM_REGISTRY:-}}" \
+                "${UV_DEFAULT_INDEX:-${UV_INDEX_URL:-${PIP_INDEX_URL:-}}}" \
+                "$(sed -n '/^\[\[tool\.uv\.index\]\]/,/^\[/s/^url *= *"\(.*\)"/\1/p' pyproject.toml 2>/dev/null | head -1)"; do
+        _h="${_r#*://}"; _h="${_h%%/*}"; _h="${_h##*@}"; _h="${_h%%:*}"
+        [[ -n "$_h" && ",$_seed," != *",$_h,"* ]] && _seed="${_seed:+$_seed,}$_h"
+      done
+      export AIFORGE_EGRESS_ALLOW_HOSTS="$_seed"
+    fi
+    echo "==> isolated network (the default; --open shares this machine's network instead):" \
+         "model via relay -> $host:$port; anything else only to hosts on the allowlist" \
+         "(Settings → Egress allowlist; first start: ${AIFORGE_EGRESS_ALLOW_HOSTS:-none})"
   }
 
   # The box is built for YOU: files the agent writes into ~/.aiforge stay yours.
@@ -667,6 +684,27 @@ if ! _in_box; then
   # project root (docker/compose.repos.yml). Nothing else of the host is added.
   # Compose files: COMPOSE_FILE (a site override) or the default, plus ours.
   # Passing any -f makes compose ignore COMPOSE_FILE, so it is folded in here.
+  # Isolated is the DEFAULT: the box reaches only the hosts on the Settings
+  # allowlist. --open (or AIFORGE_NETWORK=open) shares this machine's
+  # network instead — anything the agent runs can then reach any site.
+  if [[ -z "${ISOLATED:-}" ]]; then
+    case "${AIFORGE_NETWORK:-}" in
+      open) ISOLATED=0 ;;
+      isolated) ISOLATED=1 ;;
+      *)
+        if [[ -n "${COMPOSE_FILE:-}" ]]; then
+          ISOLATED=0                      # a site compose file is its own base
+          echo "==> COMPOSE_FILE is set: using it as the base (not the isolated network)." >&2
+        elif [[ "$DOCKER_ACTION" != up ]] && [[ "$(docker inspect aiforge \
+              --format '{{.HostConfig.NetworkMode}}' 2>/dev/null)" == host ]]; then
+          ISOLATED=0                      # stop / logs / shell the box that is running
+        else
+          ISOLATED=1
+        fi ;;
+    esac
+  fi
+  [[ "$ISOLATED" == 0 && "$DOCKER_ACTION" == up ]] && echo "==> open network (--open): the" \
+    "box shares this machine's network; commands the agent runs can reach any site." >&2
   _cfiles=()
   if [[ -n "${COMPOSE_FILE:-}" ]]; then IFS=':' read -ra _cfiles <<< "$COMPOSE_FILE"
   elif [[ "${ISOLATED:-0}" == 1 ]]; then _cfiles=(docker-compose.isolated.yml)
@@ -676,7 +714,7 @@ if ! _in_box; then
   # so the isolated shape has to be the base file itself.
   if [[ "${ISOLATED:-0}" == 1 ]]; then
     [[ -z "${COMPOSE_FILE:-}" ]] || _fatal \
-      "--isolated cannot be combined with COMPOSE_FILE: both are base files."
+      "--isolated cannot be combined with COMPOSE_FILE: both are base files (use --open with a site file)."
     _write_isolated_conf
     export AIFORGE_HOST="$HOST" AIFORGE_PORT="$PORT"
   fi

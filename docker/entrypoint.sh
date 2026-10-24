@@ -83,6 +83,15 @@ SSHCONF
 elif [[ "${AIFORGE_ISOLATED:-0}" == 1 ]]; then
   echo "!! isolated network: /etc/ssh/ssh_config.d is missing — ssh out will not work" >&2
 fi
+# Isolated: the model "on this machine" (http://127.0.0.1:PORT or
+# host.docker.internal:PORT, as the setup page says) is the model relay — the
+# box's own loopback forwards there, so the URL set in Settings keeps working.
+if [[ "${AIFORGE_ISOLATED:-0}" == 1 && -n "${AIFORGE_MODEL_LISTEN:-}" ]]; then
+  _py="${_py:-$(command -v python3 || command -v python3.12 || echo python3)}"
+  setpriv --reuid "${APP_UID:-1000}" --regid "${APP_GID:-1000}" --clear-groups \
+    "$_py" /opt/aiforge-src/docker/box-loopback-relay.py \
+    "$AIFORGE_MODEL_LISTEN" "model:$AIFORGE_MODEL_LISTEN" </dev/null >/dev/null 2>&1 &
+fi
 
 # Inside the box there is nothing to protect from the agent: full rights, no
 # workspace jail. run.sh's own host-permission fixes do not apply here.

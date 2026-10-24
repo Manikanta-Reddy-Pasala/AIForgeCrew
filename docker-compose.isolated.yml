@@ -1,4 +1,5 @@
-# AIForge — ISOLATED NETWORK mode: `./run.sh --isolated`.
+# AIForge — ISOLATED NETWORK mode: the default `./run.sh` (`--isolated` too;
+# `--open` selects docker-compose.yml instead).
 #
 # The default `docker-compose.yml` runs the box with `network_mode: host`: it
 # shares this machine's network stack, so the egress allowlist in
@@ -53,6 +54,11 @@ services:
     container_name: aiforge
     restart: unless-stopped
     networks: [box]
+    # "This machine" inside the box is the box's loopback, where a forwarder
+    # passes the model port to the model relay (docker/box-loopback-relay.py):
+    # http://host.docker.internal:1234/v1 keeps meaning "my model".
+    extra_hosts:
+      - "host.docker.internal:127.0.0.1"
     # No raw sockets: no forged packets on the box network. No IPv6: the
     # internal bridge's link-local addresses would reach this machine.
     cap_drop: [NET_RAW]
@@ -72,6 +78,7 @@ services:
       - AIFORGE_DEFAULT_BASE_URL=${AIFORGE_BOX_LM_URL:-http://model:1234/v1}
       - AIFORGE_OPENAI_COMPAT_BASE_URL=${AIFORGE_BOX_LM_URL:-http://model:1234/v1}
       - AIFORGE_ISOLATED=1
+      - AIFORGE_MODEL_LISTEN=${AIFORGE_MODEL_LISTEN:-1234}
       # Settings shows the list (read-only) and links to its editor.
       - AIFORGE_EGRESS_POLICY_RO=/var/lib/aiforge-egress
       - AIFORGE_API_TOKEN
@@ -91,8 +98,8 @@ services:
       - https_proxy=http://egress:8888
       - HTTP_PROXY=http://egress:8888
       - HTTPS_PROXY=http://egress:8888
-      - no_proxy=localhost,127.0.0.1,aiforge,egress,ui,model,ssh-egress
-      - NO_PROXY=localhost,127.0.0.1,aiforge,egress,ui,model,ssh-egress
+      - no_proxy=localhost,127.0.0.1,host.docker.internal,aiforge,egress,ui,model,ssh-egress
+      - NO_PROXY=localhost,127.0.0.1,host.docker.internal,aiforge,egress,ui,model,ssh-egress
       # ssh / scp / rsync / git@… leave through the SSH exit (entrypoint sets
       # the ProxyCommand when AIFORGE_ISOLATED=1).
       - AIFORGE_SSH_PROXY=ssh-egress:8889
