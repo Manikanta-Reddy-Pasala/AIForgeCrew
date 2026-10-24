@@ -20,6 +20,11 @@ On the home page (**Settings → Agent**), in the **Models** card:
 1. Paste your model server's address into **Base URL**:
    - LM Studio on this computer: `http://127.0.0.1:1234/v1` on Linux,
      `http://host.docker.internal:1234/v1` on macOS/Windows
+
+   In the sandbox (the default), the model is reached through a relay: a model
+   on this computer must listen where Docker can reach it (LM Studio: "Serve on
+   local network"; Ollama: `OLLAMA_HOST=0.0.0.0`). A model on another machine
+   or in the cloud: add its host in Settings → Egress allowlist.
    - Ollama, vLLM, OpenRouter, Groq, a cloud endpoint: its `/v1` URL (plus **API key** if it needs one)
 2. Press **🔍 Identify models from URL** and click the model you want, or type
    its **Model id** and press **+ Add model**.

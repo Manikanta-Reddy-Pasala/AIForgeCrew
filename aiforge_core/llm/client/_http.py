@@ -203,6 +203,20 @@ def _post_ctx(ep: Endpoint):
     return _ssl_context_for(base)
 
 
+def _proxy_auth(url: str) -> "dict":
+    """``Proxy-Authorization`` for the proxy ``url`` goes through, when that
+    proxy URL carries user:password (a corporate proxy); else {}."""
+    import base64
+    from urllib.parse import unquote, urlparse
+    from urllib.request import getproxies
+    proxy = getproxies().get(urlparse(url).scheme) or ""
+    q = urlparse(proxy if "://" in proxy else "http://" + proxy)
+    if not q.username:
+        return {}
+    cred = f"{unquote(q.username)}:{unquote(q.password or '')}".encode()
+    return {"Proxy-Authorization": "Basic " + base64.b64encode(cred).decode()}
+
+
 def _proxy_for(url: str) -> "tuple[str, int] | None":
     """The HTTP(S) proxy the environment says ``url`` goes through (the
     http_proxy / https_proxy / no_proxy rules urllib applies), or None. In
@@ -238,13 +252,22 @@ def _open_connection(ep: Endpoint, url: str, timeout_s: int):
         if proxy:
             conn = http.client.HTTPSConnection(proxy[0], proxy[1], timeout=timeout_s,
                                                context=_post_ctx(ep))
-            conn.set_tunnel(host, port)      # TLS (and SNI) to the real host
+            conn.set_tunnel(host, port, headers=_proxy_auth(url) or None)  # TLS + SNI to the real host
         else:
             conn = http.client.HTTPSConnection(host, port, timeout=timeout_s,
                                                context=_post_ctx(ep))
     elif proxy:
         conn = http.client.HTTPConnection(proxy[0], proxy[1], timeout=timeout_s)
         path = url                           # absolute-form for an HTTP proxy
+        auth = _proxy_auth(url)
+        if auth:                             # sent with the request by putheader
+            _orig = conn.putrequest
+
+            def _putrequest(*a, **k):
+                _orig(*a, **k)
+                for key, val in auth.items():
+                    conn.putheader(key, val)
+            conn.putrequest = _putrequest
     else:
         conn = http.client.HTTPConnection(host, port, timeout=timeout_s)
     return conn, path
@@ -541,7 +564,8 @@ def _preflight(base_url: str) -> None:
         # failure — including the bare TimeoutError a sleeping host produces,
         # which the generic classifier could not tell from a read timeout.
         _breaker.record_failure(base_url, str(exc))
+        via = (f" via the proxy {probe[0]}:{probe[1]}" if probe != (host, port) else "")
         raise ConnectionError(
-            f"LLM endpoint unreachable ({host}:{port}) within {ct:g}s "
+            f"LLM endpoint unreachable ({host}:{port}){via} within {ct:g}s "
             f"connect budget: {exc}") from exc
     _breaker.record_success(base_url)

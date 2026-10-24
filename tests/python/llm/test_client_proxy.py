@@ -65,3 +65,14 @@ def test_preflight_probes_the_proxy(monkeypatch):
     monkeypatch.setattr(endpoint_breaker, "record_success", lambda url: None)
     H._preflight("https://api.example.com/v1")
     assert seen == [("egress", 8888)]
+
+
+def test_proxy_credentials_are_sent(monkeypatch):
+    monkeypatch.setenv("https_proxy", "http://bob:s%40cret@corp-proxy:3128")
+    monkeypatch.setenv("no_proxy", "")
+    monkeypatch.setattr(H, "_post_ctx", lambda ep: None)
+    conn, _ = H._open_connection(_ep("https://api.example.com/v1"),
+                                 "https://api.example.com/v1/chat/completions", 5)
+    assert (conn.host, conn.port) == ("corp-proxy", 3128)
+    import base64
+    assert conn._tunnel_headers["Proxy-Authorization"] == "Basic " + base64.b64encode(b"bob:s@cret").decode()

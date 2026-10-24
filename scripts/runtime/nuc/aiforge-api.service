@@ -16,6 +16,11 @@ Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 # oneshot + RemainAfterExit: what actually serves the API is the container, kept
 # alive by its own `restart: unless-stopped`, not by systemd re-running this.
 # (It used to run the API on the host, which is why it needed to BE the process.)
+# The OPEN network, explicitly: this box serves the fleet as it always did.
+# The default became the isolated network (only the Settings allowlist gets
+# out); drop this line once this box's allowlist, model address and checkout
+# location are set up for it.
+Environment=AIFORGE_NETWORK=open
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=%h/AIForgeCrew/run.sh --host 0.0.0.0

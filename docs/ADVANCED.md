@@ -203,11 +203,11 @@ and is never written to — the environment wins. Catalogue: `.env.example`.
 | `AIFORGE_WORKSPACE_DIR` | — | clamps the chat agent's file scope |
 | `AIFORGE_APT_MIRROR` | archive.ubuntu.com | Ubuntu mirror (e.g. Artifactory's ubuntu remote) for the box's apt. Passed as the `APT_MIRROR` build arg **and** re-applied at every start, so the agent's own `apt-get` uses it too |
 | `AIFORGE_BASE_REGISTRY` | Docker Hub | prefix for the `ubuntu:24.04` base image (`BASE_REGISTRY` build arg) |
-| `AIFORGE_EGRESS_ALLOW_HOSTS` | — | CSV allowlist; under `--isolated` it SEEDS the network allowlist on first start, after that Settings owns it |
-| `AIFORGE_BOX_SUBNET`, `AIFORGE_OUT_SUBNET`, `AIFORGE_EGRESS_IP` | `10.251.250.0/24`, `10.251.251.0/24`, `10.251.251.250` | `--isolated` networks (the allowlist route refuses the box subnet and the proxy address) |
-| `AIFORGE_UI_HOSTS` | `localhost,127.0.0.1` (+ `--host`) | `--isolated`: the names the UI is opened by; the allowlist route refuses any other Host/Origin (DNS rebinding). Add your public name if you open the UI through one |
-| `AIFORGE_SSH_EGRESS`, `AIFORGE_SSH_PORTS` | `allowlist`, `22` | `--isolated`: SSH out (ssh/scp/rsync/git@) — only to allowlisted hosts (default), any host (`any`) or none (`off`), on these ports |
-| `AIFORGE_EGRESS_ADMIN_TOKEN` | — (off) | `--isolated`: when set, changing the allowlist needs it |
+| `AIFORGE_EGRESS_ALLOW_HOSTS` | — | CSV allowlist; in the sandbox (default) it SEEDS the network allowlist on first start (with the package registries, model hosts and configured integrations), after that Settings owns it |
+| `AIFORGE_BOX_SUBNET`, `AIFORGE_OUT_SUBNET`, `AIFORGE_EGRESS_IP` | `10.251.250.0/24`, `10.251.251.0/24`, `10.251.251.250` | sandbox networks (the allowlist route refuses the box subnet and the proxy address) |
+| `AIFORGE_UI_HOSTS` | `localhost,127.0.0.1` (+ `--host`) | sandbox: the names the UI is opened by; the allowlist route refuses any other Host/Origin (DNS rebinding). Add your public name if you open the UI through one |
+| `AIFORGE_SSH_EGRESS`, `AIFORGE_SSH_PORTS` | `allowlist`, `22` | sandbox: SSH out (ssh/scp/rsync/git@) — only to allowlisted hosts (default), any host (`any`) or none (`off`), on these ports |
+| `AIFORGE_EGRESS_ADMIN_TOKEN` | — (off) | sandbox: when set, changing the allowlist needs it |
 | `AIFORGE_EXTRAS` | — | optional Python extras |
 | `AIFORGE_CA_BUNDLE` | — | internal CA, PEM |
 | `AIFORGE_CODEGRAPH_REPOS` | — | CSV repo paths to pre-index (else on first use) |
@@ -229,7 +229,14 @@ installs from (npm, PyPI index), so the box can install itself; everything else
 is yours to add in Settings. **Upgrading an install that ran open:** move the
 checkout out of any folder mounted into the box (isolated refuses to start
 otherwise) and make sure the model listens where docker can reach it — or keep
-`--open` until then.
+`--open` until then (or put `AIFORGE_NETWORK=open` in aiforge.env / the
+systemd unit to keep it). The first start seeds the allowlist with what the
+install already uses (registries, model hosts not on this machine, the memory
+admin, Jira/Confluence/GitLab set by env); integrations configured only in
+Settings show as one-click "+ host" buttons on the allowlist card. Services
+on this machine other than the model (Langfuse, an MCP server, a second
+model port) are NOT reachable from the sandbox. The `aiforge` binary's own
+box still uses the open network.
 
 - **Replaces the compose base**, not an overlay: it selects
   `docker-compose.isolated.yml` *instead of* `docker-compose.yml`, because
@@ -283,7 +290,7 @@ GitLab, …). Without the registries the box cannot finish its first start.
 **Do not allowlist `host.docker.internal`:** that opens every port on this
 machine to the box (its own UI and API included), not just the model.
 
-Without `--isolated` the Settings card says so: the list then limits only
+With `--open` the Settings card says so: the list then limits only
 AIForge's own web tools, and a command the agent runs can reach any site.
 
 ## What the first run does
@@ -522,7 +529,7 @@ list: **[.env.example](../.env.example)**. Quick hits:
 AIFORGE_<ROLE>_PROVIDER / _MODEL / _BASE_URL   per-role model routing
 AIFORGE_WORKSPACE_DIR            clamp file/exec to one dir (security)
 AIFORGE_TOOL_POLICY              e.g. "run_command=ask,file_write=deny"
-AIFORGE_EGRESS_ALLOW_HOSTS       CSV allowlist; the --isolated proxy enforces it
+AIFORGE_EGRESS_ALLOW_HOSTS       CSV; seeds the sandbox's network allowlist on first start
 AIFORGE_CAVE_MODE                1 = lean context for small local models
 AIFORGE_PARALLEL_SUBTASKS(_MAX)  pipeline fan-out (default on, 4)
 AIFORGE_ARTIFACT_MERGE=0         turn off the duplicate-merge sweep
@@ -598,7 +605,7 @@ web/              React UI
 ## Security rails
 
 - **Workspace clamp** — `AIFORGE_WORKSPACE_DIR` confines file/exec to one dir.
-- **Network isolation** — `--isolated` enforces the egress allowlist at the network.
+- **Network isolation** — the default sandbox enforces the egress allowlist at the network (`--open` does not).
 - **Mount approval** — widening the box's view of the host needs host-side approval.
 - **Approval gate** — risky / `ask`-policy actions pause for Approve/Reject.
 - **Delete guard** — destructive deletes refused unless explicitly confirmed.

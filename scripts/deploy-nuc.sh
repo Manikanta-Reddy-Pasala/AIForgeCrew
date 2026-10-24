@@ -119,14 +119,16 @@ else
   # No apostrophe in the default: bash re-parses quotes inside ${x:-…}, and one
   # there opens a string that never closes — the whole script fails to parse.
   echo "==> up on ${HOST}:${PORT} (index: ${UV_DEFAULT_INDEX:-the one pyproject names})"
-  ./run.sh --host "$HOST" --port "$PORT" \
+  # The open network, explicitly (the default is now the isolated network);
+  # AIFORGE_NETWORK=isolated in the environment switches this box over.
+  AIFORGE_NETWORK="${AIFORGE_NETWORK:-open}" ./run.sh --host "$HOST" --port "$PORT" \
     || _fatal "./run.sh could not bring the sandbox up." \
               "Read the error above: a name conflict means a foreign '$BOX' container, an image build failure usually means the box cannot reach its package index."
 fi
 
 # ── health ────────────────────────────────────────────────────────────────
-# The port is the wrong thing to watch: with network_mode: host the box binds
-# it only once the API is actually serving, and a first start installs its
+# The port is the wrong thing to watch: the box (network_mode: host when open,
+# behind the ui proxy when isolated) serves it only once the API is actually serving, and a first start installs its
 # dependencies first — minutes, not seconds. So poll the endpoint itself.
 echo "==> waiting up to ${WAIT}s for /api/health on :$PORT"
 deadline=$(( $(date +%s) + WAIT ))

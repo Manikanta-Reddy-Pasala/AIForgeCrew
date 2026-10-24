@@ -59,7 +59,7 @@ def test_docker_mode_passes_the_role_flags_into_the_sandbox(tmp_path: Path):
     fake.write_text(f'#!/bin/sh\necho "$* | RUN_ARGS=$AIFORGE_RUN_ARGS | UID=$AIFORGE_UID" >> "{log}"\nexit 0\n')
     fake.chmod(0o755)
     proc = _run(tmp_path, ["--admin", "--port", "9001"],
-                {"AIFORGE_IN_SANDBOX": "0",   # force the sandbox branch: the
+                {"AIFORGE_IN_SANDBOX": "0", "AIFORGE_NETWORK": "open",   # force the sandbox branch: the
                  # suite itself runs in a container, where detection would
                  # otherwise take the in-box path.
                  "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"})
@@ -82,7 +82,7 @@ def test_repos_mounts_your_folder_and_is_not_passed_inward(tmp_path: Path):
     code = tmp_path / "code"
     code.mkdir()
     proc = _run(tmp_path, ["--repos", str(code), "--dev"],
-                {"AIFORGE_IN_SANDBOX": "0",   # force the sandbox branch: the
+                {"AIFORGE_IN_SANDBOX": "0", "AIFORGE_NETWORK": "open",   # force the sandbox branch: the
                  # suite itself runs in a container, where detection would
                  # otherwise take the in-box path.
                  "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"})
@@ -100,7 +100,7 @@ def test_repos_must_be_a_folder(tmp_path: Path):
     (bindir / "docker").write_text("#!/bin/sh\nexit 0\n")
     (bindir / "docker").chmod(0o755)
     proc = _run(tmp_path, ["--repos", str(tmp_path / "nope")],
-                {"AIFORGE_IN_SANDBOX": "0",   # force the sandbox branch: the
+                {"AIFORGE_IN_SANDBOX": "0", "AIFORGE_NETWORK": "open",   # force the sandbox branch: the
                  # suite itself runs in a container, where detection would
                  # otherwise take the in-box path.
                  "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"})
@@ -123,7 +123,7 @@ def test_docker_mode_is_the_default(tmp_path: Path):
             # Nothing selects the sandbox any more — it is what you get. Forced
             # to "0" because this suite runs INSIDE a container, where bare
             # detection would take the in-box path and never call docker.
-            "AIFORGE_IN_SANDBOX": "0"}
+            "AIFORGE_IN_SANDBOX": "0", "AIFORGE_NETWORK": "open"}
     subprocess.run(["bash", str(dst)], cwd=str(tmp_path), capture_output=True,
                    text=True, env=full, timeout=60)
     assert "compose up -d --build" in log.read_text()

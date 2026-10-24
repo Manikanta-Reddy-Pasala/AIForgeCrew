@@ -315,6 +315,7 @@ _in_box() {
   [[ -f /.dockerenv || -f /run/.containerenv ]]
 }
 DOCKER_ACTION=up
+ISOLATED=""                              # only flags or AIFORGE_NETWORK set it
 _MOUNT_ARGS=()
 _ORIG_ARGS=("$@")
 WITH_GRAPHIFY=0
@@ -524,6 +525,7 @@ if ! _in_box; then
   docker info >/dev/null 2>&1 \
     || _fatal "cannot talk to the Docker daemon as $(id -un 2>/dev/null || id -u)." \
               "Add yourself to the docker group (sudo usermod -aG docker \$USER, then log in again)."
+  DC_BASE=("${DC[@]}")                    # compose without our -f files (mode switch)
 
   # Config for --isolated: the proxy that IS the egress boundary, and the UI
   # proxy that publishes the port the box itself cannot. Written from the same
@@ -612,7 +614,29 @@ if ! _in_box; then
     # The model is reached through the `model` relay, never the proxy: the box
     # gets http://model:PORT/..., the relay gets your real endpoint. A loopback
     # endpoint is this machine's, which the relay reaches as host.docker.internal.
-    local u="${AIFORGE_LM_BASE_URL:-http://127.0.0.1:1234/v1}" scheme rest hostport path host port
+    # The model the box will really use: the one set in Settings → Models
+    # (stored per role; the chat role first), else AIFORGE_LM_BASE_URL.
+    local _models=""
+    if command -v python3 >/dev/null 2>&1; then
+      _models="$(python3 - "$AIFORGE_CONFIG_DIR/security/agent_config.json" <<'PY' 2>/dev/null
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+order = ["chat", "_default"] + [k for k in d if k not in ("chat", "_default")]
+seen = []
+for k in order:
+    r = d.get(k)
+    u = r.get("base_url") if isinstance(r, dict) else None
+    if u and u not in seen:
+        seen.append(u)
+print("\n".join(seen))
+PY
+)"
+    fi
+    local u="${_models%%$'\n'*}"; [[ -n "$u" ]] || u="${AIFORGE_LM_BASE_URL:-http://127.0.0.1:1234/v1}"
+    local scheme rest hostport path host port
     scheme="${u%%://*}"; [[ "$scheme" == "$u" ]] && scheme=http
     scheme="$(printf '%s' "$scheme" | tr '[:upper:]' '[:lower:]')"
     rest="${u#*://}"; hostport="${rest%%/*}"; hostport="${hostport%%\?*}"
@@ -660,16 +684,39 @@ if ! _in_box; then
     # First start: the box must be able to install itself, so the package
     # registries run.sh installs from seed the allowlist (once — after that
     # Settings owns it, and they can be removed there).
+    # Also what this install already talks to: every model host that is not
+    # this machine, the memory admin, the integrations configured by env.
     if [[ -z "${AIFORGE_EGRESS_ALLOW_HOSTS:-}" ]]; then
       local _r _h _seed=""
-      for _r in "${npm_config_registry:-${AIFORGE_NPM_REGISTRY:-}}" \
-                "${UV_DEFAULT_INDEX:-${UV_INDEX_URL:-${PIP_INDEX_URL:-}}}" \
-                "$(sed -n '/^\[\[tool\.uv\.index\]\]/,/^\[/s/^url *= *"\(.*\)"/\1/p' pyproject.toml 2>/dev/null | head -1)"; do
-        _h="${_r#*://}"; _h="${_h%%/*}"; _h="${_h##*@}"; _h="${_h%%:*}"
-        [[ -n "$_h" && ",$_seed," != *",$_h,"* ]] && _seed="${_seed:+$_seed,}$_h"
-      done
+      local _idx="${UV_DEFAULT_INDEX:-$(sed -n '/^\[\[tool\.uv\.index\]\]/,/^\[/s/^url *= *"\(.*\)"/\1/p' pyproject.toml 2>/dev/null | head -1)}"
+      while IFS= read -r _r; do
+        _h="${_r#*://}"; _h="${_h%%/*}"; _h="${_h##*@}"
+        if [[ "$_h" == \[* ]]; then _h="${_h%%]*}"; _h="${_h#[}"; else _h="${_h%%:*}"; fi
+        case "$_h" in ""|127.*|localhost|0.0.0.0|::1|host.docker.internal) continue ;; esac
+        [[ ",$_seed," != *",$_h,"* ]] && _seed="${_seed:+$_seed,}$_h"
+      done <<EOF_SEED
+${npm_config_registry:-${AIFORGE_NPM_REGISTRY:-}}
+$_idx
+$_models
+${AIFORGE_ADMIN_URL:-}
+${JIRA_BASE_URL:-${JIRA_URL:-}}
+${CONFLUENCE_BASE_URL:-${CONFLUENCE_URL:-}}
+${GITLAB_URL:-${GITLAB_BASE_URL:-}}
+${AIFORGE_APT_MIRROR:-}
+EOF_SEED
       export AIFORGE_EGRESS_ALLOW_HOSTS="$_seed"
     fi
+    # Models on THIS machine on another port than the relay cannot be reached.
+    local _m _mp
+    while IFS= read -r _m; do
+      [[ -n "$_m" && "$_m" != "$u" ]] || continue
+      case "$_m" in
+        *://127.*|*://localhost*|*://host.docker.internal*)
+          _mp="${_m#*://}"; _mp="${_mp%%/*}"; _mp="${_mp##*:}"
+          [[ "$_mp" == "$listen" ]] || echo "!! isolated network: model $_m is on this machine" \
+            "on another port than $u — the sandbox reaches only that one." >&2 ;;
+      esac
+    done <<< "$_models"
     echo "==> isolated network (the default; --open shares this machine's network instead):" \
          "model via relay -> $host:$port; anything else only to hosts on the allowlist" \
          "(Settings → Egress allowlist; first start: ${AIFORGE_EGRESS_ALLOW_HOSTS:-none})"
@@ -692,12 +739,14 @@ if ! _in_box; then
       open) ISOLATED=0 ;;
       isolated) ISOLATED=1 ;;
       *)
+        [[ -z "${AIFORGE_NETWORK:-}" ]] || echo "!! AIFORGE_NETWORK=$AIFORGE_NETWORK is not" \
+          "'isolated' or 'open' — using the default (isolated)." >&2
         if [[ -n "${COMPOSE_FILE:-}" ]]; then
           ISOLATED=0                      # a site compose file is its own base
           echo "==> COMPOSE_FILE is set: using it as the base (not the isolated network)." >&2
-        elif [[ "$DOCKER_ACTION" != up ]] && [[ "$(docker inspect aiforge \
-              --format '{{.HostConfig.NetworkMode}}' 2>/dev/null)" == host ]]; then
-          ISOLATED=0                      # stop / logs / shell the box that is running
+        elif [[ "$DOCKER_ACTION" != up || $TEST -eq 1 || -n "${MAINT:-}" ]] \
+             && [[ "$(docker inspect aiforge --format '{{.HostConfig.NetworkMode}}' 2>/dev/null)" == host ]]; then
+          ISOLATED=0                      # stop / logs / shell / one-offs: the box that runs
         else
           ISOLATED=1
         fi ;;
@@ -715,7 +764,8 @@ if ! _in_box; then
   if [[ "${ISOLATED:-0}" == 1 ]]; then
     [[ -z "${COMPOSE_FILE:-}" ]] || _fatal \
       "--isolated cannot be combined with COMPOSE_FILE: both are base files (use --open with a site file)."
-    _write_isolated_conf
+    if [[ "$DOCKER_ACTION" == up ]]; then _write_isolated_conf
+    else _write_isolated_conf >/dev/null 2>&1; fi    # stop/logs/shell: no setup chatter
     export AIFORGE_HOST="$HOST" AIFORGE_PORT="$PORT"
   fi
   _extra=0
@@ -846,13 +896,28 @@ if ! _in_box; then
              -w "${AIFORGE_REPOS_DIR:-$AIFORGE_HOME/.aiforge/repos}" aiforge bash ;;
   esac
   if [[ $TEST -eq 1 || -n "${MAINT:-}" ]]; then
-    # a one-off inside a throwaway box sharing the same state, then exit
+    # a one-off inside a throwaway box sharing the same state, then exit —
+    # in the sandbox WITH its way out (proxy, model relay, ssh exit)
+    if [[ "${ISOLATED:-0}" == 1 ]]; then exec "${DC[@]}" run --rm aiforge; fi
     exec "${DC[@]}" run --rm --no-deps aiforge
   fi
   if [[ "${ISOLATED:-0}" == 1 ]]; then
     _refuse_box_sees_checkout
   else
     _refuse_box_sees_checkout warn
+  fi
+  # Switching mode: the box that runs now was started from the OTHER compose
+  # file — take that stack down first (its proxy/ui would keep the port, or
+  # linger as orphans). Volumes and ~/.aiforge are kept.
+  _running_mode="$(docker inspect aiforge --format '{{.HostConfig.NetworkMode}}' 2>/dev/null || true)"
+  if [[ -n "$_running_mode" && -z "${COMPOSE_FILE:-}" ]]; then
+    if [[ "${ISOLATED:-0}" == 1 && "$_running_mode" == host ]]; then
+      echo "==> switching to the isolated network: stopping the open-network box"
+      "${DC_BASE[@]}" -f docker-compose.yml down >/dev/null 2>&1 || true
+    elif [[ "${ISOLATED:-0}" == 0 && "$_running_mode" != host ]]; then
+      echo "==> switching to the open network: stopping the isolated stack"
+      "${DC_BASE[@]}" -f docker-compose.isolated.yml down >/dev/null 2>&1 || true
+    fi
   fi
   echo "==> docker mode: building the sandbox image (first time: a few minutes)…"
   if [[ "${ISOLATED:-0}" == 1 ]]; then
@@ -1167,6 +1232,9 @@ _pick_index() {                          # only when something is installed
   # and re-running changes nothing: compose bakes the environment into the
   # container when it is CREATED, so a box that already exists keeps the index
   # it was born with until it is recreated.
+  # In the isolated sandbox only the egress proxy resolves names; pip and uv
+  # reach the index through it, so a DNS check here would always fail.
+  [[ "${AIFORGE_ISOLATED:-0}" == 1 ]] || \
   _resolves "$host" || _fatal "the package index host '$host' does not resolve from this box." \
     "AIForge installs only from $_INDEX — check DNS/VPN, or set UV_DEFAULT_INDEX. In the sandbox it must be set BEFORE the container is created (compose bakes the env at creation): docker rm -f aiforge, then UV_DEFAULT_INDEX=… ./run.sh."
   echo "==> index: $_INDEX"

@@ -13,6 +13,7 @@ base files.
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -315,3 +316,45 @@ def test_lan_names_are_added_when_the_ui_is_open_to_the_lan(tmp_path: Path):
     proc, _ = _run(tmp_path, ["--isolated", "--host", "0.0.0.0"],
                    {"AIFORGE_ALLOW_UNAUTH_NONLOOPBACK": "1"})
     assert "allowlist can be edited from the UI opened as localhost,127.0.0.1,::1," in proc.stdout
+
+
+def test_the_model_set_in_settings_feeds_the_relay_and_the_seed(tmp_path: Path):
+    """After an upgrade the box must keep the model chosen in Settings: the
+    relay follows the stored chat model (its port is the box's loopback
+    forward), and model hosts not on this machine are allowlisted."""
+    sec = tmp_path / "cfg" / "security"
+    sec.mkdir(parents=True)
+    (sec / "agent_config.json").write_text(json.dumps({
+        "chat": {"base_url": "http://127.0.0.1:11434/v1"},
+        "planner": {"base_url": "https://api.remote-llm.example/v1"},
+        "doer": {"base_url": "http://127.0.0.1:9999/v1"}}))
+    proc, _ = _run(tmp_path, [], {"AIFORGE_EGRESS_ALLOW_HOSTS": "",
+                                  "AIFORGE_ADMIN_URL": "http://admin.corp.example:8799"})
+    out = proc.stdout + proc.stderr
+    assert "model via relay -> host.docker.internal:11434" in out
+    assert "api.remote-llm.example" in out and "admin.corp.example" in out
+    assert "model http://127.0.0.1:9999/v1 is on this machine on another port" in out
+
+
+def test_one_offs_get_their_way_out(tmp_path: Path):
+    _proc, calls = _run(tmp_path, ["--test"])
+    runs = [c for c in calls if c.startswith("compose") and " run " in f" {c} "]
+    assert runs and "--no-deps" not in runs[-1]
+
+
+def test_stop_is_quiet(tmp_path: Path):
+    proc, _ = _run(tmp_path, ["--stop"])
+    assert "model via relay" not in proc.stdout + proc.stderr
+
+
+def test_an_unknown_network_value_is_reported(tmp_path: Path):
+    proc, calls = _run(tmp_path, [], {"AIFORGE_NETWORK": "isolate"})
+    assert "is not 'isolated' or 'open'" in proc.stderr
+    up = [c for c in calls if " up " in f" {c} "]
+    assert up and "docker-compose.isolated.yml" in up[0]
+
+
+def test_a_stale_ISOLATED_in_the_environment_is_ignored(tmp_path: Path):
+    _proc, calls = _run(tmp_path, [], {"ISOLATED": "true"})
+    up = [c for c in calls if " up " in f" {c} "]
+    assert up and "docker-compose.isolated.yml" in up[0]
