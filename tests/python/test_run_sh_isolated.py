@@ -45,7 +45,7 @@ exit 0
 
 def _run(tmp_path: Path, args: list[str], extra_env: dict | None = None,
          inhibit: str = "true", getent: int = 2, box_up: bool = True,
-         guard: str = "healthy", probe: str = "NET-BLOCKED"):
+         guard: str = "healthy", probe: str = "NET-BLOCKED", running: str = "isolated"):
     """run.sh (from its own checkout folder) with a fake `docker` on PATH that
     records how it was called and answers the isolation check."""
     bindir = tmp_path / "bin"
@@ -57,6 +57,10 @@ def _run(tmp_path: Path, args: list[str], extra_env: dict | None = None,
             .replace("{guard}", guard).replace("{probe}", probe))
     if not box_up:
         text = text.replace('echo box-up ;;', 'exit 1 ;;')
+    if running in ("unguarded", "guarded"):     # the box that runs now: host network
+        text = text.replace('echo "proj_box " ;;', 'echo host ;;')
+    if running == "guarded":
+        text = text.replace('"inspect aiforge-egress-guard") exit 1 ;;', '"inspect aiforge-egress-guard") exit 0 ;;')
     fake.write_text(text)
     fake.chmod(0o755)
 
@@ -128,9 +132,45 @@ def test_there_is_no_unlimited_mode(tmp_path: Path):
 
 
 def test_a_site_compose_file_still_gets_the_guard(tmp_path: Path):
+    # An isolated box runs now: its stack goes down first, then the site file
+    # comes up with the guard (by absolute path: the site file may live elsewhere).
     proc, calls = _run(tmp_path, [], {"COMPOSE_FILE": "site.yml"})
-    up = [c for c in calls if " up " in f" {c} "]
-    assert up and "-f site.yml -f docker-compose.guard.yml" in up[0]
+    guard = str(tmp_path / "checkout" / "docker-compose.guard.yml")
+    up = [i for i, c in enumerate(calls) if " up -d --build" in c]
+    down = [i for i, c in enumerate(calls) if "-f docker-compose.isolated.yml down" in c]
+    assert up and f"-f site.yml -f {guard}" in calls[up[-1]], calls
+    assert down and down[0] < up[-1], calls
+
+
+def test_an_unlimited_box_from_an_older_start_comes_up_guarded(tmp_path: Path):
+    proc, calls = _run(tmp_path, [], running="unguarded")
+    assert proc.returncode == 0, proc.stderr
+    assert "recreating it guarded" in proc.stdout
+    up = [c for c in calls if " up -d --build" in c and "egress-guard egress" not in c]
+    assert up and "-f docker-compose.yml -f docker-compose.guard.yml up -d --build" in up[0]
+    assert not [c for c in calls if " down" in c]
+    proc, calls = _run(tmp_path, ["--stop"], running="unguarded")
+    assert any("-f docker-compose.guard.yml stop" in c for c in calls), calls
+
+
+def test_an_old_open_setting_still_lets_the_box_stop(tmp_path: Path):
+    proc, calls = _run(tmp_path, ["--stop"], {"AIFORGE_NETWORK": "open"}, running="unguarded")
+    assert proc.returncode == 0, proc.stderr
+    assert any("-f docker-compose.guard.yml stop" in c for c in calls), calls
+
+
+def test_a_one_off_gets_the_allowlist_proxy(tmp_path: Path):
+    proc, calls = _run(tmp_path, ["--test"], running="guarded")
+    svc = [i for i, c in enumerate(calls) if "up -d --build egress-guard egress egress-ctl ssh-egress" in c]
+    run = [i for i, c in enumerate(calls) if "run --rm aiforge" in c]
+    assert svc and run and svc[0] < run[0], calls
+    assert "--no-deps aiforge" not in " ".join(calls[r] for r in run)
+
+
+def test_stopping_an_isolated_box_ignores_a_site_compose_file(tmp_path: Path):
+    proc, calls = _run(tmp_path, ["--stop"], {"COMPOSE_FILE": "site.yml"})
+    assert proc.returncode == 0, proc.stderr
+    assert any("-f docker-compose.isolated.yml stop" in c for c in calls), calls
 
 
 def test_first_start_seeds_the_package_registries(tmp_path: Path):

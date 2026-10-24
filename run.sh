@@ -314,6 +314,7 @@ _in_box() {
 }
 DOCKER_ACTION=up
 NET=""                                   # guarded | isolated: flags or AIFORGE_NETWORK
+_NET_FLAG=0
 _MOUNT_ARGS=()
 _ORIG_ARGS=("$@")
 WITH_GRAPHIFY=0
@@ -326,8 +327,8 @@ while [[ $# -gt 0 ]]; do
     --shell) DOCKER_ACTION=shell ;;
     --repos) AIFORGE_REPOS_DIR="${2:-}"; shift ;;
     --mount) _MOUNT_ARGS+=("${2:-}"); shift ;;
-    --guarded) NET=guarded ;;                     # the default: host network, internet via the allowlist
-    --isolated) NET=isolated ;;                   # strict: no route out at all except the allowlist
+    --guarded) NET=guarded; _NET_FLAG=1 ;;                     # the default: host network, internet via the allowlist
+    --isolated) NET=isolated; _NET_FLAG=1 ;;                   # strict: no route out at all except the allowlist
     --open) echo "!! --open is gone: run.sh always limits the internet to Settings → Egress allowlist." >&2
             echo "!! Allow what the box needs there (or use --isolated for stricter)." >&2
             exit 1 ;;
@@ -783,8 +784,13 @@ except OSError:
   if [[ -z "$NET" ]]; then
     case "${AIFORGE_NETWORK:-}" in
       guarded|isolated) NET="$AIFORGE_NETWORK" ;;
-      open) _fatal "AIFORGE_NETWORK=open is gone: run.sh always limits the internet to Settings → Egress allowlist." \
-                   "Remove it from the environment / aiforge.env / the systemd unit." ;;
+      open)
+        # Starting is refused; stop / logs / shell still work, so the box an
+        # old unit started that way can still be stopped.
+        [[ "$DOCKER_ACTION" != up ]] || _fatal \
+          "AIFORGE_NETWORK=open is gone: run.sh always limits the internet to Settings → Egress allowlist." \
+          "Remove it from the environment / aiforge.env / the systemd unit."
+        NET=guarded ;;
       *)
         [[ -z "${AIFORGE_NETWORK:-}" ]] || echo "!! AIFORGE_NETWORK=$AIFORGE_NETWORK is not" \
           "'guarded' or 'isolated' — using the default (guarded)." >&2
@@ -796,14 +802,17 @@ except OSError:
         fi ;;
     esac
   fi
+  _net_asked=0
+  [[ "$_NET_FLAG" == 1 || "${AIFORGE_NETWORK:-}" == isolated ]] && _net_asked=1
   ISOLATED=0; GUARDED=0
   [[ "$NET" == isolated ]] && ISOLATED=1
   [[ "$NET" == guarded ]] && GUARDED=1
+  export AIFORGE_SRC="$PWD"     # the guard overlay's build contexts (a site file elsewhere)
   _cfiles=()
   if [[ "${ISOLATED:-0}" == 1 ]]; then _cfiles=(docker-compose.isolated.yml)
   elif [[ -n "${COMPOSE_FILE:-}" ]]; then
     # A site compose file is the base; the guard still goes on top of it.
-    IFS=':' read -ra _cfiles <<< "$COMPOSE_FILE"; _cfiles+=(docker-compose.guard.yml)
+    IFS=':' read -ra _cfiles <<< "$COMPOSE_FILE"; _cfiles+=("$PWD/docker-compose.guard.yml")
   else _cfiles=(docker-compose.yml docker-compose.guard.yml); fi
   if [[ "${GUARDED:-0}" == 1 ]]; then
     if [[ "$DOCKER_ACTION" == up ]]; then _seed_allowlist
@@ -817,7 +826,9 @@ except OSError:
   # `network_mode: host` back off (declaring `networks:` beside it is an error),
   # so the isolated shape has to be the base file itself.
   if [[ "${ISOLATED:-0}" == 1 ]]; then
-    [[ -z "${COMPOSE_FILE:-}" ]] || _fatal \
+    # Asked for: refused. Inferred from the running isolated box (stop, logs,
+    # a one-off): its own files are used and COMPOSE_FILE is left out.
+    [[ -z "${COMPOSE_FILE:-}" || "$_net_asked" == 0 ]] || _fatal \
       "--isolated cannot be combined with COMPOSE_FILE: both are base files."
     if [[ "$DOCKER_ACTION" == up ]]; then _write_isolated_conf
     else _write_isolated_conf >/dev/null 2>&1; fi    # stop/logs/shell: no setup chatter
@@ -953,8 +964,13 @@ except OSError:
   if [[ $TEST -eq 1 || -n "${MAINT:-}" ]]; then
     # a one-off inside a throwaway box sharing the same state, then exit —
     # in the sandbox WITH its way out (proxy, model relay, ssh exit)
-    if [[ "${ISOLATED:-0}" == 1 || "${GUARDED:-0}" == 1 ]]; then exec "${DC[@]}" run --rm aiforge; fi
-    exec "${DC[@]}" run --rm --no-deps aiforge
+    if [[ "${GUARDED:-0}" == 1 ]]; then
+      # Not dependencies of the box (only the guard is): start them so the
+      # one-off has its allowlist proxy and ssh exit.
+      "${DC[@]}" up -d --build egress-guard egress egress-ctl ssh-egress >/dev/null \
+        || _fatal "could not start the egress services for the one-off run."
+    fi
+    exec "${DC[@]}" run --rm aiforge
   fi
   if [[ "${ISOLATED:-0}" == 1 ]]; then
     _refuse_box_sees_checkout
@@ -964,8 +980,12 @@ except OSError:
   # Switching mode: the box that runs now was started from other compose
   # files — take that stack down first (its proxy/ui/guard would keep a port
   # or linger). Volumes and ~/.aiforge are kept.
-  if [[ -n "$_running_mode" && "$_running_mode" != "$NET" && -z "${COMPOSE_FILE:-}" ]]; then
-    echo "==> switching the network from $_running_mode to $NET: stopping the $_running_mode stack"
+  if [[ -n "$_running_mode" && "$_running_mode" != "$NET" ]]; then
+    if [[ "$_running_mode" == unguarded ]]; then
+      echo "==> the running box has no network limits (an older start): recreating it guarded"
+    else
+      echo "==> switching the network from $_running_mode to $NET: stopping the $_running_mode stack"
+    fi
     case "$_running_mode" in
       isolated) "${DC_BASE[@]}" -f docker-compose.isolated.yml down >/dev/null 2>&1 || true ;;
       guarded)  "${DC_BASE[@]}" -f docker-compose.yml -f docker-compose.guard.yml down >/dev/null 2>&1 || true ;;

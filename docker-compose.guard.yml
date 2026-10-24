@@ -42,7 +42,7 @@ services:
       - egress-policy:/var/lib/aiforge-egress:ro
 
   egress-guard:
-    build: {context: ./docker/isolated, dockerfile: egress-guard.Dockerfile}
+    build: {context: "${AIFORGE_SRC:-.}/docker/isolated", dockerfile: egress-guard.Dockerfile}
     image: aiforge-isolated-egress-guard:local
     container_name: aiforge-egress-guard
     restart: unless-stopped
@@ -72,7 +72,7 @@ services:
       retries: 20
 
   egress:
-    build: {context: ./docker/isolated, dockerfile: egress.Dockerfile}
+    build: {context: "${AIFORGE_SRC:-.}/docker/isolated", dockerfile: egress.Dockerfile}
     image: aiforge-isolated-egress:local
     container_name: aiforge-egress
     restart: unless-stopped
@@ -89,7 +89,7 @@ services:
       - egress-policy:/policy:ro
 
   egress-ctl:
-    build: {context: ./docker/isolated, dockerfile: egress-ctl.Dockerfile}
+    build: {context: "${AIFORGE_SRC:-.}/docker/isolated", dockerfile: egress-ctl.Dockerfile}
     image: aiforge-isolated-egress-ctl:local
     container_name: aiforge-egress-ctl
     restart: unless-stopped
@@ -109,7 +109,7 @@ services:
       - egress-policy:/policy
 
   ssh-egress:
-    build: {context: ./docker/isolated, dockerfile: ssh-egress.Dockerfile}
+    build: {context: "${AIFORGE_SRC:-.}/docker/isolated", dockerfile: ssh-egress.Dockerfile}
     image: aiforge-isolated-ssh-egress:local
     container_name: aiforge-ssh-egress
     restart: unless-stopped
