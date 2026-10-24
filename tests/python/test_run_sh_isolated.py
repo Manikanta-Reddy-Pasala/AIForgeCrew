@@ -57,6 +57,9 @@ def _run(tmp_path: Path, args: list[str], extra_env: dict | None = None,
             .replace("{guard}", guard).replace("{probe}", probe))
     if not box_up:
         text = text.replace('echo box-up ;;', 'exit 1 ;;')
+    if running == "site-bridge":               # an old open box from a site file, not on host
+        text = text.replace('"inspect aiforge-egress-guard") exit 1 ;;',
+                            '"inspect aiforge-egress-guard") exit 1 ;;\n  "inspect aiforge-ui") exit 1 ;;')
     if running in ("unguarded", "guarded"):     # the box that runs now: host network
         text = text.replace('echo "proj_box " ;;', 'echo host ;;')
     if running == "guarded":
@@ -149,6 +152,9 @@ def test_an_unlimited_box_from_an_older_start_comes_up_guarded(tmp_path: Path):
     up = [c for c in calls if " up -d --build" in c and "egress-guard egress" not in c]
     assert up and "-f docker-compose.yml -f docker-compose.guard.yml up -d --build" in up[0]
     assert not [c for c in calls if " down" in c]
+    rm = [i for i, c in enumerate(calls) if c == "rm -f aiforge"]
+    upi = [i for i, c in enumerate(calls) if c == up[0]]
+    assert rm and rm[0] < upi[0], calls
     proc, calls = _run(tmp_path, ["--stop"], running="unguarded")
     assert any("-f docker-compose.guard.yml stop" in c for c in calls), calls
 
@@ -164,7 +170,30 @@ def test_a_one_off_gets_the_allowlist_proxy(tmp_path: Path):
     svc = [i for i, c in enumerate(calls) if "up -d --build egress-guard egress egress-ctl ssh-egress" in c]
     run = [i for i, c in enumerate(calls) if "run --rm aiforge" in c]
     assert svc and run and svc[0] < run[0], calls
+    files = "-f docker-compose.yml -f docker-compose.guard.yml "
+    assert files in calls[svc[0]] and files in calls[run[0]], calls
     assert "--no-deps aiforge" not in " ".join(calls[r] for r in run)
+    assert any("chown egress-ctl" in c for c in calls[:svc[0]]), calls
+
+
+def test_an_old_open_setting_refuses_one_offs_too(tmp_path: Path):
+    proc, calls = _run(tmp_path, ["--test"], {"AIFORGE_NETWORK": "open"})
+    assert proc.returncode != 0 and "always limits the internet" in proc.stderr
+    assert not [c for c in calls if "run --rm aiforge" in c]
+
+
+def test_an_old_open_setting_stops_the_isolated_stack_that_runs(tmp_path: Path):
+    proc, calls = _run(tmp_path, ["--stop"], {"AIFORGE_NETWORK": "open"})
+    assert proc.returncode == 0, proc.stderr
+    assert any("-f docker-compose.isolated.yml stop" in c for c in calls), calls
+
+
+def test_an_old_site_box_off_the_host_network_is_not_taken_for_isolated(tmp_path: Path):
+    proc, calls = _run(tmp_path, ["--stop"], {"COMPOSE_FILE": "site.yml"}, running="site-bridge")
+    assert proc.returncode == 0, proc.stderr
+    assert any("-f site.yml" in c and c.endswith(" stop") for c in calls), calls
+    proc, calls = _run(tmp_path, [], {"COMPOSE_FILE": "site.yml"}, running="site-bridge")
+    assert "rm -f aiforge" in calls, calls
 
 
 def test_stopping_an_isolated_box_ignores_a_site_compose_file(tmp_path: Path):

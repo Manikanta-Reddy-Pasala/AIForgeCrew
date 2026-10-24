@@ -779,7 +779,10 @@ except OSError:
     if docker inspect aiforge-egress-guard >/dev/null 2>&1; then _running_mode=guarded
     else _running_mode=unguarded; fi     # an older open-network box: guarded from now on
   elif docker inspect aiforge >/dev/null 2>&1; then
-    _running_mode=isolated
+    # Isolated = the isolated stack (its ui front door). Any other non-host box
+    # is an older open start from a site file: treated as unguarded.
+    if docker inspect aiforge-ui >/dev/null 2>&1; then _running_mode=isolated
+    else _running_mode=unguarded; fi
   fi
   if [[ -z "$NET" ]]; then
     case "${AIFORGE_NETWORK:-}" in
@@ -790,7 +793,7 @@ except OSError:
         [[ "$DOCKER_ACTION" != up ]] || _fatal \
           "AIFORGE_NETWORK=open is gone: run.sh always limits the internet to Settings → Egress allowlist." \
           "Remove it from the environment / aiforge.env / the systemd unit."
-        NET=guarded ;;
+        if [[ "$_running_mode" == isolated ]]; then NET=isolated; else NET=guarded; fi ;;
       *)
         [[ -z "${AIFORGE_NETWORK:-}" ]] || echo "!! AIFORGE_NETWORK=$AIFORGE_NETWORK is not" \
           "'guarded' or 'isolated' — using the default (guarded)." >&2
@@ -966,7 +969,10 @@ except OSError:
     # in the sandbox WITH its way out (proxy, model relay, ssh exit)
     if [[ "${GUARDED:-0}" == 1 ]]; then
       # Not dependencies of the box (only the guard is): start them so the
-      # one-off has its allowlist proxy and ssh exit.
+      # one-off has its allowlist proxy and ssh exit. The policy volume's owner
+      # is fixed first, as on a normal start.
+      "${DC[@]}" run --rm --no-deps --user 0 --cap-add CHOWN --entrypoint chown egress-ctl -R 65534:65534 /policy \
+        >/dev/null 2>&1 || true
       "${DC[@]}" up -d --build egress-guard egress egress-ctl ssh-egress >/dev/null \
         || _fatal "could not start the egress services for the one-off run."
     fi
@@ -989,7 +995,9 @@ except OSError:
     case "$_running_mode" in
       isolated) "${DC_BASE[@]}" -f docker-compose.isolated.yml down >/dev/null 2>&1 || true ;;
       guarded)  "${DC_BASE[@]}" -f docker-compose.yml -f docker-compose.guard.yml down >/dev/null 2>&1 || true ;;
-      unguarded) : ;;   # same box: up adds the guard and recreates it with the overlay
+      # Removed outright: its compose project may differ (a site file), and a
+      # leftover would keep the name "aiforge" — and its open internet.
+      unguarded) docker rm -f aiforge >/dev/null 2>&1 || true ;;
     esac
   fi
   echo "==> docker mode: building the sandbox image (first time: a few minutes)…"
