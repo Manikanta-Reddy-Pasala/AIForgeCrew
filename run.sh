@@ -535,23 +535,30 @@ if ! _in_box; then
     # The model is reached through the `model` relay, never the proxy: the box
     # gets http://model:PORT/..., the relay gets your real endpoint. A loopback
     # endpoint is this machine's, which the relay reaches as host.docker.internal.
-    local u="${AIFORGE_LM_BASE_URL:-http://127.0.0.1:1234/v1}" rest hostport path host port
-    rest="${u#*://}"; hostport="${rest%%/*}"
+    local u="${AIFORGE_LM_BASE_URL:-http://127.0.0.1:1234/v1}" scheme rest hostport path host port
+    scheme="${u%%://*}"; [[ "$scheme" == "$u" ]] && scheme=http
+    rest="${u#*://}"; hostport="${rest%%/*}"; hostport="${hostport##*@}"
     if [[ "$rest" == */* ]]; then path="/${rest#*/}"; else path=""; fi
-    host="${hostport%:*}"; port="${hostport##*:}"
-    if [[ "$host" == "$hostport" ]]; then
-      [[ "$u" == https://* ]] && port=443 || port=80
+    if [[ "$hostport" == \[*\]* ]]; then                  # [v6] or [v6]:port
+      host="${hostport%%]*}"; host="${host#[}"; port="${hostport##*]}"; port="${port#:}"
+    elif [[ "$hostport" == *:* ]]; then
+      host="${hostport%:*}"; port="${hostport##*:}"
+    else
+      host="$hostport"; port=""
     fi
+    [[ -n "$port" ]] || { [[ "$scheme" == https ]] && port=443 || port=80; }
     case "$host" in
       127.*|localhost|0.0.0.0|::1)
         host=host.docker.internal
         echo "==> isolated network: the model at $u is on this machine — it must" \
              "also listen where docker can reach it (0.0.0.0 or the docker bridge)." >&2 ;;
     esac
-    export AIFORGE_MODEL_UPSTREAM="$host:$port" AIFORGE_MODEL_PORT="$port"
+    [[ "$host" == *:* ]] && host="[$host]"
+    AIFORGE_MODEL_TLS=0; [[ "$scheme" == https ]] && AIFORGE_MODEL_TLS=1
+    export AIFORGE_MODEL_UPSTREAM="$host:$port" AIFORGE_MODEL_PORT="$port" AIFORGE_MODEL_TLS
     export AIFORGE_BOX_LM_URL="http://model:$port$path"
-    echo "==> isolated network: model via relay -> $host:$port; other egress only to" \
-         "hosts allowed in Settings (first start: ${AIFORGE_EGRESS_ALLOW_HOSTS:-none})"
+    echo "==> isolated network: model via relay -> $host:$port; anything else only to" \
+         "hosts on the network allowlist (first start: ${AIFORGE_EGRESS_ALLOW_HOSTS:-none})"
   }
 
   # The box is built for YOU: files the agent writes into ~/.aiforge stay yours.
@@ -613,8 +620,13 @@ if ! _in_box; then
   # ~/.aiforge is always mounted, at $HOME/.aiforge inside the box.
   _mounted=("$AIFORGE_HOME/.aiforge")
   [[ -n "${AIFORGE_REPOS_DIR:-}" ]] && _mounted+=("$AIFORGE_REPOS_DIR")
-  _mount_yml="$AIFORGE_CONFIG_DIR/.sandbox/mounts.compose.yml"
-  mkdir -p "$(dirname "$_mount_yml")"
+  # The overlay compose reads is written OUTSIDE everything the box can see:
+  # in ~/.aiforge the box could swap it between this write and `up` (a
+  # privileged container, the host's / mounted) or plant the .tmp as a
+  # symlink to a host file this script would then overwrite.
+  _mount_yml="$(dirname "$_approved")/mounts.compose.yml"
+  rm -f "$AIFORGE_CONFIG_DIR/.sandbox/mounts.compose.yml" "$AIFORGE_CONFIG_DIR/.sandbox/mounts.compose.yml.tmp"
+  rm -f "$_mount_yml.tmp"
   printf 'services:\n  aiforge:\n    volumes:\n' > "$_mount_yml.tmp"
   _n=0
   while IFS= read -r _m || [[ -n "$_m" ]]; do

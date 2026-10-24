@@ -2,32 +2,37 @@
 
 In isolated mode every outbound request from the box goes through the egress
 proxy, and the proxy lets through only the hosts on its allow file. Whoever can
-write that file decides what the agent may reach — so it must not be the box:
-the agent has full rights inside it, and ~/.aiforge is mounted read-write.
+write that file decides what the agent may reach — so it must never be the box:
+the agent has full rights inside it and ~/.aiforge is mounted read-write.
 
-This service holds the list in its own volume (shared read-only with the
-proxy), and is reached only through the `ui` front door, which refuses any
-request from the box's network (docker/ui-proxy.conf.template). The Settings page in
-YOUR browser can change the list; the agent cannot reach this service at all.
+This service keeps the list in its own volume (the proxy and the box get it
+read-only) and sits on a network of its own. Settings reaches it through the
+UI front door (`/egress-admin/`), which refuses the box's network and the
+proxy (docker/ui-proxy.conf.template), so the agent cannot call it.
 
-  GET  /api/hosts            {"hosts": [...], "enforced": true}
-  PUT  /api/hosts            {"hosts": [...]}  → replaces the list, reloads the proxy
-  GET  /api/changes          the last changes (who, when, what)
+  GET  /api/hosts      {"hosts": [...]}
+  PUT  /api/hosts      {"hosts": [...]} → replace (the proxy re-reads it)
+  GET  /api/changes    who changed what, newest first
+
+Optional admin token: when AIFORGE_EGRESS_ADMIN_TOKEN is set, every call must
+carry it (``Authorization: Bearer …``). Unset (the default for now): open to
+whoever can reach the UI.
 
 A host allows itself and its subdomains (`pypi.org` → `files.pypi.org` too),
 nothing else: each entry becomes an ANCHORED pattern, so `pypi.org` never
-matches `evilpypi.org` or `pypi.org.attacker.com`.
+matches `evilpypi.org` or `pypi.org.attacker.com`. The proxy notices the new
+file by itself (docker/egress-proxy.sh).
 
-Stdlib only; runs as root in its own container so it can signal the proxy
-(they share a process namespace: compose `pid: service:egress`).
+Stdlib only.
 """
 from __future__ import annotations
 
+import hmac
 import ipaddress
 import json
+import threading
 import os
 import re
-import signal
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,6 +44,14 @@ CHANGES = os.path.join(POLICY, "changes.log")
 PORT = int(os.environ.get("EGRESS_CONTROLLER_PORT", "8780"))
 MAX_HOSTS = 200
 _LABEL = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
+#: A label of only digits / hex digits with 0x: inet_aton reads `127.1`,
+#: `0177.0.0.1` or `0x7f.1` as an address — never a host NAME.
+_NUMERIC = re.compile(r"^(0x[0-9a-f]*|[0-9]+)$")
+_LOCK = threading.Lock()
+
+
+def token() -> str:
+    return os.environ.get("AIFORGE_EGRESS_ADMIN_TOKEN", "")
 
 
 def normalise(raw: str) -> str:
@@ -65,6 +78,8 @@ def normalise(raw: str) -> str:
     labels = h.split(".")
     if len(h) > 253 or len(labels) < 2 or not all(_LABEL.match(x) for x in labels):
         raise ValueError(f"not a host name: {raw!r}")
+    if all(_NUMERIC.match(x) for x in labels):
+        raise ValueError(f"looks like an address, not a host name: {raw!r}")
     return h
 
 
@@ -78,12 +93,18 @@ def pattern(host: str) -> str:
         return r"^(.*\.)?" + re.escape(host) + "$"
 
 
-def load() -> list[str]:
+def load() -> list[str] | None:
+    """The saved list; [] when there is none yet, None when the file is
+    unreadable (then nothing is allowed until it is saved again — fail
+    closed, but the old file is left for a human to look at)."""
     try:
         with open(HOSTS) as f:
-            return list(json.load(f).get("hosts") or [])
-    except (OSError, ValueError):
+            data = json.load(f)
+        return [str(h) for h in data.get("hosts") or []]
+    except FileNotFoundError:
         return []
+    except (OSError, ValueError, AttributeError):
+        return None
 
 
 def _write(path: str, text: str) -> None:
@@ -91,21 +112,6 @@ def _write(path: str, text: str) -> None:
     with open(tmp, "w") as f:
         f.write(text)
     os.replace(tmp, path)
-
-
-def reload_proxy() -> bool:
-    """Ask the proxy to re-read its filter (tinyproxy: SIGUSR1)."""
-    for pid in os.listdir("/proc"):
-        if not pid.isdigit():
-            continue
-        try:
-            with open(f"/proc/{pid}/comm") as f:
-                if f.read().strip() == "tinyproxy":
-                    os.kill(int(pid), signal.SIGUSR1)
-                    return True
-        except OSError:
-            continue
-    return False
 
 
 def save(hosts: list[str], who: str = "") -> list[str]:
@@ -116,17 +122,17 @@ def save(hosts: list[str], who: str = "") -> list[str]:
             clean.append(h)
     if len(clean) > MAX_HOSTS:
         raise ValueError(f"too many hosts (max {MAX_HOSTS})")
-    before = load()
-    _write(ALLOW, "".join(pattern(h) + "\n" for h in clean))
-    _write(HOSTS, json.dumps({"hosts": clean, "updated": time.time()}, indent=1))
-    added = [h for h in clean if h not in before]
-    removed = [h for h in before if h not in clean]
-    if added or removed:
-        with open(CHANGES, "a") as f:
-            f.write(json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                                "by": who, "added": added,
-                                "removed": removed}) + "\n")
-    reload_proxy()
+    with _LOCK:
+        before = load() or []
+        _write(HOSTS, json.dumps({"hosts": clean, "updated": time.time()}, indent=1))
+        _write(ALLOW, "".join(pattern(h) + "\n" for h in clean))
+        added = [h for h in clean if h not in before]
+        removed = [h for h in before if h not in clean]
+        if added or removed:
+            with open(CHANGES, "a") as f:
+                f.write(json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                                    "by": who, "added": added,
+                                    "removed": removed}) + "\n")
     return clean
 
 
@@ -135,7 +141,13 @@ def seed() -> None:
     starts keep what was set in Settings."""
     os.makedirs(POLICY, exist_ok=True)
     if os.path.exists(HOSTS):
-        save(load(), who="restart")
+        hosts = load()
+        if hosts is None:
+            print("egress-controller: hosts.json is unreadable — allowing NOTHING "
+                  "until the list is saved again", file=sys.stderr)
+            _write(ALLOW, "")
+            return
+        save(hosts, who="restart")
         return
     raw = [h for h in os.environ.get("AIFORGE_EGRESS_ALLOW_HOSTS", "").split(",") if h.strip()]
     good = []
@@ -148,6 +160,7 @@ def seed() -> None:
 
 
 def changes(n: int = 50) -> list[dict]:
+    """The last ``n`` changes, newest first."""
     try:
         with open(CHANGES) as f:
             lines = f.readlines()[-n:]
@@ -168,22 +181,46 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # noqa: D401 — quieter access log
         sys.stderr.write("egress-controller: " + (fmt % args) + "\n")
 
+    def _headers(self, code: int, ctype: str, length: int) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(length))
+        self.send_header("Cache-Control", "no-store")
+        # No CORS headers: a page on another origin cannot call this.
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.end_headers()
+
     def _send(self, code: int, obj) -> None:
         body = json.dumps(obj).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
+        self._headers(code, "application/json", len(body))
         self.wfile.write(body)
 
     def _path(self) -> str:
-        return self.path.split("?", 1)[0].rstrip("/")
+        return self.path.split("?", 1)[0].rstrip("/") or "/"
+
+    def _authorised(self) -> bool:
+        """True when no admin token is configured, or the request carries it."""
+        want = token()
+        if not want:
+            return True
+        got = (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
+        if got and hmac.compare_digest(want.encode(), got.encode()):
+            return True
+        self._send(401, {"error": "admin token required"})
+        return False
 
     def do_GET(self):  # noqa: N802
         p = self._path()
+        if p == "/healthz":
+            return self._send(200, {"ok": True})
+        if not self._authorised():
+            return None
         if p == "/api/hosts":
-            return self._send(200, {"hosts": load(), "enforced": True})
+            hosts = load()
+            if hosts is None:
+                return self._send(500, {"error": "the saved list is unreadable; save a new one"})
+            return self._send(200, {"hosts": hosts, "enforced": True})
         if p == "/api/changes":
             return self._send(200, {"changes": changes()})
         return self._send(404, {"error": "not found"})
@@ -191,16 +228,23 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self):  # noqa: N802
         if self._path() != "/api/hosts":
             return self._send(404, {"error": "not found"})
+        if not self._authorised():
+            return None
         try:
             n = int(self.headers.get("Content-Length") or 0)
-            if n > 64 * 1024:
-                return self._send(413, {"error": "too large"})
+        except ValueError:
+            n = -1
+        if n < 0 or n > 64 * 1024:
+            return self._send(413, {"error": "bad or too large body"})
+        try:
             body = json.loads(self.rfile.read(n) or b"{}")
-            hosts = body.get("hosts")
-            if not isinstance(hosts, list):
-                return self._send(400, {"error": "'hosts' must be a list"})
-            who = self.headers.get("X-Real-IP") or self.client_address[0]
-            saved = save([str(h) for h in hosts], who=who)
+        except ValueError:
+            return self._send(400, {"error": "body is not JSON"})
+        hosts = body.get("hosts") if isinstance(body, dict) else None
+        if not isinstance(hosts, list):
+            return self._send(400, {"error": "'hosts' must be a list"})
+        try:
+            saved = save([str(h) for h in hosts], who="settings")
         except ValueError as exc:
             return self._send(400, {"error": str(exc)})
         return self._send(200, {"ok": True, "hosts": saved, "enforced": True})

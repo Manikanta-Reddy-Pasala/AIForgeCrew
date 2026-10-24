@@ -5,8 +5,8 @@
 # both that network and an ordinary one, so it can accept a connection from the
 # host and forward it inward.
 #
-# A template: nginx fills ${AIFORGE_BOX_SUBNET} from the environment at start
-# (the official image's /etc/nginx/templates mechanism); everything else is static. The published address is
+# A template: nginx fills ${AIFORGE_BOX_SUBNET} and ${AIFORGE_EGRESS_IP} from the
+# environment at start (the official image's /etc/nginx/templates mechanism). The published address is
 # chosen by compose (`${AIFORGE_HOST}:${AIFORGE_PORT}`), not here.
 #
 # The upstream is plain HTTP by design: this hop never leaves the internal
@@ -15,13 +15,13 @@
 server {
   listen 8799;
 
-  # The network allowlist's controller (docker/egress-controller.py). Your
-  # browser reaches it through here; the BOX must not — the agent would
-  # otherwise allow itself any site. The box's network has a fixed subnet
-  # (AIFORGE_BOX_SUBNET in docker-compose.isolated.yml) and every request from it
-  # is refused.
+  # The network allowlist's controller (docker/egress-controller.py), for
+  # Settings. Refused to the BOX (its whole network) and to the egress PROXY
+  # (else the agent could loop back through the proxy to reach this route):
+  # the agent must not be able to change its own allowlist.
   location /egress-admin/ {
     deny ${AIFORGE_BOX_SUBNET};
+    deny ${AIFORGE_EGRESS_IP};
     allow all;
     # Resolved per request: nginx must still start while the controller is
     # down (the chat keeps working; only the list cannot be changed).
@@ -29,12 +29,15 @@ server {
     set $egress_ctl http://egress-ctl:8780;
     rewrite ^/egress-admin/(.*)$ /$1 break;
     proxy_pass $egress_ctl;
-    proxy_set_header X-Real-IP $remote_addr;
     client_max_body_size 64k;
   }
 
   location / {
-    proxy_pass http://aiforge:8799;
+    # Resolved per request: the box can be recreated (new address) and ui
+    # must not crash-loop while it is still starting.
+    resolver 127.0.0.11 valid=10s;
+    set $box http://aiforge:8799;
+    proxy_pass $box;
     proxy_set_header Host $host;
     proxy_http_version 1.1;
     proxy_set_header Upgrade $http_upgrade;

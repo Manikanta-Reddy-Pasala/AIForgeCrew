@@ -72,15 +72,9 @@ export default function EgressCard() {
     <div className="card">
       <h3>Egress allowlist</h3>
       <NetworkAllowlist
-        suggest={data.derived.filter(h => !/^(127\.|localhost|model$|host\.docker\.internal$)/.test(h))}
-        onSaved={async hosts => {
-          // AIForge's own web tools follow the same list, so a host allowed on
-          // the network is not then refused by web_fetch (and vice versa).
-          try {
-            const d = await api.setEgressHosts(hosts.filter(h => !data.derived.includes(h)));
-            setData(d); setDraft(d.extra_hosts.join('\n'));
-          } catch { /* the network list is the boundary; this is convenience */ }
-        }} />
+        network={data.network}
+        suggest={data.derived.filter(h => !/^(127\.|localhost$|model$|host\.docker\.internal$)/.test(h))}
+        onSaved={() => { api.egressHosts().then(setData).catch(() => undefined); }} />
       <h4 style={{ margin: '10px 0 4px' }}>AIForge's web tools</h4>
       <p style={{ fontSize: 13, opacity: 0.8 }}>
         This machine only talks to the hosts below. Everything else is refused,

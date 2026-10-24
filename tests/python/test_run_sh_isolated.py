@@ -93,17 +93,65 @@ def test_the_proxy_config_is_static_and_denies_by_default():
 
 
 def test_the_allowlist_owner_is_off_the_box_network():
-    """The controller is on `out` only — the box has no route to it — and the
-    UI front door refuses the box's subnet on its route."""
-    import re
+    """The controller is on its own network, shared only with the UI front
+    door; the front door refuses the box's subnet AND the proxy's address
+    (else the agent loops back through the proxy) on the allowlist route."""
     compose = (REPO / "docker-compose.isolated.yml").read_text()
     ctl = compose[compose.index("  egress-ctl:"):compose.index("  model:")]
-    assert "networks: [out]" in ctl and "box" not in ctl.split("networks:")[1].split("\n")[0]
-    assert re.search(r"subnet: \$\{AIFORGE_BOX_SUBNET:-[0-9./]+\}", compose)
-    ui = (REPO / "docker" / "ui-proxy.conf.template").read_text()
-    loc = ui[ui.index("location /egress-admin/"):]
-    assert "deny ${AIFORGE_BOX_SUBNET};" in loc.split("}")[0]
-    assert "AIFORGE_BOX_SUBNET=${AIFORGE_BOX_SUBNET:-" in compose     # nginx gets the same value
+    assert "networks: [admin]" in ctl and "ports:" not in ctl
+    ui = compose[compose.index("  ui:"):compose.index("networks:\n  box:")]
+    assert "networks: [box, out, admin]" in ui
+    egress = compose[compose.index("  egress:"):compose.index("  egress-ctl:")]
+    assert "ipv4_address: ${AIFORGE_EGRESS_IP:-" in egress
+    box = compose[compose.index("    container_name: aiforge\n"):compose.index("  egress:")]
+    assert "egress-policy:/var/lib/aiforge-egress:ro" in box        # the box only reads it
+    assert "cap_drop: [NET_RAW]" in box
+    conf = (REPO / "docker" / "ui-proxy.conf.template").read_text()
+    loc = conf[conf.index("location /egress-admin/"):conf.index("proxy_pass $egress_ctl")]
+    assert "deny ${AIFORGE_BOX_SUBNET};" in loc and "deny ${AIFORGE_EGRESS_IP};" in loc
+
+
+def test_the_box_network_gives_this_machine_no_address():
+    """Without it the box reached every host service (ssh, the AIForge API)
+    through the internal bridge's gateway."""
+    compose = (REPO / "docker-compose.isolated.yml").read_text()
+    assert 'com.docker.network.bridge.inhibit_ipv4: "true"' in compose
+
+
+def test_the_mount_overlay_is_not_written_where_the_box_can_write(tmp_path: Path):
+    """The box could swap it before `up` (a privileged container, the host's
+    / mounted) or plant its .tmp as a symlink to a host file."""
+    xdg = tmp_path / "xdg"
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    (cfg / "mounts.list").write_text(str(shared) + "\n")
+    (xdg / "aiforge").mkdir(parents=True)
+    (xdg / "aiforge" / "approved-mounts").write_text(str(shared) + "\n")
+    _proc, calls = _run(tmp_path, [], {"XDG_CONFIG_HOME": str(xdg)})
+    up = [c for c in calls if " up " in f" {c} "][0]
+    assert str(xdg / "aiforge" / "mounts.compose.yml") in up
+    assert not (cfg / ".sandbox" / "mounts.compose.yml").exists()
+
+
+def test_the_model_url_is_parsed_for_the_relay(tmp_path: Path):
+    cases = {
+        "https://user:pw@api.example.com/v1": "api.example.com:443",
+        "http://[::1]:1234/v1": "host.docker.internal:1234",
+        "http://[fd00::5]:8080/v1": "[fd00::5]:8080",
+        "http://studio.lan/v1": "studio.lan:80",
+    }
+    for url, want in cases.items():
+        proc, _ = _run(tmp_path, ["--isolated"], {"AIFORGE_LM_BASE_URL": url})
+        assert f"model via relay -> {want}" in proc.stdout + proc.stderr, url
+
+
+def test_the_proxy_waits_for_its_list_and_follows_changes():
+    sh = (REPO / "docker" / "egress-proxy.sh").read_text()
+    assert 'while [ ! -f "$ALLOW" ]' in sh and "kill -USR1" in sh
+    compose = (REPO / "docker-compose.isolated.yml").read_text()
+    assert 'pid: "service:egress"' not in compose     # no shared namespace (start-order deadlock)
 
 
 def test_the_model_goes_through_its_own_relay(tmp_path: Path):
@@ -129,7 +177,7 @@ def test_the_ui_is_published_through_its_own_proxy():
     Its config varies with nothing, so it is a file in the repo rather than
     something run.sh echoes out at start-up — compose mounts it directly."""
     conf = (REPO / "docker" / "ui-proxy.conf.template").read_text()
-    assert "proxy_pass http://aiforge:8799;" in conf
+    assert "set $box http://aiforge:8799;" in conf and "proxy_pass $box;" in conf
     # SSE: the chat streams, so buffering would hold every token to the end.
     assert "proxy_buffering off;" in conf
 

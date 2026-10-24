@@ -23,10 +23,12 @@
 #          itself cannot publish a port, because a container on an internal
 #          network is not reachable from outside it.
 #
-#   egress-ctl  owns the allowlist, OUTSIDE the box: you change it in Settings
-#          (the browser reaches it through `ui`, which refuses the box's own
-#          network), the agent cannot reach it. Each entry allows that host and
-#          its subdomains, anchored — `pypi.org` never matches `evilpypi.org`.
+#   egress-ctl  owns the allowlist, OUTSIDE the box, on a network of its own.
+#          You edit it in Settings; the UI front door forwards /egress-admin/
+#          to it and refuses the box's network and the proxy, so the agent
+#          cannot change it. Each entry allows that host and its subdomains,
+#          anchored — `pypi.org` never matches `evilpypi.org`. An admin token
+#          (AIFORGE_EGRESS_ADMIN_TOKEN) is optional and off by default.
 #   model  relays to the model endpoint ONLY (one host:port, no proxy): the
 #          model client talks to it directly. run.sh points the box's model URL
 #          at it and the relay at your real endpoint (AIFORGE_MODEL_UPSTREAM);
@@ -51,6 +53,8 @@ services:
     container_name: aiforge
     restart: unless-stopped
     networks: [box]
+    # No raw sockets: no forged packets on the box network.
+    cap_drop: [NET_RAW]
     environment:
       # The box listens on its internal network so `ui` can reach it; nothing
       # else can (the network is internal and only `ui` publishes a port, on
@@ -64,6 +68,8 @@ services:
       - AIFORGE_DEFAULT_BASE_URL=${AIFORGE_BOX_LM_URL:-http://model:1234/v1}
       - AIFORGE_OPENAI_COMPAT_BASE_URL=${AIFORGE_BOX_LM_URL:-http://model:1234/v1}
       - AIFORGE_ISOLATED=1
+      # Settings shows the list (read-only) and links to its editor.
+      - AIFORGE_EGRESS_POLICY_RO=/var/lib/aiforge-egress
       - AIFORGE_API_TOKEN
       - AIFORGE_ROLE
       - AIFORGE_ADMIN_URL
@@ -86,6 +92,7 @@ services:
     volumes:
       - ${AIFORGE_CONFIG_DIR:-~/.aiforge}:${AIFORGE_HOME:-/home/aiforge}/.aiforge
       - aiforge-state:/var/lib/aiforge
+      - egress-policy:/var/lib/aiforge-egress:ro
 
   # The allowlist, enforced where the agent cannot argue with it. Shape:
   # docker/tinyproxy.conf (static, read-only). Policy: /policy/allow.txt,
@@ -94,22 +101,31 @@ services:
     image: ${AIFORGE_PROXY_IMAGE:-vimagick/tinyproxy}
     container_name: aiforge-egress
     restart: unless-stopped
-    networks: [box, out]
+    networks:
+      box: {}
+      out:
+        # Fixed, so the UI front door can refuse requests that loop back
+        # through the proxy (docker/ui-proxy.conf.template).
+        ipv4_address: ${AIFORGE_EGRESS_IP:-10.251.251.250}
+    # Waits for the first list, then re-reads it whenever it changes.
+    entrypoint: ["/bin/sh", "/app/egress-proxy.sh"]
+    command: []
     volumes:
+      - ./docker/egress-proxy.sh:/app/egress-proxy.sh:ro
       - ./docker/tinyproxy.conf:/etc/tinyproxy/tinyproxy.conf:ro
       - egress-policy:/policy:ro
 
-  # Owns the allowlist (docker/egress-controller.py). Not on the box network:
-  # the agent has no route to it. Shares the proxy's process namespace so it
-  # can tell it to re-read the list the moment Settings changes it.
+  # Owns the allowlist (docker/egress-controller.py), on its OWN network:
+  # only the UI front door shares it; the box has no route to it.
   egress-ctl:
     image: ${AIFORGE_EGRESS_CTL_IMAGE:-python:3.12-alpine}
     container_name: aiforge-egress-ctl
     restart: unless-stopped
-    networks: [out]
-    pid: "service:egress"
+    networks: [admin]
     command: ["python3", "-u", "/app/egress-controller.py"]
     environment:
+      # Optional: when set, every change needs it. Off for now.
+      - AIFORGE_EGRESS_ADMIN_TOKEN=${AIFORGE_EGRESS_ADMIN_TOKEN:-}
       # First start only: seeds the list. After that Settings owns it.
       - AIFORGE_EGRESS_ALLOW_HOSTS
     volumes:
@@ -124,8 +140,14 @@ services:
     networks: [box, out]
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    command: ["TCP-LISTEN:${AIFORGE_MODEL_PORT:-1234},fork,reuseaddr",
-              "TCP:${AIFORGE_MODEL_UPSTREAM:-host.docker.internal:1234}"]
+    entrypoint: ["/bin/sh", "/app/model-relay.sh"]
+    command: []
+    environment:
+      - AIFORGE_MODEL_PORT=${AIFORGE_MODEL_PORT:-1234}
+      - AIFORGE_MODEL_UPSTREAM=${AIFORGE_MODEL_UPSTREAM:-host.docker.internal:1234}
+      - AIFORGE_MODEL_TLS=${AIFORGE_MODEL_TLS:-0}
+    volumes:
+      - ./docker/model-relay.sh:/app/model-relay.sh:ro
 
   # A container on an internal network cannot publish a port, so the UI is
   # served through here instead of from the box directly.
@@ -133,24 +155,34 @@ services:
     image: ${AIFORGE_UI_PROXY_IMAGE:-nginx:alpine}
     container_name: aiforge-ui
     restart: unless-stopped
-    networks: [box, out]
+    networks: [box, out, admin]
     ports:
       - "${AIFORGE_HOST:-127.0.0.1}:${AIFORGE_PORT:-8799}:8799"
     environment:
       - AIFORGE_BOX_SUBNET=${AIFORGE_BOX_SUBNET:-10.251.250.0/24}
+      - AIFORGE_EGRESS_IP=${AIFORGE_EGRESS_IP:-10.251.251.250}
     volumes:
-      # Static config, versioned with the repo rather than generated at start-up.
+      # A template: nginx fills in the two addresses it refuses at start.
       - ./docker/ui-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro
 
 networks:
   box:
     internal: true
-    # Fixed so the UI front door can refuse the box by address
-    # (docker/ui-proxy.conf.template denies this subnet on /egress-admin/).
+    driver_opts:
+      # No address for THIS machine on the box's bridge: without it the box
+      # reached every service listening on the host (ssh, the AIForge API…)
+      # through the bridge's gateway, internal network or not.
+      com.docker.network.bridge.inhibit_ipv4: "true"
     ipam:
       config:
         - subnet: ${AIFORGE_BOX_SUBNET:-10.251.250.0/24}
-  out: {}
+  out:
+    ipam:
+      config:
+        - subnet: ${AIFORGE_OUT_SUBNET:-10.251.251.0/24}
+  # Only the UI front door and the allowlist's controller.
+  admin:
+    internal: true
 
 volumes:
   aiforge-state:

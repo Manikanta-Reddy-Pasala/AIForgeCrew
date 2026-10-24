@@ -246,6 +246,33 @@ def _env_hosts() -> set[str]:
     return out
 
 
+def network_policy() -> dict | None:
+    """The NETWORK allowlist in isolated docker mode, read from the egress
+    controller's volume (mounted read-only into the box at
+    AIFORGE_EGRESS_POLICY_RO). None when this box is not isolated.
+
+    The box can only READ it: Settings changes it through the UI front door,
+    which the box itself cannot use (docker/egress-controller.py).
+    """
+    root = (os.environ.get("AIFORGE_EGRESS_POLICY_RO") or "").strip()
+    if not root:
+        return None
+    try:
+        with open(os.path.join(root, "hosts.json")) as f:
+            hosts = [str(h) for h in (json.load(f).get("hosts") or [])]
+    except FileNotFoundError:
+        hosts = []
+    except (OSError, ValueError, AttributeError):
+        hosts = []
+    return {"isolated": True, "hosts": hosts}
+
+
+def network_hosts() -> set[str]:
+    """Hosts the network lets the box reach (isolated mode), else empty."""
+    pol = network_policy()
+    return set(pol["hosts"]) if pol else set()
+
+
 _CACHE: dict[str, tuple[float, set[str]]] = {}
 _CACHE_TTL_S = 5.0
 
@@ -274,7 +301,7 @@ def allowed_hosts() -> set[str]:
 
     Each source is computed independently so one failing cannot take the others
     with it — the env fallback in particular has to survive a broken store."""
-    return _derived_cached() | set(stored_hosts()) | _env_hosts()
+    return _derived_cached() | set(stored_hosts()) | _env_hosts() | network_hosts()
 
 
 def write_hosts() -> set[str]:
@@ -313,8 +340,10 @@ def describe() -> dict:
             "effective": sorted(set(derived) | set(stored) | set(env)),
             # The UI says this out loud: an added host is READ-ONLY, so nobody
             # adds one expecting the agent to be able to post to it.
-            "writable": derived}
+            "writable": derived,
+            # Isolated docker mode: the network's own list (read-only here).
+            "network": network_policy()}
 
 
-__all__ = ["allowed_hosts", "describe", "set_stored_hosts", "stored_hosts",
-           "write_hosts"]
+__all__ = ["allowed_hosts", "describe", "network_hosts", "network_policy",
+           "set_stored_hosts", "stored_hosts", "write_hosts"]

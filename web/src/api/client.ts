@@ -13,6 +13,9 @@ import type { JobPreview, JobDraft, Job } from './jobs';
  *  the integration config, so the way to remove one is to unconfigure the
  *  integration rather than prune a list that will silently regrow. */
 export type EgressHosts = {
+  /** Isolated docker mode: the NETWORK allowlist as the box sees it
+   *  (read-only mount). Edited through /egress-admin/ (networkAllowlist…). */
+  network?: { isolated: boolean; hosts: string[] } | null;
   derived: string[];
   extra_hosts: string[];
   env: string[];
@@ -446,32 +449,19 @@ export const api = {
 };
 
 // ── Network allowlist (isolated docker mode) ──────────────────────
-// Served by the egress controller OUTSIDE the box, through the UI front door
-// (/egress-admin/, which refuses the box's own network). Not under /api: the
-// box's API cannot change it, only this browser can.
-export type NetworkAllowlist = { hosts: string[]; enforced: boolean };
+// The egress controller OUTSIDE the box, through the UI front door
+// (/egress-admin/, which refuses the box's own network and the proxy). Not
+// under /api: the box's API cannot change it.
 export type NetworkAllowChange = { at: string; by: string; added: string[]; removed: string[] };
 
-/** The network allowlist, or null when this box is not isolated (no controller). */
-export async function networkAllowlist(): Promise<NetworkAllowlist | null> {
-  try {
-    const r = await fetch('/egress-admin/api/hosts', { cache: 'no-store' });
-    if (!r.ok) return null;
-    const d = await r.json();
-    return d && Array.isArray(d.hosts) ? d as NetworkAllowlist : null;
-  } catch {
-    return null;
-  }
-}
-
-export async function setNetworkAllowlist(hosts: string[]): Promise<NetworkAllowlist> {
+export async function setNetworkAllowlist(hosts: string[]): Promise<string[]> {
   const r = await fetch('/egress-admin/api/hosts', {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ hosts }),
   });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d?.error || `${r.status} ${r.statusText}`);
-  return d as NetworkAllowlist;
+  return d.hosts as string[];
 }
 
 export async function networkAllowChanges(): Promise<NetworkAllowChange[]> {
