@@ -32,8 +32,8 @@
 #                LAN, your model all work); the INTERNET only for hosts on
 #                Settings → Egress allowlist (web, git, ssh, scp, rsync, pip…)
 #   --isolated   strict: an internal docker network — no host, no LAN either
-#   --open       this machine's network with no limits
-#                (AIFORGE_NETWORK=guarded|isolated|open does the same)
+#                (AIFORGE_NETWORK=guarded|isolated does the same). There is no
+#                unlimited mode: run.sh always limits the internet.
 #   --skip-web   don't (re)build the web UI
 #   --test       probe the configured model endpoint, then exit
 #   --admin      this box is THE memory admin (exactly one per fleet); it
@@ -313,7 +313,7 @@ _in_box() {
   [[ -f /.dockerenv || -f /run/.containerenv ]]
 }
 DOCKER_ACTION=up
-NET=""                                   # guarded | isolated | open: flags or AIFORGE_NETWORK
+NET=""                                   # guarded | isolated: flags or AIFORGE_NETWORK
 _MOUNT_ARGS=()
 _ORIG_ARGS=("$@")
 WITH_GRAPHIFY=0
@@ -328,7 +328,9 @@ while [[ $# -gt 0 ]]; do
     --mount) _MOUNT_ARGS+=("${2:-}"); shift ;;
     --guarded) NET=guarded ;;                     # the default: host network, internet via the allowlist
     --isolated) NET=isolated ;;                   # strict: no route out at all except the allowlist
-    --open) NET=open ;;                           # host network, no allowlist
+    --open) echo "!! --open is gone: run.sh always limits the internet to Settings → Egress allowlist." >&2
+            echo "!! Allow what the box needs there (or use --isolated for stricter)." >&2
+            exit 1 ;;
     --lite|--hybrid|--no-build) : ;;                 # legacy no-ops
     --migrate) MIGRATE=1 ;;
     --dedupe) MAINT=dedupe ;;
@@ -660,7 +662,7 @@ EOF_SEED
     done
     (( ok )) || { "${DC[@]}" stop aiforge >/dev/null 2>&1 || true
       _fatal "guarded network: the firewall keeper (aiforge-egress-guard) is not running — the box was stopped." \
-             "See: docker logs aiforge-egress-guard (it needs Linux iptables and NET_ADMIN); or start with --open."; }
+             "See: docker logs aiforge-egress-guard (it needs Linux iptables with cgroup matching and NET_ADMIN)."; }
     for i in $(seq 1 30); do
       probe="$(docker exec aiforge sh -c 'python3 -c "import socket
 try:
@@ -673,7 +675,7 @@ except OSError:
       *NET-BLOCKED*) echo "==> guarded network verified (the internet only through the allowlist)" ;;
       *NET-OPEN*) "${DC[@]}" stop aiforge >/dev/null 2>&1 || true
         _fatal "guarded network: the box reached the internet directly — NOT guarded, the box was stopped." \
-               "See: docker logs aiforge-egress-guard; or start with --open." ;;
+               "See: docker logs aiforge-egress-guard." ;;
       *) echo "!! guarded network: could not probe the box (still starting?) — check: docker logs aiforge-egress-guard" >&2 ;;
     esac
   }
@@ -753,7 +755,7 @@ except OSError:
             "on another port than $u — the sandbox reaches only that one." >&2 ;;
       esac
     done <<< "$_models"
-    echo "==> isolated network (the default; --open shares this machine's network instead):" \
+    echo "==> isolated network (strict):" \
          "model via relay -> $host:$port; anything else only to hosts on the allowlist" \
          "(Settings → Egress allowlist; first start: ${AIFORGE_EGRESS_ALLOW_HOSTS:-none})"
   }
@@ -770,25 +772,25 @@ except OSError:
   # The network mode. GUARDED is the default: the box shares this machine's
   # network (localhost, LAN, a model on 127.0.0.1 all work), and only the
   # INTERNET is limited to the Settings allowlist. --isolated: no route out at
-  # all except the allowlist (no host, no LAN). --open: no limits.
+  # all except the allowlist (no host, no LAN). There is no unlimited mode.
   _running_mode=""
   if [[ "$(docker inspect aiforge --format '{{.HostConfig.NetworkMode}}' 2>/dev/null)" == host ]]; then
     if docker inspect aiforge-egress-guard >/dev/null 2>&1; then _running_mode=guarded
-    else _running_mode=open; fi
+    else _running_mode=unguarded; fi     # an older open-network box: guarded from now on
   elif docker inspect aiforge >/dev/null 2>&1; then
     _running_mode=isolated
   fi
   if [[ -z "$NET" ]]; then
     case "${AIFORGE_NETWORK:-}" in
-      guarded|isolated|open) NET="$AIFORGE_NETWORK" ;;
+      guarded|isolated) NET="$AIFORGE_NETWORK" ;;
+      open) _fatal "AIFORGE_NETWORK=open is gone: run.sh always limits the internet to Settings → Egress allowlist." \
+                   "Remove it from the environment / aiforge.env / the systemd unit." ;;
       *)
         [[ -z "${AIFORGE_NETWORK:-}" ]] || echo "!! AIFORGE_NETWORK=$AIFORGE_NETWORK is not" \
-          "'guarded', 'isolated' or 'open' — using the default (guarded)." >&2
-        if [[ -n "${COMPOSE_FILE:-}" ]]; then
-          NET=open                        # a site compose file is its own base
-          echo "==> COMPOSE_FILE is set: using it as the base (no allowlist)." >&2
-        elif [[ "$DOCKER_ACTION" != up || $TEST -eq 1 || -n "${MAINT:-}" ]] && [[ -n "$_running_mode" ]]; then
-          NET="$_running_mode"            # stop / logs / shell / one-offs: the box that runs
+          "'guarded' or 'isolated' — using the default (guarded)." >&2
+        if [[ "$DOCKER_ACTION" != up || $TEST -eq 1 || -n "${MAINT:-}" ]] \
+           && [[ "$_running_mode" == isolated ]]; then
+          NET=isolated                    # stop / logs / shell / one-offs: the box that runs
         else
           NET=guarded
         fi ;;
@@ -797,21 +799,18 @@ except OSError:
   ISOLATED=0; GUARDED=0
   [[ "$NET" == isolated ]] && ISOLATED=1
   [[ "$NET" == guarded ]] && GUARDED=1
-  [[ "$NET" == open && "$DOCKER_ACTION" == up ]] && echo "==> open network (--open): the" \
-    "box shares this machine's network; commands the agent runs can reach any site." >&2
   _cfiles=()
-  if [[ -n "${COMPOSE_FILE:-}" ]]; then IFS=':' read -ra _cfiles <<< "$COMPOSE_FILE"
-  elif [[ "${ISOLATED:-0}" == 1 ]]; then _cfiles=(docker-compose.isolated.yml)
-  elif [[ "${GUARDED:-0}" == 1 ]]; then _cfiles=(docker-compose.yml docker-compose.guard.yml)
-  else _cfiles=(docker-compose.yml); fi
+  if [[ "${ISOLATED:-0}" == 1 ]]; then _cfiles=(docker-compose.isolated.yml)
+  elif [[ -n "${COMPOSE_FILE:-}" ]]; then
+    # A site compose file is the base; the guard still goes on top of it.
+    IFS=':' read -ra _cfiles <<< "$COMPOSE_FILE"; _cfiles+=(docker-compose.guard.yml)
+  else _cfiles=(docker-compose.yml docker-compose.guard.yml); fi
   if [[ "${GUARDED:-0}" == 1 ]]; then
-    [[ -z "${COMPOSE_FILE:-}" ]] || _fatal \
-      "the guarded network cannot be combined with COMPOSE_FILE (use --open with a site file)."
     if [[ "$DOCKER_ACTION" == up ]]; then _seed_allowlist
     else _seed_allowlist >/dev/null 2>&1; fi
     echo "==> guarded network (the default): this machine and the LAN are free; the" \
          "internet only for hosts on Settings → Egress allowlist (first start:" \
-         "${AIFORGE_EGRESS_ALLOW_HOSTS:-none}). --open: no limits; --isolated: strict." \
+         "${AIFORGE_EGRESS_ALLOW_HOSTS:-none}). --isolated: stricter (no host / LAN)." \
          | { [[ "$DOCKER_ACTION" == up ]] && cat || cat >/dev/null; }
   fi
   # --isolated REPLACES the base rather than overlaying one: compose cannot take
@@ -819,7 +818,7 @@ except OSError:
   # so the isolated shape has to be the base file itself.
   if [[ "${ISOLATED:-0}" == 1 ]]; then
     [[ -z "${COMPOSE_FILE:-}" ]] || _fatal \
-      "--isolated cannot be combined with COMPOSE_FILE: both are base files (use --open with a site file)."
+      "--isolated cannot be combined with COMPOSE_FILE: both are base files."
     if [[ "$DOCKER_ACTION" == up ]]; then _write_isolated_conf
     else _write_isolated_conf >/dev/null 2>&1; fi    # stop/logs/shell: no setup chatter
     export AIFORGE_HOST="$HOST" AIFORGE_PORT="$PORT"
@@ -970,7 +969,7 @@ except OSError:
     case "$_running_mode" in
       isolated) "${DC_BASE[@]}" -f docker-compose.isolated.yml down >/dev/null 2>&1 || true ;;
       guarded)  "${DC_BASE[@]}" -f docker-compose.yml -f docker-compose.guard.yml down >/dev/null 2>&1 || true ;;
-      open)     "${DC_BASE[@]}" -f docker-compose.yml down >/dev/null 2>&1 || true ;;
+      unguarded) : ;;   # same box: up adds the guard and recreates it with the overlay
     esac
   fi
   echo "==> docker mode: building the sandbox image (first time: a few minutes)…"

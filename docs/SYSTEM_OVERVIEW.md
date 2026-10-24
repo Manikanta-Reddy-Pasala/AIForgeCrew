@@ -232,7 +232,6 @@ The full decision history lives in **[DECISIONS.md](DECISIONS.md)**.
 ./run.sh                 # the default: an Ubuntu 24.04 docker sandbox on this machine's
                          # network; the internet only via the Settings allowlist
 ./run.sh --isolated      # strict: no host / LAN either
-./run.sh --open          # no limits
 ./run.sh --repos DIR     # mount YOUR projects folder as the project root
 ./run.sh --mount DIR     # approve one more host folder (repeatable)
 ./run.sh --stop | --logs | --shell

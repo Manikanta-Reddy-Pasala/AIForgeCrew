@@ -94,7 +94,7 @@ The sandbox is an Ubuntu 24.04 container. That is the only mode.
 - **Command** — `aiforge`, or `./run.sh` from a checkout
 - **What the agent can touch** — everything **inside** the box; of this machine only `~/.aiforge` plus folders you approve
 - **Rights** — full: your uid + passwordless sudo, no workspace jail
-- **Network** — guarded by default: the box shares this machine's network (localhost, the LAN, your model all work), and the INTERNET is limited to Settings → Egress allowlist — for everything the agent runs. `--isolated`: also no host / LAN. `--open`: no limits
+- **Network** — guarded by default: the box shares this machine's network (localhost, the LAN, your model all work), and the INTERNET is limited to Settings → Egress allowlist — for everything the agent runs. `--isolated`: also no host / LAN. There is no unlimited mode
 
 ## First run: what gets installed
 
@@ -146,7 +146,6 @@ git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew.git && cd AIForg
 ./run.sh --mount /srv/x   # also mount /srv/x (repeatable)
 ./run.sh                  # guarded (default): host network, internet only via the allowlist
 ./run.sh --isolated       # strict: no host, no LAN, internet only via the allowlist
-./run.sh --open           # host network, no limits
 ./run.sh --port 9000      # any other flag is passed to the run.sh inside the box
 ```
 
@@ -242,17 +241,12 @@ docker-compose.yml):
 
 ## Isolated network (`--isolated`)
 
-With `--open` the box shares this machine's network stack, so the allowlist in
-`aiforge_core/net/egress.py` governs only *declared* destinations (Jira,
-GitLab, SMTP, MCP, telemetry) and page fetches — a `curl` in the agent's shell
-never passes through it. The default (isolated) moves the boundary into the
-network. The first start seeds the allowlist with the package registries run.sh
+The strict mode puts the box on an internal network: no host, no LAN. The first start seeds the allowlist with the package registries run.sh
 installs from (npm, PyPI index), so the box can install itself; everything else
 is yours to add in Settings. **Upgrading an install that ran open:** move the
 checkout out of any folder mounted into the box (isolated refuses to start
 otherwise) and make sure the model listens where docker can reach it — or keep
-`--open` until then (or put `AIFORGE_NETWORK=open` in aiforge.env / the
-systemd unit to keep it). The first start seeds the allowlist with what the
+the default guarded mode until then. The first start seeds the allowlist with what the
 install already uses (registries, model hosts not on this machine, the memory
 admin, Jira/Confluence/GitLab set by env); integrations configured only in
 Settings show as one-click "+ host" buttons on the allowlist card. Services
@@ -312,8 +306,7 @@ GitLab, …). Without the registries the box cannot finish its first start.
 **Do not allowlist `host.docker.internal`:** that opens every port on this
 machine to the box (its own UI and API included), not just the model.
 
-With `--open` the Settings card says so: the list then limits only
-AIForge's own web tools, and a command the agent runs can reach any site.
+
 
 ## What the first run does
 
@@ -455,7 +448,6 @@ in the real environment, which **overrides** the file. `.env` is not read.
 | `--dev` | uvicorn hot reload |
 | (default) | guarded: host network, internet only via the allowlist |
 | `--isolated` | internal network: no host, no LAN, internet only via the allowlist |
-| `--open` | host network, no limits |
 | `--stop` / `--logs` / `--shell` | stop, follow, or open a shell in the sandbox |
 | `--repos DIR` | mount your projects folder (default `~/.aiforge/repos`) |
 | `--mount DIR` | approve and mount another host folder; repeatable |
@@ -628,7 +620,7 @@ web/              React UI
 ## Security rails
 
 - **Workspace clamp** — `AIFORGE_WORKSPACE_DIR` confines file/exec to one dir.
-- **Network** — the default (guarded) and `--isolated` enforce the egress allowlist for the internet; `--isolated` also cuts the host and LAN; `--open` enforces nothing.
+- **Network** — `./run.sh` always enforces the egress allowlist for the internet (guarded by default; `--isolated` also cuts the host and LAN).
 - **Mount approval** — widening the box's view of the host needs host-side approval.
 - **Approval gate** — risky / `ask`-policy actions pause for Approve/Reject.
 - **Delete guard** — destructive deletes refused unless explicitly confirmed.

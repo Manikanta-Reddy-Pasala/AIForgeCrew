@@ -1,6 +1,7 @@
-# AIForge — OPEN-NETWORK docker mode: `./run.sh --open` (the default is the
-# isolated network, docker-compose.isolated.yml). Start it through run.sh, which
-# fills in your uid/home and the passthrough settings below.
+# AIForge — the docker box on this machine's network. run.sh always starts it
+# WITH docker-compose.guard.yml on top (the internet only via the Settings
+# allowlist); never start this file alone. Start it through run.sh, which fills
+# in your uid/home and the passthrough settings below.
 #
 # An Ubuntu 24.04 sandbox. Inside it the agent has full rights (your uid +
 # passwordless sudo, no workspace jail) and open outbound network. It sees ONE

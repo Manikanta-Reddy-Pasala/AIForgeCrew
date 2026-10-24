@@ -1,5 +1,5 @@
-# AIForge — ISOLATED NETWORK mode: the default `./run.sh` (`--isolated` too;
-# `--open` selects docker-compose.yml instead).
+# AIForge — ISOLATED (strict) network mode: `./run.sh --isolated`. The default
+# is the guarded mode (docker-compose.yml + docker-compose.guard.yml).
 #
 # The default `docker-compose.yml` runs the box with `network_mode: host`: it
 # shares this machine's network stack, so the egress allowlist in

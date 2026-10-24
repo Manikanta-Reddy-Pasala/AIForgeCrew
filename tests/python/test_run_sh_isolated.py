@@ -120,19 +120,17 @@ def test_isolated_is_still_there(tmp_path: Path):
     assert up and "-f docker-compose.isolated.yml" in up[0]
 
 
-def test_open_shares_this_machines_network(tmp_path: Path):
-    for args, env in (([ "--open"], {}), ([], {"AIFORGE_NETWORK": "open"})):
+def test_there_is_no_unlimited_mode(tmp_path: Path):
+    for args, env in ((["--open"], {}), ([], {"AIFORGE_NETWORK": "open"})):
         proc, calls = _run(tmp_path, args, env)
-        up = [c for c in calls if " up " in f" {c} "]
-        assert up and "docker-compose.isolated.yml" not in up[0], (args, env)
-        assert "open network (--open)" in proc.stderr
+        assert proc.returncode != 0 and "always limits the internet" in proc.stderr, (args, env)
+        assert not [c for c in calls if " up " in f" {c} "]
 
 
-def test_a_site_compose_file_is_used_as_is(tmp_path: Path):
+def test_a_site_compose_file_still_gets_the_guard(tmp_path: Path):
     proc, calls = _run(tmp_path, [], {"COMPOSE_FILE": "site.yml"})
     up = [c for c in calls if " up " in f" {c} "]
-    assert up and "docker-compose.isolated.yml" not in up[0]
-    assert "COMPOSE_FILE is set" in proc.stderr
+    assert up and "-f site.yml -f docker-compose.guard.yml" in up[0]
 
 
 def test_first_start_seeds_the_package_registries(tmp_path: Path):
@@ -296,8 +294,8 @@ def test_isolated_refuses_a_checkout_the_box_can_see(tmp_path: Path):
     assert proc.returncode != 0
     assert "would see its own boundary" in proc.stderr
     assert not [c for c in calls if " up " in f" {c} "]
-    proc, calls = _run(tmp_path, ["--open"], {"AIFORGE_REPOS_DIR": str(tmp_path)})
-    assert "the box can edit this checkout" in proc.stderr          # open mode: warns
+    proc, calls = _run(tmp_path, [], {"AIFORGE_REPOS_DIR": str(tmp_path)})
+    assert "the box can edit this checkout" in proc.stderr          # guarded mode: warns
     assert [c for c in calls if " up " in f" {c} "]
 
 
@@ -371,7 +369,7 @@ def test_stop_is_quiet(tmp_path: Path):
 
 def test_an_unknown_network_value_is_reported(tmp_path: Path):
     proc, calls = _run(tmp_path, [], {"AIFORGE_NETWORK": "isolate"})
-    assert "is not 'guarded', 'isolated' or 'open'" in proc.stderr
+    assert "is not 'guarded' or 'isolated'" in proc.stderr
     up = [c for c in calls if " up " in f" {c} "]
     assert up and "docker-compose.guard.yml" in up[0]
 

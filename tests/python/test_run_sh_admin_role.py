@@ -17,6 +17,12 @@ from pathlib import Path
 RUN_SH = Path(__file__).resolve().parents[2] / "run.sh"
 
 
+# run.sh's post-start guard check (the default guarded network): the guard is
+# healthy and the box cannot reach the internet directly.
+_GUARD_ANSWERS = ('case "$*" in *"inspect aiforge-egress-guard --format"*) echo healthy ;; '
+                  '*"exec aiforge sh -c python3"*) echo NET-BLOCKED ;; esac\n')
+
+
 def _run(tmp_path: Path, args: list[str], extra_env: dict | None = None):
     """Run a copy of run.sh in an empty dir, so nothing touches the real repo."""
     import os
@@ -56,15 +62,16 @@ def test_docker_mode_passes_the_role_flags_into_the_sandbox(tmp_path: Path):
     bindir.mkdir()
     log = tmp_path / "docker.log"
     fake = bindir / "docker"
-    fake.write_text(f'#!/bin/sh\necho "$* | RUN_ARGS=$AIFORGE_RUN_ARGS | UID=$AIFORGE_UID" >> "{log}"\nexit 0\n')
+    fake.write_text(f'#!/bin/sh\necho "$* | RUN_ARGS=$AIFORGE_RUN_ARGS | UID=$AIFORGE_UID" >> "{log}"\n'
+                    + _GUARD_ANSWERS + 'exit 0\n')
     fake.chmod(0o755)
     proc = _run(tmp_path, ["--admin", "--port", "9001"],
-                {"AIFORGE_IN_SANDBOX": "0", "AIFORGE_NETWORK": "open",   # force the sandbox branch: the
+                {"AIFORGE_IN_SANDBOX": "0", "AIFORGE_NETWORK": "guarded",   # force the sandbox branch: the
                  # suite itself runs in a container, where detection would
                  # otherwise take the in-box path.
                  "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"})
     assert proc.returncode == 0, proc.stderr
-    up = [ln for ln in log.read_text().splitlines() if ln.startswith("compose up")]
+    up = [ln for ln in log.read_text().splitlines() if " up -d " in ln]
     assert up, log.read_text()
     assert "RUN_ARGS=--admin --port 9001" in up[0], log.read_text()
     assert f"UID={os.getuid()}" in up[0]
@@ -77,18 +84,19 @@ def test_repos_mounts_your_folder_and_is_not_passed_inward(tmp_path: Path):
     bindir.mkdir()
     log = tmp_path / "docker.log"
     fake = bindir / "docker"
-    fake.write_text(f'#!/bin/sh\necho "$* | RUN_ARGS=$AIFORGE_RUN_ARGS | REPOS=$AIFORGE_REPOS_DIR" >> "{log}"\nexit 0\n')
+    fake.write_text(f'#!/bin/sh\necho "$* | RUN_ARGS=$AIFORGE_RUN_ARGS | REPOS=$AIFORGE_REPOS_DIR" >> "{log}"\n'
+                    + _GUARD_ANSWERS + 'exit 0\n')
     fake.chmod(0o755)
     code = tmp_path / "code"
     code.mkdir()
     proc = _run(tmp_path, ["--repos", str(code), "--dev"],
-                {"AIFORGE_IN_SANDBOX": "0", "AIFORGE_NETWORK": "open",   # force the sandbox branch: the
+                {"AIFORGE_IN_SANDBOX": "0", "AIFORGE_NETWORK": "guarded",   # force the sandbox branch: the
                  # suite itself runs in a container, where detection would
                  # otherwise take the in-box path.
                  "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"})
     assert proc.returncode == 0, proc.stderr
     up = [ln for ln in log.read_text().splitlines() if " up " in f" {ln} "][0]
-    assert "-f docker-compose.yml -f docker/compose.repos.yml" in up
+    assert "-f docker-compose.yml -f docker-compose.guard.yml -f docker/compose.repos.yml" in up
     assert f"REPOS={os.path.realpath(code)}" in up
     assert "RUN_ARGS=--dev |" in up                 # --repos and its value stay outside
 
@@ -100,7 +108,7 @@ def test_repos_must_be_a_folder(tmp_path: Path):
     (bindir / "docker").write_text("#!/bin/sh\nexit 0\n")
     (bindir / "docker").chmod(0o755)
     proc = _run(tmp_path, ["--repos", str(tmp_path / "nope")],
-                {"AIFORGE_IN_SANDBOX": "0", "AIFORGE_NETWORK": "open",   # force the sandbox branch: the
+                {"AIFORGE_IN_SANDBOX": "0", "AIFORGE_NETWORK": "guarded",   # force the sandbox branch: the
                  # suite itself runs in a container, where detection would
                  # otherwise take the in-box path.
                  "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"})
@@ -114,7 +122,9 @@ def test_docker_mode_is_the_default(tmp_path: Path):
     bindir.mkdir()
     log = tmp_path / "docker.log"
     fake = bindir / "docker"
-    fake.write_text(f'#!/bin/sh\necho "$*" >> "{log}"\nexit 0\n')
+    # The box, once up, runs on this machine's network (the guarded default).
+    fake.write_text(f'#!/bin/sh\necho "$*" >> "{log}"\n' + _GUARD_ANSWERS
+                    + 'case "$*" in "inspect aiforge --format"*) echo host ;; esac\nexit 0\n')
     fake.chmod(0o755)
     env = {"PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}"}
     dst = tmp_path / "run.sh"
@@ -123,14 +133,14 @@ def test_docker_mode_is_the_default(tmp_path: Path):
             # Nothing selects the sandbox any more — it is what you get. Forced
             # to "0" because this suite runs INSIDE a container, where bare
             # detection would take the in-box path and never call docker.
-            "AIFORGE_IN_SANDBOX": "0", "AIFORGE_NETWORK": "open"}
+            "AIFORGE_IN_SANDBOX": "0"}
     subprocess.run(["bash", str(dst)], cwd=str(tmp_path), capture_output=True,
                    text=True, env=full, timeout=60)
-    assert "compose up -d --build" in log.read_text()
+    assert "-f docker-compose.guard.yml up -d --build" in log.read_text()
     subprocess.run(["bash", str(dst), "--stop"], cwd=str(tmp_path),
                    capture_output=True, text=True, env=full, timeout=60)
     # stop, not down: the container keeps what the agent installed in it
-    assert "compose stop" in log.read_text()
+    assert "-f docker-compose.guard.yml stop" in log.read_text()
 
 def test_admin_and_spoke_together_are_refused(tmp_path: Path):
     proc = _run(tmp_path, ["--admin", "--spoke"])
