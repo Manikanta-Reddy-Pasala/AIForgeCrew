@@ -530,12 +530,14 @@ if ! _in_box; then
   # aiforge config) lets the agent edit run.sh, the compose files and the
   # isolation's own config — taking effect on the next start, on this host.
   _refuse_box_sees_checkout() {
-    local here cfg m why=""
+    local here cfg m why="" _ms=()
     here="$(pwd -P)"; cfg="${XDG_CONFIG_HOME:-$HOME/.config}/aiforge"
-    for m in "$AIFORGE_CONFIG_DIR" ${AIFORGE_REPOS_DIR:+"$AIFORGE_REPOS_DIR"} \
-             $(IFS=:; echo ${AIFORGE_MOUNTS:-}); do
+    # Split on ':' only (paths may hold spaces); no globbing.
+    IFS=: read -r -a _ms <<< "${AIFORGE_MOUNTS:-}"
+    for m in "$AIFORGE_CONFIG_DIR" ${AIFORGE_REPOS_DIR:+"$AIFORGE_REPOS_DIR"} ${_ms[@]+"${_ms[@]}"}; do
       [[ -n "$m" && -d "$m" ]] || continue
-      m="$(cd "$m" && pwd -P)"
+      m="$(cd "$m" && pwd -P)"; m="${m%/}"
+      if [[ -z "$m" ]]; then why="/ (the whole filesystem) is mounted into the box"; break; fi
       case "$here/" in "$m"/*) why="$m contains this checkout ($here)" ;; esac
       case "$m/" in "$here"/*) why="$m is inside this checkout ($here)" ;; esac
       case "$cfg/" in "$m"/*) why="$m contains $cfg (the host's aiforge settings)" ;; esac
@@ -558,7 +560,7 @@ if ! _in_box; then
   _verify_isolated() {
     local net problems="" i
     for i in $(seq 1 30); do
-      net="$(docker inspect aiforge --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' 2>/dev/null)"
+      net="$(docker inspect aiforge --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' 2>/dev/null | awk '{print $1}')"
       [[ -n "$net" ]] && break; sleep 1
     done
     [[ -n "$net" ]] || problems+=" the box has no network;"
@@ -570,11 +572,25 @@ if ! _in_box; then
       [[ "$(docker network inspect "$net" --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}')" == "${AIFORGE_BOX_SUBNET:-10.251.250.0/24}" ]] \
         || problems+=" $net is not on ${AIFORGE_BOX_SUBNET:-10.251.250.0/24};"
     fi
-    if docker exec aiforge sh -c 'getent hosts example.com' >/dev/null 2>&1; then
-      problems+=" the box resolves internet names (DNS leaks out — update Docker);"
-    fi
-    if [[ -n "$(docker exec aiforge sh -c 'cat /proc/net/if_inet6 2>/dev/null' 2>/dev/null)" ]]; then
-      problems+=" the box has IPv6 addresses;"
+    local up=0
+    for i in $(seq 1 30); do
+      [[ "$(docker exec aiforge sh -c 'echo box-up' 2>/dev/null)" == box-up ]] && { up=1; break; }
+      sleep 2
+    done
+    if (( up )); then
+      # Explicit answers, so a failed exec can never read as "fine".
+      case "$(docker exec aiforge sh -c 'getent hosts example.com >/dev/null 2>&1 && echo DNS-LEAK || echo DNS-NONE' 2>/dev/null)" in
+        DNS-NONE) ;;
+        DNS-LEAK) problems+=" the box resolves internet names (DNS leaks out — update Docker);" ;;
+        *) problems+=" could not check the box's DNS;" ;;
+      esac
+      case "$(docker exec aiforge sh -c 'if [ -s /proc/net/if_inet6 ]; then echo V6-YES; else echo V6-NO; fi' 2>/dev/null)" in
+        V6-NO) ;;
+        V6-YES) problems+=" the box has IPv6 addresses;" ;;
+        *) problems+=" could not check the box's IPv6;" ;;
+      esac
+    else
+      problems+=" the box is not running, so its isolation could not be checked (./run.sh --logs);"
     fi
     [[ -z "$problems" ]] && { echo "==> isolated network verified (no route, no host address, no IPv6, no outside DNS)"; return 0; }
     "${DC[@]}" down >/dev/null 2>&1 || true
@@ -622,8 +638,20 @@ if ! _in_box; then
     export AIFORGE_BOX_LM_URL="http://model:$listen$path"
     # The names the UI is opened by (the allowlist route refuses others).
     if [[ -z "${AIFORGE_UI_HOSTS:-}" ]]; then
-      AIFORGE_UI_HOSTS="localhost,127.0.0.1"
-      [[ "$HOST" != 0.0.0.0 && "$HOST" != 127.0.0.1 ]] && AIFORGE_UI_HOSTS+=",$HOST"
+      AIFORGE_UI_HOSTS="localhost,127.0.0.1,::1"
+      case "$HOST" in
+        0.0.0.0|::|"[::]")
+          # Reachable from the LAN: the names and addresses it is opened by.
+          local _n
+          for _n in "$(hostname 2>/dev/null)" "$(hostname -f 2>/dev/null)" \
+                    $( (hostname -I 2>/dev/null || ipconfig getifaddr en0 2>/dev/null) ); do
+            [[ -n "$_n" && ",$AIFORGE_UI_HOSTS," != *",$_n,"* ]] && AIFORGE_UI_HOSTS+=",$_n"
+          done
+          echo "==> isolated network: the allowlist can be edited from the UI opened as" \
+               "$AIFORGE_UI_HOSTS (another name or a public URL: add it to AIFORGE_UI_HOSTS)" ;;
+        127.0.0.1|localhost) ;;
+        *) AIFORGE_UI_HOSTS+=",$HOST" ;;
+      esac
       export AIFORGE_UI_HOSTS
     fi
     echo "==> isolated network: model via relay -> $host:$port; anything else only to" \
@@ -789,6 +817,13 @@ if ! _in_box; then
     _refuse_box_sees_checkout warn
   fi
   echo "==> docker mode: building the sandbox image (first time: a few minutes)…"
+  if [[ "${ISOLATED:-0}" == 1 ]]; then
+    # The allowlist's volume belongs to the controller's unprivileged user
+    # (an older version wrote it as root, and the controller would then
+    # crash-loop on its first save). Idempotent.
+    "${DC[@]}" run --rm --no-deps --user 0 --cap-add CHOWN --entrypoint chown egress-ctl -R 65534:65534 /policy \
+      >/dev/null 2>&1 || true
+  fi
   "${DC[@]}" up -d --build
   [[ "${ISOLATED:-0}" == 1 ]] && _verify_isolated
   _start_awake_bridge

@@ -44,8 +44,17 @@ def test_ssh_port_only(eg, monkeypatch):
     assert eg.allowed("github.com", 22) is None
     assert "only SSH ports" in eg.allowed("github.com", 443)
     assert eg.allowed("10.0.0.5", 22) is None                    # LAN ssh is fine
-    for bad in ("127.0.0.1", "localhost", "169.254.169.254", "::1", "a b"):
+    for bad in ("127.0.0.1", "localhost", "169.254.169.254", "::1", "a b", "egress-ctl",
+                "aiforge", "x.localhost"):
         assert eg.allowed(bad, 22), bad
+    assert eg.allowed("nuc", 22) is None                           # a LAN short name is fine
+
+
+def test_a_name_resolving_to_loopback_is_refused(eg, monkeypatch):
+    monkeypatch.setattr(eg.socket, "getaddrinfo",
+                        lambda h, p, type=0: [(2, 1, 6, "", ("127.0.0.1", p))])
+    addr, why = eg.resolve("sneaky.example", 22)
+    assert addr == "" and "127.0.0.1" in why
 
 
 def test_modes(eg, monkeypatch, tmp_path):
@@ -94,6 +103,7 @@ def test_end_to_end_through_the_box_proxycommand(eg, monkeypatch):
     echo_port = echo.getsockname()[1]
     monkeypatch.setattr(eg, "allowed",
                         lambda h, p: None if p == echo_port else "only SSH ports")
+    monkeypatch.setattr(eg, "resolve", lambda h, p: ("127.0.0.1", None))
     port = _exit_server(eg)
     env = {"AIFORGE_SSH_PROXY": f"127.0.0.1:{port}", "PATH": "/usr/bin:/bin"}
     script = str(REPO / "docker" / "ssh-connect.py")

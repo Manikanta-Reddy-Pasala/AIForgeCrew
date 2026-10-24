@@ -80,6 +80,8 @@ Host localhost 127.0.0.1 ::1
 Host *
   ProxyCommand $_py /opt/aiforge-src/docker/ssh-connect.py %h %p
 SSHCONF
+elif [[ "${AIFORGE_ISOLATED:-0}" == 1 ]]; then
+  echo "!! isolated network: /etc/ssh/ssh_config.d is missing — ssh out will not work" >&2
 fi
 
 # Inside the box there is nothing to protect from the agent: full rights, no

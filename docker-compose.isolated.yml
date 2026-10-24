@@ -208,6 +208,8 @@ services:
     environment:
       - AIFORGE_BOX_SUBNET=${AIFORGE_BOX_SUBNET:-10.251.250.0/24}
       - AIFORGE_EGRESS_IP=${AIFORGE_EGRESS_IP:-10.251.251.250}
+      - AIFORGE_OUT_SUBNET=${AIFORGE_OUT_SUBNET:-10.251.251.0/24}
+      - AIFORGE_OUT_GATEWAY=${AIFORGE_OUT_GATEWAY:-10.251.251.1}
 
 networks:
   box:
@@ -226,6 +228,7 @@ networks:
     ipam:
       config:
         - subnet: ${AIFORGE_OUT_SUBNET:-10.251.251.0/24}
+          gateway: ${AIFORGE_OUT_GATEWAY:-10.251.251.1}
   # Only the UI front door and the allowlist's controller.
   admin:
     internal: true

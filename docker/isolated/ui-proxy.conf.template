@@ -21,7 +21,11 @@ server {
   # the agent must not be able to change its own allowlist.
   location /egress-admin/ {
     deny ${AIFORGE_BOX_SUBNET};
+    # The proxy network: only its gateway (where the published port's
+    # traffic arrives) — not the proxy, the SSH exit or the model relay.
+    allow ${AIFORGE_OUT_GATEWAY};
     deny ${AIFORGE_EGRESS_IP};
+    deny ${AIFORGE_OUT_SUBNET};
     allow all;
     # Resolved per request: nginx must still start while the controller is
     # down (the chat keeps working; only the list cannot be changed).

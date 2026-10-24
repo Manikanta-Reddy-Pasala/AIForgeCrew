@@ -26,28 +26,32 @@ _FAKE_DOCKER = r"""#!/bin/sh
 echo "$*" >> "{log}"
 # Answers for run.sh's post-start isolation check (_verify_isolated).
 case "$*" in
-  "inspect aiforge --format"*) echo "proj_box" ;;
+  "inspect aiforge --format"*) echo "proj_box " ;;
   *"network inspect proj_box"*Internal*) echo true ;;
   *"network inspect proj_box"*inhibit_ipv4*) echo "{inhibit}" ;;
   *"network inspect proj_box"*EnableIPv6*) echo false ;;
   *"network inspect proj_box"*Subnet*) echo "10.251.250.0/24" ;;
-  *"exec aiforge sh -c getent"*) exit {getent} ;;
-  *"exec aiforge sh -c cat /proc/net/if_inet6"*) : ;;
+  *"exec aiforge sh -c echo box-up"*) echo box-up ;;
+  *"exec aiforge sh -c getent"*) if [ "{getent}" = 0 ]; then echo DNS-LEAK; else echo DNS-NONE; fi ;;
+  *"exec aiforge sh -c if [ -s /proc/net/if_inet6 ]"*) echo V6-NO ;;
 esac
 exit 0
 """
 
 
 def _run(tmp_path: Path, args: list[str], extra_env: dict | None = None,
-         inhibit: str = "true", getent: int = 2):
+         inhibit: str = "true", getent: int = 2, box_up: bool = True):
     """run.sh (from its own checkout folder) with a fake `docker` on PATH that
     records how it was called and answers the isolation check."""
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     log = tmp_path / "docker.log"
     fake = bindir / "docker"
-    fake.write_text(_FAKE_DOCKER.replace("{log}", str(log))
-                    .replace("{inhibit}", inhibit).replace("{getent}", str(getent)))
+    text = (_FAKE_DOCKER.replace("{log}", str(log))
+            .replace("{inhibit}", inhibit).replace("{getent}", str(getent)))
+    if not box_up:
+        text = text.replace('echo box-up ;;', 'exit 1 ;;')
+    fake.write_text(text)
     fake.chmod(0o755)
 
     checkout = tmp_path / "checkout"
@@ -271,3 +275,15 @@ def test_ssh_goes_out_through_its_own_exit():
     entry = (REPO / "docker" / "entrypoint.sh").read_text()
     assert "ProxyCommand $_py /opt/aiforge-src/docker/ssh-connect.py %h %p" in entry
     assert '_py="$(command -v python3' in entry
+
+
+def test_the_check_fails_closed_when_the_box_is_not_running(tmp_path: Path):
+    """No answer from the box is NOT 'isolated'."""
+    proc, _ = _run(tmp_path, ["--isolated"], getent=2, box_up=False)
+    assert proc.returncode != 0 and "isolation could not be checked" in proc.stderr
+
+
+def test_lan_names_are_added_when_the_ui_is_open_to_the_lan(tmp_path: Path):
+    proc, _ = _run(tmp_path, ["--isolated", "--host", "0.0.0.0"],
+                   {"AIFORGE_ALLOW_UNAUTH_NONLOOPBACK": "1"})
+    assert "allowlist can be edited from the UI opened as localhost,127.0.0.1,::1," in proc.stdout
