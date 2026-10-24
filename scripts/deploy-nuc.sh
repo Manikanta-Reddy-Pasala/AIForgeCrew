@@ -119,9 +119,8 @@ else
   # No apostrophe in the default: bash re-parses quotes inside ${x:-…}, and one
   # there opens a string that never closes — the whole script fails to parse.
   echo "==> up on ${HOST}:${PORT} (index: ${UV_DEFAULT_INDEX:-the one pyproject names})"
-  # The open network, explicitly (the default is now the isolated network);
-  # AIFORGE_NETWORK=isolated in the environment switches this box over.
-  AIFORGE_NETWORK="${AIFORGE_NETWORK:-open}" ./run.sh --host "$HOST" --port "$PORT" \
+  # The default network: guarded (the internet only via the Settings allowlist).
+  ./run.sh --host "$HOST" --port "$PORT" \
     || _fatal "./run.sh could not bring the sandbox up." \
               "Read the error above: a name conflict means a foreign '$BOX' container, an image build failure usually means the box cannot reach its package index."
 fi
