@@ -165,3 +165,60 @@ def runtime_mounts_remove(path: str) -> dict:
     from aiforge_core.runtime import sandbox_mounts
     sandbox_mounts.remove(path)
     return sandbox_mounts.state()
+
+
+# ─── network allowlist (guarded default) ────────────────────────────────
+# In the guarded mode the allowlist's controller listens on this machine's
+# loopback (docker-compose.guard.yml); Settings reaches it through these, the
+# same paths the isolated mode's UI front door serves. Not configured (open
+# mode): 404, and the Settings card says the list is not enforced.
+
+class NetworkAllowBody(BaseModel):
+    hosts: list[str] = Field(default_factory=list,
+                             description="hosts (or URLs) the box may reach on the internet")
+
+
+def _egress_admin(method: str, path: str, body: dict | None = None) -> dict:
+    import json as _json
+    import os as _os
+    import urllib.error
+    import urllib.request
+    base = (_os.environ.get("AIFORGE_EGRESS_ADMIN_URL") or "").rstrip("/")
+    if not base:
+        raise HTTPException(status_code=404, detail="no network allowlist on this box")
+    headers = {"Content-Type": "application/json", "Host": "127.0.0.1"}
+    tok = _os.environ.get("AIFORGE_EGRESS_ADMIN_TOKEN")
+    if tok:
+        headers["Authorization"] = f"Bearer {tok}"
+    req = urllib.request.Request(
+        base + path, method=method, headers=headers,
+        data=_json.dumps(body).encode() if body is not None else None)
+    # Never through a proxy: the controller is on this machine.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(req, timeout=10) as r:
+            return _json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = _json.loads(exc.read() or b"{}").get("error") or str(exc)
+        except ValueError:
+            detail = str(exc)
+        raise HTTPException(status_code=exc.code, detail=detail) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=503,
+                            detail=f"the allowlist controller is not reachable: {exc}") from exc
+
+
+@router.get("/egress-admin/api/hosts")
+def network_allowlist_get() -> dict:
+    return _egress_admin("GET", "/api/hosts")
+
+
+@router.put("/egress-admin/api/hosts", responses={400: {"description": "Bad host"}})
+def network_allowlist_put(body: NetworkAllowBody) -> dict:
+    return _egress_admin("PUT", "/api/hosts", {"hosts": body.hosts})
+
+
+@router.get("/egress-admin/api/changes")
+def network_allowlist_changes() -> dict:
+    return _egress_admin("GET", "/api/changes")

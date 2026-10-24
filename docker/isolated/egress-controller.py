@@ -306,7 +306,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     seed()
-    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+    host = os.environ.get("EGRESS_CONTROLLER_HOST", "0.0.0.0")   # 127.0.0.1 on the host network
+    ThreadingHTTPServer((host, PORT), Handler).serve_forever()
 
 
 if __name__ == "__main__":

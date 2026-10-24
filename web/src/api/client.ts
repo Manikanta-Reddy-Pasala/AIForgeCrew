@@ -15,7 +15,7 @@ import type { JobPreview, JobDraft, Job } from './jobs';
 export type EgressHosts = {
   /** Isolated docker mode: the NETWORK allowlist as the box sees it
    *  (read-only mount). Edited through /egress-admin/ (networkAllowlist…). */
-  network?: { isolated: boolean; hosts: string[] } | null;
+  network?: { isolated: boolean; mode?: 'guarded' | 'isolated'; hosts: string[] } | null;
   derived: string[];
   extra_hosts: string[];
   env: string[];

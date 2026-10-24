@@ -26,6 +26,7 @@ import re
 import sys
 
 PORT = int(os.environ.get("SSH_EGRESS_LISTEN", "8889"))
+HOST = os.environ.get("SSH_EGRESS_HOST", "0.0.0.0")     # 127.0.0.1 on the host network
 MAX_TUNNELS = int(os.environ.get("SSH_EGRESS_MAX", "64"))
 #: The names of this setup's own containers: never destinations.
 _OWN = frozenset({"aiforge", "egress", "egress-ctl", "ssh-egress", "model", "ui",
@@ -204,7 +205,7 @@ async def _handle(reader, writer):
 
 
 async def main():
-    server = await asyncio.start_server(handle, "0.0.0.0", PORT)
+    server = await asyncio.start_server(handle, HOST, PORT)
     print(f"ssh-egress: listening on {PORT}, mode={mode()}, ports={sorted(ports())}",
           file=sys.stderr, flush=True)
     async with server:

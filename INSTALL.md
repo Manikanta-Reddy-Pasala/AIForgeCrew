@@ -64,10 +64,8 @@ A model server running on the same computer (LM Studio uses port 1234, Ollama 11
 - **Linux with Docker Engine:** `http://127.0.0.1:1234/v1`
 - **Docker Desktop (macOS, Windows, Linux):** `http://host.docker.internal:1234/v1`,
   because the sandbox reaches your computer through that name
-In the sandbox (the default), the model is reached through a relay: a model
-on this computer must listen where Docker can reach it (LM Studio: "Serve on
-local network"; Ollama: `OLLAMA_HOST=0.0.0.0`). A model on another machine
-or in the cloud: add its host in Settings → Egress allowlist.
+   The internet is limited to Settings → Egress allowlist (a model in the cloud:
+   add its host there). This computer and your LAN are not limited.
 
 
 Then, in any project folder:

@@ -67,11 +67,10 @@ rsync -a --delete --chown="$APP_UID:$APP_GID" \
   /opt/aiforge-src/ "$APP/"
 chown "$APP_UID:$APP_GID" "$STATE" "$APP" "$CFG/repos" 2>/dev/null || true
 
-# Isolated network (`./run.sh --isolated`): the box has no route out, so ssh
-# (and scp / rsync / git over ssh) leaves through the SSH exit
-# (docker/ssh-egress.py) — every host, through one ProxyCommand. Localhost
-# stays direct.
-if [[ "${AIFORGE_ISOLATED:-0}" == 1 && -d /etc/ssh/ssh_config.d ]]; then
+# Isolated / guarded network: ssh (and scp / rsync / git over ssh) to the
+# internet leaves through the SSH exit (docker/ssh-egress.py), via one
+# ProxyCommand; localhost — and in guarded mode the LAN — stays direct.
+if [[ ( "${AIFORGE_ISOLATED:-0}" == 1 || "${AIFORGE_GUARDED:-0}" == 1 ) && -d /etc/ssh/ssh_config.d ]]; then
   _py="$(command -v python3 || command -v python3.12 || echo python3)"
   cat > /etc/ssh/ssh_config.d/50-aiforge-egress.conf <<SSHCONF
 # Written by aiforge-entrypoint (isolated network): ssh goes out via the SSH exit.
@@ -80,8 +79,8 @@ Host localhost 127.0.0.1 ::1
 Host *
   ProxyCommand $_py /opt/aiforge-src/docker/ssh-connect.py %h %p
 SSHCONF
-elif [[ "${AIFORGE_ISOLATED:-0}" == 1 ]]; then
-  echo "!! isolated network: /etc/ssh/ssh_config.d is missing — ssh out will not work" >&2
+elif [[ "${AIFORGE_ISOLATED:-0}" == 1 || "${AIFORGE_GUARDED:-0}" == 1 ]]; then
+  echo "!! /etc/ssh/ssh_config.d is missing — ssh to internet hosts will not work" >&2
 fi
 # Isolated: the model "on this machine" (http://127.0.0.1:PORT or
 # host.docker.internal:PORT, as the setup page says) is the model relay — the

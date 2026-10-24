@@ -9,7 +9,16 @@
 set -u
 ALLOW=/policy/allow.txt
 while [ ! -f "$ALLOW" ]; do sleep 1; done
-tinyproxy -d -c /etc/tinyproxy/tinyproxy.conf &
+CONF=/etc/tinyproxy/tinyproxy.conf
+# On the host's network (the guarded default) the proxy must listen on
+# loopback only, on its own port: the shape is the same file, with Port and
+# Listen replaced (written to /tmp — the image itself is read-only).
+if [ -n "${EGRESS_LISTEN:-}" ]; then
+  sed -e "s/^Port .*/Port ${EGRESS_LISTEN##*:}/" -e "s/^Listen .*/Listen ${EGRESS_LISTEN%:*}/" \
+    "$CONF" > /tmp/tinyproxy.conf
+  CONF=/tmp/tinyproxy.conf
+fi
+tinyproxy -d -c "$CONF" &
 pid=$!
 trap 'kill "$pid" 2>/dev/null; exit 0' TERM INT
 last="$(stat -c %i:%Y:%s "$ALLOW" 2>/dev/null)"

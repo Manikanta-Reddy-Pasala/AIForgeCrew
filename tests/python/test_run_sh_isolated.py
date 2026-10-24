@@ -27,6 +27,9 @@ _FAKE_DOCKER = r"""#!/bin/sh
 echo "$*" >> "{log}"
 # Answers for run.sh's post-start isolation check (_verify_isolated).
 case "$*" in
+  "inspect aiforge-egress-guard --format"*) echo "{guard}" ;;
+  "inspect aiforge-egress-guard") exit 1 ;;
+  *"exec aiforge sh -c python3"*) echo "{probe}" ;;
   "inspect aiforge --format"*) echo "proj_box " ;;
   *"network inspect proj_box"*Internal*) echo true ;;
   *"network inspect proj_box"*inhibit_ipv4*) echo "{inhibit}" ;;
@@ -41,7 +44,8 @@ exit 0
 
 
 def _run(tmp_path: Path, args: list[str], extra_env: dict | None = None,
-         inhibit: str = "true", getent: int = 2, box_up: bool = True):
+         inhibit: str = "true", getent: int = 2, box_up: bool = True,
+         guard: str = "healthy", probe: str = "NET-BLOCKED"):
     """run.sh (from its own checkout folder) with a fake `docker` on PATH that
     records how it was called and answers the isolation check."""
     bindir = tmp_path / "bin"
@@ -49,7 +53,8 @@ def _run(tmp_path: Path, args: list[str], extra_env: dict | None = None,
     log = tmp_path / "docker.log"
     fake = bindir / "docker"
     text = (_FAKE_DOCKER.replace("{log}", str(log))
-            .replace("{inhibit}", inhibit).replace("{getent}", str(getent)))
+            .replace("{inhibit}", inhibit).replace("{getent}", str(getent))
+            .replace("{guard}", guard).replace("{probe}", probe))
     if not box_up:
         text = text.replace('echo box-up ;;', 'exit 1 ;;')
     fake.write_text(text)
@@ -90,12 +95,29 @@ def test_isolated_selects_the_isolated_base_file(tmp_path: Path):
     assert "-f docker-compose.yml" not in up[0]
 
 
-def test_isolated_is_the_default(tmp_path: Path):
-    """Plain ./run.sh: the allowlist sandbox."""
-    _proc, calls = _run(tmp_path, [])
+def test_guarded_is_the_default(tmp_path: Path):
+    """Plain ./run.sh: the host network, with the internet limited to the
+    allowlist (an overlay on docker-compose.yml)."""
+    proc, calls = _run(tmp_path, [])
     up = [c for c in calls if " up " in f" {c} "]
     assert up, calls
-    assert "-f docker-compose.isolated.yml" in up[0]
+    assert "-f docker-compose.yml -f docker-compose.guard.yml" in up[0]
+    assert "docker-compose.isolated.yml" not in up[0]
+    assert "guarded network verified" in proc.stdout
+
+
+def test_guarded_stops_the_box_when_not_guarded(tmp_path: Path):
+    proc, calls = _run(tmp_path, [], probe="NET-OPEN")
+    assert proc.returncode != 0 and "NOT guarded" in proc.stderr
+    assert any(" stop aiforge" in f" {c}" for c in calls)
+    proc, _ = _run(tmp_path, [], guard="starting")
+    assert proc.returncode != 0 and "firewall keeper" in proc.stderr
+
+
+def test_isolated_is_still_there(tmp_path: Path):
+    _proc, calls = _run(tmp_path, ["--isolated"])
+    up = [c for c in calls if " up " in f" {c} "]
+    assert up and "-f docker-compose.isolated.yml" in up[0]
 
 
 def test_open_shares_this_machines_network(tmp_path: Path):
@@ -328,7 +350,7 @@ def test_the_model_set_in_settings_feeds_the_relay_and_the_seed(tmp_path: Path):
         "chat": {"base_url": "http://127.0.0.1:11434/v1"},
         "planner": {"base_url": "https://api.remote-llm.example/v1"},
         "doer": {"base_url": "http://127.0.0.1:9999/v1"}}))
-    proc, _ = _run(tmp_path, [], {"AIFORGE_EGRESS_ALLOW_HOSTS": "",
+    proc, _ = _run(tmp_path, ["--isolated"], {"AIFORGE_EGRESS_ALLOW_HOSTS": "",
                                   "AIFORGE_ADMIN_URL": "http://admin.corp.example:8799"})
     out = proc.stdout + proc.stderr
     assert "model via relay -> host.docker.internal:11434" in out
@@ -349,12 +371,24 @@ def test_stop_is_quiet(tmp_path: Path):
 
 def test_an_unknown_network_value_is_reported(tmp_path: Path):
     proc, calls = _run(tmp_path, [], {"AIFORGE_NETWORK": "isolate"})
-    assert "is not 'isolated' or 'open'" in proc.stderr
+    assert "is not 'guarded', 'isolated' or 'open'" in proc.stderr
     up = [c for c in calls if " up " in f" {c} "]
-    assert up and "docker-compose.isolated.yml" in up[0]
+    assert up and "docker-compose.guard.yml" in up[0]
 
 
 def test_a_stale_ISOLATED_in_the_environment_is_ignored(tmp_path: Path):
     _proc, calls = _run(tmp_path, [], {"ISOLATED": "true"})
     up = [c for c in calls if " up " in f" {c} "]
-    assert up and "docker-compose.isolated.yml" in up[0]
+    assert up and "docker-compose.guard.yml" in up[0]
+
+
+def test_the_guard_overlay_keeps_the_host_network_and_gates_the_internet():
+    g = (REPO / "docker-compose.guard.yml").read_text()
+    assert "network_mode: host" in g and "cap_add: [NET_ADMIN, NET_RAW]" in g
+    assert "/var/run/docker.sock:/var/run/docker.sock:ro" in g
+    assert "no_proxy=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16" in g
+    assert "AIFORGE_SSH_DIRECT_PRIVATE=1" in g
+    sh = (REPO / "docker" / "isolated" / "egress-guard.sh").read_text()
+    assert "-m cgroup --path" in sh and "ip6tables" in sh
+    for net in ("127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"):
+        assert net in sh

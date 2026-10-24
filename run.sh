@@ -28,14 +28,12 @@
 #                project root; default ~/.aiforge/repos (or AIFORGE_REPOS_DIR)
 #   --mount DIR  also mount DIR into the sandbox (same path); repeatable, and
 #                remembered in ~/.aiforge/mounts.list — the list Settings edits
-#   (default)    the box sits on an INTERNAL docker network with no route out:
-#                web, git, ssh, scp, rsync reach ONLY the hosts on the network
-#                allowlist (Settings → Egress allowlist; first start seeds the
-#                package registries). The UI is published through a small
-#                proxy; the model through a relay (it must listen where docker
-#                can reach it). Same as --isolated.
-#   --open       share this machine's network instead: no allowlist for what
-#                the agent runs (AIFORGE_NETWORK=open does the same)
+#   (default)    GUARDED: the box shares this machine's network (localhost,
+#                LAN, your model all work); the INTERNET only for hosts on
+#                Settings → Egress allowlist (web, git, ssh, scp, rsync, pip…)
+#   --isolated   strict: an internal docker network — no host, no LAN either
+#   --open       this machine's network with no limits
+#                (AIFORGE_NETWORK=guarded|isolated|open does the same)
 #   --skip-web   don't (re)build the web UI
 #   --test       probe the configured model endpoint, then exit
 #   --admin      this box is THE memory admin (exactly one per fleet); it
@@ -315,7 +313,7 @@ _in_box() {
   [[ -f /.dockerenv || -f /run/.containerenv ]]
 }
 DOCKER_ACTION=up
-ISOLATED=""                              # only flags or AIFORGE_NETWORK set it
+NET=""                                   # guarded | isolated | open: flags or AIFORGE_NETWORK
 _MOUNT_ARGS=()
 _ORIG_ARGS=("$@")
 WITH_GRAPHIFY=0
@@ -328,8 +326,9 @@ while [[ $# -gt 0 ]]; do
     --shell) DOCKER_ACTION=shell ;;
     --repos) AIFORGE_REPOS_DIR="${2:-}"; shift ;;
     --mount) _MOUNT_ARGS+=("${2:-}"); shift ;;
-    --isolated) ISOLATED=1 ;;                     # the default in docker mode
-    --open) ISOLATED=0 ;;                          # share this machine's network (no allowlist)
+    --guarded) NET=guarded ;;                     # the default: host network, internet via the allowlist
+    --isolated) NET=isolated ;;                   # strict: no route out at all except the allowlist
+    --open) NET=open ;;                           # host network, no allowlist
     --lite|--hybrid|--no-build) : ;;                 # legacy no-ops
     --migrate) MIGRATE=1 ;;
     --dedupe) MAINT=dedupe ;;
@@ -603,22 +602,10 @@ if ! _in_box; then
            "Fix the above (an old network: ${DC[*]} down, then docker network rm it) and start again."
   }
 
-  _write_isolated_conf() {
-    # The proxy's shape is docker/tinyproxy.conf and its POLICY (which hosts)
-    # belongs to the egress controller outside the box: seeded once from
-    # AIFORGE_EGRESS_ALLOW_HOSTS, then changed in Settings. Nothing about the
-    # boundary is written into ~/.aiforge any more — the box can write there.
-    # (Not through a .sandbox the box replaced with a symlink to a host folder.)
-    [[ -L "$AIFORGE_CONFIG_DIR/.sandbox" ]] || \
-      rm -f "$AIFORGE_CONFIG_DIR/.sandbox/tinyproxy.conf" "$AIFORGE_CONFIG_DIR/.sandbox/allow.txt"
-    # The model is reached through the `model` relay, never the proxy: the box
-    # gets http://model:PORT/..., the relay gets your real endpoint. A loopback
-    # endpoint is this machine's, which the relay reaches as host.docker.internal.
-    # The model the box will really use: the one set in Settings → Models
-    # (stored per role; the chat role first), else AIFORGE_LM_BASE_URL.
-    local _models=""
-    if command -v python3 >/dev/null 2>&1; then
-      _models="$(python3 - "$AIFORGE_CONFIG_DIR/security/agent_config.json" <<'PY' 2>/dev/null
+  # The model URLs stored in Settings → Models (chat role first), one per line.
+  _stored_models() {
+    command -v python3 >/dev/null 2>&1 || return 0
+    python3 - "$AIFORGE_CONFIG_DIR/security/agent_config.json" <<'PY' 2>/dev/null || true
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))
@@ -633,8 +620,78 @@ for k in order:
         seen.append(u)
 print("\n".join(seen))
 PY
-)"
+  }
+
+  # First start of an allowlist (guarded or isolated): what this install
+  # already talks to — the package registries run.sh installs from, model hosts
+  # not on this machine, the memory admin, integrations set by env. Once:
+  # after that Settings owns the list.
+  _seed_allowlist() {
+    local _models="${1:-$(_stored_models)}"
+    if [[ -z "${AIFORGE_EGRESS_ALLOW_HOSTS:-}" ]]; then
+      local _r _h _seed=""
+      local _idx="${UV_DEFAULT_INDEX:-$(sed -n '/^\[\[tool\.uv\.index\]\]/,/^\[/s/^url *= *"\(.*\)"/\1/p' pyproject.toml 2>/dev/null | head -1)}"
+      while IFS= read -r _r; do
+        _h="${_r#*://}"; _h="${_h%%/*}"; _h="${_h##*@}"
+        if [[ "$_h" == \[* ]]; then _h="${_h%%]*}"; _h="${_h#[}"; else _h="${_h%%:*}"; fi
+        case "$_h" in ""|127.*|localhost|0.0.0.0|::1|host.docker.internal) continue ;; esac
+        [[ ",$_seed," != *",$_h,"* ]] && _seed="${_seed:+$_seed,}$_h"
+      done <<EOF_SEED
+${npm_config_registry:-${AIFORGE_NPM_REGISTRY:-}}
+$_idx
+$_models
+${AIFORGE_ADMIN_URL:-}
+${JIRA_BASE_URL:-${JIRA_URL:-}}
+${CONFLUENCE_BASE_URL:-${CONFLUENCE_URL:-}}
+${GITLAB_URL:-${GITLAB_BASE_URL:-}}
+${AIFORGE_APT_MIRROR:-}
+EOF_SEED
+      export AIFORGE_EGRESS_ALLOW_HOSTS="$_seed"
     fi
+  }
+
+  # After `up` in guarded mode: the firewall keeper runs and the box really
+  # cannot open a connection to the internet itself (only via the proxy).
+  _verify_guarded() {
+    local i ok=0 probe=""
+    for i in $(seq 1 40); do
+      [[ "$(docker inspect aiforge-egress-guard --format '{{.State.Health.Status}}' 2>/dev/null)" == healthy ]] && { ok=1; break; }
+      sleep 1
+    done
+    (( ok )) || { "${DC[@]}" stop aiforge >/dev/null 2>&1 || true
+      _fatal "guarded network: the firewall keeper (aiforge-egress-guard) is not running — the box was stopped." \
+             "See: docker logs aiforge-egress-guard (it needs Linux iptables and NET_ADMIN); or start with --open."; }
+    for i in $(seq 1 30); do
+      probe="$(docker exec aiforge sh -c 'python3 -c "import socket
+try:
+    socket.create_connection((\"1.1.1.1\", 443), timeout=4); print(\"NET-OPEN\")
+except OSError:
+    print(\"NET-BLOCKED\")"' 2>/dev/null)"
+      [[ -n "$probe" ]] && break; sleep 2
+    done
+    case "$probe" in
+      *NET-BLOCKED*) echo "==> guarded network verified (the internet only through the allowlist)" ;;
+      *NET-OPEN*) "${DC[@]}" stop aiforge >/dev/null 2>&1 || true
+        _fatal "guarded network: the box reached the internet directly — NOT guarded, the box was stopped." \
+               "See: docker logs aiforge-egress-guard; or start with --open." ;;
+      *) echo "!! guarded network: could not probe the box (still starting?) — check: docker logs aiforge-egress-guard" >&2 ;;
+    esac
+  }
+
+  _write_isolated_conf() {
+    # The proxy's shape is docker/tinyproxy.conf and its POLICY (which hosts)
+    # belongs to the egress controller outside the box: seeded once from
+    # AIFORGE_EGRESS_ALLOW_HOSTS, then changed in Settings. Nothing about the
+    # boundary is written into ~/.aiforge any more — the box can write there.
+    # (Not through a .sandbox the box replaced with a symlink to a host folder.)
+    [[ -L "$AIFORGE_CONFIG_DIR/.sandbox" ]] || \
+      rm -f "$AIFORGE_CONFIG_DIR/.sandbox/tinyproxy.conf" "$AIFORGE_CONFIG_DIR/.sandbox/allow.txt"
+    # The model is reached through the `model` relay, never the proxy: the box
+    # gets http://model:PORT/..., the relay gets your real endpoint. A loopback
+    # endpoint is this machine's, which the relay reaches as host.docker.internal.
+    # The model the box will really use: the one set in Settings → Models
+    # (stored per role; the chat role first), else AIFORGE_LM_BASE_URL.
+    local _models; _models="$(_stored_models)"
     local u="${_models%%$'\n'*}"; [[ -n "$u" ]] || u="${AIFORGE_LM_BASE_URL:-http://127.0.0.1:1234/v1}"
     local scheme rest hostport path host port
     scheme="${u%%://*}"; [[ "$scheme" == "$u" ]] && scheme=http
@@ -684,28 +741,7 @@ PY
     # First start: the box must be able to install itself, so the package
     # registries run.sh installs from seed the allowlist (once — after that
     # Settings owns it, and they can be removed there).
-    # Also what this install already talks to: every model host that is not
-    # this machine, the memory admin, the integrations configured by env.
-    if [[ -z "${AIFORGE_EGRESS_ALLOW_HOSTS:-}" ]]; then
-      local _r _h _seed=""
-      local _idx="${UV_DEFAULT_INDEX:-$(sed -n '/^\[\[tool\.uv\.index\]\]/,/^\[/s/^url *= *"\(.*\)"/\1/p' pyproject.toml 2>/dev/null | head -1)}"
-      while IFS= read -r _r; do
-        _h="${_r#*://}"; _h="${_h%%/*}"; _h="${_h##*@}"
-        if [[ "$_h" == \[* ]]; then _h="${_h%%]*}"; _h="${_h#[}"; else _h="${_h%%:*}"; fi
-        case "$_h" in ""|127.*|localhost|0.0.0.0|::1|host.docker.internal) continue ;; esac
-        [[ ",$_seed," != *",$_h,"* ]] && _seed="${_seed:+$_seed,}$_h"
-      done <<EOF_SEED
-${npm_config_registry:-${AIFORGE_NPM_REGISTRY:-}}
-$_idx
-$_models
-${AIFORGE_ADMIN_URL:-}
-${JIRA_BASE_URL:-${JIRA_URL:-}}
-${CONFLUENCE_BASE_URL:-${CONFLUENCE_URL:-}}
-${GITLAB_URL:-${GITLAB_BASE_URL:-}}
-${AIFORGE_APT_MIRROR:-}
-EOF_SEED
-      export AIFORGE_EGRESS_ALLOW_HOSTS="$_seed"
-    fi
+    _seed_allowlist "$_models"
     # Models on THIS machine on another port than the relay cannot be reached.
     local _m _mp
     while IFS= read -r _m; do
@@ -731,33 +767,53 @@ EOF_SEED
   # project root (docker/compose.repos.yml). Nothing else of the host is added.
   # Compose files: COMPOSE_FILE (a site override) or the default, plus ours.
   # Passing any -f makes compose ignore COMPOSE_FILE, so it is folded in here.
-  # Isolated is the DEFAULT: the box reaches only the hosts on the Settings
-  # allowlist. --open (or AIFORGE_NETWORK=open) shares this machine's
-  # network instead — anything the agent runs can then reach any site.
-  if [[ -z "${ISOLATED:-}" ]]; then
+  # The network mode. GUARDED is the default: the box shares this machine's
+  # network (localhost, LAN, a model on 127.0.0.1 all work), and only the
+  # INTERNET is limited to the Settings allowlist. --isolated: no route out at
+  # all except the allowlist (no host, no LAN). --open: no limits.
+  _running_mode=""
+  if [[ "$(docker inspect aiforge --format '{{.HostConfig.NetworkMode}}' 2>/dev/null)" == host ]]; then
+    if docker inspect aiforge-egress-guard >/dev/null 2>&1; then _running_mode=guarded
+    else _running_mode=open; fi
+  elif docker inspect aiforge >/dev/null 2>&1; then
+    _running_mode=isolated
+  fi
+  if [[ -z "$NET" ]]; then
     case "${AIFORGE_NETWORK:-}" in
-      open) ISOLATED=0 ;;
-      isolated) ISOLATED=1 ;;
+      guarded|isolated|open) NET="$AIFORGE_NETWORK" ;;
       *)
         [[ -z "${AIFORGE_NETWORK:-}" ]] || echo "!! AIFORGE_NETWORK=$AIFORGE_NETWORK is not" \
-          "'isolated' or 'open' — using the default (isolated)." >&2
+          "'guarded', 'isolated' or 'open' — using the default (guarded)." >&2
         if [[ -n "${COMPOSE_FILE:-}" ]]; then
-          ISOLATED=0                      # a site compose file is its own base
-          echo "==> COMPOSE_FILE is set: using it as the base (not the isolated network)." >&2
-        elif [[ "$DOCKER_ACTION" != up || $TEST -eq 1 || -n "${MAINT:-}" ]] \
-             && [[ "$(docker inspect aiforge --format '{{.HostConfig.NetworkMode}}' 2>/dev/null)" == host ]]; then
-          ISOLATED=0                      # stop / logs / shell / one-offs: the box that runs
+          NET=open                        # a site compose file is its own base
+          echo "==> COMPOSE_FILE is set: using it as the base (no allowlist)." >&2
+        elif [[ "$DOCKER_ACTION" != up || $TEST -eq 1 || -n "${MAINT:-}" ]] && [[ -n "$_running_mode" ]]; then
+          NET="$_running_mode"            # stop / logs / shell / one-offs: the box that runs
         else
-          ISOLATED=1
+          NET=guarded
         fi ;;
     esac
   fi
-  [[ "$ISOLATED" == 0 && "$DOCKER_ACTION" == up ]] && echo "==> open network (--open): the" \
+  ISOLATED=0; GUARDED=0
+  [[ "$NET" == isolated ]] && ISOLATED=1
+  [[ "$NET" == guarded ]] && GUARDED=1
+  [[ "$NET" == open && "$DOCKER_ACTION" == up ]] && echo "==> open network (--open): the" \
     "box shares this machine's network; commands the agent runs can reach any site." >&2
   _cfiles=()
   if [[ -n "${COMPOSE_FILE:-}" ]]; then IFS=':' read -ra _cfiles <<< "$COMPOSE_FILE"
   elif [[ "${ISOLATED:-0}" == 1 ]]; then _cfiles=(docker-compose.isolated.yml)
+  elif [[ "${GUARDED:-0}" == 1 ]]; then _cfiles=(docker-compose.yml docker-compose.guard.yml)
   else _cfiles=(docker-compose.yml); fi
+  if [[ "${GUARDED:-0}" == 1 ]]; then
+    [[ -z "${COMPOSE_FILE:-}" ]] || _fatal \
+      "the guarded network cannot be combined with COMPOSE_FILE (use --open with a site file)."
+    if [[ "$DOCKER_ACTION" == up ]]; then _seed_allowlist
+    else _seed_allowlist >/dev/null 2>&1; fi
+    echo "==> guarded network (the default): this machine and the LAN are free; the" \
+         "internet only for hosts on Settings → Egress allowlist (first start:" \
+         "${AIFORGE_EGRESS_ALLOW_HOSTS:-none}). --open: no limits; --isolated: strict." \
+         | { [[ "$DOCKER_ACTION" == up ]] && cat || cat >/dev/null; }
+  fi
   # --isolated REPLACES the base rather than overlaying one: compose cannot take
   # `network_mode: host` back off (declaring `networks:` beside it is an error),
   # so the isolated shape has to be the base file itself.
@@ -847,7 +903,7 @@ EOF_SEED
   # overlays, a site COMPOSE_FILE, or --isolated. Omitting it under --isolated
   # silently ran docker-compose.yml instead — `network_mode: host`, no proxy,
   # no internal network: the box looked isolated and was not.
-  if (( _extra )) || [[ -n "${COMPOSE_FILE:-}" ]] || [[ "${ISOLATED:-0}" == 1 ]]; then
+  if (( _extra )) || [[ -n "${COMPOSE_FILE:-}" ]] || [[ "${ISOLATED:-0}" == 1 || "${GUARDED:-0}" == 1 ]]; then
     for _f in "${_cfiles[@]}"; do DC+=(-f "$_f"); done
   fi
 
@@ -898,7 +954,7 @@ EOF_SEED
   if [[ $TEST -eq 1 || -n "${MAINT:-}" ]]; then
     # a one-off inside a throwaway box sharing the same state, then exit —
     # in the sandbox WITH its way out (proxy, model relay, ssh exit)
-    if [[ "${ISOLATED:-0}" == 1 ]]; then exec "${DC[@]}" run --rm aiforge; fi
+    if [[ "${ISOLATED:-0}" == 1 || "${GUARDED:-0}" == 1 ]]; then exec "${DC[@]}" run --rm aiforge; fi
     exec "${DC[@]}" run --rm --no-deps aiforge
   fi
   if [[ "${ISOLATED:-0}" == 1 ]]; then
@@ -906,21 +962,19 @@ EOF_SEED
   else
     _refuse_box_sees_checkout warn
   fi
-  # Switching mode: the box that runs now was started from the OTHER compose
-  # file — take that stack down first (its proxy/ui would keep the port, or
-  # linger as orphans). Volumes and ~/.aiforge are kept.
-  _running_mode="$(docker inspect aiforge --format '{{.HostConfig.NetworkMode}}' 2>/dev/null || true)"
-  if [[ -n "$_running_mode" && -z "${COMPOSE_FILE:-}" ]]; then
-    if [[ "${ISOLATED:-0}" == 1 && "$_running_mode" == host ]]; then
-      echo "==> switching to the isolated network: stopping the open-network box"
-      "${DC_BASE[@]}" -f docker-compose.yml down >/dev/null 2>&1 || true
-    elif [[ "${ISOLATED:-0}" == 0 && "$_running_mode" != host ]]; then
-      echo "==> switching to the open network: stopping the isolated stack"
-      "${DC_BASE[@]}" -f docker-compose.isolated.yml down >/dev/null 2>&1 || true
-    fi
+  # Switching mode: the box that runs now was started from other compose
+  # files — take that stack down first (its proxy/ui/guard would keep a port
+  # or linger). Volumes and ~/.aiforge are kept.
+  if [[ -n "$_running_mode" && "$_running_mode" != "$NET" && -z "${COMPOSE_FILE:-}" ]]; then
+    echo "==> switching the network from $_running_mode to $NET: stopping the $_running_mode stack"
+    case "$_running_mode" in
+      isolated) "${DC_BASE[@]}" -f docker-compose.isolated.yml down >/dev/null 2>&1 || true ;;
+      guarded)  "${DC_BASE[@]}" -f docker-compose.yml -f docker-compose.guard.yml down >/dev/null 2>&1 || true ;;
+      open)     "${DC_BASE[@]}" -f docker-compose.yml down >/dev/null 2>&1 || true ;;
+    esac
   fi
   echo "==> docker mode: building the sandbox image (first time: a few minutes)…"
-  if [[ "${ISOLATED:-0}" == 1 ]]; then
+  if [[ "${ISOLATED:-0}" == 1 || "${GUARDED:-0}" == 1 ]]; then
     # The allowlist's volume belongs to the controller's unprivileged user
     # (an older version wrote it as root, and the controller would then
     # crash-loop on its first save). Idempotent.
@@ -929,6 +983,7 @@ EOF_SEED
   fi
   "${DC[@]}" up -d --build
   [[ "${ISOLATED:-0}" == 1 ]] && _verify_isolated
+  [[ "${GUARDED:-0}" == 1 ]] && _verify_guarded
   _start_awake_bridge
   echo ""
   echo "  AIForge sandbox → $(_ui_scheme)://${HOST}:${PORT}/ui/"

@@ -264,7 +264,8 @@ def network_policy() -> dict | None:
         hosts = []
     except (OSError, ValueError, AttributeError):
         hosts = []
-    return {"isolated": True, "hosts": hosts}
+    mode = "guarded" if os.environ.get("AIFORGE_GUARDED") == "1" else "isolated"
+    return {"isolated": True, "mode": mode, "hosts": hosts}
 
 
 def network_hosts() -> set[str]:

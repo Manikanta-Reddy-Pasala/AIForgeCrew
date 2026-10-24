@@ -1,0 +1,119 @@
+# AIForge — GUARDED mode, the default `./run.sh`: an overlay on
+# docker-compose.yml (the box keeps sharing this machine's network — localhost,
+# the LAN, your model on 127.0.0.1 all work as before). Only the INTERNET is
+# gated: the box reaches the hosts on Settings → Egress allowlist, nothing else.
+#
+#   egress-guard  keeps one firewall rule for the box's processes only: this
+#                 machine and the LAN are free, the internet is refused.
+#   egress        the allowlist proxy on 127.0.0.1 — web, git over https, pip,
+#                 npm, curl from the box go through it (proxy env below).
+#   ssh-egress    ssh / scp / rsync / git@ to internet hosts, allowlisted only;
+#                 LAN hosts are reached directly.
+#   egress-ctl    keeps the list; Settings edits it (through the box's API).
+#
+# Everything on 127.0.0.1 — so the box CAN reach the list's controller: with no
+# admin token (the current choice) the agent could change the list. The strict
+# alternative is `./run.sh --isolated`.
+services:
+  aiforge:
+    environment:
+      - AIFORGE_GUARDED=1
+      - http_proxy=http://127.0.0.1:${AIFORGE_EGRESS_PORT:-18888}
+      - https_proxy=http://127.0.0.1:${AIFORGE_EGRESS_PORT:-18888}
+      - HTTP_PROXY=http://127.0.0.1:${AIFORGE_EGRESS_PORT:-18888}
+      - HTTPS_PROXY=http://127.0.0.1:${AIFORGE_EGRESS_PORT:-18888}
+      # This machine and the LAN go direct (the firewall lets them through).
+      - no_proxy=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,.local,.lan,.internal,.home.arpa${AIFORGE_NO_PROXY_EXTRA:+,${AIFORGE_NO_PROXY_EXTRA}}
+      - NO_PROXY=localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,.local,.lan,.internal,.home.arpa${AIFORGE_NO_PROXY_EXTRA:+,${AIFORGE_NO_PROXY_EXTRA}}
+      - AIFORGE_SSH_PROXY=127.0.0.1:${AIFORGE_SSH_EGRESS_PORT:-18889}
+      - AIFORGE_SSH_DIRECT_PRIVATE=1
+      - AIFORGE_EGRESS_POLICY_RO=/var/lib/aiforge-egress
+      - AIFORGE_EGRESS_ADMIN_URL=http://127.0.0.1:${AIFORGE_EGRESS_ADMIN_PORT:-18798}
+    volumes:
+      - egress-policy:/var/lib/aiforge-egress:ro
+
+  egress-guard:
+    build: {context: ./docker/isolated, dockerfile: egress-guard.Dockerfile}
+    image: aiforge-isolated-egress-guard:local
+    container_name: aiforge-egress-guard
+    restart: unless-stopped
+    network_mode: host
+    # The host's cgroup namespace: the rule names the box's cgroup by its
+    # path, which a private namespace cannot see.
+    cgroup: host
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, NET_RAW]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: [/tmp, /run]
+    pids_limit: 64
+    environment:
+      - AIFORGE_BOX_NAME=aiforge
+    volumes:
+      # Read-only: only to find the box's container id (its cgroup).
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/guarding"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  egress:
+    build: {context: ./docker/isolated, dockerfile: egress.Dockerfile}
+    image: aiforge-isolated-egress:local
+    container_name: aiforge-egress
+    restart: unless-stopped
+    network_mode: host
+    user: "65534:65534"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: ["/tmp:uid=65534,gid=65534,mode=0755"]
+    pids_limit: 256
+    environment:
+      - EGRESS_LISTEN=127.0.0.1:${AIFORGE_EGRESS_PORT:-18888}
+    volumes:
+      - egress-policy:/policy:ro
+
+  egress-ctl:
+    build: {context: ./docker/isolated, dockerfile: egress-ctl.Dockerfile}
+    image: aiforge-isolated-egress-ctl:local
+    container_name: aiforge-egress-ctl
+    restart: unless-stopped
+    network_mode: host
+    user: "65534:65534"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    pids_limit: 256
+    environment:
+      - EGRESS_CONTROLLER_HOST=127.0.0.1
+      - EGRESS_CONTROLLER_PORT=${AIFORGE_EGRESS_ADMIN_PORT:-18798}
+      - AIFORGE_EGRESS_ADMIN_TOKEN=${AIFORGE_EGRESS_ADMIN_TOKEN:-}
+      - AIFORGE_UI_HOSTS=localhost,127.0.0.1,::1
+      - AIFORGE_EGRESS_ALLOW_HOSTS
+    volumes:
+      - egress-policy:/policy
+
+  ssh-egress:
+    build: {context: ./docker/isolated, dockerfile: ssh-egress.Dockerfile}
+    image: aiforge-isolated-ssh-egress:local
+    container_name: aiforge-ssh-egress
+    restart: unless-stopped
+    network_mode: host
+    user: "65534:65534"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    pids_limit: 256
+    environment:
+      - SSH_EGRESS_HOST=127.0.0.1
+      - SSH_EGRESS_LISTEN=${AIFORGE_SSH_EGRESS_PORT:-18889}
+      - AIFORGE_SSH_EGRESS=${AIFORGE_SSH_EGRESS:-allowlist}
+      - AIFORGE_SSH_PORTS=${AIFORGE_SSH_PORTS:-22}
+    volumes:
+      - egress-policy:/policy:ro
+
+volumes:
+  egress-policy:

@@ -94,7 +94,7 @@ The sandbox is an Ubuntu 24.04 container. That is the only mode.
 - **Command** — `aiforge`, or `./run.sh` from a checkout
 - **What the agent can touch** — everything **inside** the box; of this machine only `~/.aiforge` plus folders you approve
 - **Rights** — full: your uid + passwordless sudo, no workspace jail
-- **Network** — isolated by default: everything the agent runs reaches only the hosts on Settings → Egress allowlist (`./run.sh --open` shares this machine's network instead)
+- **Network** — guarded by default: the box shares this machine's network (localhost, the LAN, your model all work), and the INTERNET is limited to Settings → Egress allowlist — for everything the agent runs. `--isolated`: also no host / LAN. `--open`: no limits
 
 ## First run: what gets installed
 
@@ -144,8 +144,9 @@ git clone https://github.com/Manikanta-Reddy-Pasala/AIForgeCrew.git && cd AIForg
 ./run.sh --stop           # stop it (keeps what the agent installed, until a rebuild)
 ./run.sh --repos ~/code   # mount YOUR projects folder as the box's project root
 ./run.sh --mount /srv/x   # also mount /srv/x (repeatable)
-./run.sh                  # isolated network (default): only the allowlist gets out
-./run.sh --open           # share this machine's network (no allowlist)
+./run.sh                  # guarded (default): host network, internet only via the allowlist
+./run.sh --isolated       # strict: no host, no LAN, internet only via the allowlist
+./run.sh --open           # host network, no limits
 ./run.sh --port 9000      # any other flag is passed to the run.sh inside the box
 ```
 
@@ -218,7 +219,28 @@ and is never written to — the environment wins. Catalogue: `.env.example`.
 `docker volume rm <project>_aiforge-state` (`<project>` is the checkout's folder name; `aiforge` for the binary's box) only forces a reinstall — your data
 is in `~/.aiforge`, never in a volume.
 
-## Isolated network (the default; `--open` turns it off)
+## Guarded network (the default)
+
+`./run.sh` keeps the box on this machine's network — 127.0.0.1 is this
+machine, the LAN is the LAN, a model on 127.0.0.1:1234 works as before — and
+gates only the INTERNET (docker-compose.guard.yml on top of
+docker-compose.yml):
+
+- **egress-guard** keeps one firewall rule (iptables, IPv4 + IPv6) for the
+  box's processes only (matched by its cgroup): this machine, private and LAN
+  ranges are free; any other destination is refused. It follows the box when
+  it is recreated and after a reboot; run.sh stops the box if, after start,
+  the box can still reach the internet directly. Needs Linux iptables with
+  cgroup matching (Docker Desktop: inside its VM) and NET_ADMIN.
+- **egress** (allowlist proxy) and **ssh-egress** on 127.0.0.1: web, git over
+  https/ssh, pip, npm, curl, ssh/scp/rsync reach the hosts on Settings →
+  Egress allowlist through them; LAN hosts go direct.
+- **egress-ctl** keeps the list; Settings edits it through the box's API.
+  With no admin token (the current choice) the agent can reach it too — the
+  strict mode below is the one where it cannot.
+- DNS still resolves through this machine.
+
+## Isolated network (`--isolated`)
 
 With `--open` the box shares this machine's network stack, so the allowlist in
 `aiforge_core/net/egress.py` governs only *declared* destinations (Jira,
@@ -431,8 +453,9 @@ in the real environment, which **overrides** the file. `.env` is not read.
 |---|---|
 | `--port N` / `--host H` | change the bind (off-loopback needs `AIFORGE_API_TOKEN`) |
 | `--dev` | uvicorn hot reload |
-| `--isolated` | (default) internal network, all egress through the allowlist |
-| `--open` | share this machine's network: no allowlist for what the agent runs |
+| (default) | guarded: host network, internet only via the allowlist |
+| `--isolated` | internal network: no host, no LAN, internet only via the allowlist |
+| `--open` | host network, no limits |
 | `--stop` / `--logs` / `--shell` | stop, follow, or open a shell in the sandbox |
 | `--repos DIR` | mount your projects folder (default `~/.aiforge/repos`) |
 | `--mount DIR` | approve and mount another host folder; repeatable |
@@ -605,7 +628,7 @@ web/              React UI
 ## Security rails
 
 - **Workspace clamp** — `AIFORGE_WORKSPACE_DIR` confines file/exec to one dir.
-- **Network isolation** — the default sandbox enforces the egress allowlist at the network (`--open` does not).
+- **Network** — the default (guarded) and `--isolated` enforce the egress allowlist for the internet; `--isolated` also cuts the host and LAN; `--open` enforces nothing.
 - **Mount approval** — widening the box's view of the host needs host-side approval.
 - **Approval gate** — risky / `ask`-policy actions pause for Approve/Reject.
 - **Delete guard** — destructive deletes refused unless explicitly confirmed.

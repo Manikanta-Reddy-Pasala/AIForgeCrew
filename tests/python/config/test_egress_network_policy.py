@@ -18,13 +18,16 @@ def test_not_isolated_means_no_network_list(monkeypatch):
 def test_isolated_reads_the_list(monkeypatch, tmp_path):
     (tmp_path / "hosts.json").write_text(json.dumps({"hosts": ["pypi.org", "a.example"]}))
     monkeypatch.setenv("AIFORGE_EGRESS_POLICY_RO", str(tmp_path))
-    assert egress_hosts.network_policy() == {"isolated": True, "hosts": ["pypi.org", "a.example"]}
+    monkeypatch.delenv("AIFORGE_GUARDED", raising=False)
+    assert egress_hosts.network_policy() == {"isolated": True, "mode": "isolated",
+                                             "hosts": ["pypi.org", "a.example"]}
     assert {"pypi.org", "a.example"} <= egress_hosts.allowed_hosts()
     assert "pypi.org" not in egress_hosts.write_hosts()      # reading, not a write destination
 
 
 def test_isolated_with_no_list_yet_allows_nothing_extra(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_EGRESS_POLICY_RO", str(tmp_path))
-    assert egress_hosts.network_policy() == {"isolated": True, "hosts": []}
+    monkeypatch.setenv("AIFORGE_GUARDED", "1")
+    assert egress_hosts.network_policy() == {"isolated": True, "mode": "guarded", "hosts": []}
     (tmp_path / "hosts.json").write_text("{broken")
     assert egress_hosts.network_hosts() == set()
