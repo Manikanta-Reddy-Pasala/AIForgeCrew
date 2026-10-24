@@ -98,16 +98,29 @@ fi
 if [[ "${AIFORGE_GUARDED:-0}" == 1 ]]; then
   _py="${_py:-$(command -v python3 || command -v python3.12 || echo python3)}"
   _guarded=0
+  _noroute=0
   for _i in $(seq 1 60); do
     # Only an immediate refusal (the guard's reject) counts — never a timeout.
-    _p="$("$_py" /opt/aiforge-src/docker/guard-probe.py 2>/dev/null)"
+    _p="$("$_py" /opt/aiforge-src/docker/guard-probe.py 2>/dev/null)" || _p=""
     [[ "$_p" == NET-BLOCKED ]] && { _guarded=1; break; }
+    if [[ "$_p" == NET-NOROUTE ]]; then _noroute=$((_noroute + 1)); else _noroute=0; fi
     sleep 2
   done
-  # No route out at all for the whole wait (offline, or a network still coming
-  # up at boot): nothing can leave now, and the guard has had two minutes to
-  # take hold — start.
-  [[ "$_guarded" != 1 && "$_p" == NET-NOROUTE ]] && _guarded=1
+  # No route out at all for the whole last minute (offline, or a network still
+  # coming up at boot): nothing can leave now — start, but keep checking: once
+  # a route appears and the box can get out, stop the box (it restarts into
+  # this gate again, which then refuses).
+  if [[ "$_guarded" != 1 && "$_noroute" -ge 30 ]]; then
+    _guarded=1
+    ( while sleep 10; do
+        _q="$("$_py" /opt/aiforge-src/docker/guard-probe.py 2>/dev/null)" || _q=""
+        case "$_q" in
+          NET-BLOCKED) exit 0 ;;
+          NET-OPEN*) echo "!! guarded network: a route appeared and the box can reach the internet — stopping." >&2
+                     kill -TERM 1; exit 0 ;;
+        esac
+      done ) </dev/null >/dev/null &
+  fi
   if [[ "$_guarded" != 1 ]]; then
     echo "!! guarded network: this box can still reach the internet directly — not starting." \
          "See: docker logs aiforge-egress-guard" >&2

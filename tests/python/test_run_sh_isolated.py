@@ -28,6 +28,7 @@ echo "$*" >> "{log}"
 # The box goes away on down / rm and comes back on up.
 case "$*" in
   *" down"|"rm -f aiforge") : > "{log}.gone" ;;
+  *"guard.yml up -d --build") [ "{upfail}" = 1 ] && exit 1; rm -f "{log}.gone" ;;
   *"up -d"*) rm -f "{log}.gone" ;;
   "inspect aiforge") [ -f "{log}.gone" ] && exit 1 ;;
 esac
@@ -35,7 +36,9 @@ esac
 case "$*" in
   "inspect aiforge-egress-guard --format"*) echo "{guard}" ;;
   "inspect aiforge-egress-guard") exit 1 ;;
-  *"guard-probe.py"*) if [ -s "{seq}" ]; then head -1 "{seq}"; tail -n +2 "{seq}" > "{seq}.n"; mv "{seq}.n" "{seq}"
+  *"exec aiforge-egress-guard sh -c for t in"*) n=$(cat "$0.cnt" 2>/dev/null || echo 0); n=$((n + {step})); echo $n > "$0.cnt"; echo $n ;;
+  *"guard-probe.py"*) [ "{status}" = running ] || exit 1
+                      if [ -s "{seq}" ]; then head -1 "{seq}"; tail -n +2 "{seq}" > "{seq}.n"; mv "{seq}.n" "{seq}"
                       else echo "{probe}"; fi ;;
   "inspect aiforge --format {{.State.Status}}") echo "{status}" ;;
   "inspect aiforge --format"*) echo "proj_box " ;;
@@ -54,7 +57,7 @@ exit 0
 def _run(tmp_path: Path, args: list[str], extra_env: dict | None = None,
          inhibit: str = "true", getent: int = 2, box_up: bool = True,
          guard: str = "healthy", probe: str = "NET-BLOCKED", running: str = "isolated",
-         probes: list | None = None):
+         probes: list | None = None, rejects_move: bool = True, up_fails: bool = False):
     """run.sh (from its own checkout folder) with a fake `docker` on PATH that
     records how it was called and answers the isolation check."""
     bindir = tmp_path / "bin"
@@ -65,8 +68,11 @@ def _run(tmp_path: Path, args: list[str], extra_env: dict | None = None,
             .replace("{inhibit}", inhibit).replace("{getent}", str(getent))
             .replace("{guard}", guard).replace("{probe}", probe)
             .replace("{status}", "running" if probe else "restarting")
-            .replace("{seq}", str(tmp_path / "probes.txt")))
+            .replace("{seq}", str(tmp_path / "probes.txt"))
+            .replace("{step}", "1" if rejects_move else "0")
+            .replace("{upfail}", "1" if up_fails else "0"))
     (tmp_path / "docker.log.gone").unlink(missing_ok=True)
+    (bindir / "docker.cnt").unlink(missing_ok=True)
     if probes:
         (tmp_path / "probes.txt").write_text("\n".join(probes) + "\n")
     if not box_up:
@@ -170,6 +176,19 @@ def test_the_guard_taking_hold_a_moment_late_is_not_a_failure(tmp_path: Path):
     assert not (tmp_path / "xdg" / "aiforge" / "network-fallback").exists()
 
 
+def test_a_refusal_from_further_away_is_not_the_guard(tmp_path: Path):
+    """A firewall past this machine resetting 1.1.1.1:443 must not pass: the
+    guard's own reject counters have to move."""
+    proc, calls = _run(tmp_path, [], rejects_move=False)
+    assert "refused by something other than the guard" in proc.stderr
+    assert "switching to the isolated network" in proc.stderr
+
+
+def test_a_guard_that_never_gets_healthy_falls_back(tmp_path: Path):
+    proc, calls = _run(tmp_path, [], guard="unhealthy", up_fails=True)
+    assert "never became healthy" in proc.stderr and "switching to the isolated network" in proc.stderr
+
+
 def test_no_route_out_is_not_a_failure(tmp_path: Path):
     proc, calls = _run(tmp_path, [], probe="NET-NOROUTE")
     assert proc.returncode == 0 and "no route to the internet" in proc.stderr
@@ -182,9 +201,8 @@ def test_the_box_cannot_plant_the_fallback_note(tmp_path: Path):
     assert not (tmp_path / "cfg" / "network-fallback").exists()
     target = tmp_path / "victim"; target.write_text("keep")
     note = tmp_path / "xdg" / "aiforge" / "network-fallback"
-    note.unlink(); note.symlink_to(target)
-    (tmp_path / "docker.log").unlink()
-    _run(tmp_path, ["--guarded"], probe="NET-BLOCKED")
+    note.unlink(); note.symlink_to(target)          # planted right before a fallback
+    _run(tmp_path, ["--isolated", "--stop"])
     _run(tmp_path, [], probe="NET-OPEN 1.1.1.1:open")
     assert target.read_text() == "keep"
 

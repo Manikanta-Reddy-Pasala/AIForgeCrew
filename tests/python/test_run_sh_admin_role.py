@@ -20,7 +20,9 @@ RUN_SH = Path(__file__).resolve().parents[2] / "run.sh"
 # run.sh's post-start guard check (the default guarded network): the guard is
 # healthy and the box cannot reach the internet directly.
 _GUARD_ANSWERS = ('case "$*" in *"inspect aiforge-egress-guard --format"*) echo healthy ;; '
-                  '*"guard-probe.py"*) echo NET-BLOCKED ;; esac\n')
+                  '*"guard-probe.py"*) echo NET-BLOCKED ;; '
+                  '*"exec aiforge-egress-guard sh -c for t in"*) n=$(cat "$0.cnt" 2>/dev/null || echo 0); '
+                  'n=$((n + 1)); echo $n > "$0.cnt"; echo $n ;; esac\n')
 
 
 def _run(tmp_path: Path, args: list[str], extra_env: dict | None = None):

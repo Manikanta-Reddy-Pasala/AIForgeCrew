@@ -670,10 +670,17 @@ EOF_SEED
     # the guard's reject — counts as blocked; a timeout means the packet left.
     # The guard is healthy before the box exists and adds the box's rule on its
     # next loop (~2 s), so an early "open" is not final: retry until blocked.
-    local st
+    # A refusal must also be the GUARD's: its reject counters have to move (a
+    # firewall further on may reset 1.1.1.1:443 too, which proves nothing).
+    local st c0 c1
     for i in $(seq 1 "${AIFORGE_GUARD_PROBE_TRIES:-20}"); do
-      probe="$(docker exec aiforge sh -c '"$(command -v python3 || command -v python3.12)" /opt/aiforge-src/docker/guard-probe.py' 2>/dev/null)"
-      [[ "$probe" == NET-BLOCKED ]] && break
+      c0="$(_guard_rejects)"
+      probe="$(docker exec aiforge sh -c '"$(command -v python3 || command -v python3.12)" /opt/aiforge-src/docker/guard-probe.py' 2>/dev/null)" || probe=""
+      if [[ "$probe" == NET-BLOCKED ]]; then
+        c1="$(_guard_rejects)"
+        (( ${c1:-0} > ${c0:-0} )) && break
+        probe="NET-OPEN refused by something other than the guard"
+      fi
       if [[ -z "$probe" ]]; then
         # The box restarts itself while it cannot confirm the block (entrypoint).
         st="$(docker inspect aiforge --format '{{.State.Status}}' 2>/dev/null)"
@@ -692,6 +699,12 @@ EOF_SEED
       EXITED) _guard_fallback "the box could not confirm the firewall blocks it (it keeps restarting)" ;;
       *) echo "!! guarded network: could not probe the box (still starting?) — check: docker logs aiforge-egress-guard" >&2 ;;
     esac
+  }
+
+  _guard_rejects() {   # packets the guard has refused so far (IPv4 + IPv6)
+    docker exec aiforge-egress-guard sh -c \
+      'for t in iptables ip6tables; do $t -L AIFORGE_EGRESS -v -n -x 2>/dev/null; done | awk "/REJECT/{s+=\$1} END{print s+0}"' \
+      2>/dev/null | tr -cd 0-9 || true
   }
 
   # Guarded mode cannot be enforced on this machine (some kernels / WSL /
@@ -722,7 +735,7 @@ EOF_SEED
       _fatal "guarded network: $1 — the box was stopped (details: $diag)." \
              "${iso_block:+The isolated network cannot start either: $iso_block. }${COMPOSE_FILE:+COMPOSE_FILE is set, which --isolated cannot use. }Without these, run.sh switches to --isolated by itself."
     fi
-    if [[ ! -L "$_NET_FALLBACK" ]]; then
+    if [[ ! -L "$_NET_FALLBACK" && ! -L "$_HOST_CFG" ]]; then
       printf '%s %s\n' "$(date '+%F %T')" "$1" > "$_NET_FALLBACK" 2>/dev/null || true
     fi
     echo "!! guarded network: $1 — this machine cannot keep the box off the internet that way." >&2
@@ -853,7 +866,11 @@ EOF_SEED
         if [[ "$DOCKER_ACTION" != up || $TEST -eq 1 || -n "${MAINT:-}" ]] \
            && [[ "$_running_mode" == isolated ]]; then
           NET=isolated                    # stop / logs / shell / one-offs: the box that runs
-        elif [[ -f "$_NET_FALLBACK" && -z "${COMPOSE_FILE:-}" ]]; then
+        elif [[ "$DOCKER_ACTION" != up || $TEST -eq 1 || -n "${MAINT:-}" ]] \
+           && [[ "$_running_mode" == guarded ]]; then
+          NET=guarded                     # the guarded box that runs (even with a note)
+        elif [[ -f "$_NET_FALLBACK" && ! -L "$_HOST_CFG" && -z "${COMPOSE_FILE:-}" ]] \
+             && _refuse_box_sees_checkout check >/dev/null; then
           NET=isolated                    # guarded could not be enforced here (remembered)
           [[ "$DOCKER_ACTION" != up ]] || echo "==> isolated network: guarded mode could not be" \
             "enforced on this machine ($(cut -c1-160 "$_NET_FALLBACK")). Retry: ./run.sh --guarded" >&2
@@ -995,15 +1012,18 @@ EOF_SEED
   # Its pid and log are kept host-side (~/.aiforge is the box's to write).
   _AWAKE_PID="$_HOST_CFG/awake-bridge.pid"; _AWAKE_LOG="$_HOST_CFG/awake-bridge.log"
   _stop_awake_bridge() {
-    if [[ -f "$_AWAKE_PID" ]]; then
-      local _p; _p="$(cat "$_AWAKE_PID" 2>/dev/null)"
+    local _f _p
+    # The pid file, and the one an older run.sh kept in ~/.aiforge/run.
+    for _f in "$_AWAKE_PID" "$AIFORGE_CONFIG_DIR/run/awake-bridge.pid"; do
+      [[ -f "$_f" && ! -L "$_f" ]] || continue
+      _p="$(cat "$_f" 2>/dev/null)" || _p=""
       # Only our bridge: a pid file it left behind when it exited on its own
       # may name an unrelated process by now.
       if [[ "$_p" =~ ^[0-9]+$ ]] && ps -ww -p "$_p" -o command= 2>/dev/null | grep -q awake-bridge; then
         kill "$_p" 2>/dev/null || true
       fi
-      rm -f "$_AWAKE_PID"
-    fi
+      rm -f "$_f"
+    done
   }
   _start_awake_bridge() {
     [[ "${AIFORGE_KEEP_AWAKE:-1}" =~ ^(0|false|no)$ ]] && return 0
@@ -1066,7 +1086,15 @@ EOF_SEED
     "${DC[@]}" run --rm --no-deps --user 0 --cap-add CHOWN --entrypoint chown egress-ctl -R 65534:65534 /policy \
       >/dev/null 2>&1 || true
   fi
-  "${DC[@]}" up -d --build
+  if ! "${DC[@]}" up -d --build; then
+    # Guarded: the box waits for a healthy guard; a guard that never gets there
+    # (no cgroup matching on this kernel) fails `up` — that is the fallback case.
+    if [[ "${GUARDED:-0}" == 1 && \
+          "$(docker inspect aiforge-egress-guard --format '{{.State.Health.Status}}' 2>/dev/null)" == unhealthy ]]; then
+      _guard_fallback "the firewall keeper (aiforge-egress-guard) never became healthy"
+    fi
+    _fatal "docker compose up failed (see the output above)."
+  fi
   [[ "${ISOLATED:-0}" == 1 ]] && _verify_isolated
   [[ "${GUARDED:-0}" == 1 ]] && _verify_guarded
   _start_awake_bridge

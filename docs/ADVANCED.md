@@ -235,8 +235,10 @@ docker-compose.yml):
   guard's reject — counts as blocked; a timeout means the packet left. If the
   guard cannot keep the box in (some WSL / kernel / Docker setups), run.sh
   never leaves it running: it takes the stack down and starts `--isolated`
-  instead, and remembers that in `~/.aiforge/network-fallback` (details in
-  `~/.aiforge/run/guard-check.log`). `./run.sh --guarded` retries — and, when
+  instead, and remembers that in `~/.config/aiforge/network-fallback` (details
+  in `~/.config/aiforge/guard-check.log` — kept outside ~/.aiforge, which the
+  box can write). A refusal counts only when the guard's own reject counter
+  moved. `./run.sh --guarded` retries — and, when
   asked for like that, stops with the reason instead of switching.
 - **egress** (allowlist proxy) and **ssh-egress** on 127.0.0.1: web, git over
   https/ssh, pip, npm, curl, ssh/scp/rsync reach the hosts on Settings →
