@@ -16,6 +16,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import type { EgressHosts } from '../api/client';
+import { NetworkAllowlist } from './Settings.NetworkAllowlist';
 
 function Chips({ hosts, note }: { hosts: string[]; note: string }) {
   if (!hosts.length) return null;
@@ -70,6 +71,17 @@ export default function EgressCard() {
   return (
     <div className="card">
       <h3>Egress allowlist</h3>
+      <NetworkAllowlist
+        suggest={data.derived.filter(h => !/^(127\.|localhost|model$|host\.docker\.internal$)/.test(h))}
+        onSaved={async hosts => {
+          // AIForge's own web tools follow the same list, so a host allowed on
+          // the network is not then refused by web_fetch (and vice versa).
+          try {
+            const d = await api.setEgressHosts(hosts.filter(h => !data.derived.includes(h)));
+            setData(d); setDraft(d.extra_hosts.join('\n'));
+          } catch { /* the network list is the boundary; this is convenience */ }
+        }} />
+      <h4 style={{ margin: '10px 0 4px' }}>AIForge's web tools</h4>
       <p style={{ fontSize: 13, opacity: 0.8 }}>
         This machine only talks to the hosts below. Everything else is refused,
         including web pages — there is no web search on this install. Your own

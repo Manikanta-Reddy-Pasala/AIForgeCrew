@@ -527,31 +527,31 @@ if ! _in_box; then
   # AIFORGE_EGRESS_ALLOW_HOSTS the app reads, so Settings and the network can
   # never disagree about what is allowed.
   _write_isolated_conf() {
-    local d="$AIFORGE_CONFIG_DIR/.sandbox"
-    mkdir -p "$d"
-    {
-      echo "Port 8888"
-      echo "Listen 0.0.0.0"
-      echo "Timeout 600"
-      echo "LogLevel Warning"
-      # Default-deny: tinyproxy refuses any host not filtered IN below.
-      echo "FilterURLs Off"
-      echo "FilterExtended On"
-      echo "FilterDefaultDeny Yes"
-      echo "Filter \"/etc/tinyproxy/allow.txt\""
-    } > "$d/tinyproxy.conf.tmp" && mv "$d/tinyproxy.conf.tmp" "$d/tinyproxy.conf"
-    : > "$d/allow.txt.tmp"
-    local _h
-    IFS=',' read -ra _h <<< "${AIFORGE_EGRESS_ALLOW_HOSTS:-}"
-    for _a in ${_h[@]+"${_h[@]}"}; do
-      _a="$(printf '%s' "$_a" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-      [[ -n "$_a" ]] && printf '%s\n' "$_a" >> "$d/allow.txt.tmp"
-    done
-    mv "$d/allow.txt.tmp" "$d/allow.txt"
-    # The UI proxy's config is STATIC — it varies with nothing — so it lives in
-    # the repo at docker/ui-proxy.conf and compose mounts it directly. Nothing
-    # to generate here.
-    echo "==> isolated network: egress limited to ${AIFORGE_EGRESS_ALLOW_HOSTS:-(nothing — set AIFORGE_EGRESS_ALLOW_HOSTS)}"
+    # The proxy's shape is docker/tinyproxy.conf and its POLICY (which hosts)
+    # belongs to the egress controller outside the box: seeded once from
+    # AIFORGE_EGRESS_ALLOW_HOSTS, then changed in Settings. Nothing about the
+    # boundary is written into ~/.aiforge any more — the box can write there.
+    rm -f "$AIFORGE_CONFIG_DIR/.sandbox/tinyproxy.conf" "$AIFORGE_CONFIG_DIR/.sandbox/allow.txt"
+    # The model is reached through the `model` relay, never the proxy: the box
+    # gets http://model:PORT/..., the relay gets your real endpoint. A loopback
+    # endpoint is this machine's, which the relay reaches as host.docker.internal.
+    local u="${AIFORGE_LM_BASE_URL:-http://127.0.0.1:1234/v1}" rest hostport path host port
+    rest="${u#*://}"; hostport="${rest%%/*}"
+    if [[ "$rest" == */* ]]; then path="/${rest#*/}"; else path=""; fi
+    host="${hostport%:*}"; port="${hostport##*:}"
+    if [[ "$host" == "$hostport" ]]; then
+      [[ "$u" == https://* ]] && port=443 || port=80
+    fi
+    case "$host" in
+      127.*|localhost|0.0.0.0|::1)
+        host=host.docker.internal
+        echo "==> isolated network: the model at $u is on this machine — it must" \
+             "also listen where docker can reach it (0.0.0.0 or the docker bridge)." >&2 ;;
+    esac
+    export AIFORGE_MODEL_UPSTREAM="$host:$port" AIFORGE_MODEL_PORT="$port"
+    export AIFORGE_BOX_LM_URL="http://model:$port$path"
+    echo "==> isolated network: model via relay -> $host:$port; other egress only to" \
+         "hosts allowed in Settings (first start: ${AIFORGE_EGRESS_ALLOW_HOSTS:-none})"
   }
 
   # The box is built for YOU: files the agent writes into ~/.aiforge stay yours.

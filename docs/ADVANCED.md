@@ -202,8 +202,9 @@ and is never written to — the environment wins. Catalogue: `.env.example`.
 | `AIFORGE_WORKSPACE_DIR` | — | clamps the chat agent's file scope |
 | `AIFORGE_APT_MIRROR` | archive.ubuntu.com | Ubuntu mirror (e.g. Artifactory's ubuntu remote) for the box's apt. Passed as the `APT_MIRROR` build arg **and** re-applied at every start, so the agent's own `apt-get` uses it too |
 | `AIFORGE_BASE_REGISTRY` | Docker Hub | prefix for the `ubuntu:24.04` base image (`BASE_REGISTRY` build arg) |
-| `AIFORGE_EGRESS_ALLOW_HOSTS` | — | CSV allowlist; the proxy's list under `--isolated` |
-| `AIFORGE_PROXY_IMAGE`, `AIFORGE_UI_PROXY_IMAGE` | tinyproxy, nginx:alpine | `--isolated` proxy images |
+| `AIFORGE_EGRESS_ALLOW_HOSTS` | — | CSV allowlist; under `--isolated` it SEEDS the network allowlist on first start, after that Settings owns it |
+| `AIFORGE_BOX_SUBNET` | `10.251.250.0/24` | `--isolated`: the box's internal subnet (refused on the allowlist route) |
+| `AIFORGE_PROXY_IMAGE`, `AIFORGE_UI_PROXY_IMAGE`, `AIFORGE_EGRESS_CTL_IMAGE`, `AIFORGE_RELAY_IMAGE` | tinyproxy, nginx:alpine, python:3.12-alpine, alpine/socat | `--isolated` images |
 | `AIFORGE_EXTRAS` | — | optional Python extras |
 | `AIFORGE_CA_BUNDLE` | — | internal CA, PEM |
 | `AIFORGE_CODEGRAPH_REPOS` | — | CSV repo paths to pre-index (else on first use) |
@@ -228,19 +229,30 @@ never passes through it. `--isolated` moves the boundary into the network:
   silently running the un-isolated one.
 - **box** on an `internal` network with no route out; its
   `http_proxy`/`https_proxy` are fixed to the proxy in the compose file itself.
-- **egress**: tinyproxy, the only container on both networks, **default-deny**,
-  filtering to `AIFORGE_EGRESS_ALLOW_HOSTS`. run.sh regenerates
-  `~/.aiforge/.sandbox/{tinyproxy.conf,allow.txt}` from that same variable on
-  every start, so Settings and the network cannot disagree. Empty list, nothing
-  reachable.
+- **egress**: tinyproxy, **default-deny**, the box's only way out. Its shape is
+  `docker/tinyproxy.conf` (static, read-only; CONNECT only to port 443).
+- **egress-ctl**: owns the allowlist, OUTSIDE the box. **You edit it in
+  Settings → Egress allowlist**; a save applies at once (the proxy re-reads
+  its list). Each entry allows that host and its subdomains — anchored, so
+  `pypi.org` never matches `evilpypi.org` or `pypi.org.attacker.com`. The
+  first start seeds it from `AIFORGE_EGRESS_ALLOW_HOSTS`; after that Settings
+  owns it (`/egress-admin/api/changes` keeps who changed what). The agent
+  cannot change it: the controller is not on the box's network, nothing about
+  the boundary lives in `~/.aiforge` any more, and the UI front door refuses
+  the box's subnet (`AIFORGE_BOX_SUBNET`) on the allowlist route.
+- **model**: a relay to the model endpoint and nothing else. run.sh points the
+  box's model URL at it (`http://model:PORT/...`) and the relay at your real
+  `AIFORGE_LM_BASE_URL`; a loopback endpoint is reached as
+  `host.docker.internal`, so it must also listen where docker can reach it
+  (0.0.0.0 or the docker bridge) — or use the model's LAN address.
 - **ui**: nginx publishes the UI on `${AIFORGE_HOST}:${AIFORGE_PORT}` — a
   container on an internal network cannot publish a port itself.
 
-**The cost, stated plainly:** the model endpoint is no longer reachable at
-`127.0.0.1` — that was the host's loopback, which the box used to share. Point
-`AIFORGE_LM_BASE_URL` at `http://host.docker.internal:1234/v1` (the host stays
-addressable by name) **and add that host to the allowlist**, or keep the model
-on the `out` side.
+**Do not allowlist `host.docker.internal`:** that opens every port on this
+machine to the box (its own UI and API included), not just the model.
+
+Without `--isolated` the Settings card says so: the list then limits only
+AIForge's own web tools, and a command the agent runs can reach any site.
 
 ## What the first run does
 

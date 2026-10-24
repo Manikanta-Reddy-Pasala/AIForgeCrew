@@ -69,28 +69,57 @@ def test_the_default_run_is_unchanged(tmp_path: Path):
     assert "docker-compose.isolated.yml" not in up[0]
 
 
-def test_the_allowlist_comes_from_the_same_env_the_app_reads(tmp_path: Path):
-    """Settings and the network must never disagree about what is allowed."""
-    _run(tmp_path, ["--isolated"],
-         {"AIFORGE_EGRESS_ALLOW_HOSTS": "artifactory.internal, jira.corp"})
-    allow = (_sandbox(tmp_path) / "allow.txt").read_text().split()
-    assert allow == ["artifactory.internal", "jira.corp"]
+def test_nothing_about_the_boundary_is_written_where_the_box_can_write(tmp_path: Path):
+    """~/.aiforge is mounted read-write into the box, and the agent has full
+    rights there: a proxy config or allow file in it is one the agent edits.
+    A stale one from an older run.sh is removed."""
+    sb = _sandbox(tmp_path)
+    sb.mkdir(parents=True)
+    (sb / "allow.txt").write_text(".*\n")
+    (sb / "tinyproxy.conf").write_text("FilterDefaultDeny No\n")
+    _run(tmp_path, ["--isolated"], {"AIFORGE_EGRESS_ALLOW_HOSTS": "artifactory.internal"})
+    assert not (sb / "allow.txt").exists() and not (sb / "tinyproxy.conf").exists()
 
 
-def test_the_proxy_denies_by_default(tmp_path: Path):
+def test_the_proxy_config_is_static_and_denies_by_default():
     """An allowlist that defaults to ALLOW is not an allowlist."""
-    _run(tmp_path, ["--isolated"],
-         {"AIFORGE_EGRESS_ALLOW_HOSTS": "artifactory.internal"})
-    conf = (_sandbox(tmp_path) / "tinyproxy.conf").read_text()
-    assert "FilterDefaultDeny Yes" in conf
-    assert "/etc/tinyproxy/allow.txt" in conf
+    conf = (REPO / "docker" / "tinyproxy.conf").read_text()
+    assert "FilterDefaultDeny Yes" in conf and "FilterExtended On" in conf
+    assert 'Filter "/policy/allow.txt"' in conf
+    assert "ConnectPort 443" in conf
+    compose = (REPO / "docker-compose.isolated.yml").read_text()
+    assert "./docker/tinyproxy.conf:/etc/tinyproxy/tinyproxy.conf:ro" in compose
+    assert "egress-policy:/policy:ro" in compose          # the proxy only reads it
 
 
-def test_an_empty_allowlist_still_writes_a_file(tmp_path: Path):
-    """The proxy mounts it; a missing file is a container that will not start,
-    which reads as "isolation is broken" rather than "nothing is allowed"."""
-    _run(tmp_path, ["--isolated"], {"AIFORGE_EGRESS_ALLOW_HOSTS": ""})
-    assert (_sandbox(tmp_path) / "allow.txt").exists()
+def test_the_allowlist_owner_is_off_the_box_network():
+    """The controller is on `out` only — the box has no route to it — and the
+    UI front door refuses the box's subnet on its route."""
+    import re
+    compose = (REPO / "docker-compose.isolated.yml").read_text()
+    ctl = compose[compose.index("  egress-ctl:"):compose.index("  model:")]
+    assert "networks: [out]" in ctl and "box" not in ctl.split("networks:")[1].split("\n")[0]
+    assert re.search(r"subnet: \$\{AIFORGE_BOX_SUBNET:-[0-9./]+\}", compose)
+    ui = (REPO / "docker" / "ui-proxy.conf.template").read_text()
+    loc = ui[ui.index("location /egress-admin/"):]
+    assert "deny ${AIFORGE_BOX_SUBNET};" in loc.split("}")[0]
+    assert "AIFORGE_BOX_SUBNET=${AIFORGE_BOX_SUBNET:-" in compose     # nginx gets the same value
+
+
+def test_the_model_goes_through_its_own_relay(tmp_path: Path):
+    """The model client does not use the proxy; it reaches a relay on the box
+    network that forwards to the real endpoint only. A loopback endpoint is
+    this machine's: the relay reaches it as host.docker.internal."""
+    proc, calls = _run(tmp_path, ["--isolated"],
+                       {"AIFORGE_LM_BASE_URL": "http://127.0.0.1:1234/v1"})
+    out = proc.stdout + proc.stderr
+    assert "model via relay -> host.docker.internal:1234" in out
+    proc, _ = _run(tmp_path, ["--isolated"],
+                   {"AIFORGE_LM_BASE_URL": "http://192.168.70.185:8081/v1"})
+    assert "model via relay -> 192.168.70.185:8081" in proc.stdout + proc.stderr
+    compose = (REPO / "docker-compose.isolated.yml").read_text()
+    assert "AIFORGE_LM_BASE_URL=${AIFORGE_BOX_LM_URL" in compose
+    assert "host.docker.internal:host-gateway" not in compose.split("  egress:")[0]
 
 
 def test_the_ui_is_published_through_its_own_proxy():
@@ -99,7 +128,7 @@ def test_the_ui_is_published_through_its_own_proxy():
 
     Its config varies with nothing, so it is a file in the repo rather than
     something run.sh echoes out at start-up — compose mounts it directly."""
-    conf = (REPO / "docker" / "ui-proxy.conf").read_text()
+    conf = (REPO / "docker" / "ui-proxy.conf.template").read_text()
     assert "proxy_pass http://aiforge:8799;" in conf
     # SSE: the chat streams, so buffering would hold every token to the end.
     assert "proxy_buffering off;" in conf
@@ -108,7 +137,7 @@ def test_the_ui_is_published_through_its_own_proxy():
 def test_compose_mounts_that_static_proxy_config():
     """The file is only useful if the ui container actually gets it."""
     compose = (REPO / "docker-compose.isolated.yml").read_text()
-    assert "./docker/ui-proxy.conf:/etc/nginx/conf.d/default.conf:ro" in compose
+    assert "./docker/ui-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro" in compose
 
 
 def test_isolated_refuses_to_fight_a_site_compose_file(tmp_path: Path):

@@ -5,8 +5,8 @@
 # both that network and an ordinary one, so it can accept a connection from the
 # host and forward it inward.
 #
-# Static on purpose: nothing here varies per box, so it is a file in the repo
-# rather than lines echoed out of run.sh at start-up. The published address is
+# A template: nginx fills ${AIFORGE_BOX_SUBNET} from the environment at start
+# (the official image's /etc/nginx/templates mechanism); everything else is static. The published address is
 # chosen by compose (`${AIFORGE_HOST}:${AIFORGE_PORT}`), not here.
 #
 # The upstream is plain HTTP by design: this hop never leaves the internal
@@ -14,6 +14,24 @@
 # issuing a certificate for a name only these two containers can resolve.
 server {
   listen 8799;
+
+  # The network allowlist's controller (docker/egress-controller.py). Your
+  # browser reaches it through here; the BOX must not — the agent would
+  # otherwise allow itself any site. The box's network has a fixed subnet
+  # (AIFORGE_BOX_SUBNET in docker-compose.isolated.yml) and every request from it
+  # is refused.
+  location /egress-admin/ {
+    deny ${AIFORGE_BOX_SUBNET};
+    allow all;
+    # Resolved per request: nginx must still start while the controller is
+    # down (the chat keeps working; only the list cannot be changed).
+    resolver 127.0.0.11 valid=10s;
+    set $egress_ctl http://egress-ctl:8780;
+    rewrite ^/egress-admin/(.*)$ /$1 break;
+    proxy_pass $egress_ctl;
+    proxy_set_header X-Real-IP $remote_addr;
+    client_max_body_size 64k;
+  }
 
   location / {
     proxy_pass http://aiforge:8799;
