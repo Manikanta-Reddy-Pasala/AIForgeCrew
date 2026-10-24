@@ -116,8 +116,10 @@ if [[ "${AIFORGE_GUARDED:-0}" == 1 ]]; then
         _q="$("$_py" /opt/aiforge-src/docker/guard-probe.py 2>/dev/null)" || _q=""
         case "$_q" in
           NET-BLOCKED) exit 0 ;;
+          # PID 1 is the init docker adds (init: true, docker-compose.guard.yml):
+          # it handles TERM and stops the box; anything left is killed outright.
           NET-OPEN*) echo "!! guarded network: a route appeared and the box can reach the internet — stopping." >&2
-                     kill -TERM 1; exit 0 ;;
+                     kill -TERM 1; sleep 10; kill -KILL -1 ;;
         esac
       done ) </dev/null >/dev/null &
   fi

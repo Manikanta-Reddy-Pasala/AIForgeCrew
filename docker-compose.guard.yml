@@ -25,6 +25,9 @@ services:
     # No raw / packet sockets: in this machine's network they would send
     # frames past the firewall entirely.
     cap_drop: [NET_RAW]
+    # A real init as PID 1: the entrypoint's watcher can stop the box with
+    # TERM (a shell as PID 1 without a trap ignores it).
+    init: true
     environment:
       - AIFORGE_GUARDED=1
       - http_proxy=http://127.0.0.1:${AIFORGE_EGRESS_PORT:-18888}

@@ -201,10 +201,27 @@ def test_the_box_cannot_plant_the_fallback_note(tmp_path: Path):
     assert not (tmp_path / "cfg" / "network-fallback").exists()
     target = tmp_path / "victim"; target.write_text("keep")
     note = tmp_path / "xdg" / "aiforge" / "network-fallback"
-    note.unlink(); note.symlink_to(target)          # planted right before a fallback
-    _run(tmp_path, ["--isolated", "--stop"])
-    _run(tmp_path, [], probe="NET-OPEN 1.1.1.1:open")
-    assert target.read_text() == "keep"
+    # A dangling link: no note yet, so the next run tries guarded and falls back.
+    missing = tmp_path / "planted"
+    note.unlink(); note.symlink_to(missing)
+    proc, _ = _run(tmp_path, [], probe="NET-OPEN 1.1.1.1:open")
+    assert "switching to the isolated network" in proc.stderr
+    assert not missing.exists() and target.read_text() == "keep"
+
+
+def test_a_note_does_not_lock_out_a_machine_where_isolated_cannot_start(tmp_path: Path):
+    (tmp_path / "xdg" / "aiforge").mkdir(parents=True)
+    (tmp_path / "xdg" / "aiforge" / "network-fallback").write_text("old note\n")
+    proc, calls = _run(tmp_path, [], {"AIFORGE_REPOS_DIR": str(tmp_path)}, running="guarded")
+    assert "trying the guarded network" in proc.stderr, proc.stderr
+    assert any("docker-compose.guard.yml" in c and "up -d --build" in c for c in calls), calls
+    assert proc.returncode == 0 and "guarded network verified" in proc.stdout
+
+
+def test_the_guard_overlay_gives_the_box_a_real_init():
+    g = (REPO / "docker-compose.guard.yml").read_text()
+    box = g[g.index("\n  aiforge:\n"):g.index("\n  egress-guard:\n")]
+    assert "init: true" in box
 
 
 def test_a_site_compose_file_stops_instead_of_switching(tmp_path: Path):

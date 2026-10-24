@@ -315,6 +315,7 @@ _in_box() {
 DOCKER_ACTION=up
 NET=""                                   # guarded | isolated: flags or AIFORGE_NETWORK
 _NET_FLAG=0
+_from_note=0                             # isolated only because of the fallback note
 # Host-only notes, outside everything mounted into the box (~/.aiforge is).
 _HOST_CFG="${XDG_CONFIG_HOME:-$HOME/.config}/aiforge"
 _NET_FALLBACK="$_HOST_CFG/network-fallback"   # set when guarded cannot be enforced here
@@ -683,7 +684,7 @@ EOF_SEED
       fi
       if [[ -z "$probe" ]]; then
         # The box restarts itself while it cannot confirm the block (entrypoint).
-        st="$(docker inspect aiforge --format '{{.State.Status}}' 2>/dev/null)"
+        st="$(docker inspect aiforge --format '{{.State.Status}}' 2>/dev/null)" || st=""
         [[ "$st" == exited || "$st" == restarting ]] && probe=EXITED
       fi
       sleep 2
@@ -742,8 +743,8 @@ EOF_SEED
     echo "==> switching to the isolated network (stricter); later runs here use it too." \
          "Details: $diag. Retry guarded: ./run.sh --guarded" >&2
     for a in ${_ORIG_ARGS[@]+"${_ORIG_ARGS[@]}"}; do [[ "$a" == --guarded ]] || args+=("$a"); done
-    # The note makes the default isolated — not "asked for", so nothing else changes.
-    [[ -f "$_NET_FALLBACK" ]] || export AIFORGE_NETWORK=isolated
+    # This re-run is isolated whatever happens to the note (it only drives later runs).
+    export AIFORGE_NETWORK=isolated
     exec bash "$PWD/run.sh" ${args[@]+"${args[@]}"}
   }
 
@@ -869,9 +870,8 @@ EOF_SEED
         elif [[ "$DOCKER_ACTION" != up || $TEST -eq 1 || -n "${MAINT:-}" ]] \
            && [[ "$_running_mode" == guarded ]]; then
           NET=guarded                     # the guarded box that runs (even with a note)
-        elif [[ -f "$_NET_FALLBACK" && ! -L "$_HOST_CFG" && -z "${COMPOSE_FILE:-}" ]] \
-             && _refuse_box_sees_checkout check >/dev/null; then
-          NET=isolated                    # guarded could not be enforced here (remembered)
+        elif [[ -f "$_NET_FALLBACK" && ! -L "$_HOST_CFG" && -z "${COMPOSE_FILE:-}" ]]; then
+          NET=isolated; _from_note=1      # guarded could not be enforced here (remembered)
           [[ "$DOCKER_ACTION" != up ]] || echo "==> isolated network: guarded mode could not be" \
             "enforced on this machine ($(cut -c1-160 "$_NET_FALLBACK")). Retry: ./run.sh --guarded" >&2
         else
@@ -1057,6 +1057,13 @@ EOF_SEED
     exec "${DC[@]}" run --rm aiforge
   fi
   if [[ "${ISOLATED:-0}" == 1 ]]; then
+    if [[ "$_from_note" == 1 ]] && ! _why="$(_refuse_box_sees_checkout check)"; then
+      # Isolated only because of the note, and it cannot start here (the box
+      # would see this checkout): try guarded instead — it is verified again
+      # and stops with the reason if it still cannot hold.
+      echo "==> the isolated network cannot start here ($_why) — trying the guarded network" >&2
+      exec bash "$PWD/run.sh" --guarded ${_ORIG_ARGS[@]+"${_ORIG_ARGS[@]}"}
+    fi
     _refuse_box_sees_checkout
   else
     _refuse_box_sees_checkout warn
