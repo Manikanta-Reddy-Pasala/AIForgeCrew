@@ -92,6 +92,32 @@ if [[ "${AIFORGE_ISOLATED:-0}" == 1 && -n "${AIFORGE_MODEL_LISTEN:-}" ]]; then
     "$AIFORGE_MODEL_LISTEN" "model:$AIFORGE_MODEL_LISTEN" </dev/null >/dev/null 2>&1 &
 fi
 
+# Guarded network: nothing starts until the firewall really keeps this box
+# off the internet (it is applied from outside, a moment after the container
+# starts — also after a reboot, when nothing orders the containers).
+if [[ "${AIFORGE_GUARDED:-0}" == 1 ]]; then
+  _py="${_py:-$(command -v python3 || command -v python3.12 || echo python3)}"
+  _guarded=0
+  for _i in $(seq 1 60); do
+    if "$_py" - <<'PY' 2>/dev/null; then _guarded=1; break; fi
+import socket, sys
+for addr in (("1.1.1.1", 443), ("2606:4700:4700::1111", 443)):
+    try:
+        socket.create_connection(addr, timeout=2).close()
+        sys.exit(1)           # the internet is reachable directly: not guarded yet
+    except OSError:
+        pass
+sys.exit(0)
+PY
+    sleep 2
+  done
+  if [[ "$_guarded" != 1 ]]; then
+    echo "!! guarded network: this box can still reach the internet directly — not starting." \
+         "See: docker logs aiforge-egress-guard" >&2
+    exit 1
+  fi
+fi
+
 # Inside the box there is nothing to protect from the agent: full rights, no
 # workspace jail. run.sh's own host-permission fixes do not apply here.
 export AIFORGE_IN_SANDBOX=1 AIFORGE_CHAT_WORKSPACE_JAIL=0 AIFORGE_FIX_PERMS=0

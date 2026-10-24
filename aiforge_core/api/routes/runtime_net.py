@@ -2,7 +2,7 @@
 folders mounted into the sandbox."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 router = APIRouter()
@@ -214,8 +214,22 @@ def network_allowlist_get() -> dict:
     return _egress_admin("GET", "/api/hosts")
 
 
-@router.put("/egress-admin/api/hosts", responses={400: {"description": "Bad host"}})
-def network_allowlist_put(body: NetworkAllowBody) -> dict:
+def _same_origin(request: Request) -> None:
+    """A change must come from this UI: a page on another site (or one that
+    rebinds its own name to this machine) sends a foreign Origin."""
+    from urllib.parse import urlsplit
+    origin = request.headers.get("origin")
+    if origin is None:
+        return
+    host = (request.headers.get("host") or "").lower()
+    if origin == "null" or urlsplit(origin).netloc.lower() != host:
+        raise HTTPException(status_code=403, detail="cross-origin change refused")
+
+
+@router.put("/egress-admin/api/hosts", responses={400: {"description": "Bad host"},
+                                                  403: {"description": "Cross-origin"}})
+def network_allowlist_put(body: NetworkAllowBody, request: Request) -> dict:
+    _same_origin(request)
     return _egress_admin("PUT", "/api/hosts", {"hosts": body.hosts})
 
 

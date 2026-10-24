@@ -272,6 +272,10 @@ def _auth_exempt(path: str) -> bool:
     # nothing at all — and "nothing at all" is exactly an exemption.
     if _sync_open() and _is_sync_path(path):
         return True
+    # The network allowlist (guarded mode) changes what the box may reach: it
+    # needs the same token as the API, not the UI's static-file exemption.
+    if path.startswith("/egress-admin/"):
+        return False
     return not path.startswith("/api/")
 
 

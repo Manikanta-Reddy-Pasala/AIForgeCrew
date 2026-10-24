@@ -20,7 +20,13 @@ def _private(host: str, port: str) -> bool:
     except (OSError, ValueError):
         return False
     addrs = [ipaddress.ip_address(i[4][0].split("%")[0]) for i in infos]
-    return bool(addrs) and all(a.is_private or a.is_loopback or a.is_link_local for a in addrs)
+    # The same ranges the guard leaves free (Tailscale's 100.64.0.0/10 too).
+    free = [ipaddress.ip_network(n) for n in (
+        "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+        "100.64.0.0/10", "169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10")]
+    meta = ipaddress.ip_address("169.254.169.254")
+    return bool(addrs) and all(a != meta and any(a in n for n in free if n.version == a.version)
+                               for a in addrs)
 
 
 def _relay(s) -> int:

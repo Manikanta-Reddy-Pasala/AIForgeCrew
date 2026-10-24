@@ -22,6 +22,9 @@ services:
       aiforge.egress-guarded: "1"
     depends_on:
       egress-guard: {condition: service_healthy}
+    # No raw / packet sockets: in this machine's network they would send
+    # frames past the firewall entirely.
+    cap_drop: [NET_RAW]
     environment:
       - AIFORGE_GUARDED=1
       - http_proxy=http://127.0.0.1:${AIFORGE_EGRESS_PORT:-18888}
@@ -52,14 +55,18 @@ services:
     security_opt: ["no-new-privileges:true"]
     read_only: true
     tmpfs: [/tmp, /run]
+    # On stop it removes its rules (leaving guarded mode leaves nothing behind).
+    stop_grace_period: 20s
     pids_limit: 64
     volumes:
       # Read-only: only to find the box's containers (their cgroups).
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /sys/fs/cgroup:/sys/fs/cgroup:ro
+      # The host's resolvers: DNS to them stays allowed.
+      - /etc/resolv.conf:/host/resolv.conf:ro
     healthcheck:
       # Healthy once its rules exist; it also guards boxes started later.
-      test: ["CMD", "sh", "-c", "test -f /tmp/guarding || iptables -S AIFORGE_EGRESS >/dev/null"]
+      test: ["CMD", "test", "-f", "/tmp/guarding"]
       interval: 5s
       timeout: 3s
       retries: 20

@@ -392,3 +392,22 @@ def test_the_guard_overlay_keeps_the_host_network_and_gates_the_internet():
     assert "-m cgroup --path" in sh and "ip6tables" in sh
     for net in ("127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"):
         assert net in sh
+
+
+def test_guarded_hardening_is_in_place():
+    g = (REPO / "docker-compose.guard.yml").read_text()
+    box = g[g.index("\n  aiforge:\n"):g.index("\n  egress-guard:\n")]
+    assert "cap_drop: [NET_RAW]" in box                        # no packet sockets
+    assert "cgroup: host" in g and "/etc/resolv.conf:/host/resolv.conf:ro" in g
+    sh = (REPO / "docker" / "isolated" / "egress-guard.sh").read_text()
+    assert "--ctdir REPLY -j RETURN" in sh                     # replies to outside clients
+    assert "169.254.169.254/32" in sh                          # cloud metadata refused
+    assert "stat -c %i" in sh                                  # re-installed after a restart
+    assert "chain_ok" in sh and "keeping its rules" in sh
+    entry = (REPO / "docker" / "entrypoint.sh").read_text()
+    assert 'AIFORGE_GUARDED:-0}" == 1' in entry and "not starting" in entry
+
+
+def test_the_allowlist_route_needs_the_api_token():
+    from aiforge_core.api import _bind_security as B
+    assert B._auth_exempt("/egress-admin/api/hosts") is False

@@ -1,4 +1,4 @@
-import { j, apiFetch } from './core';
+import { j, apiFetch, authHeaders } from './core';
 import type {
   RegistryModel, ModelInput, LlmSettings, LlmSettingsInput,
   AgentRole, AgentRoleConfig, AgentRoleConfigInput, ProviderCatalog, LlmUsage,
@@ -456,7 +456,7 @@ export type NetworkAllowChange = { at: string; by: string; added: string[]; remo
 
 export async function setNetworkAllowlist(hosts: string[]): Promise<string[]> {
   const r = await fetch('/egress-admin/api/hosts', {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    method: 'PUT', headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ hosts }),
   });
   const d = await r.json().catch(() => ({}));
@@ -466,7 +466,7 @@ export async function setNetworkAllowlist(hosts: string[]): Promise<string[]> {
 
 export async function networkAllowChanges(): Promise<NetworkAllowChange[]> {
   try {
-    const r = await fetch('/egress-admin/api/changes', { cache: 'no-store' });
+    const r = await fetch('/egress-admin/api/changes', { cache: 'no-store', headers: authHeaders() });
     return r.ok ? ((await r.json()).changes || []) : [];
   } catch {
     return [];
