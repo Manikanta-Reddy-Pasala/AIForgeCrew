@@ -16,6 +16,12 @@
 # alternative is `./run.sh --isolated`.
 services:
   aiforge:
+    # The guard protects every container with this label: the box and any
+    # one-off run of it (--test, maintenance).
+    labels:
+      aiforge.egress-guarded: "1"
+    depends_on:
+      egress-guard: {condition: service_healthy}
     environment:
       - AIFORGE_GUARDED=1
       - http_proxy=http://127.0.0.1:${AIFORGE_EGRESS_PORT:-18888}
@@ -47,14 +53,13 @@ services:
     read_only: true
     tmpfs: [/tmp, /run]
     pids_limit: 64
-    environment:
-      - AIFORGE_BOX_NAME=aiforge
     volumes:
-      # Read-only: only to find the box's container id (its cgroup).
+      # Read-only: only to find the box's containers (their cgroups).
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /sys/fs/cgroup:/sys/fs/cgroup:ro
     healthcheck:
-      test: ["CMD", "test", "-f", "/tmp/guarding"]
+      # Healthy once its rules exist; it also guards boxes started later.
+      test: ["CMD", "sh", "-c", "test -f /tmp/guarding || iptables -S AIFORGE_EGRESS >/dev/null"]
       interval: 5s
       timeout: 3s
       retries: 20
