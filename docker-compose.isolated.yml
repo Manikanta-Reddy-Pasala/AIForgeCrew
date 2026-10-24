@@ -53,8 +53,12 @@ services:
     container_name: aiforge
     restart: unless-stopped
     networks: [box]
-    # No raw sockets: no forged packets on the box network.
+    # No raw sockets: no forged packets on the box network. No IPv6: the
+    # internal bridge's link-local addresses would reach this machine.
     cap_drop: [NET_RAW]
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 1
+      net.ipv6.conf.default.disable_ipv6: 1
     environment:
       # The box listens on its internal network so `ui` can reach it; nothing
       # else can (the network is internal and only `ui` publishes a port, on
@@ -87,87 +91,128 @@ services:
       - https_proxy=http://egress:8888
       - HTTP_PROXY=http://egress:8888
       - HTTPS_PROXY=http://egress:8888
-      - no_proxy=localhost,127.0.0.1,aiforge,egress,ui,model
-      - NO_PROXY=localhost,127.0.0.1,aiforge,egress,ui,model
+      - no_proxy=localhost,127.0.0.1,aiforge,egress,ui,model,ssh-egress
+      - NO_PROXY=localhost,127.0.0.1,aiforge,egress,ui,model,ssh-egress
+      # ssh / scp / rsync / git@… leave through the SSH exit (entrypoint sets
+      # the ProxyCommand when AIFORGE_ISOLATED=1).
+      - AIFORGE_SSH_PROXY=ssh-egress:8889
     volumes:
       - ${AIFORGE_CONFIG_DIR:-~/.aiforge}:${AIFORGE_HOME:-/home/aiforge}/.aiforge
       - aiforge-state:/var/lib/aiforge
       - egress-policy:/var/lib/aiforge-egress:ro
 
-  # The allowlist, enforced where the agent cannot argue with it. Shape:
-  # docker/tinyproxy.conf (static, read-only). Policy: /policy/allow.txt,
-  # written only by egress-ctl.
+  # The allowlist, enforced where the agent cannot argue with it: tinyproxy
+  # (current Alpine) with its config and reload loop baked into a local image,
+  # unprivileged. Policy: /policy/allow.txt, written only by egress-ctl.
   egress:
-    image: ${AIFORGE_PROXY_IMAGE:-vimagick/tinyproxy}
+    build: {context: ./docker/isolated, dockerfile: egress.Dockerfile}
+    image: aiforge-isolated-egress:local
     container_name: aiforge-egress
     restart: unless-stopped
+    user: "65534:65534"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    pids_limit: 256
     networks:
       box: {}
       out:
         # Fixed, so the UI front door can refuse requests that loop back
-        # through the proxy (docker/ui-proxy.conf.template).
+        # through the proxy (ui-proxy.conf.template).
         ipv4_address: ${AIFORGE_EGRESS_IP:-10.251.251.250}
-    # Waits for the first list, then re-reads it whenever it changes.
-    entrypoint: ["/bin/sh", "/app/egress-proxy.sh"]
-    command: []
     volumes:
-      - ./docker/egress-proxy.sh:/app/egress-proxy.sh:ro
-      - ./docker/tinyproxy.conf:/etc/tinyproxy/tinyproxy.conf:ro
       - egress-policy:/policy:ro
 
-  # Owns the allowlist (docker/egress-controller.py), on its OWN network:
-  # only the UI front door shares it; the box has no route to it.
+  # Owns the allowlist (docker/isolated/egress-controller.py), on its OWN
+  # network: only the UI front door shares it; the box has no route to it.
   egress-ctl:
-    image: ${AIFORGE_EGRESS_CTL_IMAGE:-python:3.12-alpine}
+    build: {context: ./docker/isolated, dockerfile: egress-ctl.Dockerfile}
+    image: aiforge-isolated-egress-ctl:local
     container_name: aiforge-egress-ctl
     restart: unless-stopped
+    user: "65534:65534"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    pids_limit: 256
     networks: [admin]
-    command: ["python3", "-u", "/app/egress-controller.py"]
     environment:
-      # Optional: when set, every change needs it. Off for now.
+      # Optional: when set, every call needs it. Off for now.
       - AIFORGE_EGRESS_ADMIN_TOKEN=${AIFORGE_EGRESS_ADMIN_TOKEN:-}
+      # The names the UI is opened by: anything else is refused (a website
+      # rebinding its own name to this machine cannot edit the list).
+      - AIFORGE_UI_HOSTS=${AIFORGE_UI_HOSTS:-localhost,127.0.0.1}
+      # Never allowed: the docker networks of this setup.
+      - AIFORGE_BOX_SUBNET=${AIFORGE_BOX_SUBNET:-10.251.250.0/24}
+      - AIFORGE_OUT_SUBNET=${AIFORGE_OUT_SUBNET:-10.251.251.0/24}
       # First start only: seeds the list. After that Settings owns it.
       - AIFORGE_EGRESS_ALLOW_HOSTS
     volumes:
-      - ./docker/egress-controller.py:/app/egress-controller.py:ro
       - egress-policy:/policy
+
+  # The box's SSH exit: CONNECT to SSH ports only (AIFORGE_SSH_PORTS, 22),
+  # to any host (AIFORGE_SSH_EGRESS=any) — or only allowlisted ones
+  # (allowlist), or none (off).
+  ssh-egress:
+    build: {context: ./docker/isolated, dockerfile: ssh-egress.Dockerfile}
+    image: aiforge-isolated-ssh-egress:local
+    container_name: aiforge-ssh-egress
+    restart: unless-stopped
+    user: "65534:65534"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    pids_limit: 256
+    networks: [box, out]
+    environment:
+      - AIFORGE_SSH_EGRESS=${AIFORGE_SSH_EGRESS:-any}
+      - AIFORGE_SSH_PORTS=${AIFORGE_SSH_PORTS:-22}
+    volumes:
+      - egress-policy:/policy:ro
 
   # The model endpoint, and nothing else, for the box: one fixed upstream.
   model:
-    image: ${AIFORGE_RELAY_IMAGE:-alpine/socat}
+    build: {context: ./docker/isolated, dockerfile: model-relay.Dockerfile}
+    image: aiforge-isolated-model-relay:local
     container_name: aiforge-model
     restart: unless-stopped
+    user: "65534:65534"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    pids_limit: 256
     networks: [box, out]
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    entrypoint: ["/bin/sh", "/app/model-relay.sh"]
-    command: []
     environment:
-      - AIFORGE_MODEL_PORT=${AIFORGE_MODEL_PORT:-1234}
+      - AIFORGE_MODEL_LISTEN=${AIFORGE_MODEL_LISTEN:-1234}
       - AIFORGE_MODEL_UPSTREAM=${AIFORGE_MODEL_UPSTREAM:-host.docker.internal:1234}
       - AIFORGE_MODEL_TLS=${AIFORGE_MODEL_TLS:-0}
-    volumes:
-      - ./docker/model-relay.sh:/app/model-relay.sh:ro
 
   # A container on an internal network cannot publish a port, so the UI is
-  # served through here instead of from the box directly.
+  # served through here instead of from the box directly (nginx, unprivileged).
   ui:
-    image: ${AIFORGE_UI_PROXY_IMAGE:-nginx:alpine}
+    build: {context: ./docker/isolated, dockerfile: ui.Dockerfile}
+    image: aiforge-isolated-ui:local
     container_name: aiforge-ui
     restart: unless-stopped
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    # Writable only where nginx (uid 101) needs it: its generated config and temp files.
+    tmpfs: ["/tmp:uid=101,gid=101,mode=0755", "/etc/nginx/conf.d:uid=101,gid=101,mode=0755"]
+    pids_limit: 256
     networks: [box, out, admin]
     ports:
       - "${AIFORGE_HOST:-127.0.0.1}:${AIFORGE_PORT:-8799}:8799"
     environment:
       - AIFORGE_BOX_SUBNET=${AIFORGE_BOX_SUBNET:-10.251.250.0/24}
       - AIFORGE_EGRESS_IP=${AIFORGE_EGRESS_IP:-10.251.251.250}
-    volumes:
-      # A template: nginx fills in the two addresses it refuses at start.
-      - ./docker/ui-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro
 
 networks:
   box:
     internal: true
+    enable_ipv6: false
     driver_opts:
       # No address for THIS machine on the box's bridge: without it the box
       # reached every service listening on the host (ssh, the AIForge API…)
@@ -177,12 +222,14 @@ networks:
       config:
         - subnet: ${AIFORGE_BOX_SUBNET:-10.251.250.0/24}
   out:
+    enable_ipv6: false
     ipam:
       config:
         - subnet: ${AIFORGE_OUT_SUBNET:-10.251.251.0/24}
   # Only the UI front door and the allowlist's controller.
   admin:
     internal: true
+    enable_ipv6: false
 
 volumes:
   aiforge-state:

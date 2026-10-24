@@ -67,6 +67,21 @@ rsync -a --delete --chown="$APP_UID:$APP_GID" \
   /opt/aiforge-src/ "$APP/"
 chown "$APP_UID:$APP_GID" "$STATE" "$APP" "$CFG/repos" 2>/dev/null || true
 
+# Isolated network (`./run.sh --isolated`): the box has no route out, so ssh
+# (and scp / rsync / git over ssh) leaves through the SSH exit
+# (docker/ssh-egress.py) — every host, through one ProxyCommand. Localhost
+# stays direct.
+if [[ "${AIFORGE_ISOLATED:-0}" == 1 && -d /etc/ssh/ssh_config.d ]]; then
+  _py="$(command -v python3 || command -v python3.12 || echo python3)"
+  cat > /etc/ssh/ssh_config.d/50-aiforge-egress.conf <<SSHCONF
+# Written by aiforge-entrypoint (isolated network): ssh goes out via the SSH exit.
+Host localhost 127.0.0.1 ::1
+  ProxyCommand none
+Host *
+  ProxyCommand $_py /opt/aiforge-src/docker/ssh-connect.py %h %p
+SSHCONF
+fi
+
 # Inside the box there is nothing to protect from the agent: full rights, no
 # workspace jail. run.sh's own host-permission fixes do not apply here.
 export AIFORGE_IN_SANDBOX=1 AIFORGE_CHAT_WORKSPACE_JAIL=0 AIFORGE_FIX_PERMS=0

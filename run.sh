@@ -526,18 +526,78 @@ if ! _in_box; then
   # proxy that publishes the port the box itself cannot. Written from the same
   # AIFORGE_EGRESS_ALLOW_HOSTS the app reads, so Settings and the network can
   # never disagree about what is allowed.
+  # A folder mounted into the box that contains THIS checkout (or the host's
+  # aiforge config) lets the agent edit run.sh, the compose files and the
+  # isolation's own config — taking effect on the next start, on this host.
+  _refuse_box_sees_checkout() {
+    local here cfg m why=""
+    here="$(pwd -P)"; cfg="${XDG_CONFIG_HOME:-$HOME/.config}/aiforge"
+    for m in "$AIFORGE_CONFIG_DIR" ${AIFORGE_REPOS_DIR:+"$AIFORGE_REPOS_DIR"} \
+             $(IFS=:; echo ${AIFORGE_MOUNTS:-}); do
+      [[ -n "$m" && -d "$m" ]] || continue
+      m="$(cd "$m" && pwd -P)"
+      case "$here/" in "$m"/*) why="$m contains this checkout ($here)" ;; esac
+      case "$m/" in "$here"/*) why="$m is inside this checkout ($here)" ;; esac
+      case "$cfg/" in "$m"/*) why="$m contains $cfg (the host's aiforge settings)" ;; esac
+      [[ -n "$why" ]] && break
+    done
+    [[ -z "$why" ]] && return 0
+    if [[ "${1:-}" == warn ]]; then
+      echo "!! the box can edit this checkout: $why — it could change what runs on" \
+           "this machine at the next start. Run AIForge from a checkout outside every" \
+           "mounted folder." >&2
+      return 0
+    fi
+    _fatal "--isolated: the box would see its own boundary: $why." \
+           "Run AIForge from a checkout OUTSIDE every folder mounted into the box (~/.aiforge, --repos, --mount)."
+  }
+
+  # After `up`: the network really is what the isolation assumes — an
+  # existing network of the same name from an older setup is reused by
+  # compose and could keep a host address, IPv6 or another subnet.
+  _verify_isolated() {
+    local net problems="" i
+    for i in $(seq 1 30); do
+      net="$(docker inspect aiforge --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' 2>/dev/null)"
+      [[ -n "$net" ]] && break; sleep 1
+    done
+    [[ -n "$net" ]] || problems+=" the box has no network;"
+    if [[ -n "$net" ]]; then
+      [[ "$(docker network inspect "$net" --format '{{.Internal}}')" == true ]] || problems+=" $net is not internal;"
+      [[ "$(docker network inspect "$net" --format '{{index .Options "com.docker.network.bridge.inhibit_ipv4"}}')" == true ]] \
+        || problems+=" $net gives this machine an address (old network? docker network rm $net);"
+      [[ "$(docker network inspect "$net" --format '{{.EnableIPv6}}')" == false ]] || problems+=" $net has IPv6;"
+      [[ "$(docker network inspect "$net" --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}')" == "${AIFORGE_BOX_SUBNET:-10.251.250.0/24}" ]] \
+        || problems+=" $net is not on ${AIFORGE_BOX_SUBNET:-10.251.250.0/24};"
+    fi
+    if docker exec aiforge sh -c 'getent hosts example.com' >/dev/null 2>&1; then
+      problems+=" the box resolves internet names (DNS leaks out — update Docker);"
+    fi
+    if [[ -n "$(docker exec aiforge sh -c 'cat /proc/net/if_inet6 2>/dev/null' 2>/dev/null)" ]]; then
+      problems+=" the box has IPv6 addresses;"
+    fi
+    [[ -z "$problems" ]] && { echo "==> isolated network verified (no route, no host address, no IPv6, no outside DNS)"; return 0; }
+    "${DC[@]}" down >/dev/null 2>&1 || true
+    _fatal "--isolated: NOT isolated, stopped:$problems" \
+           "Fix the above (an old network: ${DC[*]} down, then docker network rm it) and start again."
+  }
+
   _write_isolated_conf() {
     # The proxy's shape is docker/tinyproxy.conf and its POLICY (which hosts)
     # belongs to the egress controller outside the box: seeded once from
     # AIFORGE_EGRESS_ALLOW_HOSTS, then changed in Settings. Nothing about the
     # boundary is written into ~/.aiforge any more — the box can write there.
-    rm -f "$AIFORGE_CONFIG_DIR/.sandbox/tinyproxy.conf" "$AIFORGE_CONFIG_DIR/.sandbox/allow.txt"
+    # (Not through a .sandbox the box replaced with a symlink to a host folder.)
+    [[ -L "$AIFORGE_CONFIG_DIR/.sandbox" ]] || \
+      rm -f "$AIFORGE_CONFIG_DIR/.sandbox/tinyproxy.conf" "$AIFORGE_CONFIG_DIR/.sandbox/allow.txt"
     # The model is reached through the `model` relay, never the proxy: the box
     # gets http://model:PORT/..., the relay gets your real endpoint. A loopback
     # endpoint is this machine's, which the relay reaches as host.docker.internal.
     local u="${AIFORGE_LM_BASE_URL:-http://127.0.0.1:1234/v1}" scheme rest hostport path host port
     scheme="${u%%://*}"; [[ "$scheme" == "$u" ]] && scheme=http
-    rest="${u#*://}"; hostport="${rest%%/*}"; hostport="${hostport##*@}"
+    scheme="$(printf '%s' "$scheme" | tr '[:upper:]' '[:lower:]')"
+    rest="${u#*://}"; hostport="${rest%%/*}"; hostport="${hostport%%\?*}"
+    hostport="${hostport%%#*}"; hostport="${hostport##*@}"
     if [[ "$rest" == */* ]]; then path="/${rest#*/}"; else path=""; fi
     if [[ "$hostport" == \[*\]* ]]; then                  # [v6] or [v6]:port
       host="${hostport%%]*}"; host="${host#[}"; port="${hostport##*]}"; port="${port#:}"
@@ -548,15 +608,24 @@ if ! _in_box; then
     fi
     [[ -n "$port" ]] || { [[ "$scheme" == https ]] && port=443 || port=80; }
     case "$host" in
-      127.*|localhost|0.0.0.0|::1)
+      127.*|localhost|0.0.0.0|::1|::)
         host=host.docker.internal
         echo "==> isolated network: the model at $u is on this machine — it must" \
              "also listen where docker can reach it (0.0.0.0 or the docker bridge)." >&2 ;;
     esac
     [[ "$host" == *:* ]] && host="[$host]"
     AIFORGE_MODEL_TLS=0; [[ "$scheme" == https ]] && AIFORGE_MODEL_TLS=1
-    export AIFORGE_MODEL_UPSTREAM="$host:$port" AIFORGE_MODEL_PORT="$port" AIFORGE_MODEL_TLS
-    export AIFORGE_BOX_LM_URL="http://model:$port$path"
+    # The relay runs unprivileged: it listens on the same port number when
+    # that is above 1023, else on 18080.
+    local listen="$port"; (( port < 1024 )) && listen=18080
+    export AIFORGE_MODEL_UPSTREAM="$host:$port" AIFORGE_MODEL_LISTEN="$listen" AIFORGE_MODEL_TLS
+    export AIFORGE_BOX_LM_URL="http://model:$listen$path"
+    # The names the UI is opened by (the allowlist route refuses others).
+    if [[ -z "${AIFORGE_UI_HOSTS:-}" ]]; then
+      AIFORGE_UI_HOSTS="localhost,127.0.0.1"
+      [[ "$HOST" != 0.0.0.0 && "$HOST" != 127.0.0.1 ]] && AIFORGE_UI_HOSTS+=",$HOST"
+      export AIFORGE_UI_HOSTS
+    fi
     echo "==> isolated network: model via relay -> $host:$port; anything else only to" \
          "hosts on the network allowlist (first start: ${AIFORGE_EGRESS_ALLOW_HOSTS:-none})"
   }
@@ -625,7 +694,8 @@ if ! _in_box; then
   # privileged container, the host's / mounted) or plant the .tmp as a
   # symlink to a host file this script would then overwrite.
   _mount_yml="$(dirname "$_approved")/mounts.compose.yml"
-  rm -f "$AIFORGE_CONFIG_DIR/.sandbox/mounts.compose.yml" "$AIFORGE_CONFIG_DIR/.sandbox/mounts.compose.yml.tmp"
+  [[ -L "$AIFORGE_CONFIG_DIR/.sandbox" ]] || \
+    rm -f "$AIFORGE_CONFIG_DIR/.sandbox/mounts.compose.yml" "$AIFORGE_CONFIG_DIR/.sandbox/mounts.compose.yml.tmp"
   rm -f "$_mount_yml.tmp"
   printf 'services:\n  aiforge:\n    volumes:\n' > "$_mount_yml.tmp"
   _n=0
@@ -713,8 +783,14 @@ if ! _in_box; then
     # a one-off inside a throwaway box sharing the same state, then exit
     exec "${DC[@]}" run --rm --no-deps aiforge
   fi
+  if [[ "${ISOLATED:-0}" == 1 ]]; then
+    _refuse_box_sees_checkout
+  else
+    _refuse_box_sees_checkout warn
+  fi
   echo "==> docker mode: building the sandbox image (first time: a few minutes)…"
   "${DC[@]}" up -d --build
+  [[ "${ISOLATED:-0}" == 1 ]] && _verify_isolated
   _start_awake_bridge
   echo ""
   echo "  AIForge sandbox → $(_ui_scheme)://${HOST}:${PORT}/ui/"

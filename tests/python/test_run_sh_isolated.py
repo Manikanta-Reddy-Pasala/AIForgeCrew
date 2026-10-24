@@ -22,26 +22,49 @@ REPO = Path(__file__).resolve().parents[2]
 RUN_SH = REPO / "run.sh"
 
 
-def _run(tmp_path: Path, args: list[str], extra_env: dict | None = None):
-    """run.sh with a fake `docker` on PATH that records how it was called."""
+_FAKE_DOCKER = r"""#!/bin/sh
+echo "$*" >> "{log}"
+# Answers for run.sh's post-start isolation check (_verify_isolated).
+case "$*" in
+  "inspect aiforge --format"*) echo "proj_box" ;;
+  *"network inspect proj_box"*Internal*) echo true ;;
+  *"network inspect proj_box"*inhibit_ipv4*) echo "{inhibit}" ;;
+  *"network inspect proj_box"*EnableIPv6*) echo false ;;
+  *"network inspect proj_box"*Subnet*) echo "10.251.250.0/24" ;;
+  *"exec aiforge sh -c getent"*) exit {getent} ;;
+  *"exec aiforge sh -c cat /proc/net/if_inet6"*) : ;;
+esac
+exit 0
+"""
+
+
+def _run(tmp_path: Path, args: list[str], extra_env: dict | None = None,
+         inhibit: str = "true", getent: int = 2):
+    """run.sh (from its own checkout folder) with a fake `docker` on PATH that
+    records how it was called and answers the isolation check."""
     bindir = tmp_path / "bin"
     bindir.mkdir(exist_ok=True)
     log = tmp_path / "docker.log"
     fake = bindir / "docker"
-    fake.write_text(f'#!/bin/sh\necho "$*" >> "{log}"\nexit 0\n')
+    fake.write_text(_FAKE_DOCKER.replace("{log}", str(log))
+                    .replace("{inhibit}", inhibit).replace("{getent}", str(getent)))
     fake.chmod(0o755)
 
-    dst = tmp_path / "run.sh"
+    checkout = tmp_path / "checkout"
+    checkout.mkdir(exist_ok=True)
+    dst = checkout / "run.sh"
     shutil.copy(RUN_SH, dst)
     env = {**os.environ,
            "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}",
            "AIFORGE_CONFIG_DIR": str(tmp_path / "cfg"),
+           "XDG_CONFIG_HOME": str(tmp_path / "xdg"),
            # Force the sandbox branch: this suite runs INSIDE a container, where
            # detection would otherwise take the in-box path and never call docker.
            "AIFORGE_IN_SANDBOX": "0"}
     env.pop("COMPOSE_FILE", None)
+    env.pop("AIFORGE_REPOS_DIR", None)
     env.update(extra_env or {})
-    proc = subprocess.run(["bash", str(dst), *args], cwd=str(tmp_path),
+    proc = subprocess.run(["bash", str(dst), *args], cwd=str(checkout),
                           capture_output=True, text=True, timeout=120, env=env)
     calls = log.read_text().splitlines() if log.exists() else []
     return proc, calls
@@ -83,12 +106,14 @@ def test_nothing_about_the_boundary_is_written_where_the_box_can_write(tmp_path:
 
 def test_the_proxy_config_is_static_and_denies_by_default():
     """An allowlist that defaults to ALLOW is not an allowlist."""
-    conf = (REPO / "docker" / "tinyproxy.conf").read_text()
+    conf = (REPO / "docker" / "isolated" / "tinyproxy.conf").read_text()
     assert "FilterDefaultDeny Yes" in conf and "FilterExtended On" in conf
     assert 'Filter "/policy/allow.txt"' in conf
     assert "ConnectPort 443" in conf
+    df = (REPO / "docker" / "isolated" / "egress.Dockerfile").read_text()
+    assert "COPY tinyproxy.conf /etc/tinyproxy/tinyproxy.conf" in df   # baked in
+    assert "FROM alpine:3.21" in df and "USER 65534" in df            # 1.11.2, not root
     compose = (REPO / "docker-compose.isolated.yml").read_text()
-    assert "./docker/tinyproxy.conf:/etc/tinyproxy/tinyproxy.conf:ro" in compose
     assert "egress-policy:/policy:ro" in compose          # the proxy only reads it
 
 
@@ -106,7 +131,7 @@ def test_the_allowlist_owner_is_off_the_box_network():
     box = compose[compose.index("    container_name: aiforge\n"):compose.index("  egress:")]
     assert "egress-policy:/var/lib/aiforge-egress:ro" in box        # the box only reads it
     assert "cap_drop: [NET_RAW]" in box
-    conf = (REPO / "docker" / "ui-proxy.conf.template").read_text()
+    conf = (REPO / "docker" / "isolated" / "ui-proxy.conf.template").read_text()
     loc = conf[conf.index("location /egress-admin/"):conf.index("proxy_pass $egress_ctl")]
     assert "deny ${AIFORGE_BOX_SUBNET};" in loc and "deny ${AIFORGE_EGRESS_IP};" in loc
 
@@ -148,7 +173,7 @@ def test_the_model_url_is_parsed_for_the_relay(tmp_path: Path):
 
 
 def test_the_proxy_waits_for_its_list_and_follows_changes():
-    sh = (REPO / "docker" / "egress-proxy.sh").read_text()
+    sh = (REPO / "docker" / "isolated" / "egress-proxy.sh").read_text()
     assert 'while [ ! -f "$ALLOW" ]' in sh and "kill -USR1" in sh
     compose = (REPO / "docker-compose.isolated.yml").read_text()
     assert 'pid: "service:egress"' not in compose     # no shared namespace (start-order deadlock)
@@ -176,16 +201,17 @@ def test_the_ui_is_published_through_its_own_proxy():
 
     Its config varies with nothing, so it is a file in the repo rather than
     something run.sh echoes out at start-up — compose mounts it directly."""
-    conf = (REPO / "docker" / "ui-proxy.conf.template").read_text()
+    conf = (REPO / "docker" / "isolated" / "ui-proxy.conf.template").read_text()
     assert "set $box http://aiforge:8799;" in conf and "proxy_pass $box;" in conf
     # SSE: the chat streams, so buffering would hold every token to the end.
     assert "proxy_buffering off;" in conf
 
 
-def test_compose_mounts_that_static_proxy_config():
+def test_the_ui_image_carries_that_config():
     """The file is only useful if the ui container actually gets it."""
-    compose = (REPO / "docker-compose.isolated.yml").read_text()
-    assert "./docker/ui-proxy.conf.template:/etc/nginx/templates/default.conf.template:ro" in compose
+    df = (REPO / "docker" / "isolated" / "ui.Dockerfile").read_text()
+    assert "COPY ui-proxy.conf.template /etc/nginx/templates/default.conf.template" in df
+    assert "nginx-unprivileged" in df
 
 
 def test_isolated_refuses_to_fight_a_site_compose_file(tmp_path: Path):
@@ -193,3 +219,55 @@ def test_isolated_refuses_to_fight_a_site_compose_file(tmp_path: Path):
                         {"COMPOSE_FILE": "/tmp/site.yml"})
     assert proc.returncode != 0
     assert "cannot be combined" in (proc.stderr + proc.stdout)
+
+
+def test_boundary_containers_are_unprivileged_and_hardened():
+    import re
+    compose = (REPO / "docker-compose.isolated.yml").read_text()
+    for svc in ("egress", "egress-ctl", "ssh-egress", "model"):
+        block = compose[compose.index(f"  {svc}:\n"):]
+        block = block[:block.index("\n\n")]
+        for want in ('user: "65534:65534"', "cap_drop: [ALL]", "no-new-privileges:true",
+                     "read_only: true"):
+            assert want in block, (svc, want)
+    assert compose.count("enable_ipv6: false") == 3
+    assert "net.ipv6.conf.all.disable_ipv6: 1" in compose
+
+
+def test_isolated_refuses_a_checkout_the_box_can_see(tmp_path: Path):
+    """--repos pointing at a folder that contains this checkout would let the
+    agent edit the isolation's own files."""
+    proc, calls = _run(tmp_path, ["--isolated"], {"AIFORGE_REPOS_DIR": str(tmp_path)})
+    assert proc.returncode != 0
+    assert "would see its own boundary" in proc.stderr
+    assert not [c for c in calls if " up " in f" {c} "]
+    proc, calls = _run(tmp_path, [], {"AIFORGE_REPOS_DIR": str(tmp_path)})
+    assert "the box can edit this checkout" in proc.stderr          # default mode: warns
+    assert [c for c in calls if " up " in f" {c} "]
+
+
+def test_isolated_stops_when_the_network_is_not_what_it_assumes(tmp_path: Path):
+    proc, calls = _run(tmp_path, ["--isolated"], inhibit="false")
+    assert proc.returncode != 0 and "NOT isolated" in proc.stderr
+    assert "gives this machine an address" in proc.stderr
+    assert any(c.startswith("compose") and " down" in f" {c}" for c in calls) or \
+        any(" down" in f" {c} " for c in calls)
+    proc, _ = _run(tmp_path, ["--isolated"], getent=0)
+    assert proc.returncode != 0 and "resolves internet names" in proc.stderr
+    proc, _ = _run(tmp_path, ["--isolated"])
+    assert proc.returncode == 0 and "isolated network verified" in proc.stdout
+
+
+def test_the_relay_listens_unprivileged(tmp_path: Path):
+    proc, _ = _run(tmp_path, ["--isolated"], {"AIFORGE_LM_BASE_URL": "HTTPS://api.example.com/v1?x=1"})
+    out = proc.stdout + proc.stderr
+    assert "model via relay -> api.example.com:443" in out
+
+
+def test_ssh_goes_out_through_its_own_exit():
+    compose = (REPO / "docker-compose.isolated.yml").read_text()
+    ssh = compose[compose.index("  ssh-egress:"):compose.index("  model:")]
+    assert "networks: [box, out]" in ssh and "AIFORGE_SSH_EGRESS=${AIFORGE_SSH_EGRESS:-any}" in ssh
+    entry = (REPO / "docker" / "entrypoint.sh").read_text()
+    assert "ProxyCommand $_py /opt/aiforge-src/docker/ssh-connect.py %h %p" in entry
+    assert '_py="$(command -v python3' in entry

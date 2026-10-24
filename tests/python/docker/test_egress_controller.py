@@ -22,7 +22,7 @@ REPO = Path(__file__).resolve().parents[3]
 @pytest.fixture
 def ctl(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location(
-        "egress_controller", REPO / "docker" / "egress-controller.py")
+        "egress_controller", REPO / "docker" / "isolated" / "egress-controller.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     monkeypatch.setattr(mod, "POLICY", str(tmp_path))
@@ -30,6 +30,9 @@ def ctl(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "ALLOW", str(tmp_path / "allow.txt"))
     monkeypatch.setattr(mod, "CHANGES", str(tmp_path / "changes.log"))
     monkeypatch.delenv("AIFORGE_EGRESS_ADMIN_TOKEN", raising=False)
+    monkeypatch.setenv("AIFORGE_UI_HOSTS", "localhost,127.0.0.1")
+    monkeypatch.setenv("AIFORGE_BOX_SUBNET", "10.251.250.0/24")
+    monkeypatch.setenv("AIFORGE_OUT_SUBNET", "10.251.251.0/24")
     return mod
 
 
@@ -38,7 +41,8 @@ def _matches(lines, host):
 
 
 def test_entries_are_anchored_host_and_subdomains(ctl, tmp_path):
-    ctl.save(["pypi.org", "https://Files.PythonHosted.org/simple/", "*.corp.example", "10.0.0.5"])
+    ctl.save(["pypi.org", "https://Files.PythonHosted.org/simple/", "*.corp.example", "10.0.0.5",
+              "artifactory.internal"])
     pats = (tmp_path / "allow.txt").read_text().split()
     for ok in ("pypi.org", "www.pypi.org", "files.pythonhosted.org", "a.corp.example",
                "corp.example", "10.0.0.5"):
@@ -50,7 +54,9 @@ def test_entries_are_anchored_host_and_subdomains(ctl, tmp_path):
 
 @pytest.mark.parametrize("junk", ["", "localhost", "a b.com", "-x.com", ".*", "x$.com",
                                   "http://", "a" * 64 + ".com", "127.1", "0177.0.0.1",
-                                  "0x7f.1", "10.1"])
+                                  "0x7f.1", "10.1", "127.0.0.1", "169.254.169.254", "::1",
+                                  "host.docker.internal", "x.localhost", "10.251.250.7",
+                                  "10.251.251.250"])
 def test_junk_is_refused(ctl, junk):
     with pytest.raises(ValueError):
         ctl.save([junk])
@@ -97,9 +103,11 @@ def api(ctl):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{srv.server_address[1]}"
 
-    def call(method, path, body=None, token=None, raw=None):
+    def call(method, path, body=None, token=None, raw=None, host="127.0.0.1:8799", origin=None):
         data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
-        h = {"Content-Type": "application/json"}
+        h = {"Content-Type": "application/json", "Host": host}
+        if origin:
+            h["Origin"] = origin
         if token:
             h["Authorization"] = f"Bearer {token}"
         req = urllib.request.Request(base + path, method=method, data=data, headers=h)
@@ -134,3 +142,19 @@ def test_open_by_default_token_when_configured(api, monkeypatch):
     assert api("GET", "/api/hosts")[0] == 401
     code, out, _ = api("GET", "/api/hosts", token="s3cret")
     assert code == 200 and out["hosts"] == ["a.example"]
+
+
+def test_a_rebinding_website_is_refused(api):
+    """Same-origin by DNS rebinding, but not by NAME: Host / Origin say so."""
+    assert api("GET", "/api/hosts", host="evil.example:8799")[0] == 403
+    assert api("PUT", "/api/hosts", {"hosts": ["x.example"]}, host="evil.example")[0] == 403
+    assert api("PUT", "/api/hosts", {"hosts": ["x.example"]},
+               origin="http://evil.example:8799")[0] == 403
+    assert api("PUT", "/api/hosts", {"hosts": ["x.example"]},
+               origin="http://localhost:8799", host="localhost:8799")[0] == 200
+
+
+def test_a_restart_drops_entries_the_rules_now_refuse(ctl, tmp_path):
+    (tmp_path / "hosts.json").write_text(json.dumps({"hosts": ["pypi.org", "127.0.0.1", "bad host"]}))
+    ctl.seed()
+    assert ctl.load() == ["pypi.org"]

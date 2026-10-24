@@ -29,6 +29,8 @@ server {
     set $egress_ctl http://egress-ctl:8780;
     rewrite ^/egress-admin/(.*)$ /$1 break;
     proxy_pass $egress_ctl;
+    # The name the browser used, for the controller's Host check.
+    proxy_set_header Host $http_host;
     client_max_body_size 64k;
   }
 
@@ -38,6 +40,9 @@ server {
     resolver 127.0.0.11 valid=10s;
     set $box http://aiforge:8799;
     proxy_pass $box;
+    # A box response must not steer nginx to another location (the
+    # allowlist route) with an internal redirect.
+    proxy_ignore_headers X-Accel-Redirect;
     proxy_set_header Host $host;
     proxy_http_version 1.1;
     proxy_set_header Upgrade $http_upgrade;

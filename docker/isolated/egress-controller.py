@@ -54,6 +54,34 @@ def token() -> str:
     return os.environ.get("AIFORGE_EGRESS_ADMIN_TOKEN", "")
 
 
+def ui_hosts() -> set[str]:
+    """The names the UI is opened by. A request naming any other Host (or,
+    for a change, any other Origin) is refused: a website that rebinds its own
+    DNS name to this machine is same-origin with the UI, but not by name."""
+    raw = os.environ.get("AIFORGE_UI_HOSTS", "localhost,127.0.0.1")
+    return {h.strip().lower() for h in raw.split(",") if h.strip()}
+
+
+def _hostname(value: str) -> str:
+    v = (value or "").strip().lower()
+    if "://" in v:
+        v = v.split("://", 1)[1]
+    v = v.split("/", 1)[0]
+    if v.startswith("["):
+        return v[1:v.find("]")] if "]" in v else v
+    return v.rsplit(":", 1)[0] if v.count(":") == 1 else v
+
+
+def _never_subnets() -> list:
+    out = []
+    for var in ("AIFORGE_BOX_SUBNET", "AIFORGE_OUT_SUBNET"):
+        try:
+            out.append(ipaddress.ip_network(os.environ.get(var, ""), strict=False))
+        except ValueError:
+            pass
+    return out
+
+
 def normalise(raw: str) -> str:
     """A host from what was typed (a URL, ``*.host``, ``host:port``), lower
     case; raises ValueError for anything that is not a host name or an IP."""
@@ -72,9 +100,19 @@ def normalise(raw: str) -> str:
     if not h:
         raise ValueError(f"not a host: {raw!r}")
     try:
-        return str(ipaddress.ip_address(h))
+        ip = ipaddress.ip_address(h)
     except ValueError:
-        pass
+        ip = None
+    if ip is not None:
+        # This machine, link-local (cloud metadata 169.254.169.254), and the
+        # docker networks of this very setup are never destinations.
+        if (ip.is_loopback or ip.is_link_local or ip.is_unspecified or ip.is_multicast
+                or any(ip in n for n in _never_subnets() if n.version == ip.version)):
+            raise ValueError(f"not allowed as a destination: {raw!r}")
+        return str(ip)
+    if h == "localhost" or h.endswith((".localhost", ".docker.internal")) \
+            or h == "docker.internal":
+        raise ValueError(f"not allowed as a destination: {raw!r} (this machine)")
     labels = h.split(".")
     if len(h) > 253 or len(labels) < 2 or not all(_LABEL.match(x) for x in labels):
         raise ValueError(f"not a host name: {raw!r}")
@@ -147,7 +185,13 @@ def seed() -> None:
                   "until the list is saved again", file=sys.stderr)
             _write(ALLOW, "")
             return
-        save(hosts, who="restart")
+        good = []
+        for h in hosts:
+            try:
+                good.append(normalise(h))
+            except ValueError as exc:      # saved under older, looser rules
+                print(f"egress-controller: dropping {h!r}: {exc}", file=sys.stderr)
+        save(good, who="restart")
         return
     raw = [h for h in os.environ.get("AIFORGE_EGRESS_ALLOW_HOSTS", "").split(",") if h.strip()]
     good = []
@@ -199,8 +243,18 @@ class Handler(BaseHTTPRequestHandler):
     def _path(self) -> str:
         return self.path.split("?", 1)[0].rstrip("/") or "/"
 
-    def _authorised(self) -> bool:
-        """True when no admin token is configured, or the request carries it."""
+    def _authorised(self, change: bool = False) -> bool:
+        """The request names the UI by one of its own names (Host, and Origin
+        for a change), and carries the admin token when one is configured."""
+        names = ui_hosts()
+        if _hostname(self.headers.get("Host", "")) not in names:
+            self._send(403, {"error": "open the UI by its configured name "
+                                      "(AIFORGE_UI_HOSTS)"})
+            return False
+        origin = self.headers.get("Origin")
+        if change and origin is not None and _hostname(origin) not in names:
+            self._send(403, {"error": "cross-origin change refused"})
+            return False
         want = token()
         if not want:
             return True
@@ -228,7 +282,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self):  # noqa: N802
         if self._path() != "/api/hosts":
             return self._send(404, {"error": "not found"})
-        if not self._authorised():
+        if not self._authorised(change=True):
             return None
         try:
             n = int(self.headers.get("Content-Length") or 0)

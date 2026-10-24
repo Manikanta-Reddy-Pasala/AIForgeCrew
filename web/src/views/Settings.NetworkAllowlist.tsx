@@ -24,12 +24,16 @@ export function NetworkAllowlist({ network, suggest, onSaved }: {
   const [msg, setMsg] = useState('');
   const [changes, setChanges] = useState<NetworkAllowChange[]>([]);
 
+  // Keyed on the list's CONTENT: a refetch of the same list must not throw
+  // away what is being typed.
+  const serverKey = (network?.hosts || []).join('\n');
   useEffect(() => {
     if (!network) return;
     setHosts(network.hosts);
-    setDraft(network.hosts.join('\n'));
+    setDraft(serverKey);
     networkAllowChanges().then(setChanges);
-  }, [network]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverKey, !!network]);
 
   async function save(next: string[]) {
     setBusy(true);
@@ -84,7 +88,8 @@ export function NetworkAllowlist({ network, suggest, onSaved }: {
           <span style={{ opacity: 0.7 }}>Your integrations use these — not reachable yet:</span>
           {missing.map(h => (
             <button key={h} type="button" className="ghost sm" disabled={busy}
-                    onClick={() => save([...hosts, h])} title={`Allow ${h} on the network`}>+ {h}</button>
+                    onClick={() => save([...typed.filter(x => x !== h), h])}
+                    title={`Allow ${h} on the network (keeps what you typed)`}>+ {h}</button>
           ))}
         </div>
       )}
