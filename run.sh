@@ -315,6 +315,7 @@ _in_box() {
 DOCKER_ACTION=up
 NET=""                                   # guarded | isolated: flags or AIFORGE_NETWORK
 _NET_FLAG=0
+_NET_FALLBACK="$AIFORGE_CONFIG_DIR/network-fallback"   # set when guarded cannot be enforced here
 _MOUNT_ARGS=()
 _ORIG_ARGS=("$@")
 WITH_GRAPHIFY=0
@@ -661,24 +662,50 @@ EOF_SEED
       [[ "$(docker inspect aiforge-egress-guard --format '{{.State.Health.Status}}' 2>/dev/null)" == healthy ]] && { ok=1; break; }
       sleep 1
     done
-    (( ok )) || { "${DC[@]}" stop aiforge >/dev/null 2>&1 || true
-      _fatal "guarded network: the firewall keeper (aiforge-egress-guard) is not running — the box was stopped." \
-             "See: docker logs aiforge-egress-guard (it needs Linux iptables with cgroup matching and NET_ADMIN)."; }
+    (( ok )) || { _guard_fallback "the firewall keeper (aiforge-egress-guard) did not become healthy"; }
+    # The box's own probe (docker/guard-probe.py): only an immediate refusal —
+    # the guard's reject — counts as blocked; a timeout means the packet left.
     for i in $(seq 1 30); do
-      probe="$(docker exec aiforge sh -c 'python3 -c "import socket
-try:
-    socket.create_connection((\"1.1.1.1\", 443), timeout=4); print(\"NET-OPEN\")
-except OSError:
-    print(\"NET-BLOCKED\")"' 2>/dev/null)"
-      [[ -n "$probe" ]] && break; sleep 2
+      probe="$(docker exec aiforge sh -c '"$(command -v python3 || command -v python3.12)" /opt/aiforge-src/docker/guard-probe.py' 2>/dev/null)"
+      [[ -n "$probe" ]] && break
+      # The box stops itself when it cannot confirm the block (entrypoint).
+      [[ "$(docker inspect aiforge --format '{{.State.Status}}' 2>/dev/null)" == exited ]] && { probe=EXITED; break; }
+      sleep 2
     done
     case "$probe" in
-      *NET-BLOCKED*) echo "==> guarded network verified (the internet only through the allowlist)" ;;
-      *NET-OPEN*) "${DC[@]}" stop aiforge >/dev/null 2>&1 || true
-        _fatal "guarded network: the box reached the internet directly — NOT guarded, the box was stopped." \
-               "See: docker logs aiforge-egress-guard." ;;
+      NET-BLOCKED*)
+        rm -f "$_NET_FALLBACK"
+        echo "==> guarded network verified (the internet only through the allowlist)" ;;
+      NET-OPEN*) _guard_fallback "the box reached the internet directly (${probe#NET-OPEN })" ;;
+      EXITED) _guard_fallback "the box could not confirm the firewall blocks it and stopped itself" ;;
       *) echo "!! guarded network: could not probe the box (still starting?) — check: docker logs aiforge-egress-guard" >&2 ;;
     esac
+  }
+
+  # Guarded mode cannot be enforced on this machine (some kernels / WSL /
+  # Docker setups do not let the guard's rule catch the box). Never leave the
+  # box unguarded: take the stack down and start the stricter isolated network
+  # instead — remembered, so later runs here go straight to it. Asked for
+  # explicitly (--guarded / AIFORGE_NETWORK=guarded): stop with the reason.
+  _guard_fallback() {
+    local diag="$AIFORGE_CONFIG_DIR/run/guard-check.log" a args=()
+    mkdir -p "$AIFORGE_CONFIG_DIR/run"
+    { echo "== $(date '+%F %T') $1"; uname -a; wslinfo --networking-mode 2>/dev/null || true
+      docker info --format 'driver={{.CgroupDriver}} cgroup=v{{.CgroupVersion}} os={{.OperatingSystem}}'
+      docker exec aiforge-egress-guard sh -c 'iptables -V; iptables -S OUTPUT | grep AIFORGE; iptables -L AIFORGE_EGRESS -v -n'
+      docker logs aiforge-egress-guard --tail 30; docker logs aiforge --tail 30
+    } >>"$diag" 2>&1 || true
+    "${DC[@]}" down >/dev/null 2>&1 || "${DC[@]}" stop >/dev/null 2>&1 || true
+    if [[ "$_NET_FLAG" == 1 || "${AIFORGE_NETWORK:-}" == guarded ]]; then
+      _fatal "guarded network: $1 — the box was stopped (details: $diag)." \
+             "Without --guarded / AIFORGE_NETWORK=guarded, run.sh switches to --isolated here by itself."
+    fi
+    printf '%s %s\n' "$(date '+%F %T')" "$1" > "$_NET_FALLBACK"
+    echo "!! guarded network: $1 — this machine cannot keep the box off the internet that way." >&2
+    echo "==> switching to the isolated network (stricter); later runs here use it too." \
+         "Details: $diag. Retry guarded: ./run.sh --guarded" >&2
+    for a in ${_ORIG_ARGS[@]+"${_ORIG_ARGS[@]}"}; do [[ "$a" == --guarded ]] || args+=("$a"); done
+    exec bash "$PWD/run.sh" --isolated ${args[@]+"${args[@]}"}
   }
 
   _write_isolated_conf() {
@@ -800,6 +827,10 @@ except OSError:
         if [[ "$DOCKER_ACTION" != up || $TEST -eq 1 || -n "${MAINT:-}" ]] \
            && [[ "$_running_mode" == isolated ]]; then
           NET=isolated                    # stop / logs / shell / one-offs: the box that runs
+        elif [[ -f "$_NET_FALLBACK" ]]; then
+          NET=isolated                    # guarded could not be enforced here (remembered)
+          [[ "$DOCKER_ACTION" != up ]] || echo "==> isolated network: guarded mode could not be" \
+            "enforced on this machine ($(cut -c1-160 "$_NET_FALLBACK")). Retry: ./run.sh --guarded" >&2
         else
           NET=guarded
         fi ;;

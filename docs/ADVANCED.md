@@ -228,9 +228,16 @@ docker-compose.yml):
 - **egress-guard** keeps one firewall rule (iptables, IPv4 + IPv6) for the
   box's processes only (matched by its cgroup): this machine, private and LAN
   ranges are free; any other destination is refused. It follows the box when
-  it is recreated and after a reboot; run.sh stops the box if, after start,
-  the box can still reach the internet directly. Needs Linux iptables with
-  cgroup matching (Docker Desktop: inside its VM) and NET_ADMIN.
+  it is recreated and after a reboot. Needs Linux iptables with cgroup
+  matching and NET_ADMIN.
+- **Checked every start**: the box (before it starts anything) and run.sh
+  (after `up`) try 1.1.1.1:443 directly. Only an immediate refusal — the
+  guard's reject — counts as blocked; a timeout means the packet left. If the
+  guard cannot keep the box in (some WSL / kernel / Docker setups), run.sh
+  never leaves it running: it takes the stack down and starts `--isolated`
+  instead, and remembers that in `~/.aiforge/network-fallback` (details in
+  `~/.aiforge/run/guard-check.log`). `./run.sh --guarded` retries — and, when
+  asked for like that, stops with the reason instead of switching.
 - **egress** (allowlist proxy) and **ssh-egress** on 127.0.0.1: web, git over
   https/ssh, pip, npm, curl, ssh/scp/rsync reach the hosts on Settings →
   Egress allowlist through them; LAN hosts go direct.

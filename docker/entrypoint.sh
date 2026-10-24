@@ -99,16 +99,10 @@ if [[ "${AIFORGE_GUARDED:-0}" == 1 ]]; then
   _py="${_py:-$(command -v python3 || command -v python3.12 || echo python3)}"
   _guarded=0
   for _i in $(seq 1 60); do
-    if "$_py" - <<'PY' 2>/dev/null; then _guarded=1; break; fi
-import socket, sys
-for addr in (("1.1.1.1", 443), ("2606:4700:4700::1111", 443)):
-    try:
-        socket.create_connection(addr, timeout=2).close()
-        sys.exit(1)           # the internet is reachable directly: not guarded yet
-    except OSError:
-        pass
-sys.exit(0)
-PY
+    # Only an immediate refusal (the guard's reject) counts — never a timeout.
+    if [[ "$("$_py" /opt/aiforge-src/docker/guard-probe.py 2>/dev/null)" == NET-BLOCKED ]]; then
+      _guarded=1; break
+    fi
     sleep 2
   done
   if [[ "$_guarded" != 1 ]]; then

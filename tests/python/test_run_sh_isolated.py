@@ -29,7 +29,8 @@ echo "$*" >> "{log}"
 case "$*" in
   "inspect aiforge-egress-guard --format"*) echo "{guard}" ;;
   "inspect aiforge-egress-guard") exit 1 ;;
-  *"exec aiforge sh -c python3"*) echo "{probe}" ;;
+  *"guard-probe.py"*) echo "{probe}" ;;
+  "inspect aiforge --format {{.State.Status}}") echo "{status}" ;;
   "inspect aiforge --format"*) echo "proj_box " ;;
   *"network inspect proj_box"*Internal*) echo true ;;
   *"network inspect proj_box"*inhibit_ipv4*) echo "{inhibit}" ;;
@@ -54,7 +55,8 @@ def _run(tmp_path: Path, args: list[str], extra_env: dict | None = None,
     fake = bindir / "docker"
     text = (_FAKE_DOCKER.replace("{log}", str(log))
             .replace("{inhibit}", inhibit).replace("{getent}", str(getent))
-            .replace("{guard}", guard).replace("{probe}", probe))
+            .replace("{guard}", guard).replace("{probe}", probe)
+            .replace("{status}", "running" if probe else "exited"))
     if not box_up:
         text = text.replace('echo box-up ;;', 'exit 1 ;;')
     if running == "site-bridge":               # an old open box from a site file, not on host
@@ -113,18 +115,48 @@ def test_guarded_is_the_default(tmp_path: Path):
     assert "guarded network verified" in proc.stdout
 
 
-def test_guarded_stops_the_box_when_not_guarded(tmp_path: Path):
-    proc, calls = _run(tmp_path, [], probe="NET-OPEN")
-    assert proc.returncode != 0 and "NOT guarded" in proc.stderr
-    assert any(" stop aiforge" in f" {c}" for c in calls)
-    proc, _ = _run(tmp_path, [], guard="starting")
+def test_unenforceable_guard_falls_back_to_isolated(tmp_path: Path):
+    """The guard's rule does not catch the box here (seen on WSL): never run
+    unguarded — take the stack down, start the isolated network, remember it."""
+    proc, calls = _run(tmp_path, [], probe="NET-OPEN 1.1.1.1:open")
+    assert proc.returncode == 0, proc.stderr
+    assert "switching to the isolated network" in proc.stderr
+    down = [i for i, c in enumerate(calls) if "-f docker-compose.guard.yml down" in c]
+    iso = [i for i, c in enumerate(calls) if "-f docker-compose.isolated.yml up -d --build" in c]
+    assert down and iso and down[0] < iso[0], calls
+    mark = tmp_path / "cfg" / "network-fallback"
+    assert "reached the internet directly (1.1.1.1:open)" in mark.read_text()
+    assert "guard-check" in proc.stderr and (tmp_path / "cfg" / "run" / "guard-check.log").exists()
+    # Remembered: the next plain run goes straight to isolated, no guard tried.
+    (tmp_path / "docker.log").unlink()
+    proc, calls = _run(tmp_path, [])
+    up = [c for c in calls if " up -d --build" in c]
+    assert up and "-f docker-compose.isolated.yml" in up[0] and "guard" not in " ".join(up), calls
+    assert "could not be enforced on this machine" in proc.stderr
+    # --guarded retries; once verified the note is gone.
+    (tmp_path / "docker.log").unlink()
+    proc, calls = _run(tmp_path, ["--guarded"])
+    assert proc.returncode == 0 and "guarded network verified" in proc.stdout, proc.stderr
+    assert not mark.exists()
+
+
+def test_a_timeout_is_not_blocked(tmp_path: Path):
+    proc, calls = _run(tmp_path, [], probe="NET-OPEN 1.1.1.1:timeout")
+    assert "switching to the isolated network" in proc.stderr
+
+
+def test_a_box_that_stopped_itself_falls_back(tmp_path: Path):
+    proc, calls = _run(tmp_path, [], probe="")
+    assert "stopped itself" in proc.stderr and "switching to the isolated network" in proc.stderr
+
+
+def test_asked_for_guarded_stops_instead_of_switching(tmp_path: Path):
+    proc, calls = _run(tmp_path, ["--guarded"], probe="NET-OPEN 1.1.1.1:open")
+    assert proc.returncode != 0 and "the box was stopped" in proc.stderr
+    assert not [c for c in calls if "docker-compose.isolated.yml up" in c]
+    assert not (tmp_path / "cfg" / "network-fallback").exists()
+    proc, _ = _run(tmp_path, ["--guarded"], guard="starting")
     assert proc.returncode != 0 and "firewall keeper" in proc.stderr
-
-
-def test_isolated_is_still_there(tmp_path: Path):
-    _proc, calls = _run(tmp_path, ["--isolated"])
-    up = [c for c in calls if " up " in f" {c} "]
-    assert up and "-f docker-compose.isolated.yml" in up[0]
 
 
 def test_there_is_no_unlimited_mode(tmp_path: Path):
