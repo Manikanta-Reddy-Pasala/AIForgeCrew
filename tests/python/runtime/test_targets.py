@@ -160,7 +160,7 @@ def test_noun_after_must_match_sets_the_label():
 
 def test_is_compare_ignores_old_versions_and_other_files_with_the_name():
     T.capture(5, "match this output:\n```\n" + JSON + "\n```")
-    T.capture(5, "match this output:\n```\n" + JSON.replace("1", "2") + "\n```")
+    T.capture(5, "updated: match this output:\n```\n" + JSON.replace("1", "2") + "\n```")
     rows = T.list(5)
     v1, v2 = rows[0]["versions"]
     assert T.is_compare(f"diff out.json {v1}", 5) is None
@@ -211,7 +211,7 @@ def test_note_compare_differs_then_matched():
     assert row["verified"]["evidence"] == "diff -q: no output" and row["last_compare"]["ok"] is True
     assert T.facts(5) == ["target-1: matched"] and T.board_items(5) == {}
     # a new version of the target forgets the old compare
-    T.capture(5, "match this output:\n```\n" + JSON.replace("1", "2") + "\n```")
+    T.capture(5, "updated: match this output:\n```\n" + JSON.replace("1", "2") + "\n```")
     assert T.list(5)[0]["last_compare"] is None and T.facts(5) == ["target-1: not yet compared"]
 
 

@@ -113,6 +113,8 @@ def restart_with_handoff(st) -> bool:
                               and not C._is_harness_note(C._text_of(m).strip())), "")
         from ._tasks import turn_pin
         pin = turn_pin(st)
+        if pin:
+            h = handoff.without_pinned(h)
         if _note.enabled():
             _restart_into_note(st, old, h, oid, pin)
         else:
@@ -121,8 +123,11 @@ def restart_with_handoff(st) -> bool:
                            {"role": "user", "content": handoff.render(h, oid)}]
         if getattr(st, "board", None):
             pin_board(st.convo, st.board)
-        from ._limits import _repin_turn_note
-        _repin_turn_note(st)       # the message's rules, skills and repo notes
+        try:
+            from ._limits import _repin_turn_note
+            _repin_turn_note(st)   # the message's rules, skills and repo notes
+        except Exception:  # noqa: BLE001
+            pass
         seen = getattr(st, "read_sigs_seen", None)
         if hasattr(seen, "clear"):
             seen.clear()
@@ -162,18 +167,21 @@ def _restart_into_note(st, old: list, h: dict, oid, pin=None) -> None:
 def _condense(st) -> None:
     try:
         from .._context import _compact_convo
-        from ._batch import _unread_batch_msgs
         from ._limits import _after_condense
         from ._tasks import turn_pin
         before = len(st.convo)
-        unread = _unread_batch_msgs(st)
+        unread = (len(st.convo) - st.batch_mark
+                  if getattr(st, "batch_unread", False) else 0)
         new = _compact_convo(st.convo, role=st.role, force=True, keep_recent=8,
                              keep_min=unread, pin=turn_pin(st),
                              run_key=getattr(st, "compact_key", None),
                              handoff_st=st)
         if new is not st.convo and len(new) < len(st.convo):
             st.convo[:] = new
-            _after_condense(st, unread, before)
+            try:
+                _after_condense(st, unread, before)
+            except Exception:  # noqa: BLE001 — the condense itself stands
+                pass
     except Exception:  # noqa: BLE001 — a failed condense still nudges
         pass
 

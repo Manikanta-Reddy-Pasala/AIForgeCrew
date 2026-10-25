@@ -595,8 +595,9 @@ def run_chat_agent(
 def _unfinished_answer(answer) -> str:
     """The closing line a carried unfinished turn ends on: its own text (the
     question, the stop note) marked as unfinished."""
+    from aiforge_core.runtime.chat_transcript import UNFINISHED_MARK
     text = str(answer or "").strip()
-    head = "(this turn ended before the work was finished)"
+    head = UNFINISHED_MARK
     return f"{text}\n\n{head}" if text else head
 
 

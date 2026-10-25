@@ -108,10 +108,8 @@ def _fold_into_scheduled_agent(session_id: int, text: str, body=None):
         note = "Stopping the scheduled run."
     elif _is_new_request(text) or _needs_own_turn(session_id, body):
         return None
-    elif chat_interject.push(session_id, text, require_steerable=True):
+    elif _push_with_target(session_id, text):
         chat_store.add_message(session_id, "user", text)
-        from ._message import _capture_steer_target
-        _capture_steer_target(session_id, text)
         note = ("Noted. The scheduled run keeps going and will take this "
                 "in. It is not stopped.")
     else:
@@ -125,3 +123,11 @@ def _fold_into_scheduled_agent(session_id: int, text: str, body=None):
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     return sse_response(_gen(), label=f"chat-sched-{session_id}")
+
+
+def _push_with_target(session_id, text) -> bool:
+    """Queue ``text`` for the scheduled run, its target stored first."""
+    from aiforge_core.runtime import chat_interject
+    from ._message import _capture_steer_target
+    _capture_steer_target(session_id, text)
+    return chat_interject.push(session_id, text, require_steerable=True)

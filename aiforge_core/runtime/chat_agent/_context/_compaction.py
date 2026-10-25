@@ -150,7 +150,7 @@ def _schedule_llm_summary(middle, complete_fn, run_key, gen: int,
     if not run_key or _compact_mode() != "llm" or not middle:
         return
     middle = list(middle)
-    if _summary_bg.pending(run_key) is not None:
+    if _summary_bg.pending(run_key) not in (None, gen):
         # The previous slice's summary is still being written and this one
         # cancels it: fold that slice in, or nothing would ever summarise it.
         middle = _UNSUMMARISED.get(run_key, []) + middle
@@ -441,11 +441,11 @@ def _pin_goal(sys_text: str, convo: list[dict], pin: "str | None" = None) -> str
     if pin is not None:
         if not pin.startswith("ORIGINAL TASK"):
             # The loop had no task text, only what to keep in view (targets,
-            # steers, lessons): the request is found here, as without a pin.
-            own = _own_goal(convo)
+            # steers, lessons). The task pinned by an earlier condense stays
+            # (the tail may no longer hold the request); else it is found here.
+            own = _pinned_task(sys_text) or _own_task_line(convo)
             if own:
-                pin = ("ORIGINAL TASK (stay on this until it's fully done + "
-                       "verified):\n" + own[:1200] + "\n" + pin)
+                pin = own + "\n" + pin
         sys_text = re.sub(r"\s*" + re.escape(_GOAL_PIN_OPEN) + r".*?"
                           + re.escape(_GOAL_PIN_CLOSE), "", sys_text, flags=re.S)
         return (sys_text + "\n\n" + _GOAL_PIN_OPEN + "\n" + pin + "\n"
@@ -460,6 +460,25 @@ def _pin_goal(sys_text: str, convo: list[dict], pin: "str | None" = None) -> str
             + _GOAL_PIN_CLOSE).strip()
 
 
+_TASK_HEAD = "ORIGINAL TASK (stay on this until it's fully done + verified):"
+
+
+def _pinned_task(text: str) -> str:
+    """The ORIGINAL TASK lines of a goal block already in ``text`` ("" none)."""
+    m = _GOAL_RE.search(text or "")
+    if not m:
+        return ""
+    inner = m.group(0)[len(_GOAL_PIN_OPEN):-len(_GOAL_PIN_CLOSE)].strip()
+    if not inner.startswith("ORIGINAL TASK"):
+        return ""
+    return inner.split("\nKEEP IN VIEW:")[0].split("\nLATER INSTRUCTIONS")[0].strip()
+
+
+def _own_task_line(convo: list[dict]) -> str:
+    own = _own_goal(convo)
+    return f"{_TASK_HEAD}\n{own[:1200]}" if own else ""
+
+
 def _own_goal(convo: list[dict]) -> str:
     """The first user request in ``convo`` (harness notes skipped)."""
     goal = next((_text_of(m).strip() for m in convo[1:]
@@ -469,6 +488,20 @@ def _own_goal(convo: list[dict]) -> str:
     goal = goal.split("\n\n---\n[Interpreted request")[0].strip() or goal
     from .._turn._convo import strip_turn_note
     return strip_turn_note(goal).strip()
+
+
+# Blocks the pinned task (turn_pin) re-reads at every condense. A turn-start
+# copy of one (the turn note, or the system message in the legacy layout)
+# would contradict the fresh one (a target shown unverified after its compare
+# passed), so it is dropped wherever the fresh copy goes.
+_PINNED_BLOCK = re.compile(
+    r"(?m)^(?:TARGETS — data the user gave|REPOSITORIES IN THIS CHAT|GIT TARGETS:"
+    r"|LESSONS FROM THIS CHAT)"
+    r".*?(?=\n[ \t]*\n|\n<<END_AIFORGE_TURN_CONTEXT>>|\Z)", re.S)
+
+
+def strip_pinned_blocks(text: str) -> str:
+    return _PINNED_BLOCK.sub("", text or "") if text else ""
 
 
 def _stripped_system(convo: list[dict]) -> str:
@@ -519,7 +552,7 @@ def _restart_block(st, middle, tail_text: str, carried: str, gen: int,
     on any failure, and the caller writes the ordinary breadcrumb."""
     try:
         from aiforge_core.runtime import handoff
-        h = handoff.build_chat(st)
+        h = handoff.without_pinned(handoff.build_chat(st))
         if not h["goal"] and goal_block:
             inner = goal_block[len(_GOAL_PIN_OPEN):-len(_GOAL_PIN_CLOSE)]
             h["goal"] = " ".join(inner.split())[:1200]
@@ -615,7 +648,8 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
         note = _breadcrumb(middle, used, tail_text, carried, gen, saved)
         # Legacy layout: fold the breadcrumb INTO the system message rather
         # than inserting a separate 'user' turn (two same-role messages).
-        sys_new = _pin_goal(_stripped_system(convo), work, pin)
+        sys_new = _pin_goal(strip_pinned_blocks(_stripped_system(convo))
+                            if pin else _stripped_system(convo), work, pin)
         head = [{"role": "system", "content": (sys_new + "\n\n" + note).strip()}]
         if needs_opener:
             tail = [_tail_cut.opener()] + tail

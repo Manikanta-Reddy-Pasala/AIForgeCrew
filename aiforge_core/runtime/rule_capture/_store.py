@@ -61,8 +61,7 @@ def _session_add(session_id, item: dict) -> None:
     try:
         from aiforge_core.runtime import chat_lessons
         if item.get("canonical"):
-            chat_lessons.note_correction(session_id,
-                                         "rule for this chat: " + item["canonical"])
+            chat_lessons.note_rule(session_id, item["canonical"])
     except Exception:  # noqa: BLE001
         pass
 

@@ -443,7 +443,7 @@ def turn_pin(st) -> str | None:
         parts.append("LATER INSTRUCTIONS FROM THE USER (newest last; they "
                      "override the task where they differ):")
         parts += [f"- {s}" for s in steers]
-    changed = [_shown_path(p, st.cwd) for p in getattr(st, "file_hashes", {})]
+    changed = [_shown_path(p, getattr(st, "cwd", None)) for p in getattr(st, "file_hashes", {})]
     if changed:
         more = f" (+{len(changed) - 40} more)" if len(changed) > 40 else ""
         parts.append("FILES CHANGED SO FAR: " + ", ".join(changed[-40:]) + more)

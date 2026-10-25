@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 
 from aiforge_core.config import _atomic
@@ -41,7 +42,7 @@ _CUE = re.compile(
     r"|compare (?:with|against|to) this\b"
     r"|exactly (?:this|the following|these) (?P<n5>output|result|response|data|lines?|json)\b"
     r"|(?:prints?|outputs?|returns?) exactly\b"
-    r"|should (?:return|print|output|produce)\b"
+    r"|should (?:return|print|output|produce) (?:exactly )?(?:this|the following) (?P<n8>output|result|response|data)\b"
     r"|here (?:is|are) the expected (?P<n6>output|result|response|data)\b"
     r"|(?:i (?:want|need|expect)) (?:this|the following|exactly this) (?P<n7>output|result|response|data)\b"
     r"|^expected:"
@@ -182,7 +183,7 @@ def _sniff(text: str) -> str:
 
 
 def _label(m: re.Match) -> str:
-    for g in ("n1", "n2", "n3", "n4", "n5", "n6", "n7"):
+    for g in ("n1", "n2", "n3", "n4", "n5", "n6", "n7", "n8"):
         word = m.group(g)
         if word:
             word = word.lower()
@@ -206,15 +207,23 @@ def _tail_ok(text: str, m: re.Match, *, allow_period: bool = False,
     tail = _tail(text, m)
     if allow_period and tail.rstrip().endswith("."):
         tail = tail.rstrip()[:-1]
+    if _LOOSE.search(tail):
+        return False              # "(roughly)", "except the ids": not exact
     if _TAIL.fullmatch(tail) is not None:
         return True
     # A note in brackets ("expected output (after the fix):") says WHEN the
     # output holds, not that the match is loose: it does not hedge.
     return (fenced and _FENCED_TAIL.fullmatch(tail) is not None
-            and not _HEDGE.search(_PAREN.sub(" ", tail)))
+            and not _HEDGE.search(_PAREN.sub(" ", tail))
+            and not any(_LOOSE.search(p) for p in _PAREN.findall(tail)))
 
 
 _PAREN = re.compile(r"\([^()\n]*\)")
+# What makes a match loose even inside brackets ("(roughly)", "(except ids)").
+_LOOSE = re.compile(r"\b(?:but|except|apart|similar|roughly|approximately|partly|"
+                    r"partial|some of)\b", re.I)
+# A pasted test log is not an expected output ("Expected: 3 / Received: 4").
+_TEST_LOG = re.compile(r"(?m)^\s*(?:Received|Actual|at\s+\S+\s*\(|Traceback|File \")")
 #: A short unfenced payload ("expected output: 42", a 3-line table) is kept
 #: when it is the paragraph right under (or after) a bare cue, up to this size.
 _SHORT_MAX = 2000
@@ -235,7 +244,15 @@ def _short_payload(text: str, m: re.Match, region_end: int) -> str:
         return ""
     if any(_PROSE_LINE.search(ln) for ln in para.splitlines()):
         return ""
+    if _TEST_LOG.search(para):
+        return ""
     return para
+
+
+def _bare_only(m: re.Match) -> bool:
+    """``expected:`` at a line start is a cue only with nothing after it on
+    its line: "Expected: 3" is a line of a test log."""
+    return m.group(0).lower().startswith("expected:")
 
 
 def _is_prose(rest: str) -> bool:
@@ -261,6 +278,11 @@ def _payloads(text: str) -> builtins.list[tuple[str, str]]:
     for i, m in enumerate(cues):
         region_end = cues[i + 1].start() if i + 1 < len(cues) else len(text)
         label = _label(m)
+        if _bare_only(m):
+            short = _short_payload(text, m, region_end)
+            if short:
+                out.append((label, short))
+            continue
         fence = next((f for f in fences
                       if f.start() not in used and m.end() <= f.start() < region_end
                       and f.start() - m.end() <= _GAP), None)
@@ -286,7 +308,7 @@ def _payloads(text: str) -> builtins.list[tuple[str, str]]:
             continue
         log.info("target cue %r had no payload it could keep (len %d)",
                  m.group(0), len(rest))
-    if not out and cues and fences:
+    if not out and cues and fences and not _bare_only(cues[0]):
         # the cue follows the payload: "```…```\nthat is the expected output."
         m = cues[0]
         fence = next((f for f in reversed(fences)
@@ -297,45 +319,23 @@ def _payloads(text: str) -> builtins.list[tuple[str, str]]:
 
 
 _REPLACE_CUE = re.compile(
-    r"\b(?:actually|instead|updated?|new|corrected|correct|changed?|replace[sd]?|"
-    r"revised?|fixed)\b[^\n]{0,40}\b(?:expected|target|output|result|response|data)\b"
-    r"|\b(?:expected|target)\b[^\n]{0,40}\b(?:is now|has changed|changed)\b", re.I)
-#: Two bodies this similar (difflib ratio) are one target restated.
-_SIMILAR = 0.5
+    r"\b(?:actually|instead|updated|corrected|revised|replaced?)\b[^\n]{0,40}"
+    r"\b(?:expected|target|output|result|response|data)\b"
+    r"|\b(?:expected|target)\b[^\n]{0,40}\b(?:is now|has changed|changed to)\b"
+    r"|\buse this (?:output|result|response|data)? ?instead\b", re.I)
 
 
-def _body_of(row: dict) -> str:
-    try:
-        with open(str(row.get("path") or ""), encoding="utf-8",
-                  errors="replace") as fh:
-            return fh.read(200_000)
-    except OSError:
-        return ""
-
-
-def _replaces(rows, label: str, body: str, fresh: set, replace: bool):
+def _replaces(rows, label: str, fresh: set, replace: bool):
     """The stored row a new payload is a new version of, or None (a target of
-    its own). Only a row with the same label from an EARLIER message can be
-    replaced — two payloads in one message are two targets — and only when
-    the user says it replaces it, or the bodies are close enough to be the
-    same target restated. A second, different "expected output" used to
-    overwrite the first."""
-    cands = [r for r in rows if r.get("label") == label and id(r) not in fresh]
-    if not cands:
+    its own). Only when the user says it replaces one ("actually, the expected
+    output is …", "updated expected output:") and exactly one row from an
+    EARLIER message has that label. Two payloads in one message are two
+    targets; a second, different "expected output" used to overwrite the
+    first."""
+    if not replace:
         return None
-    if replace and len(cands) == 1:
-        return cands[0]
-    import difflib
-    best, score = None, 0.0
-    for r in cands:
-        sm = difflib.SequenceMatcher(None, _body_of(r)[:20_000], body[:20_000],
-                                     autojunk=False)
-        if sm.real_quick_ratio() < _SIMILAR or sm.quick_ratio() < _SIMILAR:
-            continue
-        ratio = sm.ratio()
-        if ratio > score:
-            best, score = r, ratio
-    return best if score >= _SIMILAR else None
+    cands = [r for r in rows if r.get("label") == label and id(r) not in fresh]
+    return cands[0] if len(cands) == 1 else None
 
 
 def _store(session_id, rows, label: str, body: str, turn: int | None,
@@ -350,10 +350,11 @@ def _store(session_id, rows, label: str, body: str, turn: int | None,
             body += "\n"
         raw = body.encode("utf-8")
     sha = hashlib.sha256(raw).hexdigest()
-    same = next((r for r in rows if r.get("sha256") == sha), None)
+    same = next((r for r in rows
+                 if r.get("sha256") == sha and r.get("label") == label), None)
     if same is not None:
         return same
-    hit = _replaces(rows, label, body, fresh, replace)
+    hit = _replaces(rows, label, fresh, replace)
     ext = _sniff(body)
     if hit is not None:
         n = len(hit.get("versions") or []) + 1
@@ -375,7 +376,25 @@ def _store(session_id, rows, label: str, body: str, turn: int | None,
     return row
 
 
+_LOCKS: dict = {}
+_LOCKS_GUARD = threading.Lock()
+
+
+def _lock(session_id) -> threading.Lock:
+    """One lock per chat around every read-modify-write of its index: the
+    message route, the steer route and the loop's compare all write it."""
+    with _LOCKS_GUARD:
+        return _LOCKS.setdefault(str(session_id), threading.Lock())
+
+
 def capture(session_id, text: str, turn: int | None = None) -> builtins.list[dict]:
+    if not enabled() or not text or session_id is None:
+        return []
+    with _lock(session_id):
+        return _capture(session_id, text, turn)
+
+
+def _capture(session_id, text: str, turn: int | None = None) -> builtins.list[dict]:
     """Save the target(s) a user message carries. Returns the new/updated rows.
     Raises OSError when an existing index cannot be read: it is never
     overwritten blind (a corrupt one is moved aside instead)."""
@@ -403,6 +422,11 @@ def note_compare(session_id, target_id: str, ok: bool, evidence: str) -> None:
     line can say "differs"."""
     if not enabled() or session_id is None:
         return
+    with _lock(session_id):
+        _note_compare(session_id, target_id, ok, evidence)
+
+
+def _note_compare(session_id, target_id: str, ok: bool, evidence: str) -> None:
     rows = _read(_index(session_id), for_write=True)
     stamp = {"ok": bool(ok), "at": int(time.time()), "evidence": str(evidence)[:1000]}
     hit = False

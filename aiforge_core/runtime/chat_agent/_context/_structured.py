@@ -47,6 +47,7 @@ _ALIASES = {
     "next": "next_step", "next_steps": "next_step", "next_action": "next_step",
     "corrections": "user_corrections", "user_correction": "user_corrections",
     "feedback": "user_corrections", "user_feedback": "user_corrections",
+    "the_user_corrected_you": "user_corrections",
 }
 
 _MAX_ITEMS = 10

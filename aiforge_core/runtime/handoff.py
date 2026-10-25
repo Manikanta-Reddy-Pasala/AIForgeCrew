@@ -146,6 +146,12 @@ def build_chat(st) -> dict:
     }
 
 
+def without_pinned(h: dict) -> dict:
+    """The record without what the pinned task above it already holds
+    (steers, targets, repositories): a restart note shows each once."""
+    return {k: v for k, v in h.items() if k not in ("steers", "targets", "repos")}
+
+
 MARK = "[HANDOFF"
 #: The model decides whether the new message continues that work: it has the
 #: message and the conversation, the harness has only word rules.
@@ -225,5 +231,5 @@ def render(h: dict, offload_id: "str | None" = None,
     return "\n".join(lines)
 
 
-__all__ = ["MARK", "RESUME_HEAD", "REFERENCE_HEAD", "REFERENCE_MARK", "note_failed", "record_failed", "render_failed", "last_attempt", "build_chat", "render",
+__all__ = ["MARK", "RESUME_HEAD", "REFERENCE_HEAD", "REFERENCE_MARK", "note_failed", "record_failed", "render_failed", "last_attempt", "build_chat", "render", "without_pinned",
            "MAX_FAILED"]

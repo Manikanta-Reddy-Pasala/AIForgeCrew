@@ -120,7 +120,9 @@ def test_handoff_render_lists_targets():
     st = types.SimpleNamespace(goal="go", board={}, session_id=5, convo=[], file_hashes={},
                                steers=[], edits_made=0, cwd="/x")
     h = handoff.build_chat(st)
-    assert h["targets"] == ["target-1 (output): not yet compared"]
+    assert len(h["targets"]) == 1
+    assert h["targets"][0].startswith("target-1 (output, ")
+    assert h["targets"][0].endswith("target-1.json): not yet compared")
     assert "target-1" in handoff.render(h)
 
 

@@ -170,8 +170,6 @@ def _drain_steering(st, session_id):
             from aiforge_core.runtime import chat_steer
             _steers = [t for k, t in _items if k != "reject"]
             st.steers.extend(_steers)
-            if _steers:
-                _board_new_targets(st, session_id)
             from . import _steer_reply
             _steer_reply.on_drain(st, _steers)
             _rejects = [t for k, t in _items if k == "reject"]
@@ -186,6 +184,14 @@ def _drain_steering(st, session_id):
                 # shown the board and told to.
                 note = yield from _revise_board(st, _steers, _board_events)
                 _parts.append(note)
+                # After the revision, which rebuilds the board: a target that
+                # came with the message holds an enforced item of its own.
+                if _board_new_targets(st, session_id):
+                    from ._tasks import board_items
+                    _board_events[:] = [e for e in _board_events
+                                        if e.get("type") != "subtasks"]
+                    _board_events.append({"type": "subtasks",
+                                          "items": board_items(st.board)})
             _directive = "\n\n".join(p for p in _parts if p)
             _append_directive(st, _directive)
             for _k, _t in _items:
@@ -193,21 +199,23 @@ def _drain_steering(st, session_id):
             yield from _board_events
 
 
-def _board_new_targets(st, session_id) -> None:
+def _board_new_targets(st, session_id) -> bool:
     """A target that came with a steer (stored by the steer route) gets its
     enforced board item now, as one in the turn's own message did at start."""
     try:
         from aiforge_core.runtime import targets as _targets
         items = _targets.board_items(session_id)
     except Exception:  # noqa: BLE001 — a target store miss never blocks the turn
-        return
+        return False
     if not items:
-        return
+        return False
     if getattr(st, "board", None) is None:
         st.board = {}
+    added = [s for s in items if s not in st.board]
     for slug, item in items.items():
         st.board.setdefault(slug, item)
     st.board_used = True
+    return bool(added)
 
 
 def _revise_board(st, steers, events):
@@ -428,17 +436,9 @@ def _repin_turn_note(st) -> None:
     st.convo[at] = {**st.convo[at], "content": st.convo[at]["content"] + "\n\n" + text}
 
 
-# Blocks the pinned task (turn_pin) re-reads at every condense. The turn note
-# holds their turn-start copy; put back next to the fresh one it would
-# contradict it (a target shown unverified after its compare passed).
-_PINNED_BLOCK = re.compile(
-    r"(?m)^(?:TARGETS — data the user gave|REPOSITORIES IN THIS CHAT|GIT TARGETS:"
-    r"|LESSONS FROM THIS CHAT)"
-    r".*?(?=\n[ \t]*\n|\n<<END_AIFORGE_TURN_CONTEXT>>|\Z)", re.S)
-
-
 def _without_pinned_blocks(text: str) -> str:
-    return _PINNED_BLOCK.sub("", text or "") if text else ""
+    from .._context._compaction import strip_pinned_blocks
+    return strip_pinned_blocks(text)
 
 
 def _stuck_output_guard(st, out):

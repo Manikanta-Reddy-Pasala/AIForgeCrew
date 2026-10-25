@@ -39,6 +39,9 @@ log = logging.getLogger("aiforge.chat_transcript")
 #: Where the enhancer's restatement starts in a user message.
 _ENHANCED = "\n\n---\n[Interpreted request"
 
+#: The line a carried UNFINISHED turn ends on (a question back, a stop, a
+#: failure): the next message sees what was tried and that it is not done.
+UNFINISHED_MARK = "(this turn ended before the work was finished)"
 #: A transcript bigger than this is not kept (bytes of JSON).
 MAX_BYTES = 6_000_000
 
@@ -279,7 +282,9 @@ def carried(session_id, messages) -> "list | None":
     if (isinstance(prev, dict) and prev.get("role") == "assistant"
             and work[-1].get("role") == "assistant"):
         said = _text(prev.get("content")).strip()
-        answer = str(work[-1].get("content") or "").strip()
+        full = str(work[-1].get("content") or "").strip()
+        answer = full[:-len(UNFINISHED_MARK)].strip() \
+            if full.endswith(UNFINISHED_MARK) else full
         extra = ""
         if answer and said.startswith(answer):
             extra = said[len(answer):]
@@ -288,7 +293,7 @@ def carried(session_id, messages) -> "list | None":
         if extra.strip():
             # Only what came after the answer is added; the answer stays as it was.
             work = [*work[:-1], {"role": "assistant",
-                                 "content": answer + "\n\n" + extra.strip()}]
+                                 "content": full + "\n\n" + extra.strip()}]
     return [*work, last]
 
 

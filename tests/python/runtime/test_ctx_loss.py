@@ -49,7 +49,7 @@ def test_two_payloads_in_one_message_are_two_targets():
 
 def test_a_restated_target_becomes_a_new_version():
     T.capture(5, "expected output:\n```\n" + JSON + "\n```")
-    T.capture(5, "expected output:\n```\n" + JSON.replace('"e"', '"f"') + "\n```")
+    T.capture(5, "actually the expected output is:\n```\n" + JSON.replace('"e"', '"f"') + "\n```")
     rows = T.list(5)
     assert len(rows) == 1 and rows[0]["path"].endswith("target-1.v2.json")
 
@@ -69,11 +69,26 @@ def test_a_bracketed_when_does_not_hedge_a_fenced_cue():
 
 
 @pytest.mark.parametrize("msg", [
-    "the function should return:\n```\n[1, 2]\n```",
+    "the function should return this output:\n```\n[1, 2]\n```",
     "here is the expected output\n```\n[1, 2]\n```",
 ])
 def test_wider_cue_wordings(msg):
     assert T.capture(5, msg)
+
+
+@pytest.mark.parametrize("msg", [
+    "parse() should return None when the key is missing:\n```python\ndef parse(d):\n    return d['k']\n```",
+    "the test fails:\nExpected: 3\nReceived: 4\n    at Object.<anonymous> (sum.test.js:3:20)\n" + "x" * 300,
+    "expected output (roughly):\n```\nok 3\n```",
+])
+def test_code_test_logs_and_loose_matches_are_not_targets(msg):
+    assert T.capture(5, msg) == []
+
+
+def test_two_same_schema_targets_in_two_messages_stay_two():
+    T.capture(5, "expected output:\n```\n" + JSON + "\n```")
+    T.capture(5, "expected output:\n```\n" + JSON.replace('"e"', '"f"') + "\n```")
+    assert len(T.list(5)) == 2
 
 
 # ── lessons ────────────────────────────────────────────────────────────────
@@ -89,8 +104,11 @@ def test_corrections_are_recognised(msg):
     assert L.is_correction(msg)
 
 
-@pytest.mark.parametrize("msg", ["add a login page", "what does this do?",
-                                 "run the tests and show me"])
+@pytest.mark.parametrize("msg", [
+    "add a login page", "what does this do?", "run the tests and show me",
+    "what is wrong with the parser", "the build is broken", "reject incorrect passwords",
+    "make sure you keep the old API", "if you can't find it, create it",
+    "use pnpm instead of npm", "you already have access to the repo"])
 def test_ordinary_requests_are_not_corrections(msg):
     assert not L.is_correction(msg)
 
@@ -122,6 +140,28 @@ def test_temporary_chat_keeps_lessons_in_memory_only(monkeypatch):
     assert "don't touch the db" in L.block(9)
     import os
     assert not os.path.exists(L._path(9))
+
+
+def test_only_strong_corrections_go_to_the_project():
+    assert L.is_strong_correction("that's the wrong repo")
+    assert not L.is_strong_correction("don't commit yet")
+
+
+def test_session_rules_are_kept_apart_and_undone():
+    L.note_rule(7, "use tabs")
+    for i in range(12):
+        L.note_correction(7, f"don't touch file{i}.py")
+    b = L.block(7)
+    assert "rule the user set for this chat: use tabs" in b
+    L.drop_rule(7, "use tabs")
+    assert "use tabs" not in L.block(7)
+
+
+def test_forget_takes_the_chat_out_of_the_project(monkeypatch):
+    monkeypatch.setattr(L, "_repo_of", lambda sid: "shop")
+    L._note_project("shop", {"text": "never edit migrations"}, 1)
+    L.forget(1)
+    assert L.project_lessons("shop") == []
 
 
 def test_project_lessons_reach_a_new_chat(monkeypatch):

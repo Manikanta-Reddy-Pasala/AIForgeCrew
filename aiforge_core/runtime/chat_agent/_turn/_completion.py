@@ -98,8 +98,9 @@ def _turn_kw(st, convo) -> dict:
     if st is None or convo is not getattr(st, "convo", None):
         return {}
     from ._tasks import turn_pin
-    return {"pin": turn_pin(st), "run_key": getattr(st, "compact_key", None),
-            "handoff_st": st}
+    # No run key: a retry after a timeout must not also queue a summary call
+    # on the same (struggling) model server.
+    return {"pin": turn_pin(st), "handoff_st": st}
 
 
 def _shrink_for_retry(convo, role, complete_fn, session_id, st=None) -> bool:
@@ -114,8 +115,8 @@ def _shrink_for_retry(convo, role, complete_fn, session_id, st=None) -> bool:
         kw = _turn_kw(st, convo)
         unread = 0
         if kw:
-            from ._batch import _unread_batch_msgs
-            unread = _unread_batch_msgs(st)
+            unread = (len(st.convo) - st.batch_mark
+                      if getattr(st, "batch_unread", False) else 0)
             kw["keep_min"] = unread
         new = _compact_convo(convo, role=role, complete_fn=complete_fn,
                              session_id=session_id, force=True, keep_recent=6,
@@ -124,8 +125,11 @@ def _shrink_for_retry(convo, role, complete_fn, session_id, st=None) -> bool:
         if new is not convo and after < before:
             convo[:] = new
             if kw:
-                from ._limits import _after_condense
-                _after_condense(st, unread, n_before)
+                try:
+                    from ._limits import _after_condense
+                    _after_condense(st, unread, n_before)
+                except Exception:  # noqa: BLE001 — the shrink itself stands
+                    pass
             return True
     except Exception:  # noqa: BLE001 — a failed shrink just retries as is
         pass

@@ -28,6 +28,7 @@ MARK = "LESSONS FROM THIS CHAT"
 #: Corrections and failed approaches kept, newest last.
 MAX_CORRECTIONS = 10
 MAX_FAILED = 8
+MAX_RULES = 8
 _TEXT_CHARS = 500
 _SAID_CHARS = 160
 _BLOCK_CHARS = 3500
@@ -35,28 +36,32 @@ _BLOCK_CHARS = 3500
 _LOCK = threading.Lock()
 _MEM: dict = {}          # temporary chats: session id -> lessons
 
-# The user telling the agent it got something wrong, or what not to do. Only
-# read on a message that follows an answer (there is something to correct).
-_CORRECTION = re.compile(
-    r"\b(?:"
-    r"that'?s (?:wrong|not (?:right|correct|it|what))"
-    r"|(?:is|was|are|were|looks?) (?:wrong|incorrect|broken)"
-    r"|wrong (?:again|file|repo|repository|branch|folder|place|way|path|command|output|answer)"
+# The user telling the agent it got something wrong. Only read on a message
+# that follows an answer (there is something to correct). Kept narrow: a
+# false match is pinned as "the user corrected you" for the rest of the chat.
+_STRONG = (
+    r"that'?s (?:wrong|not (?:right|correct|what i (?:asked|wanted|meant)))"
+    r"|(?:that|this|it) (?:is|was) (?:wrong|incorrect|not right)"
+    r"|wrong (?:again|file|repo|repository|branch|folder|place|path|command|"
+    r"output|answer|one)"
     r"|not what i (?:asked|wanted|meant|said)"
-    r"|incorrect"
-    r"|you (?:forgot|missed|broke|ignored|skipped|deleted|overwrote|didn'?t|did not|"
-    r"keep|still|again|already|were (?:told|asked)|should(?:n'?t| not| have)|"
-    r"must(?:n'?t| not)|can'?t|cannot)"
-    r"|i (?:told|said|asked) you"
-    r"|same (?:mistake|error|issue|problem) again"
-    r"|(?:don'?t|do not|never|stop) (?:do|doing|use|using|touch|touching|change|changing|"
-    r"edit|editing|run|running|commit|committing|push|pushing|delete|deleting|create|"
-    r"add|adding|modify|modifying|rewrite|rewriting|guess|guessing|ask|asking)"
-    r"|instead of"
-    r"|why did you"
-    r"|no[,.!]? (?:not|use|do|it'?s|that'?s|the|you|don'?t|wrong)"
-    r"|not (?:like that|that one|this one|there)"
-    r")", re.I)
+    r"|you (?:forgot|missed|broke|ignored|skipped|deleted|overwrote|"
+    r"didn'?t (?:listen|read|follow|run|check|test)|did not (?:listen|read|follow|run|check|test)|"
+    r"were (?:told|asked)|should(?:n'?t| not)(?: have)?)\b"
+    r"|i (?:already )?(?:told|asked) you"
+    r"|(?:same|that) (?:mistake|error) again|again (?:the )?same (?:mistake|error)"
+    r"|why did you")
+_CORRECTION = re.compile(
+    r"\b(?:" + _STRONG +
+    r"|^\s*no[,.!]+ (?:not|that'?s|it'?s|wrong|don'?t|stop)"
+    r"|(?:don'?t|do not|never|stop) (?:touch|touching|change|changing|edit|editing|"
+    r"commit|committing|push|pushing|delete|deleting|modify|modifying|rewrite|"
+    r"rewriting|guess|guessing)\b"
+    r"|not (?:like that|that one|this one)"
+    r")", re.I | re.M)
+#: The subset that goes to the PROJECT's lessons (every later chat): only an
+#: unmistakable "you got it wrong", never a one-off "don't commit yet".
+_STRONG_RE = re.compile(r"\b(?:" + _STRONG + r")", re.I)
 
 
 def enabled() -> bool:
@@ -79,7 +84,7 @@ def _temporary(session_id) -> bool:
 
 
 def _empty() -> dict:
-    return {"corrections": [], "failed": []}
+    return {"corrections": [], "failed": [], "rules": []}
 
 
 def _load(session_id) -> dict:
@@ -95,7 +100,9 @@ def _load(session_id) -> dict:
     return {"corrections": [c for c in data.get("corrections") or []
                             if isinstance(c, dict) and c.get("text")],
             "failed": [f for f in data.get("failed") or []
-                       if isinstance(f, dict) and f.get("text")]}
+                       if isinstance(f, dict) and f.get("text")],
+            "rules": [r for r in data.get("rules") or []
+                      if isinstance(r, dict) and r.get("text")]}
 
 
 def _save(session_id, data: dict) -> None:
@@ -137,6 +144,42 @@ def _users_words(text: str) -> str:
 def is_correction(text: str) -> bool:
     """Does the message tell the agent it got something wrong / what not to do?"""
     return bool(_CORRECTION.search(_users_words(text or "")[:4000]))
+
+
+def is_strong_correction(text: str) -> bool:
+    """An unmistakable "you got it wrong" — worth keeping for the project."""
+    return bool(_STRONG_RE.search(_users_words(text or "")[:4000]))
+
+
+def note_rule(session_id, text: str) -> None:
+    """A rule the user set for this chat (rule capture, scope "session"):
+    the in-process list is gone on a restart, this file is not."""
+    t = _flat(text, _TEXT_CHARS)
+    if not enabled() or session_id is None or not t:
+        return
+    try:
+        with _LOCK:
+            data = _load(session_id)
+            items = [r for r in data["rules"] if r.get("text") != t]
+            items.append({"text": t, "at": int(time.time())})
+            data["rules"] = items[-MAX_RULES:]
+            _save(session_id, data)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("lessons write failed (session=%s): %s", session_id, exc)
+
+
+def drop_rule(session_id, text: str) -> None:
+    """The user undid that rule: the agent must stop following it."""
+    t = _flat(text, _TEXT_CHARS)
+    if session_id is None or not t:
+        return
+    try:
+        with _LOCK:
+            data = _load(session_id)
+            data["rules"] = [r for r in data["rules"] if r.get("text") != t]
+            _save(session_id, data)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("lessons write failed (session=%s): %s", session_id, exc)
 
 
 def note_correction(session_id, text: str, said: str = "",
@@ -207,13 +250,24 @@ def _project_path(repo: str) -> str:
                         f"{safe}.json")
 
 
+_REPO_CACHE: dict = {}
+
+
 def _repo_of(session_id) -> str:
+    """The chat's project key (cached: read on every step's pin)."""
+    key = str(session_id)
+    if key in _REPO_CACHE:
+        return _REPO_CACHE[key]
     try:
         from aiforge_core.runtime import chat_store, rule_capture
         sess = chat_store.get_session(session_id) or {}
-        return rule_capture.repo_key(sess.get("cwd") or "") or ""
+        repo = rule_capture.repo_key(sess.get("cwd") or "") or ""
     except Exception:  # noqa: BLE001
         return ""
+    if len(_REPO_CACHE) > 512:
+        _REPO_CACHE.clear()
+    _REPO_CACHE[key] = repo
+    return repo
 
 
 def project_lessons(repo: str) -> list:
@@ -249,9 +303,10 @@ def render(data: dict, live_failed=(), earlier=()) -> str:
         if t and t not in failed:
             failed.append(t)
     failed = failed[-MAX_FAILED:]
+    rules = [r.get("text") for r in data.get("rules") or []][-MAX_RULES:]
     have = {c.get("text") for c in corr}
     earlier = [c for c in earlier or () if c.get("text") not in have][-MAX_PROJECT:]
-    if not corr and not failed and not earlier:
+    if not corr and not failed and not earlier and not rules:
         return ""
     head = (f"{MARK} — the user already corrected you on these, or they were "
             "tried and did not work. They still hold: do not repeat them.")
@@ -261,6 +316,8 @@ def render(data: dict, live_failed=(), earlier=()) -> str:
     for c in corr:
         said = f' (you had said: "{c["said"]}")' if c.get("said") else ""
         lines.append(f'- the user said: "{c["text"]}"{said}')
+    for t in rules:
+        lines.append(f"- rule the user set for this chat: {t}")
     for t in failed:
         lines.append(f"- tried and failed: {t}")
     while lines and len(head) + sum(len(x) + 1 for x in lines) > _BLOCK_CHARS:
@@ -279,6 +336,15 @@ def block(st_or_session) -> str:
         sid = getattr(st_or_session, "session_id", None)
         live = getattr(st_or_session, "failed_approaches", None) or ()
     data = lessons(sid) if sid is not None else _empty()
+    if data.get("rules") and sid is not None:
+        # A rule still in the live session list is already in the rule book.
+        try:
+            from aiforge_core.runtime.rule_capture._base import _SESSION_ITEMS
+            live_rules = {_flat(it.get("canonical"), _TEXT_CHARS)
+                          for it in _SESSION_ITEMS.get(str(sid), [])}
+            data["rules"] = [r for r in data["rules"] if r.get("text") not in live_rules]
+        except Exception:  # noqa: BLE001
+            pass
     earlier = []
     if sid is not None and not _temporary(sid):
         earlier = [c for c in project_lessons(_repo_of(sid))
@@ -290,40 +356,48 @@ def block(st_or_session) -> str:
 
 
 def remember_in_project(session_id, entry: dict, repo: "str | None") -> None:
-    """Hand a correction to project memory (a ``gotcha``) so a LATER chat on
-    the same project recalls it. Only for chats that learn; never for a
-    temporary chat."""
-    if not entry or session_id is None or _temporary(session_id):
+    """Keep a correction in the PROJECT's lessons so a later chat on the same
+    repository is told too. Only for chats that learn; never for a temporary
+    chat. A plain file the chat's deletion can take back (a memory note could
+    not be)."""
+    if not entry or not repo or session_id is None or _temporary(session_id):
         return
-    if os.environ.get("AIFORGE_CHAT_LESSONS_TO_MEMORY", "1").strip().lower() in (
+    if os.environ.get("AIFORGE_CHAT_LESSONS_PROJECT", "1").strip().lower() in (
             "0", "false", "no", "off"):
         return
     try:
         from aiforge_core.runtime import chat_store
         if not chat_store.session_learns(session_id):
             return
-        _note_project(repo or "", entry, session_id)
-        from aiforge_core.runtime.tools.memory_write import memory_write
-        said = f' (after the agent said: "{entry["said"]}")' if entry.get("said") else ""
-        memory_write(text=f'User correction: "{entry["text"]}"{said}',
-                     kind="gotcha", tags=["correction", "chat_lessons"],
-                     repo=repo or "notes", source="chat_lessons")
+        _note_project(repo, entry, session_id)
     except Exception as exc:  # noqa: BLE001
-        log.debug("correction not handed to memory: %s", exc)
+        log.debug("correction not kept for the project: %s", exc)
 
 
 def forget(session_id) -> None:
     """The chat was deleted: drop its lessons."""
     if session_id is None:
         return
+    repo = _repo_of(session_id)
     with _LOCK:
         _MEM.pop(str(session_id), None)
         try:
             os.remove(_path(session_id))
         except OSError:
             pass
+        if repo:
+            # What this chat taught the project goes with it.
+            items = [c for c in project_lessons(repo)
+                     if c.get("session") != str(session_id)]
+            try:
+                from aiforge_core.config import _atomic
+                _atomic.write_text(_project_path(repo), json.dumps(items, indent=1))
+            except OSError:
+                pass
+    _REPO_CACHE.pop(str(session_id), None)
 
 
 __all__ = ["MARK", "block", "enabled", "forget", "is_correction", "lessons",
-           "note_correction", "note_failed", "project_lessons",
+           "drop_rule", "is_strong_correction", "note_correction", "note_failed",
+           "note_rule", "project_lessons",
            "remember_in_project", "render"]

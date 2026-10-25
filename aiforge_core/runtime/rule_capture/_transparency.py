@@ -139,6 +139,7 @@ def undo(rid: str) -> bool:
             found = None
     if found is not None:
         _clear_applied_flags(found)            # gate re-enabled
+        _drop_lesson(found)
         return True
     idx = _load_index()
     item = idx.get("items", {}).get(rid)
@@ -166,13 +167,29 @@ def _find_item(rid: str) -> tuple[dict | None, bool]:
     return (dict(it) if it else None), False
 
 
+def _drop_lesson(item: dict) -> None:
+    """The chat's lessons file keeps session rules across a restart: an undone
+    (or moved) rule must leave it too."""
+    try:
+        from aiforge_core.runtime import chat_lessons
+        chat_lessons.drop_rule(item.get("session_id"), item.get("canonical") or "")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _drop_session_item(rid: str) -> None:
     with _LOCK:
         for items in _SESSION_ITEMS.values():
             for i, it in enumerate(list(items)):
                 if it.get("id") == rid:
-                    items.pop(i)
-                    return
+                    gone = items.pop(i)
+                    break
+            else:
+                continue
+            break
+        else:
+            return
+    _drop_lesson(gone)
 
 
 def _drop_indexed_item(found: dict, rid: str) -> None:

@@ -153,6 +153,10 @@ _SPEC: dict[str, tuple[str, int]] = {
     # the next-step prediction); with one it keeps them sequential. The env
     # var also takes "auto". See aiforge_core/llm/slots.py.
     "llm_parallel": ("AIFORGE_LLM_PARALLEL", 0),
+    # Days logs and evidence are kept (runtime/log_retention): older log
+    # files, traces, trajectories and the evidence / tool output of older chat
+    # turns are cleaned up. 0 keeps everything.
+    "log_retention_days": ("AIFORGE_LOG_RETENTION_DAYS", 15),
 }
 
 # Sanity bounds — reject obviously-bad values from the API/UI so a typo
@@ -186,6 +190,7 @@ _BOUNDS: dict[str, tuple[int, int]] = {
     # throttle me", and even that keeps obeying the server.
     "llm_rate_limit_cap_s": (1, 3_600),
     "llm_parallel": (0, 1024),
+    "log_retention_days": (0, 3650),
 }
 
 

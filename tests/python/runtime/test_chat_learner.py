@@ -57,7 +57,7 @@ def test_the_transcript_carries_ask_actions_and_answer():
     out = cl._transcript("fix the parser", "done", [_tool("file_write", path="a.py"),
                                                     {"type": "thought"}])
     assert "USER:\nfix the parser" in out
-    assert "ACTIONS:\n- file_write ok=True" in out
+    assert "ACTIONS:\n- file_write(a.py) ok=True" in out
     assert "ASSISTANT:\ndone" in out
 
 

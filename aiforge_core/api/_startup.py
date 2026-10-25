@@ -183,6 +183,16 @@ def _sweep_temporary_chats() -> None:
         logging.getLogger("aiforge").warning("temporary chat sweep skipped: %s", exc)
 
 
+def _start_log_cleanup() -> None:
+    """Logs and evidence older than ``log_retention_days`` (default 15) are
+    cleaned up now and every six hours (runtime/log_retention)."""
+    try:
+        from aiforge_core.runtime import log_retention
+        log_retention.register()
+    except Exception as exc:  # noqa: BLE001 — never block boot on this
+        logging.getLogger("aiforge").warning("log cleanup not started: %s", exc)
+
+
 def _ensure_model_context_on_boot() -> None:
     """Post-deploy, LM Studio JIT-loads the local model at its small default
     context (e.g. 8192), which HTTP-400s the big prompts a multi-file build needs

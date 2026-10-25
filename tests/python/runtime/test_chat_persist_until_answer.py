@@ -89,7 +89,7 @@ def test_a_model_that_is_not_served_is_reported_not_retried(monkeypatch):
 def test_the_prompt_is_condensed_between_attempts(monkeypatch):
     seen = []
 
-    def shrink(convo, role, complete_fn, session_id):
+    def shrink(convo, role, complete_fn, session_id, st=None):
         seen.append(len(convo))
         return False
     monkeypatch.setattr(C, "_shrink_for_retry", shrink)

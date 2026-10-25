@@ -130,7 +130,7 @@ def compact_saved(session_id, role: str = "chat") -> dict:
     from aiforge_core.runtime.chat_agent._context import _summary_bg
     from aiforge_core.runtime.chat_agent._context._compaction import (
         _compact_convo,
-        _splice_ready_summary,
+        release_run,
     )
     from aiforge_core.runtime.chat_agent._context import _note
     work = chat_transcript.load_work(session_id)
@@ -166,12 +166,14 @@ def compact_saved(session_id, role: str = "chat") -> dict:
             _extra.append(_rr)
     except Exception:  # noqa: BLE001
         pass
-    pin = "\n\n".join(p for p in [latest[:2000], _tblock, *_extra] if p).strip() or None
+    _task = ("ORIGINAL TASK (the chat's latest request):\n" + latest[:2000]) \
+        if latest.strip() else ""
+    pin = "\n\n".join(p for p in [_task, _tblock, *_extra] if p).strip() or None
     new = _compact_convo(convo, keep_recent=KEEP_RECENT, role=role,
                          session_id=session_id, force=True, run_key=key,
                          pin=pin)
     if len(new) >= len(convo):
-        _summary_bg.release(key)
+        release_run(key)
         return {"ok": True, "compacted": False,
                 "reason": "the working context is already short"}
     # The model summary is written in the background; wait for it (bounded),
@@ -179,8 +181,7 @@ def compact_saved(session_id, role: str = "chat") -> dict:
     deadline = time.monotonic() + _wait_s()
     while _summary_bg.pending(key) is not None and time.monotonic() < deadline:
         time.sleep(0.5)
-    new = _splice_ready_summary(new, key)
-    _summary_bg.release(key)
+    new = release_run(key, new)
     out_work = chat_transcript._working_part(new) or new[1:]
     if not chat_transcript.replace_work(session_id, out_work, expect=stamp):
         return {"ok": True, "compacted": False,
