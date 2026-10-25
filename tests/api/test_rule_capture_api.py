@@ -144,10 +144,16 @@ def test_prefilter_skips_classify_for_trivial(app_client, monkeypatch):
     monkeypatch.setenv("AIFORGE_CHAT_LEARNER", "0")
     called = {"n": 0}
 
-    def _complete(*a, **k):
+    # Count the classifier's own calls only: any other model call (a thread
+    # an earlier test left running) went to the generic stub and was counted
+    # as a classify, so the test failed only in a full run.
+    from aiforge_core.runtime import rule_capture as _rc_mod
+
+    def _classify_call(*a, **k):
         called["n"] += 1
         return "{}"
-    monkeypatch.setattr(llm_client, "complete", _complete)
+    monkeypatch.setattr(_rc_mod, "_llm_complete", _classify_call)
+    monkeypatch.setattr(llm_client, "complete", lambda *a, **k: "{}")
     # Model-titling also calls the LLM on a fresh session — not the classifier;
     # stub it so this test isolates the rule-capture prefilter.
     monkeypatch.setattr(chat_title, "suggest_title", lambda *a, **k: "")

@@ -13,6 +13,10 @@ def app_client(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_MEMORY_DB_PATH", str(tmp_path / "mem.db"))
     for k in ("AIFORGE_MEMORY_BACKEND", "AIFORGE_NEO4J_URI", "NEO4J_URI"):
         monkeypatch.delenv(k, raising=False)
+    # These tests resolve the endpoint from the registry: the suite-wide dead
+    # endpoint (tests/conftest.py) would override the model each test applies.
+    for k in ("AIFORGE_LM_BASE_URL", "AIFORGE_OPENAI_COMPAT_BASE_URL"):
+        monkeypatch.delenv(k, raising=False)
     import aiforge_core.config.env as envmod
     importlib.reload(envmod)
     import aiforge_core.tickets.backend_factory as bf
