@@ -26,6 +26,10 @@ def app_client(monkeypatch, tmp_path):
     for k in ("AIFORGE_MEMORY_BACKEND", "AIFORGE_NEO4J_URI", "NEO4J_URI"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("AIFORGE_PARALLEL_SUBTASKS", "0")  # single-agent path under test (default is now ON)
+    # A short follow-up skips the enhancer by default (routing
+    # _followup_needs_enhance); this test is about what the enhancer SEES when
+    # it runs, so every follow-up is enhanced.
+    monkeypatch.setenv("AIFORGE_CHAT_FOLLOWUP_ENHANCE_CHARS", "0")
     monkeypatch.delenv("AIFORGE_BEST_OF_N", raising=False)
     import aiforge_core.config.env as envmod
     importlib.reload(envmod)

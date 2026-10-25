@@ -190,6 +190,17 @@ class _Run:
     def finish(self) -> None:
         with self.lock:
             first = not self.done
+            if first and not self.answered:
+                # A run ends on exactly one ``done``, whoever ends it. A team
+                # turn's driver thread finishes the run from its own finally;
+                # when that won the race against the producer, the producer's
+                # ``done`` came after ``finish`` and was dropped, so the stream
+                # closed without it and a UI waiting on ``done`` hung.
+                done = {"type": "done"}
+                self.answered = True
+                self.events.append(done)
+                for q in self.subscribers:
+                    q.put(done)
             self.done = True
             self.finished.set()
             for q in self.subscribers:

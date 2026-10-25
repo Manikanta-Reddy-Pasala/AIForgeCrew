@@ -297,6 +297,9 @@ def _dispatch_routes(_rd, _pp, prompt, cwd, session_id, history, _with_resume,
         _path["handed_off"] = yield from stream_chat_pipeline(
             prompt, cwd=cwd, session_id=session_id, history=history,
             started_at=_turn_t0, resume_brief=_resume_brief)
+        # It returned (not closed early by a disconnect): the driver's work
+        # is over, so the producer may end the run (finish is idempotent).
+        _path["pipeline_returned"] = True
         # The team run IS the turn: without this the producer fell through and
         # ran the same request again with the single agent (enhancer, baseline
         # commit, run_chat_agent, post-run checks) after the team had finished.

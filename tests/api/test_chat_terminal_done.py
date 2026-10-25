@@ -24,6 +24,12 @@ def app_client(monkeypatch, tmp_path):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("AIFORGE_PARALLEL_SUBTASKS", "1")
     monkeypatch.setenv("AIFORGE_BEST_OF_N", "2")
+    # Best-of-N runs N writers: it needs the explicit fan-out opt-in.
+    monkeypatch.setenv("AIFORGE_PARALLEL_SUBTASKS_MAX", "2")
+    # These are the PARALLEL / best-of-N paths. Pipeline approvals (on by
+    # default) force the gated SEQUENTIAL pipeline instead.
+    monkeypatch.setattr("aiforge_core.config.approval_settings.required",
+                        lambda mode: False)
     import aiforge_core.config.env as envmod
     importlib.reload(envmod)
     import aiforge_core.tickets.backend_factory as bf

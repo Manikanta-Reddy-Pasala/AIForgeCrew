@@ -118,15 +118,17 @@ def test_gate_flags_endpoints_set_list_revoke(app_client):
     r = client.post("/api/rules/flags", json={
         "name": "commit_auto_approve", "scope": "global"})
     assert r.json()["applied"] is False
-    # session opt-in honored
+    # session opt-in honored (on a real chat: flags of deleted chats are
+    # pruned from the list)
+    sid = client.post("/api/chat/sessions", json={}).json()["id"]
     r2 = client.post("/api/rules/flags", json={
-        "name": "commit_auto_approve", "scope": "session", "session_id": 7})
+        "name": "commit_auto_approve", "scope": "session", "session_id": sid})
     assert r2.json()["applied"] is True
     listed = client.get("/api/rules/flags").json()["by_scope"]
-    assert "7" in listed["session"]
+    assert str(sid) in listed["session"]
     # revoke
     d = client.delete("/api/rules/flags/commit_auto_approve",
-                      params={"scope": "session", "session_id": 7})
+                      params={"scope": "session", "session_id": sid})
     assert d.json()["ok"] is True
     assert not client.get("/api/rules/flags").json()["by_scope"].get("session")
 

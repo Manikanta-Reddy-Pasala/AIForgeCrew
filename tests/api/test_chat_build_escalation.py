@@ -54,7 +54,7 @@ def test_simple_mode_escalates_multifile_build(app_client, monkeypatch, tmp_path
                       json={"title": "t", "cwd": str(tmp_path)}).json()["id"]
     r = client.post(f"/api/chat/sessions/{sid}/message", json={
         "content": "create a simple poc on spring boot having 10 files with test cases",
-        "mode": "simple", "cwd": str(tmp_path)})
+        "mode": "simple", "context": "split", "cwd": str(tmp_path)})
     assert r.status_code == 200
     body = r.text
     assert called["team"] == 1, "pipeline was not invoked"
@@ -79,7 +79,7 @@ def test_single_task_fallback_still_writes_spec(app_client, monkeypatch, tmp_pat
                       json={"title": "t", "cwd": str(tmp_path)}).json()["id"]
     r = client.post(f"/api/chat/sessions/{sid}/message", json={
         "content": "create a single-file parser tool with tests",
-        "mode": "simple", "cwd": str(tmp_path)})
+        "mode": "simple", "context": "split", "cwd": str(tmp_path)})
     assert r.status_code == 200
     spec = os.path.join(str(tmp_path), "SPEC.md")
     assert os.path.isfile(spec), "SPEC.md missing on the single-task fallback"
@@ -102,7 +102,7 @@ def test_simple_mode_question_stays_single_agent(app_client, monkeypatch, tmp_pa
                       json={"title": "t", "cwd": str(tmp_path)}).json()["id"]
     r = client.post(f"/api/chat/sessions/{sid}/message", json={
         "content": "how do I build a spring boot app with tests?",
-        "mode": "simple", "cwd": str(tmp_path)})
+        "mode": "simple", "context": "split", "cwd": str(tmp_path)})
     assert r.status_code == 200
     assert "answer" in r.text
 
@@ -130,7 +130,7 @@ def test_doc_word_mention_does_not_veto_a_real_build(app_client, monkeypatch, tm
         "content": ("build an expense tracker cli tool in python: a storage "
                     "module using sqlite, a monthly report module, and the "
                     "cli entrypoint. include unit tests for every module"),
-        "mode": "simple", "cwd": str(tmp_path)})
+        "mode": "simple", "context": "split", "cwd": str(tmp_path)})
     assert r.status_code == 200
     assert called["n"] == 1
     # pure DOC tasks still stay off the pipeline
@@ -152,6 +152,6 @@ def test_pure_doc_task_still_vetoed(app_client, monkeypatch, tmp_path):
                       json={"title": "t", "cwd": str(tmp_path)}).json()["id"]
     r = client.post(f"/api/chat/sessions/{sid}/message", json={
         "content": "write a jira ticket describing the rate limiting work",
-        "mode": "simple", "cwd": str(tmp_path)})
+        "mode": "simple", "context": "split", "cwd": str(tmp_path)})
     assert r.status_code == 200
     assert "ok" in r.text

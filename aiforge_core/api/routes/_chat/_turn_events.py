@@ -365,7 +365,9 @@ def _finalize_produce_turn(session_id, cwd, prompt, final_text, steps, awaiting,
         pass
     if not path["driver"]:
         run.finish()
-    elif path.get("handed_off"):
+    elif path.get("handed_off") or path.get("pipeline_returned"):
+        # (pipeline_returned: the driver finished the run already in its own
+        # teardown — or never ran one, and nothing else would end it.)
         # The driver persisted the turn and handed it back once the answer was
         # out; only its Learner still runs (under the team run lock), so end
         # the run now that the answer and `done` are published.

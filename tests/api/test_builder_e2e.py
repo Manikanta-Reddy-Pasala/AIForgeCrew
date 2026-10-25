@@ -20,6 +20,9 @@ def app_client(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_MEMORY_BACKEND", "sqlite")
     monkeypatch.setenv("AIFORGE_MEMORY_DB_PATH", str(tmp_path / "memory.db"))
     monkeypatch.setenv("AIFORGE_JOBS_DISABLE", "1")
+    # The stubbed model answers in the text ACTION protocol; native tool
+    # calling (the default) would go around the stub to the model server.
+    monkeypatch.setenv("AIFORGE_CHAT_TOOL_PROTOCOL", "text")
     monkeypatch.setenv("AIFORGE_CHAT_CTX_REPOMAP", "0")
     monkeypatch.setenv("AIFORGE_BUILDER_ELABORATE", "0")   # keep body verbatim
     import aiforge_core.config.env as envmod
