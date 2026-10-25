@@ -101,9 +101,27 @@ def test_publish_after_finish_is_dropped():
     run.finish()
     run.publish({"type": "thought", "text": "late"})   # ignored
     q = run.subscribe()
-    # Only the sentinel — no late event leaked into the buffer.
+    # Only the closing done (a run always ends on one) and the sentinel — no
+    # late event leaked into the buffer.
+    assert q.get_nowait() == {"type": "done"}
     assert q.get_nowait() is cr._SENTINEL
     assert q.empty()
+
+
+def test_finish_adds_one_done_only_when_none_was_sent():
+    run = cr.start(104)
+    q = run.subscribe()
+    run.publish({"type": "done"})
+    run.finish()
+    run.finish()                      # idempotent: still one done
+    got = []
+    while not q.empty():
+        got.append(q.get_nowait())
+    assert [e for e in got if e is not cr._SENTINEL] == [{"type": "done"}]
+    run2 = cr.start(105)
+    q2 = run2.subscribe()
+    run2.finish()                     # ended with no done: one is added
+    assert q2.get_nowait() == {"type": "done"}
 
 
 def test_iter_subscription_yields_until_sentinel():
