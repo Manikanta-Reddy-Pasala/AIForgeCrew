@@ -11,3 +11,7 @@ from __future__ import annotations
 import os
 
 os.environ.setdefault("AIFORGE_LLM_MAX_RPM", "0")
+# The log cleanup never runs on its own schedule in a test process: an API
+# test boots the app, and an operator's exported AIFORGE_CONFIG_DIR would
+# point it at the live logs.
+os.environ.setdefault("AIFORGE_LOG_CLEANUP", "0")

@@ -154,6 +154,9 @@ def _schedule_llm_summary(middle, complete_fn, run_key, gen: int,
         # The previous slice's summary is still being written and this one
         # cancels it: fold that slice in, or nothing would ever summarise it.
         middle = _UNSUMMARISED.get(run_key, []) + middle
+        # Bounded: the summary prompt keeps a head and a tail of it anyway.
+        while len(middle) > 1 and sum(len(_text_of(m)) for m in middle) > 200_000:
+            middle = middle[1:]
     _UNSUMMARISED[run_key] = middle
     while len(_UNSUMMARISED) > 64:
         _UNSUMMARISED.pop(next(iter(_UNSUMMARISED)))
@@ -461,6 +464,10 @@ def _pin_goal(sys_text: str, convo: list[dict], pin: "str | None" = None) -> str
 
 
 _TASK_HEAD = "ORIGINAL TASK (stay on this until it's fully done + verified):"
+_PIN_PART = re.compile(
+    r"\n(?:KEEP IN VIEW:|LATER INSTRUCTIONS|FILES CHANGED SO FAR:|TARGETS — |"
+    r"REPOSITORIES IN THIS CHAT|GIT TARGETS:|LESSONS FROM THIS CHAT|"
+    r"LONG AND MULTI-TASK WORK:)")
 
 
 def _pinned_task(text: str) -> str:
@@ -471,7 +478,10 @@ def _pinned_task(text: str) -> str:
     inner = m.group(0)[len(_GOAL_PIN_OPEN):-len(_GOAL_PIN_CLOSE)].strip()
     if not inner.startswith("ORIGINAL TASK"):
         return ""
-    return inner.split("\nKEEP IN VIEW:")[0].split("\nLATER INSTRUCTIONS")[0].strip()
+    # Only the task: the rest of that pin (instructions, files, targets,
+    # lessons) is re-read fresh by the new one.
+    cut = _PIN_PART.search(inner)
+    return (inner[:cut.start()] if cut else inner).strip()
 
 
 def _own_task_line(convo: list[dict]) -> str:
@@ -501,7 +511,18 @@ _PINNED_BLOCK = re.compile(
 
 
 def strip_pinned_blocks(text: str) -> str:
-    return _PINNED_BLOCK.sub("", text or "") if text else ""
+    """``text`` without turn-start copies of the pinned blocks. A pinned-goal
+    block is left whole: its blocks are the pin's own, and a cut there would
+    take its close marker with it."""
+    if not text:
+        return ""
+    out, at = [], 0
+    for m in _GOAL_RE.finditer(text):
+        out.append(_PINNED_BLOCK.sub("", text[at:m.start()]))
+        out.append(m.group(0))
+        at = m.end()
+    out.append(_PINNED_BLOCK.sub("", text[at:]))
+    return "".join(out)
 
 
 def _stripped_system(convo: list[dict]) -> str:

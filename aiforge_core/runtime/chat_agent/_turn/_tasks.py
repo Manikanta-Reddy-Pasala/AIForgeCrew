@@ -460,6 +460,10 @@ def turn_pin(st) -> str | None:
         parts.append(lessons)
     if not parts:
         return None
+    if any(b in "\n".join(parts) for b in ("TARGETS — ", "LESSONS FROM THIS CHAT",
+                                            "REPOSITORIES IN THIS CHAT")):
+        parts.append("(These blocks are current: an older copy elsewhere in "
+                     "the context is out of date.)")
     if not goal:
         # No task text (an image-only message): the compactor still pins the
         # request itself; this block carries what must not be lost with it.
@@ -501,7 +505,9 @@ def _lessons_block(st) -> str:
     them."""
     try:
         from aiforge_core.runtime import chat_lessons
-        return chat_lessons.block(st)
+        # Earlier turns' lessons only: this turn's failed approaches are in
+        # the handoff a restart writes (shown once, not twice).
+        return chat_lessons.block(getattr(st, "session_id", None))
     except Exception:  # noqa: BLE001
         return ""
 

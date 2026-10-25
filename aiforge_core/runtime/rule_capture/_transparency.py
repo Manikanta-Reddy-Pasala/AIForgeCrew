@@ -93,7 +93,20 @@ def list_captured(repo: str | None = None, session_id=None) -> list[dict]:
         log.debug("rule_capture.list_captured failed: %s", exc)
     if session_id is not None:
         with _LOCK:
-            out.extend(list(_SESSION_ITEMS.get(str(session_id), [])))
+            live = list(_SESSION_ITEMS.get(str(session_id), []))
+        out.extend(live)
+        # After a restart the chat's rules live only in its lessons file.
+        try:
+            from aiforge_core.runtime import chat_lessons
+            have = {it.get("id") for it in live}
+            for r in chat_lessons.rules(session_id):
+                if r.get("id") and r["id"] not in have:
+                    out.append({"id": r["id"], "category": "rule", "scope": "session",
+                                "canonical": r["text"], "session_id": str(session_id),
+                                "location": "session", "undone": False,
+                                "triggers": []})
+        except Exception:  # noqa: BLE001
+            pass
     return out
 
 
@@ -144,7 +157,12 @@ def undo(rid: str) -> bool:
     idx = _load_index()
     item = idx.get("items", {}).get(rid)
     if not item:
-        return False
+        # A chat rule kept only in its lessons file (after a restart).
+        try:
+            from aiforge_core.runtime import chat_lessons
+            return chat_lessons.drop_rule_id(rid)
+        except Exception:  # noqa: BLE001
+            return False
     _clear_applied_flags(item)                 # gate re-enabled
     _remove_storage(item)
     with _LOCK, _file_lock(_index_path()):

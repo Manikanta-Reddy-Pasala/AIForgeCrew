@@ -410,7 +410,10 @@ def reset_context(st) -> bool:
                                render_board(st.board))
         fresh = [convo[0], note_msg, _note.ack()]
     else:
-        sys_text = _pin_goal(_stripped_system(convo), convo, turn_pin(st))
+        from .._context._compaction import strip_pinned_blocks
+        _pin = turn_pin(st)
+        _base = _stripped_system(convo)
+        sys_text = _pin_goal(strip_pinned_blocks(_base) if _pin else _base, convo, _pin)
         fresh = [{"role": "system", "content": (sys_text + "\n\n" + block).strip()}]
         pin_board(fresh, st.board)
     fresh.append({"role": "user", "content": _reset_message(st)})

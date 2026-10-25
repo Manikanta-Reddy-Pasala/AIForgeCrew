@@ -48,9 +48,8 @@ _STRONG = (
     r"|you (?:forgot|missed|broke|ignored|skipped|deleted|overwrote|"
     r"didn'?t (?:listen|read|follow|run|check|test)|did not (?:listen|read|follow|run|check|test)|"
     r"were (?:told|asked)|should(?:n'?t| not)(?: have)?)\b"
-    r"|i (?:already )?(?:told|asked) you"
-    r"|(?:same|that) (?:mistake|error) again|again (?:the )?same (?:mistake|error)"
-    r"|why did you")
+    r"|i (?:already )?told you"
+    r"|(?:same|that) (?:mistake|error) again|again (?:the )?same (?:mistake|error)")
 _CORRECTION = re.compile(
     r"\b(?:" + _STRONG +
     r"|^\s*no[,.!]+ (?:not|that'?s|it'?s|wrong|don'?t|stop)"
@@ -58,6 +57,8 @@ _CORRECTION = re.compile(
     r"commit|committing|push|pushing|delete|deleting|modify|modifying|rewrite|"
     r"rewriting|guess|guessing)\b"
     r"|not (?:like that|that one|this one)"
+    r"|why did you (?:delete|remove|change|edit|break|touch|overwrite|revert|commit|push)"
+    r"|i (?:already )?asked you"
     r")", re.I | re.M)
 #: The subset that goes to the PROJECT's lessons (every later chat): only an
 #: unmistakable "you got it wrong", never a one-off "don't commit yet".
@@ -151,7 +152,23 @@ def is_strong_correction(text: str) -> bool:
     return bool(_STRONG_RE.search(_users_words(text or "")[:4000]))
 
 
-def note_rule(session_id, text: str) -> None:
+def drop_after_turn(session_id, turn: int) -> None:
+    """The chat was cut back to ``turn`` user messages (edit-and-resend): the
+    corrections made in the turns that are gone are dropped too."""
+    if session_id is None:
+        return
+    try:
+        with _LOCK:
+            data = _load(session_id)
+            data["corrections"] = [c for c in data["corrections"]
+                                   if not (isinstance(c.get("turn"), int)
+                                           and c["turn"] > turn)]
+            _save(session_id, data)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("lessons write failed (session=%s): %s", session_id, exc)
+
+
+def note_rule(session_id, text: str, rid: "str | None" = None) -> None:
     """A rule the user set for this chat (rule capture, scope "session"):
     the in-process list is gone on a restart, this file is not."""
     t = _flat(text, _TEXT_CHARS)
@@ -161,11 +178,51 @@ def note_rule(session_id, text: str) -> None:
         with _LOCK:
             data = _load(session_id)
             items = [r for r in data["rules"] if r.get("text") != t]
-            items.append({"text": t, "at": int(time.time())})
+            items.append({"text": t, "id": rid, "at": int(time.time())})
             data["rules"] = items[-MAX_RULES:]
             _save(session_id, data)
     except Exception as exc:  # noqa: BLE001
         log.debug("lessons write failed (session=%s): %s", session_id, exc)
+
+
+def rules(session_id) -> list:
+    """The chat's kept rules (``{"text", "id"}``), for the rules list after a
+    restart emptied the in-process one."""
+    return list(lessons(session_id).get("rules") or [])
+
+
+def drop_rule_id(rid: str) -> bool:
+    """Undo a kept rule by its capture id, whichever chat holds it. True when
+    one was removed."""
+    if not rid:
+        return False
+    from aiforge_core.runtime import repo_ident
+    base = os.path.join(repo_ident.chat_scratch_root())
+    hit = False
+    try:
+        names = os.listdir(base)
+    except OSError:
+        names = []
+    for name in names:
+        if not name.startswith("session-"):
+            continue
+        sid = name[len("session-"):]
+        try:
+            with _LOCK:
+                data = _load(sid)
+                keep = [r for r in data["rules"] if r.get("id") != rid]
+                if len(keep) != len(data["rules"]):
+                    data["rules"] = keep
+                    _save(sid, data)
+                    hit = True
+        except Exception:  # noqa: BLE001
+            continue
+    for sid, data in list(_MEM.items()):
+        keep = [r for r in data.get("rules") or [] if r.get("id") != rid]
+        if len(keep) != len(data.get("rules") or []):
+            data["rules"] = keep
+            hit = True
+    return hit
 
 
 def drop_rule(session_id, text: str) -> None:
@@ -308,8 +365,9 @@ def render(data: dict, live_failed=(), earlier=()) -> str:
     earlier = [c for c in earlier or () if c.get("text") not in have][-MAX_PROJECT:]
     if not corr and not failed and not earlier and not rules:
         return ""
-    head = (f"{MARK} — the user already corrected you on these, or they were "
-            "tried and did not work. They still hold: do not repeat them.")
+    head = (f"{MARK} — the user's corrections and instructions so far, and "
+            "what was tried and did not work. Do not repeat these mistakes; a "
+            "newer message from the user overrides an older line here.")
     lines: list = []
     for c in earlier:
         lines.append(f'- in an earlier chat on this project the user said: "{c["text"]}"')
@@ -385,10 +443,10 @@ def forget(session_id) -> None:
             os.remove(_path(session_id))
         except OSError:
             pass
-        if repo:
+        before = project_lessons(repo) if repo else []
+        items = [c for c in before if c.get("session") != str(session_id)]
+        if repo and len(items) != len(before):
             # What this chat taught the project goes with it.
-            items = [c for c in project_lessons(repo)
-                     if c.get("session") != str(session_id)]
             try:
                 from aiforge_core.config import _atomic
                 _atomic.write_text(_project_path(repo), json.dumps(items, indent=1))
@@ -398,6 +456,7 @@ def forget(session_id) -> None:
 
 
 __all__ = ["MARK", "block", "enabled", "forget", "is_correction", "lessons",
-           "drop_rule", "is_strong_correction", "note_correction", "note_failed",
+           "drop_after_turn", "drop_rule", "drop_rule_id", "is_strong_correction",
+           "rules", "note_correction", "note_failed",
            "note_rule", "project_lessons",
            "remember_in_project", "render"]

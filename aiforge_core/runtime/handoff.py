@@ -148,7 +148,8 @@ def build_chat(st) -> dict:
 
 def without_pinned(h: dict) -> dict:
     """The record without what the pinned task above it already holds
-    (steers, targets, repositories): a restart note shows each once."""
+    (steers, targets, repositories): a restart note shows each once. The
+    failed approaches stay here: the pin lists only earlier turns' ones."""
     return {k: v for k, v in h.items() if k not in ("steers", "targets", "repos")}
 
 

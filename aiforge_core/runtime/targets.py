@@ -224,8 +224,8 @@ _LOOSE = re.compile(r"\b(?:but|except|apart|similar|roughly|approximately|partly
                     r"partial|some of)\b", re.I)
 # A pasted test log is not an expected output ("Expected: 3 / Received: 4").
 _TEST_LOG = re.compile(r"(?m)^\s*(?:Received|Actual|at\s+\S+\s*\(|Traceback|File \")")
-#: A short unfenced payload ("expected output: 42", a 3-line table) is kept
-#: when it is the paragraph right under (or after) a bare cue, up to this size.
+#: A short unfenced payload (a 3-line table, "42") is kept when it is the
+#: paragraph right under a bare cue line ("expected output:"), up to this size.
 _SHORT_MAX = 2000
 _PROSE_LINE = re.compile(r"(?:\S+\s+){2,}\S*[.!?]\s*$")
 
@@ -322,7 +322,10 @@ _REPLACE_CUE = re.compile(
     r"\b(?:actually|instead|updated|corrected|revised|replaced?)\b[^\n]{0,40}"
     r"\b(?:expected|target|output|result|response|data)\b"
     r"|\b(?:expected|target)\b[^\n]{0,40}\b(?:is now|has changed|changed to)\b"
-    r"|\buse this (?:output|result|response|data)? ?instead\b", re.I)
+    r"|\buse this (?:output|result|response|data)? ?instead\b"
+    r"|^\s*no[,.!]*\s+(?:the |that'?s not the )?(?:expected|target|right|correct)\b"
+    r"|\b(?:wrong|correct|right) (?:expected|target) (?:output|result|response|data)\b",
+    re.I | re.M)
 
 
 def _replaces(rows, label: str, fresh: set, replace: bool):
@@ -361,7 +364,9 @@ def _store(session_id, rows, label: str, body: str, turn: int | None,
         fname = f"{hit['id']}.v{n}.{ext}"
         row = hit
     else:
-        tid = f"target-{len(rows) + 1}"
+        nums = [int(m.group(1)) for r in rows
+                for m in [re.fullmatch(r"target-(\d+)", str(r.get("id") or ""))] if m]
+        tid = f"target-{max(nums, default=0) + 1}"   # unique even with gaps
         fname = f"{tid}.{ext}"
         row = {"id": tid, "label": label, "versions": [],
                "turn": turn if turn is not None else len(rows) + 1}
@@ -414,6 +419,29 @@ def _capture(session_id, text: str, turn: int | None = None) -> builtins.list[di
             out.append(row)
     _save_index(session_id, rows)
     return out
+
+
+def discard(session_id, made) -> int:
+    """Remove the targets a refused steer stored: ``made`` is a list of
+    ``(id, versions before)``; only rows it CREATED (versions before = None)
+    go — a new version of an older target stays (the target was real).
+    Returns how many were removed."""
+    gone = {tid for tid, prev in made or () if prev is None}
+    if not enabled() or session_id is None or not gone:
+        return 0
+    with _lock(session_id):
+        rows = _read(_index(session_id), for_write=True)
+        keep = [r for r in rows if r.get("id") not in gone]
+        for r in rows:
+            if r.get("id") in gone:
+                for p in r.get("versions") or []:
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+        if len(keep) != len(rows):
+            _save_index(session_id, keep)
+        return len(rows) - len(keep)
 
 
 def note_compare(session_id, target_id: str, ok: bool, evidence: str) -> None:

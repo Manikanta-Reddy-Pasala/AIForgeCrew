@@ -118,7 +118,9 @@ def restart_with_handoff(st) -> bool:
         if _note.enabled():
             _restart_into_note(st, old, h, oid, pin)
         else:
-            sys_text = C._pin_goal(C._stripped_system(old), old, pin)
+            base = C._stripped_system(old)
+            sys_text = C._pin_goal(C.strip_pinned_blocks(base) if pin else base,
+                                   old, pin)
             st.convo[:] = [{**old[0], "content": sys_text},
                            {"role": "user", "content": handoff.render(h, oid)}]
         if getattr(st, "board", None):

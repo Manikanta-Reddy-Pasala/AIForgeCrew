@@ -36,7 +36,16 @@ def _apply_edit_resend(session, session_id, body) -> None:
             if _sha and _own_scratch:
                 from aiforge_core.runtime import checkpoints as _ckpt
                 _ckpt.restore(_cwd_er, _sha)
+            _kept_users = sum(
+                1 for r in chat_store.get_messages(session_id)
+                if r.get("role") == "user" and int(r.get("id") or 0)
+                < int(body.edit_from_message_id))
             chat_store.delete_messages_from(session_id, body.edit_from_message_id)
+            try:      # corrections made in the erased turns go with them
+                from aiforge_core.runtime import chat_lessons
+                chat_lessons.drop_after_turn(session_id, _kept_users)
+            except Exception:  # noqa: BLE001
+                pass
         except Exception as _exc:  # noqa: BLE001 — edit-resend must fail open
             _af_log.warning("edit-resend failed (session=%s msg=%s): %s",
                             session_id, body.edit_from_message_id, _exc)

@@ -41,26 +41,40 @@ def test_old_files_in_log_folders_go_recent_ones_stay(root):
     assert out["files_deleted"] == 2
 
 
-def test_live_ndjson_drops_lines_older_than_the_window(root):
-    (root / "logs").mkdir()
-    p = root / "logs" / "orchestrator-doer.ndjson"
-    old_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 20 * DAY))
-    new_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - DAY))
-    p.write_text(json.dumps({"ts": old_ts, "m": "old"}) + "\n"
-                 + json.dumps({"ts": new_ts, "m": "new"}) + "\n")
-    R.sweep_files(time.time() - 15 * DAY, root)
-    text = p.read_text()
-    assert '"old"' not in text and '"new"' in text
-
-
-def test_live_plain_log_over_the_cap_keeps_its_newest_half(root, monkeypatch):
+def test_app_logs_are_emptied_or_cut_never_deleted(root, monkeypatch):
     monkeypatch.setenv("AIFORGE_LOG_MAX_MB", "1")
-    p = root / "scheduler.log"
-    p.write_bytes(b"".join(b"line %07d\n" % i for i in range(200_000)))   # ~2.6 MB
-    R.sweep_files(time.time() - 15 * DAY, root)
-    data = p.read_bytes()
+    (root / "logs").mkdir()
+    idle = root / "logs" / "orchestrator-old.ndjson"
+    idle.write_text('{"ts": "x"}\n' * 100)
+    _old(idle, 20)
+    big = root / "logs" / "orchestrator-doer.ndjson"
+    big.write_bytes(b"".join(b"line %07d\n" % i for i in range(200_000)))   # ~2.6 MB
+    out = R.sweep_files(time.time() - 15 * DAY, root)
+    assert idle.exists() and idle.stat().st_size == 0
+    data = big.read_bytes()
     assert len(data) <= 512 * 1024 and data.endswith(b"line 0199999\n")
     assert data.startswith(b"line ")                 # cut at a line boundary
+    assert out["files_trimmed"] == 2 and out["files_deleted"] == 0
+
+
+def test_an_append_handle_keeps_writing_after_a_cut(root, monkeypatch):
+    monkeypatch.setenv("AIFORGE_LOG_MAX_MB", "1")
+    (root / "logs").mkdir()
+    p = root / "logs" / "orchestrator-chat.ndjson"
+    with open(p, "ab") as fh:
+        fh.write(b"x" * 2_000_000 + b"\n")
+        fh.flush()
+        R.sweep_files(time.time() - 15 * DAY, root)
+        fh.write(b"after\n")
+    assert p.read_bytes().endswith(b"after\n") and b"\0" not in p.read_bytes()
+
+
+def test_top_level_files_of_other_programs_are_left_alone(root):
+    p = root / "scheduler.log"
+    p.write_bytes(b"x" * 100)
+    _old(p, 99)
+    R.sweep_files(time.time() - 15 * DAY, root)
+    assert p.read_bytes() == b"x" * 100
 
 
 def test_user_project_files_are_never_touched(root):
@@ -100,6 +114,8 @@ def test_old_turns_lose_evidence_and_bulky_output_but_keep_text(tmp_path, monkey
     con.close()
     out = R.sweep_chat_db(time.time() - 15 * DAY, path)
     assert out["messages_slimmed"] == 1
+    again = R.sweep_chat_db(time.time() - 15 * DAY, path)
+    assert again["messages_slimmed"] == 0               # each message once
     con = sqlite3.connect(path)
     rows = dict(con.execute("SELECT id, steps FROM chat_messages").fetchall())
     texts = dict(con.execute("SELECT id, content FROM chat_messages").fetchall())

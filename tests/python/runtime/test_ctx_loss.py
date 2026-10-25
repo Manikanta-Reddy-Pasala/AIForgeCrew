@@ -126,6 +126,9 @@ def test_failed_approaches_outlive_the_turn_and_live_ones_show():
     L.note_failed(7, ["pip install foo -> 404"])
     b = L.block(_st(failed_approaches=["npm ci -> EACCES"]))
     assert "pip install foo -> 404" in b and "npm ci -> EACCES" in b
+    from aiforge_core.runtime.chat_agent._turn._tasks import turn_pin
+    pin = turn_pin(_st(failed_approaches=["npm ci -> EACCES"]))
+    assert "pip install foo -> 404" in pin and "npm ci -> EACCES" not in pin
 
 
 def test_block_is_bounded():
@@ -145,6 +148,8 @@ def test_temporary_chat_keeps_lessons_in_memory_only(monkeypatch):
 def test_only_strong_corrections_go_to_the_project():
     assert L.is_strong_correction("that's the wrong repo")
     assert not L.is_strong_correction("don't commit yet")
+    assert not L.is_strong_correction("why did you pick sqlite?")
+    assert not L.is_correction("why did you pick sqlite?")
 
 
 def test_session_rules_are_kept_apart_and_undone():
@@ -298,3 +303,51 @@ def test_corrections_reach_the_rule_classifier():
     from aiforge_core.runtime.capture_cues import has_cue
     assert has_cue("that's the wrong repo")
     assert has_cue("I told you to use pnpm")
+
+
+def test_legacy_strip_keeps_the_goal_pin_whole():
+    from aiforge_core.runtime.chat_agent._context._compaction import (
+        _GOAL_PIN_CLOSE, _GOAL_PIN_OPEN, strip_pinned_blocks)
+    text = ("SYS\n\nTARGETS — data the user gave old\n- target-1 — verified: no\n\n"
+            + _GOAL_PIN_OPEN + "\nORIGINAL TASK (x):\ndo it\nTARGETS — data the "
+            "user gave\n- target-1 — verified: yes\n" + _GOAL_PIN_CLOSE)
+    out = strip_pinned_blocks(text)
+    assert out.count(_GOAL_PIN_CLOSE) == 1 and "verified: yes" in out
+    assert "verified: no" not in out
+
+
+def test_an_earlier_pin_gives_only_its_task():
+    from aiforge_core.runtime.chat_agent._context._compaction import (
+        _GOAL_PIN_CLOSE, _GOAL_PIN_OPEN, _pinned_task)
+    text = (_GOAL_PIN_OPEN + "\nORIGINAL TASK (stay):\nbuild it\nFILES CHANGED SO FAR: a.py"
+            "\nTARGETS — data the user gave\n- t\n" + _GOAL_PIN_CLOSE)
+    assert _pinned_task(text) == "ORIGINAL TASK (stay):\nbuild it"
+
+
+def test_no_the_expected_output_is_replaces_the_target():
+    T.capture(5, "expected output:\n```\n" + JSON + "\n```")
+    T.capture(5, "no, the expected output is:\n```\nnew one\n```")
+    rows = T.list(5)
+    assert len(rows) == 1 and len(rows[0]["versions"]) == 2
+
+
+def test_discard_takes_back_only_new_rows():
+    T.capture(5, "expected output:\n```\nA\n```")
+    made = [(r["id"], None) for r in T.capture(5, "expected output:\n```\nB\n```")]
+    assert T.discard(5, made) == 1 and [r["id"] for r in T.list(5)] == ["target-1"]
+    T.capture(5, "expected output:\n```\nC\n```")
+    assert [r["id"] for r in T.list(5)] == ["target-1", "target-2"]
+
+
+def test_edit_resend_drops_corrections_of_erased_turns():
+    L.note_correction(7, "don't touch web/", turn=2)
+    L.note_correction(7, "that's the wrong repo", turn=4)
+    L.drop_after_turn(7, 3)
+    b = L.block(7)
+    assert "don't touch web/" in b and "wrong repo" not in b
+
+
+def test_a_kept_rule_can_be_undone_by_id_after_a_restart():
+    L.note_rule(7, "use tabs", "rid-1")
+    assert [r["id"] for r in L.rules(7)] == ["rid-1"]
+    assert L.drop_rule_id("rid-1") and L.rules(7) == []

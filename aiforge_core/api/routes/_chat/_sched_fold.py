@@ -128,6 +128,10 @@ def _fold_into_scheduled_agent(session_id: int, text: str, body=None):
 def _push_with_target(session_id, text) -> bool:
     """Queue ``text`` for the scheduled run, its target stored first."""
     from aiforge_core.runtime import chat_interject
-    from ._message import _capture_steer_target
-    _capture_steer_target(session_id, text)
-    return chat_interject.push(session_id, text, require_steerable=True)
+    from ._message import _capture_steer_target, _discard_targets, _note_correction
+    made = _capture_steer_target(session_id, text)
+    if not chat_interject.push(session_id, text, require_steerable=True):
+        _discard_targets(session_id, made)
+        return False
+    _note_correction(session_id, text, steer=True)
+    return True
