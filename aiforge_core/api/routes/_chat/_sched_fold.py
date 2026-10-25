@@ -110,6 +110,8 @@ def _fold_into_scheduled_agent(session_id: int, text: str, body=None):
         return None
     elif chat_interject.push(session_id, text, require_steerable=True):
         chat_store.add_message(session_id, "user", text)
+        from ._message import _capture_steer_target
+        _capture_steer_target(session_id, text)
         note = ("Noted. The scheduled run keeps going and will take this "
                 "in. It is not stopped.")
     else:

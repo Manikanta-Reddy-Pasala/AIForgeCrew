@@ -579,12 +579,25 @@ def run_chat_agent(
             pass
         if _carry_on:
             try:
+                # An unfinished turn (a question back, a stop, a failure) is
+                # carried too: the next message is usually the answer or the
+                # correction, and it must see what was tried. Dropping it left
+                # only the final texts, so the same mistake was made again.
                 chat_transcript.save(session_id, _asked, st.convo,
-                                     answer=None if _unfinished else _answer,
+                                     answer=(_unfinished_answer(_answer)
+                                             if _unfinished else _answer),
                                      role=role)
             except Exception:  # noqa: BLE001 — keeping it never breaks a turn
                 pass
         ctx_ratio.unbind(_ratio_tok)
+
+
+def _unfinished_answer(answer) -> str:
+    """The closing line a carried unfinished turn ends on: its own text (the
+    question, the stop note) marked as unfinished."""
+    text = str(answer or "").strip()
+    head = "(this turn ended before the work was finished)"
+    return f"{text}\n\n{head}" if text else head
 
 
 class _NoActionLog:
@@ -669,10 +682,21 @@ def _drive(st, cwd, role, complete_fn, session_id, builder, strict_finish):
                 cmd_jobs.end_turn(_jobs_turn)
         except Exception:  # noqa: BLE001
             pass
+        # The approaches this turn found not to work outlive it: the next
+        # turn (and every condense of it) is told not to repeat them.
+        try:
+            from aiforge_core.runtime import chat_lessons
+            chat_lessons.note_failed(getattr(st, "session_id", None),
+                                     getattr(st, "failed_approaches", None))
+        except Exception:  # noqa: BLE001
+            pass
         # Nor does its condense summary / test-gaming baseline.
         try:
             from ._context._compaction import release_run
-            release_run(getattr(st, "compact_key", None))
+            _kept = release_run(getattr(st, "compact_key", None),
+                                getattr(st, "convo", None))
+            if _kept is not None:
+                st.convo = _kept
         except Exception:  # noqa: BLE001
             pass
         try:

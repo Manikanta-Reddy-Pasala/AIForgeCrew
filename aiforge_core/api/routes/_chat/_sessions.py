@@ -490,6 +490,11 @@ def chat_session_delete(session_id: int) -> None:
             pass
     from aiforge_core.runtime import chat_transcript
     chat_transcript.drop(session_id)
+    try:
+        from aiforge_core.runtime import chat_lessons
+        chat_lessons.forget(session_id)
+    except Exception:  # noqa: BLE001
+        pass
     from aiforge_core.runtime import proc_logs
     proc_logs.forget_session(session_id)
     # Grab the isolated-workspace path BEFORE deleting the row so we can rm -rf

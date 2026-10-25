@@ -111,14 +111,18 @@ def restart_with_handoff(st) -> bool:
                               if m.get("role") == "user"
                               and not C._text_of(m).strip().startswith("OBSERVATION:")
                               and not C._is_harness_note(C._text_of(m).strip())), "")
+        from ._tasks import turn_pin
+        pin = turn_pin(st)
         if _note.enabled():
-            _restart_into_note(st, old, h, oid)
+            _restart_into_note(st, old, h, oid, pin)
         else:
-            sys_text = C._pin_goal(C._stripped_system(old), old)
+            sys_text = C._pin_goal(C._stripped_system(old), old, pin)
             st.convo[:] = [{**old[0], "content": sys_text},
                            {"role": "user", "content": handoff.render(h, oid)}]
         if getattr(st, "board", None):
             pin_board(st.convo, st.board)
+        from ._limits import _repin_turn_note
+        _repin_turn_note(st)       # the message's rules, skills and repo notes
         seen = getattr(st, "read_sigs_seen", None)
         if hasattr(seen, "clear"):
             seen.clear()
@@ -132,7 +136,7 @@ def restart_with_handoff(st) -> bool:
         return False
 
 
-def _restart_into_note(st, old: list, h: dict, oid) -> None:
+def _restart_into_note(st, old: list, h: dict, oid, pin=None) -> None:
     """The restarted context with the system message UNTOUCHED: the pinned
     goal, the board and the handoff go in the note right after it (see
     ``_context._note``), so the model server's prompt cache is not thrown away
@@ -146,7 +150,7 @@ def _restart_into_note(st, old: list, h: dict, oid) -> None:
     gen = C._block_gen(C._prior_block(prior_src)) + 1
     work = [old[0]] + old[_note.prefix_len(old):]
     prior_goal = C._GOAL_RE.search(prior_src) or C._GOAL_RE.search(sys_text)
-    goal_block = C._pin_goal(prior_goal.group(0) if prior_goal else "", work)
+    goal_block = C._pin_goal(prior_goal.group(0) if prior_goal else "", work, pin)
     head = (f"[HANDOFF (condense #{gen}) — the earlier attempt went in circles, "
             "so this is a fresh start. It holds what is known; do not repeat "
             "what failed.]")
@@ -158,11 +162,18 @@ def _restart_into_note(st, old: list, h: dict, oid) -> None:
 def _condense(st) -> None:
     try:
         from .._context import _compact_convo
+        from ._batch import _unread_batch_msgs
+        from ._limits import _after_condense
+        from ._tasks import turn_pin
+        before = len(st.convo)
+        unread = _unread_batch_msgs(st)
         new = _compact_convo(st.convo, role=st.role, force=True, keep_recent=8,
+                             keep_min=unread, pin=turn_pin(st),
                              run_key=getattr(st, "compact_key", None),
                              handoff_st=st)
         if new is not st.convo and len(new) < len(st.convo):
             st.convo[:] = new
+            _after_condense(st, unread, before)
     except Exception:  # noqa: BLE001 — a failed condense still nudges
         pass
 

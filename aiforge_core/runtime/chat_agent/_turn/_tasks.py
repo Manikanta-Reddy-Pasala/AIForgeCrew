@@ -422,22 +422,23 @@ def turn_pin(st) -> str | None:
     the user sent while it ran, and the files it has changed so far. None
     when the turn has no task text (the compactor then pins its own)."""
     goal = (getattr(st, "goal", "") or "").strip()
-    if not goal:
-        return None
-    from .._native_prompt import is_plan_execution
-    limit = 4000 if is_plan_execution(goal) else 1200
-    if getattr(st, "item_resets", 0):
-        # After a reset between board items the goal is the ONLY copy of the
-        # request (its message is gone): keep it whole.
-        limit = max(limit, 8000)
-    parts = ["ORIGINAL TASK (stay on this until it's fully done + verified):",
-             goal[:limit]]
+    parts: list = []
+    if goal:
+        from .._native_prompt import is_plan_execution
+        limit = 4000 if is_plan_execution(goal) else 1200
+        if getattr(st, "item_resets", 0):
+            # After a reset between board items the goal is the ONLY copy of
+            # the request (its message is gone): keep it whole.
+            limit = max(limit, 8000)
+        parts += ["ORIGINAL TASK (stay on this until it's fully done + verified):",
+                  goal[:limit]]
     if (getattr(st, "unlimited", False) and not getattr(st, "readonly_mode", False)
             and not getattr(st, "builder", None)):
         # Only a run long enough to be condensed gets this reminder.
         from .._prompt_text import LONG_RUN_RULE
         parts.append(LONG_RUN_RULE)
-    steers = [" ".join(s.split())[:300] for s in getattr(st, "steers", [])][-5:]
+    steers = [" ".join(s.split())[:_STEER_CHARS]
+              for s in getattr(st, "steers", [])][-_STEER_KEEP:]
     if steers:
         parts.append("LATER INSTRUCTIONS FROM THE USER (newest last; they "
                      "override the task where they differ):")
@@ -453,7 +454,56 @@ def turn_pin(st) -> str | None:
             parts.append(tb)
     except Exception:  # noqa: BLE001 — the pin stands without the targets
         pass
+    parts += [b for b in _repo_blocks(st) if b]
+    lessons = _lessons_block(st)
+    if lessons:
+        parts.append(lessons)
+    if not parts:
+        return None
+    if not goal:
+        # No task text (an image-only message): the compactor still pins the
+        # request itself; this block carries what must not be lost with it.
+        parts.insert(0, "KEEP IN VIEW:")
     return "\n".join(parts)
+
+
+#: Mid-run instructions the pin keeps, and how much of each.
+_STEER_KEEP = 8
+_STEER_CHARS = 600
+
+
+def _repo_blocks(st) -> list:
+    """The chat's recorded repositories (WORK IN / READ ONLY) and git targets,
+    read NOW: the turn note holds the turn-start copy, and roles recorded
+    mid-turn (plan_progress slug=repos) were never shown after a condense."""
+    sid = getattr(st, "session_id", None)
+    if sid is None:
+        return []
+    out = []
+    try:
+        from aiforge_core.runtime import repo_roles
+        note = repo_roles.prompt_note(sid, getattr(st, "cwd", None))
+        if note.startswith("REPOSITORIES IN THIS CHAT"):
+            out.append(note)
+    except Exception:  # noqa: BLE001 — the pin stands without them
+        pass
+    try:
+        from aiforge_core.runtime import git_target
+        out.append(git_target.prompt_note(sid))
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def _lessons_block(st) -> str:
+    """Mistakes this chat already made and the user's corrections, kept
+    verbatim (runtime/chat_lessons) so a condense never lets the model repeat
+    them."""
+    try:
+        from aiforge_core.runtime import chat_lessons
+        return chat_lessons.block(st)
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 #: Reminders in a row a FINAL gets while task-board items are still open.

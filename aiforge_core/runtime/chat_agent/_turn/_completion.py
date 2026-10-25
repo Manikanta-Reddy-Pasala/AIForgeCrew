@@ -90,7 +90,19 @@ _llm_issue = retry_policy.llm_issue
 _outage_waitable = retry_policy.outage_waitable
 
 
-def _shrink_for_retry(convo, role, complete_fn, session_id) -> bool:
+def _turn_kw(st, convo) -> dict:
+    """What the turn's own condense passes (pinned task with its targets,
+    steers and lessons; run key; handoff state) when ``convo`` is the turn's
+    history. Without it a retry condense pinned the first user message it
+    found — in a carried transcript an OLDER request — and no targets."""
+    if st is None or convo is not getattr(st, "convo", None):
+        return {}
+    from ._tasks import turn_pin
+    return {"pin": turn_pin(st), "run_key": getattr(st, "compact_key", None),
+            "handoff_st": st}
+
+
+def _shrink_for_retry(convo, role, complete_fn, session_id, st=None) -> bool:
     """Condense the history in place so the next send is a SMALLER request.
     Returns True when the prompt got shorter. A model that cannot start
     answering a big prompt, or a gateway that times it out, is often fixed by
@@ -98,11 +110,22 @@ def _shrink_for_retry(convo, role, complete_fn, session_id) -> bool:
     try:
         from .._context import _compact_convo
         before = sum(len(str(m.get("content") or "")) for m in convo)
+        n_before = len(convo)
+        kw = _turn_kw(st, convo)
+        unread = 0
+        if kw:
+            from ._batch import _unread_batch_msgs
+            unread = _unread_batch_msgs(st)
+            kw["keep_min"] = unread
         new = _compact_convo(convo, role=role, complete_fn=complete_fn,
-                             session_id=session_id, force=True, keep_recent=6)
+                             session_id=session_id, force=True, keep_recent=6,
+                             **kw)
         after = sum(len(str(m.get("content") or "")) for m in new)
         if new is not convo and after < before:
             convo[:] = new
+            if kw:
+                from ._limits import _after_condense
+                _after_condense(st, unread, n_before)
             return True
     except Exception:  # noqa: BLE001 — a failed shrink just retries as is
         pass
@@ -128,7 +151,7 @@ def _shrink_after_overflow(st, complete_fn, role, convo, session_id) -> str:
                 return "restarted from a handoff"
         except Exception:  # noqa: BLE001 — fall back to the condense
             pass
-    if _shrink_for_retry(convo, role, complete_fn, session_id):
+    if _shrink_for_retry(convo, role, complete_fn, session_id, st):
         return "condensed the history"
     return ""
 
@@ -157,7 +180,7 @@ def _resize_after_overflow(st, complete_fn, role, convo, session_id, exc) -> str
                 st.convo = convo
         else:
             new = _compact_convo(convo, role=role, complete_fn=complete_fn,
-                                 session_id=session_id)
+                                 session_id=session_id, **_turn_kw(st, convo))
             if new is not convo:
                 convo[:] = new
     except Exception:  # noqa: BLE001
@@ -185,7 +208,7 @@ def _hooks(complete_fn, role, convo, session_id, st=None):
     return retry_policy.Hooks(
         call=lambda: _complete_cancellable(complete_fn, role, convo, session_id),
         cancelled=cancelled, pause=pause,
-        shrink=lambda: _shrink_for_retry(convo, role, complete_fn, session_id),
+        shrink=lambda: _shrink_for_retry(convo, role, complete_fn, session_id, st),
         on_overflow=lambda: _shrink_after_overflow(st, complete_fn, role, convo,
                                                    session_id),
         stopped=_CANCELLED,

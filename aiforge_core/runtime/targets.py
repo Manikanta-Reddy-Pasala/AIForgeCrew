@@ -41,6 +41,10 @@ _CUE = re.compile(
     r"|compare (?:with|against|to) this\b"
     r"|exactly (?:this|the following|these) (?P<n5>output|result|response|data|lines?|json)\b"
     r"|(?:prints?|outputs?|returns?) exactly\b"
+    r"|should (?:return|print|output|produce)\b"
+    r"|here (?:is|are) the expected (?P<n6>output|result|response|data)\b"
+    r"|(?:i (?:want|need|expect)) (?:this|the following|exactly this) (?P<n7>output|result|response|data)\b"
+    r"|^expected:"
     r"|set target:?(?:[ \t]+(?P<n3>[a-z][a-z0-9_-]*)(?=[ \t]*(?:[=:]|$)))?"
     r"|^target:(?:[ \t]*(?P<n4>[a-z][a-z0-9_-]*)(?=[ \t]*(?:[=:]|$)))?"
     r")", re.I | re.M)
@@ -178,7 +182,7 @@ def _sniff(text: str) -> str:
 
 
 def _label(m: re.Match) -> str:
-    for g in ("n1", "n2", "n3", "n4", "n5"):
+    for g in ("n1", "n2", "n3", "n4", "n5", "n6", "n7"):
         word = m.group(g)
         if word:
             word = word.lower()
@@ -204,8 +208,34 @@ def _tail_ok(text: str, m: re.Match, *, allow_period: bool = False,
         tail = tail.rstrip()[:-1]
     if _TAIL.fullmatch(tail) is not None:
         return True
+    # A note in brackets ("expected output (after the fix):") says WHEN the
+    # output holds, not that the match is loose: it does not hedge.
     return (fenced and _FENCED_TAIL.fullmatch(tail) is not None
-            and not _HEDGE.search(tail))
+            and not _HEDGE.search(_PAREN.sub(" ", tail)))
+
+
+_PAREN = re.compile(r"\([^()\n]*\)")
+#: A short unfenced payload ("expected output: 42", a 3-line table) is kept
+#: when it is the paragraph right under (or after) a bare cue, up to this size.
+_SHORT_MAX = 2000
+_PROSE_LINE = re.compile(r"(?:\S+\s+){2,}\S*[.!?]\s*$")
+
+
+def _short_payload(text: str, m: re.Match, region_end: int) -> str:
+    """The paragraph a bare cue introduces ("expected output:" then data),
+    when it is short data rather than an instruction: it ends at the first
+    blank line, holds no sentence-like line, and fits _SHORT_MAX. "" else."""
+    if _tail(text, m).strip(" \t:="):
+        return ""                    # the cue line goes on: not a bare cue
+    rest = text[m.end():region_end].lstrip(" \t:=")
+    if rest.startswith("\n"):
+        rest = rest[1:]
+    para = re.split(r"\n[ \t]*\n", rest, maxsplit=1)[0].rstrip()
+    if not para.strip() or len(para) > _SHORT_MAX:
+        return ""
+    if any(_PROSE_LINE.search(ln) for ln in para.splitlines()):
+        return ""
+    return para
 
 
 def _is_prose(rest: str) -> bool:
@@ -249,6 +279,13 @@ def _payloads(text: str) -> builtins.list[tuple[str, str]]:
             rest = text[m.end():region_end].lstrip(" \t:=\n")
         if len(rest) >= min_chars() and not _is_prose(rest):
             out.append((label, rest))
+            continue
+        short = _short_payload(text, m, region_end)
+        if short:
+            out.append((label, short))
+            continue
+        log.info("target cue %r had no payload it could keep (len %d)",
+                 m.group(0), len(rest))
     if not out and cues and fences:
         # the cue follows the payload: "```…```\nthat is the expected output."
         m = cues[0]
@@ -259,7 +296,51 @@ def _payloads(text: str) -> builtins.list[tuple[str, str]]:
     return out
 
 
-def _store(session_id, rows, label: str, body: str, turn: int | None) -> dict:
+_REPLACE_CUE = re.compile(
+    r"\b(?:actually|instead|updated?|new|corrected|correct|changed?|replace[sd]?|"
+    r"revised?|fixed)\b[^\n]{0,40}\b(?:expected|target|output|result|response|data)\b"
+    r"|\b(?:expected|target)\b[^\n]{0,40}\b(?:is now|has changed|changed)\b", re.I)
+#: Two bodies this similar (difflib ratio) are one target restated.
+_SIMILAR = 0.5
+
+
+def _body_of(row: dict) -> str:
+    try:
+        with open(str(row.get("path") or ""), encoding="utf-8",
+                  errors="replace") as fh:
+            return fh.read(200_000)
+    except OSError:
+        return ""
+
+
+def _replaces(rows, label: str, body: str, fresh: set, replace: bool):
+    """The stored row a new payload is a new version of, or None (a target of
+    its own). Only a row with the same label from an EARLIER message can be
+    replaced — two payloads in one message are two targets — and only when
+    the user says it replaces it, or the bodies are close enough to be the
+    same target restated. A second, different "expected output" used to
+    overwrite the first."""
+    cands = [r for r in rows if r.get("label") == label and id(r) not in fresh]
+    if not cands:
+        return None
+    if replace and len(cands) == 1:
+        return cands[0]
+    import difflib
+    best, score = None, 0.0
+    for r in cands:
+        sm = difflib.SequenceMatcher(None, _body_of(r)[:20_000], body[:20_000],
+                                     autojunk=False)
+        if sm.real_quick_ratio() < _SIMILAR or sm.quick_ratio() < _SIMILAR:
+            continue
+        ratio = sm.ratio()
+        if ratio > score:
+            best, score = r, ratio
+    return best if score >= _SIMILAR else None
+
+
+def _store(session_id, rows, label: str, body: str, turn: int | None,
+           fresh: "set | None" = None, replace: bool = False) -> dict:
+    fresh = set() if fresh is None else fresh
     body = body.strip("\n") + "\n"
     raw = body.encode("utf-8")
     truncated = len(raw) > MAX_BYTES
@@ -269,9 +350,10 @@ def _store(session_id, rows, label: str, body: str, turn: int | None) -> dict:
             body += "\n"
         raw = body.encode("utf-8")
     sha = hashlib.sha256(raw).hexdigest()
-    hit = next((r for r in rows if r.get("label") == label), None)
-    if hit is not None and hit.get("sha256") == sha:
-        return hit
+    same = next((r for r in rows if r.get("sha256") == sha), None)
+    if same is not None:
+        return same
+    hit = _replaces(rows, label, body, fresh, replace)
     ext = _sniff(body)
     if hit is not None:
         n = len(hit.get("versions") or []) + 1
@@ -304,8 +386,11 @@ def capture(session_id, text: str, turn: int | None = None) -> builtins.list[dic
         return []
     rows = _read(_index(session_id), for_write=True)
     out = []
+    replace = bool(_REPLACE_CUE.search(text))
+    fresh: set = set()
     for label, body in found:
-        row = _store(session_id, rows, label, body, turn)
+        row = _store(session_id, rows, label, body, turn, fresh, replace)
+        fresh.add(id(row))
         if row not in out:
             out.append(row)
     _save_index(session_id, rows)

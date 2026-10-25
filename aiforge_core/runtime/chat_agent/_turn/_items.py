@@ -415,6 +415,9 @@ def reset_context(st) -> bool:
         pin_board(fresh, st.board)
     fresh.append({"role": "user", "content": _reset_message(st)})
     st.convo = fresh
+    # The message's rules, skills and repo notes were in the cleared history.
+    from ._limits import _repin_turn_note
+    _repin_turn_note(st)
     st.read_sigs_seen.clear()
     st.batch_mark = len(fresh)
     _cancel_early_reads(st)

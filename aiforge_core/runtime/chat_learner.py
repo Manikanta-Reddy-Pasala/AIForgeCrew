@@ -41,17 +41,47 @@ def _transcript(prompt: str, final_text: str, steps: list | None,
     and the assistant's answer — so the learner distils real outcomes."""
     parts = [f"USER:\n{(prompt or '').strip()}"]
     tool_lines: list[str] = []
+    failed: list[str] = []
     for s in steps or []:
         if isinstance(s, dict) and s.get("type") == "tool":
             name = s.get("name") or "tool"
             res = s.get("result")
             ok = res.get("ok") if isinstance(res, dict) else None
-            tool_lines.append(f"- {name} ok={ok}")
+            arg, err = _arg_err(s.get("args"), res)
+            line = f"- {name}({arg}) ok={ok}" if arg else f"- {name} ok={ok}"
+            if ok is False:
+                # A failure carries its error: a gotcha cannot be distilled
+                # from "ok=False" alone.
+                line += f" — {err}" if err else ""
+                failed.append(line)
+            tool_lines.append(line)
     if tool_lines:
-        parts.append("ACTIONS:\n" + "\n".join(tool_lines[:40]))
+        shown = tool_lines[:40]
+        shown += [f for f in failed if f not in shown][:10]
+        parts.append("ACTIONS:\n" + "\n".join(shown))
+    try:
+        from aiforge_core.runtime import chat_lessons
+        if chat_lessons.is_correction(prompt or ""):
+            parts.insert(1, "NOTE: the user is correcting an earlier answer of the "
+                            "assistant — record the correction as a lesson.")
+    except Exception:  # noqa: BLE001
+        pass
     if final_text:
         parts.append(f"ASSISTANT:\n{final_text.strip()}")
     return ("\n\n".join(parts))[:limit]
+
+
+def _arg_err(args, res) -> tuple:
+    """A short argument and the first error line of a tool step ("" each when
+    there is none)."""
+    try:
+        from aiforge_core.runtime import action_log
+        arg = action_log._clip(action_log._arg(args), 80) if args else ""
+        err = action_log._clip(action_log._first_error(res), 200) \
+            if isinstance(res, dict) else ""
+        return arg, err
+    except Exception:  # noqa: BLE001
+        return "", ""
 
 
 def _extract_json(raw: str) -> str:

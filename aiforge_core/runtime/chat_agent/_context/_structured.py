@@ -25,6 +25,7 @@ FIELDS = {
     "files_changed": "list",
     "failing_tests_errors": "list",
     "decisions": "list",
+    "user_corrections": "list",
     "failed_approaches": "list",
     "next_step": "str",
 }
@@ -44,6 +45,8 @@ _ALIASES = {
     "failed": "failed_approaches", "failed_attempts": "failed_approaches",
     "dead_ends": "failed_approaches", "tried_and_failed": "failed_approaches",
     "next": "next_step", "next_steps": "next_step", "next_action": "next_step",
+    "corrections": "user_corrections", "user_correction": "user_corrections",
+    "feedback": "user_corrections", "user_feedback": "user_corrections",
 }
 
 _MAX_ITEMS = 10
@@ -57,6 +60,7 @@ _LABELS = {
     "files_changed": "FILES CHANGED",
     "failing_tests_errors": "FAILING TESTS / ERRORS (verbatim)",
     "decisions": "DECISIONS",
+    "user_corrections": "THE USER CORRECTED YOU (still holds)",
     "failed_approaches": "FAILED APPROACHES (do not repeat)",
     "next_step": "NEXT STEP",
 }
@@ -74,6 +78,8 @@ SYSTEM = (
     ' "failing_tests_errors": ["failing tests and error messages, copied '
     'VERBATIM"],\n'
     ' "decisions": ["choices made, with the reason"],\n'
+    ' "user_corrections": ["each time the user said you were wrong or told '
+    'you what not to do, in the user\'s own words"],\n'
     ' "failed_approaches": ["what was tried and did not work, so it is not '
     'repeated"],\n'
     ' "next_step": "the single next action"}\n'

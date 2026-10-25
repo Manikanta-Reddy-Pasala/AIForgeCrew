@@ -114,11 +114,24 @@ def build_chat(st) -> dict:
         from aiforge_core.runtime import targets
         sid = getattr(st, "session_id", None)
         if sid is not None:
-            tg = [f"{r['id']} ({r['label']}): "
-                  + ("matched" if r.get("verified") else "not yet compared")
+            tg = [f"{r['id']} ({r['label']}, {r.get('path') or ''}): {targets._state(r)}"
                   for r in targets.list(sid)]
     except Exception:  # noqa: BLE001
         tg = []
+    # What the user said while the run worked, and the repositories it may
+    # change: a restart used to drop both (only the goal and board stayed).
+    steers = [" ".join(str(t).split())[:300]
+              for t in (getattr(st, "steers", None) or [])][-5:]
+    repos = ""
+    try:
+        from aiforge_core.runtime import repo_roles
+        sid = getattr(st, "session_id", None)
+        if sid is not None:
+            note = repo_roles.prompt_note(sid, getattr(st, "cwd", None))
+            if note.startswith("REPOSITORIES IN THIS CHAT"):
+                repos = note
+    except Exception:  # noqa: BLE001
+        repos = ""
     return {
         **({"cleanup": cleanup} if cleanup else {}),
         "goal": str(getattr(st, "goal", "") or "").strip()[:1200],
@@ -126,6 +139,8 @@ def build_chat(st) -> dict:
         "open": open_[:12],
         "files": [f for f in files][-20:],
         **({"targets": tg} if tg else {}),
+        **({"steers": steers} if steers else {}),
+        **({"repos": repos} if repos else {}),
         "failed": list(getattr(st, "failed_approaches", []) or [])[-MAX_FAILED:],
         "error": err,
     }
@@ -176,8 +191,10 @@ def render(h: dict, offload_id: "str | None" = None,
     if h.get("files"):
         lines.append("FILES CHANGED SO FAR: " + ", ".join(h["files"]))
     if h.get("targets"):
-        lines.append("targets: " + "; ".join(h["targets"])
-                     + " — files pinned in TARGETS block")
+        lines.append("TARGETS (data the user gave to match; read the file, "
+                     "compare with diff): " + "; ".join(h["targets"]))
+    if h.get("repos"):
+        lines.append(h["repos"])
     if h.get("failed"):
         lines.append("ALREADY TRIED AND FAILED — choose something different:\n"
                      + render_failed(h["failed"]))
@@ -193,7 +210,7 @@ def render(h: dict, offload_id: "str | None" = None,
     if h.get("steers"):
         lines.append("THE USER REDIRECTED THE WORK (these override the goal "
                      "above where they differ):\n"
-                     + "\n".join(f"- {t}" for t in h["steers"][-3:]))
+                     + "\n".join(f"- {t}" for t in h["steers"][-5:]))
     nxt = ("NEXT (only if the new message continues this work): " if reference
            else "NEXT: ")
     if h.get("open"):

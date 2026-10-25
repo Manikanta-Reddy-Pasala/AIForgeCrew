@@ -347,7 +347,7 @@ def _append_context_blocks(add, cwd, last_user, messages, session_id, role, cave
 
 def _prepend_priority_blocks(sys_msg, asks, prefs, rules, analyze_mode,
                              plan_mode, builder, *, recipes_text: str = "",
-                             targets_text: str = ""):
+                             targets_text: str = "", lessons_text: str = ""):
     """Prepend the highest-priority prompt blocks in drop order (multi-ask
     checklist, standing prefs, user targets, project recipes, user rule book,
     analyze/plan banner, builder charter) — each pushed to the FRONT so it
@@ -367,6 +367,8 @@ def _prepend_priority_blocks(sys_msg, asks, prefs, rules, analyze_mode,
         sys_msg = prefs + "\n\n" + sys_msg
     if targets_text:                # user-given targets — must be matched, on disk
         sys_msg = targets_text + "\n\n" + sys_msg
+    if lessons_text:                # the user's corrections + failed approaches
+        sys_msg = lessons_text + "\n\n" + sys_msg
     if recipes_text:                # project recipes — fixed commands
         sys_msg = recipes_text + "\n\n" + sys_msg
     if rules:                       # user rule book first — highest priority

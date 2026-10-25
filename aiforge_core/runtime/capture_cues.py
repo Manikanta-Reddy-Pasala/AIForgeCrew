@@ -23,7 +23,10 @@ _CUE_RE = re.compile(
     r"my (?:preference|setting|convention|default)|"
     r"don'?t|do not|auto[-\s]?approve|auto[-\s]?commit|"
     r"without asking|stop asking|no need to ask|commit directly|"
-    r"for (?:all|every|each|this|the)"
+    r"for (?:all|every|each|this|the)|"
+    # a correction states a rule too ("that's the wrong repo, use X")
+    r"wrong|incorrect|instead of|should(?:n'?t| not)|"
+    r"i (?:told|said|asked) you|not what i (?:asked|wanted|meant)"
     r")\b",
     re.IGNORECASE)
 

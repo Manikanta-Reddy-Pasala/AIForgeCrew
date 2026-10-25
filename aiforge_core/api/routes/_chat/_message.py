@@ -154,6 +154,7 @@ def _message_turn_locked(session_id: int, body: _SessionMsgBody,
             _targets.capture(session_id, body.content, turn=_turn_no)
     except Exception as exc:  # noqa: BLE001 — never block the turn on target storage
         _af_log.warning("target capture failed: %s", exc)
+    _note_correction(session_id, body.content, session)
     # Provisional title now (instant), upgraded to a model-generated one after
     # the turn (see _produce). _fresh marks a still-unnamed session.
     _fresh_title = (session.get("title") or _NEW_CHAT) == _NEW_CHAT
@@ -491,6 +492,8 @@ def chat_session_steer(session_id: int, body: _SteerBody) -> dict:
     # cannot be steered) must not kill anything behind the user's back.
     stopped = _stop_commands_for(session_id, body.content) if queued else 0
     if queued:
+        _capture_steer_target(session_id, body.content)
+        _note_correction(session_id, body.content)
         out = {"queued": True, "session_id": session_id}
         if stopped:
             out["commands_stopped"] = stopped
@@ -500,6 +503,57 @@ def chat_session_steer(session_id: int, body: _SteerBody) -> dict:
         return {"queued": False, "session_id": session_id, "reason": "empty content"}
     return {"queued": False, "unsupported": True, "session_id": session_id,
             "reason": "steering not available for this run"}
+
+
+def _note_correction(session_id: int, content: str, session=None) -> None:
+    """The user's message corrects the agent ("that's the wrong repo", "don't
+    touch the tests"): keep it for the rest of the chat (runtime/chat_lessons)
+    and hand it to project memory for later chats. It used to survive only
+    as a 120-char "earlier ask" until the next condense or two."""
+    try:
+        from aiforge_core.runtime import chat_lessons, chat_store
+        if not chat_lessons.enabled() or not chat_lessons.is_correction(content):
+            return
+        rows = chat_store.get_messages(session_id)
+        said = ""
+        for r in reversed(rows):
+            if r.get("role") == "assistant" and str(r.get("content") or "").strip():
+                said = str(r.get("content"))
+                break
+        if not said:
+            return          # nothing was said yet: an instruction, not a correction
+        turn = sum(1 for r in rows if r.get("role") == "user")
+        entry = chat_lessons.note_correction(session_id, content, said, turn)
+        if entry is None:
+            return
+        try:
+            from aiforge_core.runtime import rule_capture
+            sess = session if session is not None else chat_store.get_session(session_id)
+            repo = rule_capture.repo_key((sess or {}).get("cwd") or "") or None
+        except Exception:  # noqa: BLE001
+            repo = None
+        _spawn(lambda: chat_lessons.remember_in_project(session_id, entry, repo),
+               name="aiforge-lesson-memory")
+    except Exception as exc:  # noqa: BLE001 — never block a turn on lessons
+        _af_log.debug("correction not kept: %s", exc)
+
+
+def _capture_steer_target(session_id: int, content: str) -> None:
+    """A target pasted while the run works ("expected output: ```…```") is
+    stored like one in a new message; the loop puts it on the board when it
+    drains the steer. Before, it lived only in the steer text, cut to 300
+    chars in the pinned task."""
+    try:
+        from aiforge_core.runtime import chat_private as _cp_t
+        from aiforge_core.runtime import chat_store
+        from aiforge_core.runtime import targets as _targets
+        if _cp_t.is_temporary(session_id):
+            return
+        turn = sum(1 for r in chat_store.get_messages(session_id)
+                   if r.get("role") == "user")
+        _targets.capture(session_id, content, turn=turn)
+    except Exception as exc:  # noqa: BLE001 — never block a steer on storage
+        _af_log.warning("steer target capture failed: %s", exc)
 
 
 class _ApproveBody(BaseModel):

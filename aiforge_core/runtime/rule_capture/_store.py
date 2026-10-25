@@ -56,6 +56,15 @@ def _session_add(session_id, item: dict) -> None:
         return
     with _LOCK:
         _SESSION_ITEMS.setdefault(str(session_id), []).append(item)
+    # The in-process list is gone on a restart; the chat's lessons file keeps
+    # the rule for the rest of the chat (runtime/chat_lessons).
+    try:
+        from aiforge_core.runtime import chat_lessons
+        if item.get("canonical"):
+            chat_lessons.note_correction(session_id,
+                                         "rule for this chat: " + item["canonical"])
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _new_item(rid: str, c: dict, repo, session_id) -> dict:

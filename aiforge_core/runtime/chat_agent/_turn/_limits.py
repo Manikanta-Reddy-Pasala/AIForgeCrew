@@ -2,6 +2,7 @@
 builder nudge, steering, condensing, and the stuck-output guard."""
 from __future__ import annotations
 
+import re
 import time
 
 from .._context import (
@@ -169,6 +170,8 @@ def _drain_steering(st, session_id):
             from aiforge_core.runtime import chat_steer
             _steers = [t for k, t in _items if k != "reject"]
             st.steers.extend(_steers)
+            if _steers:
+                _board_new_targets(st, session_id)
             from . import _steer_reply
             _steer_reply.on_drain(st, _steers)
             _rejects = [t for k, t in _items if k == "reject"]
@@ -188,6 +191,23 @@ def _drain_steering(st, session_id):
             for _k, _t in _items:
                 yield chat_steer.steer_event(_t)
             yield from _board_events
+
+
+def _board_new_targets(st, session_id) -> None:
+    """A target that came with a steer (stored by the steer route) gets its
+    enforced board item now, as one in the turn's own message did at start."""
+    try:
+        from aiforge_core.runtime import targets as _targets
+        items = _targets.board_items(session_id)
+    except Exception:  # noqa: BLE001 — a target store miss never blocks the turn
+        return
+    if not items:
+        return
+    if getattr(st, "board", None) is None:
+        st.board = {}
+    for slug, item in items.items():
+        st.board.setdefault(slug, item)
+    st.board_used = True
 
 
 def _revise_board(st, steers, events):
@@ -395,7 +415,7 @@ def _repin_turn_note(st) -> None:
     """The message's prompt blocks (rules, skills, checklist) were in a note
     in the history; a condense that folded it away puts them in the condense
     note, so they still apply for the rest of the turn."""
-    text = getattr(st, "turn_note_text", "")
+    text = _without_pinned_blocks(getattr(st, "turn_note_text", ""))
     if not text:
         return
     from .._context import _note
@@ -406,6 +426,19 @@ def _repin_turn_note(st) -> None:
     if not at or text in (st.convo[at].get("content") or ""):
         return
     st.convo[at] = {**st.convo[at], "content": st.convo[at]["content"] + "\n\n" + text}
+
+
+# Blocks the pinned task (turn_pin) re-reads at every condense. The turn note
+# holds their turn-start copy; put back next to the fresh one it would
+# contradict it (a target shown unverified after its compare passed).
+_PINNED_BLOCK = re.compile(
+    r"(?m)^(?:TARGETS — data the user gave|REPOSITORIES IN THIS CHAT|GIT TARGETS:"
+    r"|LESSONS FROM THIS CHAT)"
+    r".*?(?=\n[ \t]*\n|\n<<END_AIFORGE_TURN_CONTEXT>>|\Z)", re.S)
+
+
+def _without_pinned_blocks(text: str) -> str:
+    return _PINNED_BLOCK.sub("", text or "") if text else ""
 
 
 def _stuck_output_guard(st, out):

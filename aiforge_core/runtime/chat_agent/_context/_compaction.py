@@ -134,6 +134,10 @@ def _summary_role() -> str:
     return os.environ.get("AIFORGE_COMPACT_ROLE", "").strip() or "learner"
 
 
+#: run key -> the dropped messages whose summary is not in the note yet.
+_UNSUMMARISED: dict = {}
+
+
 def _schedule_llm_summary(middle, complete_fn, run_key, gen: int,
                           prior: str = "") -> None:
     """Start the model summary of condense ``gen`` and return at once.
@@ -145,7 +149,15 @@ def _schedule_llm_summary(middle, complete_fn, run_key, gen: int,
     """
     if not run_key or _compact_mode() != "llm" or not middle:
         return
-    msgs = _summary_messages(list(middle), prior)
+    middle = list(middle)
+    if _summary_bg.pending(run_key) is not None:
+        # The previous slice's summary is still being written and this one
+        # cancels it: fold that slice in, or nothing would ever summarise it.
+        middle = _UNSUMMARISED.get(run_key, []) + middle
+    _UNSUMMARISED[run_key] = middle
+    while len(_UNSUMMARISED) > 64:
+        _UNSUMMARISED.pop(next(iter(_UNSUMMARISED)))
+    msgs = _summary_messages(middle, prior)
     role = _summary_role()
     # A reply that holds no typed record is stored as "": the breadcrumb stands.
     _summary_bg.schedule(
@@ -194,13 +206,23 @@ def _splice_ready_summary(convo: list[dict], run_key) -> list[dict]:
     summary = _summary_bg.take(run_key, _block_gen(block))
     if not summary:
         return convo
+    _UNSUMMARISED.pop(run_key, None)
     new = text.replace(block, _with_summary(block, summary), 1)
     return convo[:at] + [{**convo[at], "content": new}] + convo[at + 1:]
 
 
-def release_run(run_key) -> None:
-    """The run ended: drop its summary, finished or not."""
+def release_run(run_key, convo: "list | None" = None) -> "list | None":
+    """The run ended: drop its summary, finished or not. A summary that
+    landed after the last step is first put into ``convo`` (the history the
+    next message carries); returns the history to keep."""
+    if convo is not None:
+        try:
+            convo = _splice_ready_summary(convo, run_key)
+        except Exception:  # noqa: BLE001
+            pass
     _summary_bg.release(run_key)
+    _UNSUMMARISED.pop(run_key, None)
+    return convo
 
 
 def _tail_fraction(frac: float = 0.5) -> float:
@@ -286,7 +308,7 @@ def _middle_signals(middle: list[dict]) -> tuple[list[str], list[str], list[str]
             from .._turn._convo import strip_turn_note
             ask = strip_turn_note(content).strip()
             if ask:
-                user_asks.append(ask.replace("\n", " ")[:120])
+                user_asks.append(ask.replace("\n", " ")[:240])
     return tools, user_asks, finals
 
 
@@ -370,7 +392,7 @@ def _summary_tail(user_asks: list, finals: list,
     bounded."""
     bits: list[str] = []
     if user_asks:
-        bits.append("Earlier asks: " + " · ".join(user_asks[-6:]))
+        bits.append("Earlier asks: " + " · ".join(user_asks[-8:]))
     if finals:
         bits.append("Earlier outcomes: " + " · ".join(finals[-4:]))
     edited, read, errors = facts or ([], [], [])
@@ -417,24 +439,36 @@ def _pin_goal(sys_text: str, convo: list[dict], pin: "str | None" = None) -> str
     ``pin`` is the loop's own text for the block (this turn's task, later
     instructions, files changed); it replaces the previous one each time."""
     if pin is not None:
+        if not pin.startswith("ORIGINAL TASK"):
+            # The loop had no task text, only what to keep in view (targets,
+            # steers, lessons): the request is found here, as without a pin.
+            own = _own_goal(convo)
+            if own:
+                pin = ("ORIGINAL TASK (stay on this until it's fully done + "
+                       "verified):\n" + own[:1200] + "\n" + pin)
         sys_text = re.sub(r"\s*" + re.escape(_GOAL_PIN_OPEN) + r".*?"
                           + re.escape(_GOAL_PIN_CLOSE), "", sys_text, flags=re.S)
         return (sys_text + "\n\n" + _GOAL_PIN_OPEN + "\n" + pin + "\n"
                 + _GOAL_PIN_CLOSE).strip()
     if _GOAL_PIN_OPEN in sys_text:
         return sys_text
+    goal = _own_goal(convo)
+    if not goal:
+        return sys_text
+    return (sys_text + "\n\n" + _GOAL_PIN_OPEN + "\nORIGINAL TASK (stay on this "
+            "until it's fully done + verified):\n" + goal[:1200] + "\n"
+            + _GOAL_PIN_CLOSE).strip()
+
+
+def _own_goal(convo: list[dict]) -> str:
+    """The first user request in ``convo`` (harness notes skipped)."""
     goal = next((_text_of(m).strip() for m in convo[1:]
                  if m.get("role") == "user" and _text_of(m).strip()
                  and not _text_of(m).strip().startswith("OBSERVATION:")
                  and not _text_of(m).strip().startswith("[action log")), "")
     goal = goal.split("\n\n---\n[Interpreted request")[0].strip() or goal
     from .._turn._convo import strip_turn_note
-    goal = strip_turn_note(goal).strip()
-    if not goal:
-        return sys_text
-    return (sys_text + "\n\n" + _GOAL_PIN_OPEN + "\nORIGINAL TASK (stay on this "
-            "until it's fully done + verified):\n" + goal[:1200] + "\n"
-            + _GOAL_PIN_CLOSE).strip()
+    return strip_turn_note(goal).strip()
 
 
 def _stripped_system(convo: list[dict]) -> str:

@@ -156,7 +156,17 @@ def compact_saved(session_id, role: str = "chat") -> dict:
         _tblock = targets.block(session_id)
     except Exception:  # noqa: BLE001
         _tblock = ""
-    pin = ((latest[:2000] or "") + "\n\n" + _tblock).strip() or None
+    # And what the chat learned the hard way, and the repositories it works in.
+    _extra = []
+    try:
+        from aiforge_core.runtime import chat_lessons, repo_roles
+        _extra.append(chat_lessons.block(session_id))
+        _rr = repo_roles.prompt_note(session_id)
+        if _rr.startswith("REPOSITORIES IN THIS CHAT"):
+            _extra.append(_rr)
+    except Exception:  # noqa: BLE001
+        pass
+    pin = "\n\n".join(p for p in [latest[:2000], _tblock, *_extra] if p).strip() or None
     new = _compact_convo(convo, keep_recent=KEEP_RECENT, role=role,
                          session_id=session_id, force=True, run_key=key,
                          pin=pin)
