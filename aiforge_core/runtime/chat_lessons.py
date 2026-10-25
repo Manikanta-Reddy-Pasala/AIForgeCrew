@@ -160,10 +160,21 @@ def drop_after_turn(session_id, turn: int) -> None:
     try:
         with _LOCK:
             data = _load(session_id)
+            gone = {c.get("text") for c in data["corrections"]
+                    if isinstance(c.get("turn"), int) and c["turn"] > turn}
             data["corrections"] = [c for c in data["corrections"]
-                                   if not (isinstance(c.get("turn"), int)
-                                           and c["turn"] > turn)]
+                                   if c.get("text") not in gone]
             _save(session_id, data)
+        repo = _repo_of(session_id)
+        if gone and repo:
+            # The project's copy of an erased correction goes too.
+            from aiforge_core.config import _atomic
+            with _LOCK:
+                before = project_lessons(repo)
+                items = [c for c in before if not (
+                    c.get("session") == str(session_id) and c.get("text") in gone)]
+                if len(items) != len(before):
+                    _atomic.write_text(_project_path(repo), json.dumps(items, indent=1))
     except Exception as exc:  # noqa: BLE001
         log.debug("lessons write failed (session=%s): %s", session_id, exc)
 
@@ -191,38 +202,58 @@ def rules(session_id) -> list:
     return list(lessons(session_id).get("rules") or [])
 
 
-def drop_rule_id(rid: str) -> bool:
-    """Undo a kept rule by its capture id, whichever chat holds it. True when
-    one was removed."""
-    if not rid:
-        return False
+def _scratch_sessions() -> list:
     from aiforge_core.runtime import repo_ident
-    base = os.path.join(repo_ident.chat_scratch_root())
-    hit = False
     try:
-        names = os.listdir(base)
+        names = os.listdir(repo_ident.chat_scratch_root())
     except OSError:
-        names = []
-    for name in names:
-        if not name.startswith("session-"):
-            continue
-        sid = name[len("session-"):]
-        try:
-            with _LOCK:
-                data = _load(sid)
-                keep = [r for r in data["rules"] if r.get("id") != rid]
-                if len(keep) != len(data["rules"]):
-                    data["rules"] = keep
-                    _save(sid, data)
-                    hit = True
-        except Exception:  # noqa: BLE001
-            continue
-    for sid, data in list(_MEM.items()):
-        keep = [r for r in data.get("rules") or [] if r.get("id") != rid]
-        if len(keep) != len(data.get("rules") or []):
-            data["rules"] = keep
-            hit = True
+        return []
+    return [n[len("session-"):] for n in names if n.startswith("session-")]
+
+
+def find_rule(rid: str) -> "dict | None":
+    """A kept rule by its capture id: ``{"text", "id", "session_id",
+    "applied_flags"}``, or None."""
+    if not rid:
+        return None
+    for sid in list(_MEM) + _scratch_sessions():
+        for r in lessons(sid).get("rules") or []:
+            if r.get("id") == rid:
+                return {**r, "session_id": str(sid)}
+    return None
+
+
+def drop_rule_id(rid: str) -> "dict | None":
+    """Undo a kept rule by its capture id, whichever chat holds it. Returns
+    the removed entry (with its ``applied_flags``) or None."""
+    hit = find_rule(rid)
+    if hit is None:
+        return None
+    try:
+        with _LOCK:
+            data = _load(hit["session_id"])
+            data["rules"] = [r for r in data["rules"] if r.get("id") != rid]
+            _save(hit["session_id"], data)
+    except Exception:  # noqa: BLE001
+        return None
     return hit
+
+
+def add_rule_flag(session_id, rid: str, entry: dict) -> None:
+    """A gate flag the rule ``rid`` turned on, kept with the rule so an undo
+    after a restart turns it off again."""
+    if session_id is None or not rid:
+        return
+    try:
+        with _LOCK:
+            data = _load(session_id)
+            for r in data["rules"]:
+                if r.get("id") == rid:
+                    r.setdefault("applied_flags", []).append(entry)
+                    _save(session_id, data)
+                    return
+    except Exception as exc:  # noqa: BLE001
+        log.debug("lessons write failed (session=%s): %s", session_id, exc)
 
 
 def drop_rule(session_id, text: str) -> None:
@@ -254,8 +285,11 @@ def note_correction(session_id, text: str, said: str = "",
         with _LOCK:
             data = _load(session_id)
             prev = next((c for c in data["corrections"] if c.get("text") == words), None)
-            if prev is not None and not entry["said"]:
-                entry["said"] = prev.get("said") or ""
+            if prev is not None:
+                if not entry["said"]:
+                    entry["said"] = prev.get("said") or ""
+                if isinstance(prev.get("turn"), int):
+                    entry["turn"] = prev["turn"]     # first said then: edit-resend
             items = [c for c in data["corrections"] if c.get("text") != words]
             items.append(entry)
             data["corrections"] = items[-MAX_CORRECTIONS:]
@@ -456,7 +490,8 @@ def forget(session_id) -> None:
 
 
 __all__ = ["MARK", "block", "enabled", "forget", "is_correction", "lessons",
-           "drop_after_turn", "drop_rule", "drop_rule_id", "is_strong_correction",
+           "add_rule_flag", "drop_after_turn", "drop_rule", "drop_rule_id",
+           "find_rule", "is_strong_correction",
            "rules", "note_correction", "note_failed",
            "note_rule", "project_lessons",
            "remember_in_project", "render"]

@@ -417,7 +417,7 @@ def _shown_path(path: str, cwd) -> str:
         return path
 
 
-def turn_pin(st) -> str | None:
+def turn_pin(st, live_failed: bool = False) -> str | None:
     """What a condense must keep in view: this turn's task, the instructions
     the user sent while it ran, and the files it has changed so far. None
     when the turn has no task text (the compactor then pins its own)."""
@@ -455,7 +455,7 @@ def turn_pin(st) -> str | None:
     except Exception:  # noqa: BLE001 — the pin stands without the targets
         pass
     parts += [b for b in _repo_blocks(st) if b]
-    lessons = _lessons_block(st)
+    lessons = _lessons_block(st, live_failed)
     if lessons:
         parts.append(lessons)
     if not parts:
@@ -499,15 +499,17 @@ def _repo_blocks(st) -> list:
     return out
 
 
-def _lessons_block(st) -> str:
+def _lessons_block(st, live_failed: bool = False) -> str:
     """Mistakes this chat already made and the user's corrections, kept
     verbatim (runtime/chat_lessons) so a condense never lets the model repeat
-    them."""
+    them. ``live_failed`` adds this turn's failed approaches: for a rebuild
+    that carries no handoff record of them (a board-item reset)."""
     try:
         from aiforge_core.runtime import chat_lessons
         # Earlier turns' lessons only: this turn's failed approaches are in
         # the handoff a restart writes (shown once, not twice).
-        return chat_lessons.block(getattr(st, "session_id", None))
+        return chat_lessons.block(st if live_failed
+                                  else getattr(st, "session_id", None))
     except Exception:  # noqa: BLE001
         return ""
 

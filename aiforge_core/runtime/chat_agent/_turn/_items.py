@@ -405,13 +405,13 @@ def reset_context(st) -> bool:
         # cache keeps its prefix) and the goal, the earlier condense record
         # (failed approaches, files, offload ids) and the board live in the note.
         from ._tasks import render_board
-        goal = _pin_goal("", convo, turn_pin(st)).strip()
+        goal = _pin_goal("", convo, turn_pin(st, live_failed=True)).strip()
         note_msg = _note.build(goal, prior.strip() if prior else "", block,
                                render_board(st.board))
         fresh = [convo[0], note_msg, _note.ack()]
     else:
         from .._context._compaction import strip_pinned_blocks
-        _pin = turn_pin(st)
+        _pin = turn_pin(st, live_failed=True)
         _base = _stripped_system(convo)
         sys_text = _pin_goal(strip_pinned_blocks(_base) if _pin else _base, convo, _pin)
         fresh = [{"role": "system", "content": (sys_text + "\n\n" + block).strip()}]

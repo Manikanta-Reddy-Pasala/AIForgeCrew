@@ -242,6 +242,7 @@ def _record_applied_flag(rule_id: str, name: str, scope: str,
             for it in items:
                 if it.get("id") == rule_id:
                     it.setdefault("applied_flags", []).append(entry)
+                    _flag_to_lessons(it.get("session_id"), rule_id, entry)
                     return
     with _LOCK, _file_lock(_index_path()):
         idx = _load_index()
@@ -249,6 +250,14 @@ def _record_applied_flag(rule_id: str, name: str, scope: str,
         if it is not None:
             it.setdefault("applied_flags", []).append(entry)
             _save_index(idx)
+
+
+def _flag_to_lessons(session_id, rule_id: str, entry: dict) -> None:
+    try:
+        from aiforge_core.runtime import chat_lessons
+        chat_lessons.add_rule_flag(session_id, rule_id, entry)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _clear_applied_flags(item: dict) -> None:

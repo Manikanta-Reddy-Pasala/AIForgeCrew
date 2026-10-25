@@ -69,6 +69,35 @@ def test_an_append_handle_keeps_writing_after_a_cut(root, monkeypatch):
     assert p.read_bytes().endswith(b"after\n") and b"\0" not in p.read_bytes()
 
 
+def test_other_files_in_the_log_folder_are_only_deleted_when_idle(root, monkeypatch):
+    monkeypatch.setenv("AIFORGE_LOG_MAX_MB", "1")
+    (root / "logs").mkdir()
+    idle = root / "logs" / "graph-runner.err"
+    idle.write_text("old")
+    _old(idle, 20)
+    busy = root / "logs" / "graphify-all.log"
+    busy.write_bytes(b"x" * 2_000_000)            # big but not ours: never cut
+    target = root / "elsewhere.ndjson"
+    target.write_bytes(b"y" * 2_000_000)
+    (root / "logs" / "orchestrator-link.ndjson").symlink_to(target)
+    R.sweep_files(time.time() - 15 * DAY, root)
+    assert not idle.exists()
+    assert busy.stat().st_size == 2_000_000 and target.stat().st_size == 2_000_000
+
+
+def test_a_replaced_database_starts_the_mark_over(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "days", lambda: 15)
+    path = str(tmp_path / "chat.db")
+    con = _db(path)
+    old = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 20 * DAY))
+    con.execute("INSERT INTO chat_messages VALUES (1, 1, 'assistant', 'a', ?, ?)",
+                (json.dumps([{"type": "turn_evidence", "evidence": {}}]), old))
+    con.commit()
+    con.close()
+    R._save_mark(path, 999)
+    assert R.sweep_chat_db(time.time() - 15 * DAY, path)["messages_slimmed"] == 1
+
+
 def test_top_level_files_of_other_programs_are_left_alone(root):
     p = root / "scheduler.log"
     p.write_bytes(b"x" * 100)

@@ -186,7 +186,7 @@ def _drain_steering(st, session_id):
                 _parts.append(note)
                 # After the revision, which rebuilds the board: a target that
                 # came with the message holds an enforced item of its own.
-                if _board_new_targets(st, session_id):
+                if _board_new_targets(st, session_id, _steers):
                     from ._tasks import board_items
                     _board_events[:] = [e for e in _board_events
                                         if e.get("type") != "subtasks"]
@@ -199,11 +199,17 @@ def _drain_steering(st, session_id):
             yield from _board_events
 
 
-def _board_new_targets(st, session_id) -> bool:
-    """A target that came with a steer (stored by the steer route) gets its
-    enforced board item now, as one in the turn's own message did at start."""
+def _board_new_targets(st, session_id, steers=()) -> bool:
+    """A target that came with a steer gets its enforced board item now, as
+    one in the turn's own message did at start. The steer's target is stored
+    here too: the steer route may not have stored it yet (a no-op if it has)."""
     try:
+        from aiforge_core.runtime import chat_private
         from aiforge_core.runtime import targets as _targets
+        if not chat_private.is_temporary(session_id):
+            for text in steers:
+                _targets.capture(session_id, text,
+                                 turn=getattr(st, "turn_no", None))
         items = _targets.board_items(session_id)
     except Exception:  # noqa: BLE001 — a target store miss never blocks the turn
         return False

@@ -486,19 +486,17 @@ def chat_session_steer(session_id: int, body: _SteerBody) -> dict:
     # Atomic test-and-set: push() itself checks steerability under its lock, so
     # there's no window between the check and the enqueue for a run-end clear()
     # to slip a stale steer into the next turn (CC3).
-    # A target the steer carries is stored BEFORE the steer is queued: the
-    # loop may drain it at once and boards only targets already on disk.
-    made = (_capture_steer_target(session_id, body.content)
-            if (body.content or "").strip() else [])
     queued = chat_interject.push(session_id, body.content, require_steerable=True)
-    if not queued:
-        _discard_targets(session_id, made)   # the steer went nowhere
     # "stop it" / "kill the build" ends the commands this run handed back to
     # the model now — not only when the agent next calls command_wait. Only
     # when the steer reached a run: a refused one (no run, blank, a run that
     # cannot be steered) must not kill anything behind the user's back.
     stopped = _stop_commands_for(session_id, body.content) if queued else 0
     if queued:
+        # Stored here for every kind of run; the chat loop also stores it when
+        # it drains the steer (whichever is first; the second is a no-op), so
+        # its board item cannot be missed.
+        _capture_steer_target(session_id, body.content)
         _note_correction(session_id, body.content, steer=True)
         out = {"queued": True, "session_id": session_id}
         if stopped:
@@ -546,17 +544,7 @@ def _note_correction(session_id: int, content: str, session=None, *,
         _af_log.debug("correction not kept: %s", exc)
 
 
-def _discard_targets(session_id: int, made) -> None:
-    """Take back targets a refused steer stored (only ones it created)."""
-    try:
-        if made:
-            from aiforge_core.runtime import targets as _targets
-            _targets.discard(session_id, made)
-    except Exception as exc:  # noqa: BLE001
-        _af_log.debug("steer targets not taken back: %s", exc)
-
-
-def _capture_steer_target(session_id: int, content: str) -> list:
+def _capture_steer_target(session_id: int, content: str) -> None:
     """A target pasted while the run works ("expected output: ```…```") is
     stored like one in a new message; the loop puts it on the board when it
     drains the steer. Before, it lived only in the steer text, cut to 300
@@ -566,7 +554,12 @@ def _capture_steer_target(session_id: int, content: str) -> list:
         from aiforge_core.runtime import chat_store
         from aiforge_core.runtime import targets as _targets
         if _cp_t.is_temporary(session_id):
-            return []
+            return
+        turn = sum(1 for r in chat_store.get_messages(session_id)
+                   if r.get("role") == "user")
+        _targets.capture(session_id, content, turn=turn)
+    except Exception as exc:  # noqa: BLE001 — never block a steer on storage
+        _af_log.warning("steer target capture failed: %s", exc)
         before = {r.get("id"): len(r.get("versions") or []) for r in _targets.list(session_id)}
         turn = sum(1 for r in chat_store.get_messages(session_id)
                    if r.get("role") == "user")

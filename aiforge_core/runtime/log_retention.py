@@ -163,28 +163,63 @@ def _safe_base(base: Path, root: Path) -> bool:
         return False
 
 
+def _ours(p: Path, base: Path, runs: bool) -> bool:
+    """A log the app itself writes in append mode: a role log in the log
+    folder, a run log in ``runs/``. Only these are cut in place: another
+    program's log may be open without append mode, and a cut would leave a
+    hole its next write fills with NUL bytes."""
+    if p.parent != base or p.is_symlink():
+        return False
+    return p.suffix == ".ndjson" and (runs or p.name.startswith("orchestrator-"))
+
+
+def _under(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def sweep_files(cutoff: float, root: "Path | None" = None) -> dict:
-    """Delete old dumps; empty idle app logs; cut app logs over the cap."""
+    """Delete old dumps; empty idle app logs; cut app logs over the cap. In
+    the log folder, another file idle for the whole window is deleted, but
+    only when that folder is inside the config folder (a log folder pointed
+    at a shared place like /var/log is never swept beyond the app's own
+    files)."""
     top = root or _root()
     cap = _max_bytes()
     out = {"files_deleted": 0, "files_trimmed": 0, "bytes_freed": 0}
-    for base in _app_log_dirs(root):
+    for i, base in enumerate(_app_log_dirs(root)):
         if not _safe_base(base, top):
             continue
-        for dirpath, _dirs, filenames in os.walk(base):
-            for fn in filenames:
-                p = Path(dirpath) / fn
-                if p.suffix not in _LOG_SUFFIXES:
+        runs = i == 1
+        own_folder = _under(base, top)
+        try:
+            entries = list(base.iterdir())
+        except OSError:
+            continue
+        for p in entries:
+            try:
+                if not p.is_file() or p.is_symlink():
                     continue
-                try:
-                    mtime = p.stat().st_mtime
-                except OSError:
-                    continue
-                freed = (_empty_in_place(p) if mtime < cutoff
+                st = p.stat()
+            except OSError:
+                continue
+            if _ours(p, base, runs):
+                freed = (_empty_in_place(p) if st.st_mtime < cutoff
                          else _keep_tail(p, cap))
                 if freed:
                     out["files_trimmed"] += 1
                     out["bytes_freed"] += freed
+            elif own_folder and st.st_mtime < cutoff and p.suffix in (
+                    ".log", ".err", ".out", ".ndjson", ".txt"):
+                try:
+                    p.unlink()
+                    out["files_deleted"] += 1
+                    out["bytes_freed"] += st.st_size
+                except OSError:
+                    pass
     for base in _dump_dirs(root):
         if not _safe_base(base, top):
             continue
@@ -192,6 +227,8 @@ def sweep_files(cutoff: float, root: "Path | None" = None) -> dict:
             for fn in filenames:
                 p = Path(dirpath) / fn
                 try:
+                    if p.is_symlink():
+                        continue
                     st = p.stat()
                 except OSError:
                     continue
@@ -291,10 +328,12 @@ def sweep_chat_db(cutoff: float, path: "str | None" = None) -> dict:
         return out
     stamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(cutoff))
     last = _mark(path)
-    start = last
     con = sqlite3.connect(path, timeout=30.0)
     try:
         con.execute("PRAGMA busy_timeout=30000")
+        top = con.execute("SELECT COALESCE(MAX(id), 0) FROM chat_messages").fetchone()[0]
+        if last > top:
+            last = 0              # the database was replaced (a restore): start over
         while True:
             rows = con.execute(
                 "SELECT id, steps, created_at FROM chat_messages WHERE id > ? "
@@ -333,7 +372,7 @@ def sweep_chat_db(cutoff: float, path: "str | None" = None) -> dict:
                 break
     finally:
         con.close()
-    if last != start:
+    if last != _mark(path):
         _save_mark(path, last)
     return out
 
@@ -345,12 +384,26 @@ _RUN = threading.Lock()
 
 def sweep() -> dict:
     """One cleanup pass. Returns what it did (empty when the window is 0, or
-    when another pass is already running)."""
+    when another pass is already running — in this process or another server
+    process on the same config folder)."""
     if not _RUN.acquire(blocking=False):
         return {}
+    fh = None
     try:
+        try:
+            import fcntl
+            fh = open(_root() / "log_retention.lock", "a")
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except ImportError:
+            fh = None             # no flock on this platform: the thread lock only
+        except OSError:
+            if fh is not None:
+                fh.close()
+            return {}             # another process is sweeping
         return _sweep()
     finally:
+        if fh is not None:
+            fh.close()
         _RUN.release()
 
 

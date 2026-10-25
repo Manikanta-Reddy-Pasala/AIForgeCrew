@@ -331,12 +331,22 @@ def test_no_the_expected_output_is_replaces_the_target():
     assert len(rows) == 1 and len(rows[0]["versions"]) == 2
 
 
-def test_discard_takes_back_only_new_rows():
+def test_ids_stay_unique_with_gaps():
     T.capture(5, "expected output:\n```\nA\n```")
-    made = [(r["id"], None) for r in T.capture(5, "expected output:\n```\nB\n```")]
-    assert T.discard(5, made) == 1 and [r["id"] for r in T.list(5)] == ["target-1"]
+    T.capture(5, "expected output:\n```\nB\n```")
+    import json as _j, os as _o
+    idx = _o.path.join(T.dir(5), "targets.json")
+    rows = _j.load(open(idx))
+    _j.dump([rows[1]], open(idx, "w"))            # target-1 gone, target-2 kept
     T.capture(5, "expected output:\n```\nC\n```")
-    assert [r["id"] for r in T.list(5)] == ["target-1", "target-2"]
+    assert [r["id"] for r in T.list(5)] == ["target-2", "target-3"]
+
+
+def test_a_steer_target_is_boarded_even_before_the_route_stored_it(monkeypatch):
+    from aiforge_core.runtime.chat_agent._turn._limits import _board_new_targets
+    st = _st(board={})
+    assert _board_new_targets(st, 5, ["expected output:\n```\nZ\n```"])
+    assert "target-1" in st.board and st.board["target-1"]["enforced"]
 
 
 def test_edit_resend_drops_corrections_of_erased_turns():
@@ -349,5 +359,17 @@ def test_edit_resend_drops_corrections_of_erased_turns():
 
 def test_a_kept_rule_can_be_undone_by_id_after_a_restart():
     L.note_rule(7, "use tabs", "rid-1")
+    L.add_rule_flag(7, "rid-1", {"name": "commit_auto_approve", "scope": "session",
+                                 "session_id": "7"})
     assert [r["id"] for r in L.rules(7)] == ["rid-1"]
-    assert L.drop_rule_id("rid-1") and L.rules(7) == []
+    gone = L.drop_rule_id("rid-1")
+    assert gone["applied_flags"][0]["name"] == "commit_auto_approve"
+    assert L.rules(7) == []
+
+
+def test_edit_resend_drops_the_projects_copy_too(monkeypatch):
+    monkeypatch.setattr(L, "_repo_of", lambda sid: "shop")
+    e = L.note_correction(7, "that's the wrong repo", turn=4)
+    L._note_project("shop", e, 7)
+    L.drop_after_turn(7, 3)
+    assert L.project_lessons("shop") == []

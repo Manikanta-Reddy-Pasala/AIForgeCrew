@@ -157,12 +157,17 @@ def undo(rid: str) -> bool:
     idx = _load_index()
     item = idx.get("items", {}).get(rid)
     if not item:
-        # A chat rule kept only in its lessons file (after a restart).
+        # A chat rule kept only in its lessons file (after a restart): its
+        # gate flags are turned off too.
         try:
             from aiforge_core.runtime import chat_lessons
-            return chat_lessons.drop_rule_id(rid)
+            gone = chat_lessons.drop_rule_id(rid)
         except Exception:  # noqa: BLE001
+            gone = None
+        if gone is None:
             return False
+        _clear_applied_flags(gone)
+        return True
     _clear_applied_flags(item)                 # gate re-enabled
     _remove_storage(item)
     with _LOCK, _file_lock(_index_path()):
@@ -182,7 +187,19 @@ def _find_item(rid: str) -> tuple[dict | None, bool]:
                 if it.get("id") == rid:
                     return dict(it), True
     it = _load_index().get("items", {}).get(rid)
-    return (dict(it) if it else None), False
+    if it:
+        return dict(it), False
+    try:                      # a chat rule kept only in its lessons file
+        from aiforge_core.runtime import chat_lessons
+        kept = chat_lessons.find_rule(rid)
+    except Exception:  # noqa: BLE001
+        kept = None
+    if kept is None:
+        return None, False
+    return ({"id": rid, "category": "rule", "scope": "session",
+             "canonical": kept["text"], "session_id": kept["session_id"],
+             "repo": None, "applied_flags": kept.get("applied_flags") or []},
+            True)
 
 
 def _drop_lesson(item: dict) -> None:
@@ -206,7 +223,14 @@ def _drop_session_item(rid: str) -> None:
                 continue
             break
         else:
-            return
+            gone = None
+    if gone is None:
+        try:              # only in the lessons file (after a restart)
+            from aiforge_core.runtime import chat_lessons
+            chat_lessons.drop_rule_id(rid)
+        except Exception:  # noqa: BLE001
+            pass
+        return
     _drop_lesson(gone)
 
 
