@@ -193,6 +193,16 @@ def _start_log_cleanup() -> None:
         logging.getLogger("aiforge").warning("log cleanup not started: %s", exc)
 
 
+def _start_idle_compact() -> None:
+    """Chats idle for ``idle_compact_min`` (default 20) get their carried
+    context compacted (runtime/idle_compact)."""
+    try:
+        from aiforge_core.runtime import idle_compact
+        idle_compact.register()
+    except Exception as exc:  # noqa: BLE001 — never block boot on this
+        logging.getLogger("aiforge").warning("idle compact not started: %s", exc)
+
+
 def _ensure_model_context_on_boot() -> None:
     """Post-deploy, LM Studio JIT-loads the local model at its small default
     context (e.g. 8192), which HTTP-400s the big prompts a multi-file build needs

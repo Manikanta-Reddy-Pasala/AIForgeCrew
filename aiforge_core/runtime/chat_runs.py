@@ -421,6 +421,13 @@ def start_lock(session_id: int) -> threading.Lock:
         return _START_LOCKS.setdefault(session_id, threading.Lock())
 
 
+def start_lock_held(session_id: int) -> bool:
+    """Whether a starter holds :func:`start_lock` now (creates no lock)."""
+    with _LOCK:
+        lock = _START_LOCKS.get(session_id)
+    return lock is not None and lock.locked()
+
+
 def start(session_id: int) -> _Run:
     """Register a fresh run for ``session_id``, replacing any prior one."""
     _touch()

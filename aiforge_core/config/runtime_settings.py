@@ -157,6 +157,10 @@ _SPEC: dict[str, tuple[str, int]] = {
     # files, traces, trajectories and the evidence / tool output of older chat
     # turns are cleaned up. 0 keeps everything.
     "log_retention_days": ("AIFORGE_LOG_RETENTION_DAYS", 15),
+    # Minutes a chat sits idle before its carried context is compacted
+    # (runtime/idle_compact): the model's prompt cache is gone by then, so the
+    # next message would re-read the whole transcript. 0 = never.
+    "idle_compact_min": ("AIFORGE_IDLE_COMPACT_MIN", 20),
 }
 
 # Sanity bounds — reject obviously-bad values from the API/UI so a typo
@@ -191,6 +195,7 @@ _BOUNDS: dict[str, tuple[int, int]] = {
     "llm_rate_limit_cap_s": (1, 3_600),
     "llm_parallel": (0, 1024),
     "log_retention_days": (0, 3650),
+    "idle_compact_min": (0, 1440),
 }
 
 

@@ -49,7 +49,9 @@ def test_defaults(rs, monkeypatch):
         # 0 = auto: probe the model server for its concurrent slots.
         "llm_parallel": 0,
         # Logs and evidence older than this are cleaned up (0 = keep all).
-        "log_retention_days": 15}
+        "log_retention_days": 15,
+        # Minutes idle before a chat's carried context is compacted.
+        "idle_compact_min": 20}
 
 
 def test_stale_cave_zero_migrated_to_default(rs, monkeypatch):

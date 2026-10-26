@@ -15,6 +15,7 @@ os.environ.setdefault("AIFORGE_LLM_MAX_RPM", "0")
 # test boots the app, and an operator's exported AIFORGE_CONFIG_DIR would
 # point it at the live logs.
 os.environ.setdefault("AIFORGE_LOG_CLEANUP", "0")
+os.environ.setdefault("AIFORGE_IDLE_COMPACT", "0")
 
 # HERMETIC MODEL ENDPOINT for EVERY test directory (tests/python's conftest
 # already did this for itself; tests/api had nothing). An unstubbed model call
