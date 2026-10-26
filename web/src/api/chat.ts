@@ -385,6 +385,8 @@ export interface ChatProcess {
   bytes: number[];         // per stream: stdout, stderr
   shown: number;           // > 0: the agent asked to show it (higher = newer)
   log_files: string[];     // log files it writes or follows (absolute paths)
+  task?: { slug: string; title: string } | null;  // task-board item it ran under
+  aka?: string;            // the foreground key it had before it was handed off
 }
 
 export interface ChatProcessChunk {

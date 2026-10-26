@@ -55,7 +55,7 @@ from ._shell_wait import (  # noqa: F401  # re-exported
     _kill_proc,
     _timeout_result,
 )
-from ._spool import Spool
+from ._spool import Spool, live_output_env
 
 # Digits too: a tool name like `s3_get` was cut to `s`. See _prompt._credible_action
 # for why a match alone is not yet a tool call.
@@ -462,7 +462,7 @@ def _start_background(cmd: str, base: str, deadline: float | None = None,
         proc = subprocess.Popen(
             cmd, shell=True, cwd=base,
             stdout=spool.out, stderr=spool.err,
-            start_new_session=True)
+            start_new_session=True, env=live_output_env())
     except Exception as exc:  # noqa: BLE001
         spool.close()
         return {"ok": False, "error": str(exc)}
@@ -516,7 +516,7 @@ def _t_run_command(args: dict, cwd: str) -> dict:
         proc = subprocess.Popen(
             cmd, shell=True, cwd=base,
             stdout=spool.out, stderr=spool.err,
-            start_new_session=True,
+            start_new_session=True, env=live_output_env(),
         )
     except Exception as exc:  # noqa: BLE001
         if spool is not None:
@@ -524,17 +524,29 @@ def _t_run_command(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": str(exc)}
     spool.pgid = proc.pid             # start_new_session: its own group
     import time as _time
+    from aiforge_core.runtime import proc_logs
     started = _time.monotonic()
+    # In the Processes dock from its first second, not only once handed off.
+    shown = proc_logs.watch_foreground(proc, spool, cmd, base,
+                                       args.get("description") or "")
     handed = False
     try:
         res = _run_to_end(proc, timeout, spool, idle_s)
         if res.get("_handoff"):
             handed = True
-            return _label_job(_hand_off(proc, spool, cmd, base,
-                                        res["_handoff"], started, timeout,
-                                        idle_s), args)
+            try:
+                out = _hand_off(proc, spool, cmd, base, res["_handoff"],
+                                started, timeout, idle_s)
+            except BaseException:
+                proc_logs.drop_foreground(shown)
+                shown = None
+                raise
+            proc_logs.end_foreground(shown, out.get("id"))
+            shown = None
+            return _label_job(out, args)
         return res
     finally:
+        proc_logs.end_foreground(shown)     # before its output is closed
         if not handed:
             spool.release_children()
             spool.close()

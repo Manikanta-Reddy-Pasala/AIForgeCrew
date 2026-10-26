@@ -39,6 +39,24 @@ function title(p: ChatProcess): string {
   return p.label || p.cmd;
 }
 
+/** Finished commands are filed under the task they ran for. */
+type Group = { key: string; title: string; procs: ChatProcess[] };
+const NO_TASK = '';
+
+function groupsOf(done: ChatProcess[]): Group[] {
+  const out: Group[] = [];
+  for (const p of done) {
+    const key = p.task?.slug || NO_TASK;
+    let g = out.find(x => x.key === key);
+    if (!g) {
+      g = { key, title: key ? (p.task?.title || key) : 'Other commands', procs: [] };
+      out.push(g);
+    }
+    g.procs.push(p);
+  }
+  return out;
+}
+
 /** One read of a source from `offsets` on: the chunks per stream, and whether
  *  it is still being written. */
 async function readSource(sessionId: number, src: Source, offsets: number[], first: number):
@@ -250,6 +268,7 @@ export function ProcessDock({ sessionId }: { sessionId: number | null }) {
   const [open, setOpen] = useState<Source[]>([]);
   const [viewing, setViewing] = useState<Source | null>(null);
   const [expanded, setExpanded] = useState(true);
+  const [groupsOpen, setGroupsOpen] = useState<string[]>([]);
   const seenShown = useRef(0);
   const first = useRef(true);
 
@@ -257,6 +276,7 @@ export function ProcessDock({ sessionId }: { sessionId: number | null }) {
     setProcs([]);
     setOpen([]);
     setViewing(null);
+    setGroupsOpen([]);
     seenShown.current = 0;
     first.current = true;
     if (sessionId === null) return;
@@ -273,9 +293,11 @@ export function ProcessDock({ sessionId }: { sessionId: number | null }) {
           first.current = false;
           seenShown.current = top;
         } else if (top > seenShown.current) {
-          const fresh = r.processes.filter(p => p.shown > seenShown.current).map(p => ({ proc: p.id }));
+          const fresh = r.processes.filter(p => p.shown > seenShown.current);
           seenShown.current = top;
-          setOpen(o => o.concat(fresh.filter(f => !o.some(x => tileKey(x) === tileKey(f)))));
+          // Already open — maybe under the foreground key it had before.
+          const isTile = (x: Source, p: ChatProcess) => !x.path && (x.proc === p.id || x.proc === p.aka);
+          setOpen(o => o.concat(fresh.filter(p => !o.some(x => isTile(x, p))).map(p => ({ proc: p.id }))));
           setExpanded(true);
         }
       } catch { /* a missed poll is retried */ }
@@ -286,24 +308,51 @@ export function ProcessDock({ sessionId }: { sessionId: number | null }) {
   }, [sessionId]);
 
   if (sessionId === null || procs.length === 0) return null;
-  const running = procs.filter(p => p.running).length;
   const byId = new Map(procs.map(p => [p.id, p]));
+  // A tile opened on a foreground command follows it once it is handed off.
+  for (const p of procs) if (p.aka && !byId.has(p.aka)) byId.set(p.aka, p);
+  const liveProcs = procs.filter(p => p.running);
+  const running = liveProcs.length;
+  const groups = groupsOf(procs.filter(p => !p.running));
+  const shownProcs = liveProcs.concat(groups.filter(g => groupsOpen.includes(g.key)).flatMap(g => g.procs));
   const tiles = open.filter(s => byId.has(s.proc));
-  const isOpen = (s: Source) => open.some(x => tileKey(x) === tileKey(s));
+  // A tile opened under a foreground key is the same tile once handed off.
+  const sameTile = (a: Source, b: Source) => tileKey(a) === tileKey(b)
+    || (a.path === b.path && byId.get(a.proc) !== undefined && byId.get(a.proc) === byId.get(b.proc));
+  const isOpen = (s: Source) => open.some(x => sameTile(x, s));
   const toggle = (s: Source) => {
-    setOpen(o => (o.some(x => tileKey(x) === tileKey(s))
-      ? o.filter(x => tileKey(x) !== tileKey(s)) : o.concat(s)));
+    setOpen(o => (o.some(x => sameTile(x, s))
+      ? o.filter(x => !sameTile(x, s)) : o.concat(s)));
     setExpanded(true);
   };
   // One chip per file: the same log is often written by one command and
   // followed by another (show_logs) — list it once, under a running one.
   const fileChips: { p: ChatProcess; f: string }[] = [];
-  for (const p of [...procs].sort((a, b) => Number(b.running) - Number(a.running))) {
+  for (const p of shownProcs) {
     for (const f of p.log_files || []) {
       if (!fileChips.some(c => c.f === f)) fileChips.push({ p, f });
     }
   }
   const viewProc = viewing ? byId.get(viewing.proc) : undefined;
+  const chip = (p: ChatProcess) => {
+    const st = stateOf(p);
+    const on = isOpen({ proc: p.id });
+    const task = p.task?.title ? `\ntask: ${p.task.title}` : '';
+    return (
+      <span key={p.id} className={st.cls}
+            style={{ maxWidth: 300, outline: on ? '1px solid currentColor' : undefined }}>
+        <button type="button"
+                title={`${p.cmd}\n${st.text} · ${since(p.started_at, p.running ? undefined : p.ended_at)}${task}${on ? '\nClick to close its output' : '\nClick to watch its output'}`}
+                onClick={() => toggle({ proc: p.id })} style={{ ...btnReset, maxWidth: 240 }}>
+          {p.running ? '● ' : ''}{title(p)}
+        </button>
+        <button type="button" title="Open its output in a bigger view"
+                onClick={() => setViewing({ proc: p.id })} style={{ ...btnReset, opacity: 0.75 }}>⤢</button>
+      </span>
+    );
+  };
+  const toggleGroup = (key: string) =>
+    setGroupsOpen(g => (g.includes(key) ? g.filter(x => x !== key) : g.concat(key)));
 
   return (
     <div className="proc-dock" style={{ borderTop: '1px solid var(--border-1)' }}>
@@ -313,27 +362,12 @@ export function ProcessDock({ sessionId }: { sessionId: number | null }) {
           {expanded ? '▾' : '▸'} Processes
         </button>
         <span className="muted xs">{running ? `${running} running` : 'none running'}</span>
-        {procs.map(p => {
-          const st = stateOf(p);
-          const on = isOpen({ proc: p.id });
-          return (
-            <span key={p.id} className={st.cls}
-                  style={{ maxWidth: 300, outline: on ? '1px solid currentColor' : undefined }}>
-              <button type="button"
-                      title={`${p.cmd}\n${st.text} · ${since(p.started_at, p.running ? undefined : p.ended_at)}${on ? '\nClick to close its output' : '\nClick to watch its output'}`}
-                      onClick={() => toggle({ proc: p.id })} style={{ ...btnReset, maxWidth: 240 }}>
-                {p.running ? '● ' : ''}{title(p)}
-              </button>
-              <button type="button" title="Open its output in a bigger view"
-                      onClick={() => setViewing({ proc: p.id })} style={{ ...btnReset, opacity: 0.75 }}>⤢</button>
-            </span>
-          );
-        })}
+        {liveProcs.map(chip)}
         {running > 0 && (
           <button type="button" className="ghost sm"
                   title="Stop every command this chat started (Ctrl-C, then force kill)"
                   onClick={() => {
-                    procs.filter(p => p.running)
+                    liveProcs
                       .forEach(p => { chatProcessKill(sessionId, p.id).catch(() => undefined); });
                   }}>■ Stop all</button>
         )}
@@ -341,6 +375,30 @@ export function ProcessDock({ sessionId }: { sessionId: number | null }) {
           <button type="button" className="ghost sm" onClick={() => setOpen([])}>close all</button>
         )}
       </div>
+      {groups.length > 0 && (
+        <div className="row" style={{ gap: 6, flexWrap: 'wrap', alignItems: 'center', padding: '0 10px 6px' }}>
+          <span className="muted xs">Finished</span>
+          {groups.map(g => {
+            const isGroupOpen = groupsOpen.includes(g.key);
+            const failed = g.procs.filter(p => !p.stopped && p.code !== 0).length;
+            return (
+              <span key={`g:${g.key}`} style={{ display: 'contents' }}>
+                <span className={`chip${failed ? ' err' : ''}`}
+                      style={{ maxWidth: 320, outline: isGroupOpen ? '1px solid currentColor' : undefined }}>
+                  <button type="button" onClick={() => toggleGroup(g.key)}
+                          style={{ ...btnReset, maxWidth: 280 }}
+                          title={`${g.procs.length} finished command${g.procs.length === 1 ? '' : 's'}`
+                                 + `${failed ? ` (${failed} failed)` : ''}`
+                                 + `\nClick to ${isGroupOpen ? 'hide' : 'show'} them`}>
+                    {isGroupOpen ? '▾' : '▸'} {g.title} ({g.procs.length})
+                  </button>
+                </span>
+                {isGroupOpen && g.procs.map(chip)}
+              </span>
+            );
+          })}
+        </div>
+      )}
       {fileChips.length > 0 && (
         <div className="row" style={{ gap: 6, flexWrap: 'wrap', alignItems: 'center', padding: '0 10px 6px' }}>
           <span className="muted xs">Log files</span>

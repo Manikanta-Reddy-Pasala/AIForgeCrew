@@ -43,6 +43,10 @@ _TURN: contextvars.ContextVar = contextvars.ContextVar(
 #: so a claim that ends — or is taken over after a crash — can stop them.
 _OWNER: contextvars.ContextVar = contextvars.ContextVar(
     "aiforge_cmd_owner", default=None)
+#: The task-board item the turn was working on when a job started: the
+#: Processes dock files a finished command under its task.
+_TASK: contextvars.ContextVar = contextvars.ContextVar(
+    "aiforge_cmd_task", default=None)
 _JOBS: dict[str, "Job"] = {}
 _LOCK = threading.Lock()
 _MAX_JOBS = 64
@@ -91,6 +95,7 @@ class Job:
         self.pgid = pgid
         self.turn = _TURN.get()
         self.owner = _OWNER.get()
+        self.task = _TASK.get()
         self.started = time.monotonic()
         self.streak = 0
         self.stuck_reported = False
@@ -229,6 +234,19 @@ def end_owner(owner) -> int:
             killed += 1
         _forget(job)
     return killed
+
+
+def set_task(task):
+    """Tag jobs started from here on with ``task`` ({slug, title} of the
+    running task-board item, or None); returns the reset token."""
+    return _TASK.set(task)
+
+
+def reset_task(tok) -> None:
+    try:
+        _TASK.reset(tok)
+    except (ValueError, RuntimeError):
+        pass
 
 
 def progress_suffix(name: str, args) -> str:
@@ -647,4 +665,5 @@ def wait(job: Job, max_s: float | None = None, session_id=None) -> dict:
 __all__ = ["Job", "adopt_service", "adopt_spooled", "begin_turn",
            "checkin_s", "current_owner", "default_wait_s", "end_owner",
            "end_turn", "find", "look", "progress_suffix", "reset_owner",
-           "running", "set_label", "set_owner", "stop_for_text", "stop_session", "stuck_s", "wait"]
+           "reset_task", "running", "set_label", "set_owner", "set_task",
+           "stop_for_text", "stop_session", "stuck_s", "wait"]

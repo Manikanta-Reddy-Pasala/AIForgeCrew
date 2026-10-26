@@ -117,6 +117,7 @@ from ._turn._tool_dispatch import (  # noqa: F401
     _SECRET_ARGS,
     _dispatch_tool,
     _invoke_tool,
+    running_task,
     _shown_args,
     _unknown_tool_result,
 )
@@ -368,7 +369,8 @@ def _gated_action(st, step, name, args, sig, n, cwd, session_id):
         result, _note = _halt, ""
     else:
         result = yield from _dispatch_tool(name, args, cwd, n, _hb,
-                                           _take_early_read(st, sig))
+                                           _take_early_read(st, sig),
+                                           task=running_task(st))
         result, _note = _net.end(_h, result) if _h is not None else (
             result, _net.poll(cwd))
         result, _rnote = _roles.net_end(_rh, result)

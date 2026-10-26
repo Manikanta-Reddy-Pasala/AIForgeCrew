@@ -38,6 +38,16 @@ def _group_members(pgid: int) -> list[int]:
     return members
 
 
+def live_output_env() -> dict:
+    """The environment for a spooled command. Python block-buffers stdout
+    that goes to a file, so a script or a test run showed nothing in the
+    Processes dock until it flushed 8 KB or exited; unbuffered, its lines
+    land as they are printed. A value the user set wins."""
+    env = dict(os.environ)
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    return env
+
+
 class Spool:
     def __init__(self) -> None:
         self.out = tempfile.TemporaryFile()

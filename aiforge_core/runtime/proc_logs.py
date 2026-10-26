@@ -11,7 +11,13 @@ whose output sits in spool files. This module reads those for the web UI:
 * :func:`read` — output from a byte offset on, per stream, so the UI tails a
   job by asking only for what is new;
 * :func:`mark_shown` — the agent asked to put a job's log in front of the
-  user (``show_logs``); the UI opens a tile for it.
+  user (``show_logs``); the UI opens a tile for it;
+* :func:`watch_foreground` / :func:`end_foreground` — a foreground
+  ``run_command`` is listed from its first second, not only once it is handed
+  off at the check-in (or never, when it ends before that).
+
+Each job carries the task-board item it was started under (``task``), so the
+dock lists only what runs and files the finished ones under their task.
 
 Reads use ``os.pread`` (via ``cmd_signals.read_range``) and never move the
 agent's own look position, so watching a log here does not change what
@@ -20,6 +26,7 @@ agent's own look position, so watching a log here does not change what
 from __future__ import annotations
 
 import collections
+import itertools
 import os
 import threading
 import time
@@ -43,6 +50,13 @@ _SHOWN: dict[tuple[str, str], int] = {}
 _LAST_SEQ = [0]
 #: Chats deleted: a job of theirs that ends later keeps nothing here.
 _FORGOTTEN: set[str] = set()
+#: Foreground commands still inside ``run_command`` (key ``fg-<pid>-<n>``:
+#: a pid alone is reused).
+_FOREGROUND: dict[str, object] = {}
+_FG_SEQ = itertools.count(1)
+#: (chat, ``fg-<pid>``) → the job key it was handed off as: a tile opened on
+#: the foreground command keeps reading the same output.
+_ALIAS: dict[tuple[str, str], str] = {}
 
 
 def _sid(session_id) -> str:
@@ -80,7 +94,17 @@ def _status(job) -> dict:
         "bytes": [sig.file_size(s) for s in job.streams],
         "shown": _shown(job.session_id, job.key),
         "log_files": _log_files(job, alive),
+        "task": _task_of(job),
+        "aka": str(getattr(job, "aka", "") or ""),
     }
+
+
+def _task_of(job) -> dict | None:
+    task = getattr(job, "task", None)
+    if not isinstance(task, dict) or not task.get("slug"):
+        return None
+    return {"slug": str(task["slug"])[:80],
+            "title": str(task.get("title") or "")[:160]}
 
 
 def _log_files(job, alive: bool) -> list[str]:
@@ -95,18 +119,39 @@ def _live_jobs(session_id) -> list:
     from aiforge_core.runtime import cmd_jobs
     want = _sid(session_id)
     with cmd_jobs._LOCK:
-        return [j for j in cmd_jobs._JOBS.values()
+        jobs = [j for j in cmd_jobs._JOBS.values()
                 if j.session_id is not None and str(j.session_id) == want]
+    procs = {id(j.proc) for j in jobs}
+    with _LOCK:
+        # One already handed off is listed as the job it became.
+        fg = [j for j in _FOREGROUND.values()
+              if _sid(j.session_id) == want and id(j.proc) not in procs]
+    return jobs + fg
+
+
+def _resolve(session_id, key: str) -> str:
+    """A foreground command's key, once handed off, names the job it became."""
+    with _LOCK:
+        return _ALIAS.get((_sid(session_id), key), key)
 
 
 def _find_live(session_id, key: str):
-    for job in _live_jobs(session_id):
+    key = _resolve(session_id, key)
+    jobs = _live_jobs(session_id)
+    for job in jobs:
         if job.key == key:
             return job
+    with _LOCK:
+        fg = _FOREGROUND.get(key)
+    if fg is not None:                  # being handed off: the job it became
+        for job in jobs:
+            if job.proc is fg.proc:
+                return job
     return None
 
 
 def _find_ended(session_id, key: str) -> dict | None:
+    key = _resolve(session_id, key)
     with _LOCK:
         for rec in _ENDED.get(_sid(session_id), ()):
             if rec["id"] == key:
@@ -136,12 +181,26 @@ def remember(job) -> None:
                       _tails=tails,
                       _log_ids=dict(getattr(job, "log_ids", None) or {}))
         with _LOCK:
+            # Collected at its hand-off: the foreground row it came from goes
+            # now, in the same step, so no poll lists both or reads a closed
+            # spool through it.
+            for fk, fg in [(k, v) for k, v in _FOREGROUND.items()
+                           if v is not job and v.proc is job.proc]:
+                _FOREGROUND.pop(fk, None)
+                _ALIAS[(_sid(job.session_id), fk)] = job.key
+                status["aka"] = status.get("aka") or fk
+                status["task"] = status.get("task") or _task_of(fg)
+                status["label"] = status.get("label") or str(
+                    getattr(fg, "label", "") or "")
             q = _ENDED.setdefault(_sid(job.session_id),
                                   collections.deque(maxlen=ENDED_PER_SESSION))
             for old in [r for r in q if r["id"] == job.key]:
                 q.remove(old)
             if len(q) == q.maxlen:              # the oldest drops out
                 _SHOWN.pop((_sid(job.session_id), q[0]["id"]), None)
+                for a in [a for a, k in _ALIAS.items()
+                          if a[0] == _sid(job.session_id) and k == q[0]["id"]]:
+                    _ALIAS.pop(a, None)
             q.append(status)
     except Exception:  # noqa: BLE001 — collecting a job must never fail here
         pass
@@ -371,12 +430,83 @@ def kill(session_id, key: str) -> bool:
     return True
 
 
+def watch_foreground(proc, spool, cmd: str, cwd: str, label: str = ""):
+    """List a foreground ``run_command`` in the dock while it runs. Returns
+    the handle for :func:`end_foreground` (None: no chat to show it in)."""
+    try:
+        from aiforge_core.runtime import cmd_jobs
+        job = cmd_jobs.Job(f"fg-{proc.pid}-{next(_FG_SEQ)}", proc, cmd, [spool.out, spool.err],
+                           kill=spool.kill_group, pgid=spool.pgid or proc.pid)
+        if job.session_id is None or _sid(job.session_id) in _FORGOTTEN:
+            return None
+        job.cwd = cwd
+        text = " ".join(str(label or "").split())[:120]
+        if text:
+            job.label = text
+        with _LOCK:
+            _FOREGROUND[job.key] = job
+        return job
+    except Exception:  # noqa: BLE001 — the command runs whether shown or not
+        return None
+
+
+def end_foreground(job, handed_key: str | None = None) -> None:
+    """The foreground command left ``run_command``: handed off as the job
+    ``handed_key`` (a tile on it keeps reading that job, even when it was
+    collected at once), or ended — its output tail is kept like a collected
+    job's. Call it before the output is closed; never raises."""
+    if job is None:
+        return
+    sid = _sid(job.session_id)
+    try:
+        if handed_key:
+            from aiforge_core.runtime import cmd_jobs
+            with cmd_jobs._LOCK:
+                real = cmd_jobs._JOBS.get(str(handed_key))
+            if real is not None:
+                real.aka = job.key
+                if not getattr(real, "label", "") and getattr(job, "label", ""):
+                    real.label = job.label
+                if getattr(real, "task", None) is None:
+                    real.task = job.task
+            with _LOCK:
+                for rec in _ENDED.get(sid, ()):     # collected at the hand-off
+                    if rec["id"] == handed_key:
+                        rec["aka"] = job.key
+                        rec["task"] = rec.get("task") or _task_of(job)
+                        if not rec.get("label"):
+                            rec["label"] = str(getattr(job, "label", "") or "")
+                _ALIAS[(sid, job.key)] = str(handed_key)
+                if len(_ALIAS) > 512:
+                    for old in list(_ALIAS)[:256]:
+                        _ALIAS.pop(old, None)
+                _FOREGROUND.pop(job.key, None)
+            return
+        remember(job)
+    except Exception:  # noqa: BLE001
+        pass
+    with _LOCK:
+        _FOREGROUND.pop(job.key, None)
+
+
+def drop_foreground(job) -> None:
+    """Forget a foreground row without keeping anything (its hand-off failed
+    part-way; the command is someone else's to collect now)."""
+    if job is not None:
+        with _LOCK:
+            _FOREGROUND.pop(job.key, None)
+
+
 def mark_shown(session_id, key: str) -> bool:
     """Ask the UI to open job ``key``'s log. False when the chat has no such
     job."""
-    if _find_live(session_id, key) is None \
-            and _find_ended(session_id, key) is None:
+    live = _find_live(session_id, key)
+    if live is not None:
+        key = live.key
+    elif _find_ended(session_id, key) is None:
         return False
+    else:
+        key = _resolve(session_id, key)
     with _LOCK:
         _SHOWN[(_sid(session_id), key)] = _next_seq()
         if len(_SHOWN) > 512:
@@ -399,6 +529,8 @@ def forget_session(session_id) -> None:
         _ENDED.pop(sid, None)
         for k in [k for k in _SHOWN if k[0] == sid]:
             _SHOWN.pop(k, None)
+        for k in [k for k in _ALIAS if k[0] == sid]:
+            _ALIAS.pop(k, None)
 
 
 def _reset_for_tests() -> None:
@@ -406,9 +538,11 @@ def _reset_for_tests() -> None:
         _ENDED.clear()
         _SHOWN.clear()
         _FORGOTTEN.clear()
+        _FOREGROUND.clear()
+        _ALIAS.clear()
 
 
 __all__ = ["ENDED_KEEP_BYTES", "ENDED_PER_SESSION", "READ_MAX_BYTES",
            "file_chunks", "forget_session", "kill", "list_for_session",
-           "mark_shown", "open_file", "output_chunks", "read", "read_file",
-           "remember"]
+           "drop_foreground", "end_foreground", "mark_shown", "open_file", "output_chunks", "read",
+           "read_file", "remember", "watch_foreground"]

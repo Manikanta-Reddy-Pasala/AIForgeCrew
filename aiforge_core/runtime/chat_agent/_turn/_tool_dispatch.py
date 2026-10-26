@@ -14,10 +14,15 @@ from .._tools import (
 )
 
 
-def _invoke_tool(fn, name, args, cwd):
+def _invoke_tool(fn, name, args, cwd, task=None):
     """Run one tool fn under a scoped sandbox-root override (reset in finally)
-    with perf recording; KeyError/Exception become an error result."""
+    with perf recording; KeyError/Exception become an error result. ``task``:
+    the task-board item being worked on — a command started here is filed
+    under it in the Processes dock."""
     _perf_t0 = time.perf_counter()
+    from aiforge_core.runtime import cmd_jobs
+    # No board here (a nested call): an outer task stays in force.
+    _task_tok = cmd_jobs.set_task(task) if task is not None else None
     # Strong tools resolve through sandbox.root(); scope the override to
     # the workspace root (NOT the raw cwd, so it can't escape an
     # AIFORGE_WORKSPACE_DIR jail) and ALWAYS reset it in finally so a
@@ -36,6 +41,8 @@ def _invoke_tool(fn, name, args, cwd):
     except Exception as exc:  # noqa: BLE001
         result = {"ok": False, "error": str(exc)}
     finally:
+        if _task_tok is not None:
+            cmd_jobs.reset_task(_task_tok)
         if _root_tok is not None:
             try:
                 from aiforge_core.runtime import sandbox as _sb
@@ -75,7 +82,20 @@ def _unknown_tool_result(name) -> dict:
     return {"ok": False, "error": f"unknown tool: {name}"}
 
 
-def _dispatch_tool(name, args, cwd, n, _hook_block, early=None):
+def running_task(st) -> "dict | None":
+    """The task-board item the turn is on: the running one started last."""
+    best = None
+    for slug, item in (getattr(st, "board", None) or {}).items():
+        if isinstance(item, dict) and item.get("status") == "running" and (
+                best is None
+                or int(item.get("_ev_from") or 0) >= int(best[1].get("_ev_from") or 0)):
+            best = (slug, item)
+    if best is None:
+        return None
+    return {"slug": str(best[0]), "title": str(best[1].get("title") or "")[:160]}
+
+
+def _dispatch_tool(name, args, cwd, n, _hook_block, early=None, task=None):
     """Dispatch one tool call: honour a PreToolUse hook block / unknown tool,
     else emit ``tool_start`` and run ``fn(args, cwd)`` under a scoped sandbox
     root override (reset in finally) with perf recording. ``early`` is the
@@ -97,7 +117,7 @@ def _dispatch_tool(name, args, cwd, n, _hook_block, early=None):
         yield {"type": "tool_start", "name": name,
                "args": _shown_args(name, args), "call_id": n}
         result = (early.result() if early is not None
-                  else _invoke_tool(fn, name, args, cwd))
+                  else _invoke_tool(fn, name, args, cwd, task))
     return result
 
 

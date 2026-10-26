@@ -50,14 +50,14 @@ def run_to_completion(argv, cwd: str, wall_s: float, idle_s: float, *,
     # ``interrupt()`` is polled — a truthy answer ("stop" / "steer") kills
     # the group and comes back as ``why``.
     from aiforge_core.runtime.chat_agent._shell_wait import _checkin_due
-    from aiforge_core.runtime.chat_agent._spool import Spool
+    from aiforge_core.runtime.chat_agent._spool import Spool, live_output_env
     from aiforge_core.runtime.cmd_idle import ProgressClock
     spool = Spool()
     try:
         proc = subprocess.Popen(
             argv, shell=not isinstance(argv, list), cwd=cwd,
             stdout=spool.out, stderr=spool.err,
-            start_new_session=True)
+            start_new_session=True, env=live_output_env())
     except Exception:
         spool.close()
         raise
