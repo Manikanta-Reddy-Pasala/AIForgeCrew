@@ -55,6 +55,9 @@ services:
       - AIFORGE_EXTRAS
       - AIFORGE_EMBED_BACKEND
       - AIFORGE_RUNNER_POLL_SEC
+      # Off on the host (no bridge started) must be off in the box too, or it
+      # warns that nothing holds the machine awake on every run.
+      - AIFORGE_KEEP_AWAKE
       - AIFORGE_NPM_REGISTRY
       - UV_DEFAULT_INDEX
       - npm_config_registry

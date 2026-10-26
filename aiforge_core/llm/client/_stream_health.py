@@ -49,6 +49,7 @@ class LLMStreamStalled(ConnectionError):
         self.phase = phase
         self.seconds = seconds
         what = ("no first token" if phase == "first_token"
+                else "the machine slept under it" if phase == "after_sleep"
                 else "stream went idle")
         super().__init__(f"LLM stream stalled: {what} for {seconds:.0f}s "
                          "(read timed out waiting on the model server)")

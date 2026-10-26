@@ -215,3 +215,73 @@ def test_release_removes_the_file_it_wrote_even_if_the_env_moved(monkeypatch, tm
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "b"))
     ka.release()
     assert not (tmp_path / "a" / "run" / "keep-awake").exists()
+
+
+# ─── the host bridge's own mark ─────────────────────────────────────────
+
+def test_host_holding_reads_the_bridge_mark(tmp_path, monkeypatch):
+    import os
+    import time as _t
+    f = tmp_path / "keep-awake"
+    monkeypatch.setenv("AIFORGE_AWAKE_FILE", str(f))
+    assert ka.host_holding() is False                 # no mark
+    (tmp_path / "keep-awake.held").write_text("")
+    assert ka.host_holding() is True
+    old = _t.time() - 600
+    os.utime(tmp_path / "keep-awake.held", (old, old))
+    assert ka.host_holding() is False                 # stale: the bridge is gone
+    monkeypatch.delenv("AIFORGE_AWAKE_FILE")
+    assert ka.host_holding() is None                  # not the sandbox
+
+
+def test_a_run_with_no_host_hold_is_reported_once(tmp_path, monkeypatch):
+    import time as _t
+    monkeypatch.setenv("AIFORGE_AWAKE_FILE", str(tmp_path / "keep-awake"))
+    monkeypatch.setattr(ka, "BEAT_S", 0.02)
+    monkeypatch.setattr(ka, "UNHELD_AFTER_S", 0.05)
+    said = []
+
+    def report(told):
+        said.append(1)
+        told.add("chat")              # told: not again for this hold
+        return 1
+    monkeypatch.setattr(ka, "_report_unheld", report)
+    ka.acquire()
+    end = _t.monotonic() + 3
+    while not said and _t.monotonic() < end:
+        _t.sleep(0.02)
+    ka.release()
+    assert said                       # reported, and only while a chat was untold
+
+
+def test_a_held_run_is_not_reported(tmp_path, monkeypatch):
+    import time as _t
+    monkeypatch.setenv("AIFORGE_AWAKE_FILE", str(tmp_path / "keep-awake"))
+    (tmp_path / "keep-awake.held").write_text("")
+    monkeypatch.setattr(ka, "BEAT_S", 0.02)
+    monkeypatch.setattr(ka, "UNHELD_AFTER_S", 0.05)
+    said = []
+    monkeypatch.setattr(ka, "_report_unheld", lambda told: said.append(1))
+    ka.acquire()
+    _t.sleep(0.3)
+    ka.release()
+    assert said == []
+
+
+def test_the_report_reaches_running_chats(monkeypatch):
+    from aiforge_core.runtime import chat_runs
+    got = []
+    answered = {6}
+    monkeypatch.setattr(chat_runs, "note", lambda sid, ev: (
+        got.append((sid, ev)) or True) if sid not in answered else False)
+
+    class R:
+        done = False
+    monkeypatch.setattr(chat_runs, "_RUNS", {5: R(), 6: R()})
+    told = set()
+    assert ka._report_unheld(told) == 1
+    assert told == {5} and got[0][0] == 5 and "awake" in got[0][1]["text"]
+    assert "AIFORGE_KEEP_AWAKE=0" in got[0][1]["text"]
+    answered.clear()                  # 6 not told yet: a later pass tells it
+    assert ka._report_unheld(told) == 1 and told == {5, 6}
+    assert ka._report_unheld(told) == 0

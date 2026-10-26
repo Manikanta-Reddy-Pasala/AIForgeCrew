@@ -206,6 +206,11 @@ def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
                 retry = False
             last = exc
             cfg.extend(throttled[0])
+            if getattr(exc, "phase", None) == "after_sleep" \
+                    and cfg.deadline is not None:
+                # Cut because the machine slept: the time it slept was never
+                # this call's to spend. A fresh budget for the re-send.
+                cfg.deadline = time.monotonic() + cfg.budget_s
             sleep_s = _next_sleep(cfg, attempt, exc, label, ep.provider)
             budget_out = _timeout_already_shipped(cfg, attempt, label, retry, sent[0])
             if budget_out:

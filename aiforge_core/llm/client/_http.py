@@ -8,6 +8,7 @@ Layers on the leaf helpers (:mod:`._helpers`, :mod:`._errors`) plus the sibling
 from __future__ import annotations
 
 import contextvars
+import http.client
 import json
 import random  # noqa: F401  # tests patch _http.random
 import threading
@@ -315,6 +316,8 @@ def _post_cancellable_once(ep: Endpoint, payload: bytes, timeout_s: int,
     conn, path = _open_connection(ep, url, timeout_s)
     stop = threading.Event()
     _cancel_watcher(conn, cancel, stop)
+    from . import _wake
+    wake_tok = _wake.track(conn)
     try:
         if cancel.is_set():
             raise _LLMCancelled("cancelled before request")
@@ -330,11 +333,21 @@ def _post_cancellable_once(ep: Endpoint, payload: bytes, timeout_s: int,
             return _read_sse_response(conn, url, sink, payload=payload,
                                       read_timeout=timeout_s)
         return _read_http_response(conn, url)
-    except OSError as exc:
+    except (OSError, ValueError, AttributeError,
+            http.client.HTTPException) as exc:
+        # A connection closed under a read surfaces as any of these.
         if cancel.is_set():
-            raise _LLMCancelled("cancelled mid-request") from exc
+            if isinstance(exc, OSError):
+                raise _LLMCancelled("cancelled mid-request") from exc
+            raise
+        gap = _wake.cut_by_wake(wake_tok)
+        if gap is not None:
+            # The machine slept under this call: a fresh connection now.
+            from ._stream_health import LLMStreamStalled
+            raise LLMStreamStalled("after_sleep", gap) from exc
         raise
     finally:
+        _wake.untrack(wake_tok)
         stop.set()
         try:
             conn.close()

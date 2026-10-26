@@ -1773,7 +1773,8 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
         setPendingApproval({ id: evt.id, sessionId, name: evt.name, args: evt.args || {}, reason: evt.reason, preview: evt.preview });
         return;
       }
-      if (evt.type === 'tool' || evt.type === 'message') setPendingApproval(null);
+      // A note said beside the run (supplementary) does not mean it resumed.
+      if (evt.type === 'tool' || (evt.type === 'message' && !evt.supplementary)) setPendingApproval(null);
 
       // The predicted next step, emitted after the reply it follows. Held in
       // its own slot rather than folded into the message: it is about the turn

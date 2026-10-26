@@ -55,6 +55,7 @@ import platform
 import shutil
 import subprocess
 import threading
+import time
 
 log = logging.getLogger("aiforge.keep_awake")
 
@@ -81,6 +82,11 @@ _beat_path: "str | None" = None
 #: Serialises a heartbeat touch against the release's remove: a beat that
 #: woke just as the run ended must not write the file back after it is gone.
 _beat_lock = threading.Lock()
+#: How long a run goes before a missing host hold is reported (the bridge
+#: checks every 15 s).
+UNHELD_AFTER_S = 50
+#: The bridge's own mark is fresh for this long.
+HELD_FRESH_S = 60
 
 
 def enabled() -> bool:
@@ -155,13 +161,69 @@ def _start_file_locked(path: str) -> None:
     _beat, _beat_path = stop, path
     _touch(path)
 
+    started = time.monotonic()
+    warned: set = set()          # chats already told, for this hold
+    misses = [0]
+
     def beat():
         while not stop.wait(BEAT_S):
             with _beat_lock:
                 if not stop.is_set():
                     _touch(path)
+            if stop.is_set():
+                continue
+            # Two misses a beat apart: right after a wake the bridge's mark
+            # is old until its next pass, and that is no reason to warn.
+            misses[0] = misses[0] + 1 if host_holding(path) is False else 0
+            if misses[0] >= 2 and time.monotonic() - started >= UNHELD_AFTER_S:
+                _report_unheld(warned)
     threading.Thread(target=beat, daemon=True, name="keep-awake-beat").start()
     log.info("keep_awake.acquired via %s (host bridge)", path)
+
+
+def host_holding(path: "str | None" = None) -> "bool | None":
+    """Does the host bridge hold this machine awake right now? None outside
+    the sandbox (a hold there is this process's own child)."""
+    path = path or awake_file()
+    if not path:
+        return None
+    try:
+        return time.time() - os.path.getmtime(path + ".held") <= HELD_FRESH_S
+    except OSError:
+        return False
+
+
+UNHELD_TEXT = ("⚠️ Nothing is keeping this computer awake while the agent "
+               "works: if it sleeps (screen locked, lid closed), the run "
+               "pauses until it wakes. Start AIForge with ./run.sh on this "
+               "computer (it starts the keep-awake helper), or turn sleep off. "
+               "Set AIFORGE_KEEP_AWAKE=0 to stop this note.")
+
+
+def _report_unheld(told: "set | None" = None) -> int:
+    """Tell each running chat not in ``told`` (added to it) that nothing
+    holds this machine awake. Returns how many were told."""
+    told = set() if told is None else told
+    n = 0
+    try:
+        from aiforge_core.runtime import chat_runs
+        with chat_runs._LOCK:
+            live = [sid for sid, r in chat_runs._RUNS.items() if not r.done]
+        for sid in live:
+            if sid in told:
+                continue
+            # note(): said beside the run (its phase untouched) and kept
+            # with the turn's steps.
+            if chat_runs.note(sid, {"type": "message", "role": "system",
+                                    "supplementary": True, "text": UNHELD_TEXT}):
+                told.add(sid)
+                n += 1
+    except Exception:  # noqa: BLE001 — a warning must never break a run
+        pass
+    if n:
+        log.warning("keep_awake: a run is in flight but the host bridge does "
+                    "not hold this machine awake (start it with ./run.sh)")
+    return n
 
 
 def _stop_file_locked() -> None:
@@ -277,4 +339,5 @@ def active() -> bool:
         return (_proc is not None and _proc.poll() is None) or _beat is not None
 
 
-__all__ = ["keep_awake", "acquire", "release", "active", "enabled", "awake_file"]
+__all__ = ["keep_awake", "acquire", "release", "active", "enabled", "awake_file",
+           "host_holding"]
