@@ -202,9 +202,26 @@ def _vouched_hosts(url: str, started: dict | None) -> frozenset[str]:
     host = (urlsplit(url).hostname or "").lower()
     if not host:
         return frozenset()
-    if host in _LOOPBACK or _is_served_host(host, started):
+    if host in _LOOPBACK:
+        return frozenset({host})
+    # The served URL is scraped from the service's own log, so a command that
+    # PRINTS "http://evil.com" would register evil.com. A served host is
+    # vouched for only when the name lands on this machine or the LAN.
+    if _is_served_host(host, started) and _resolves_local(host):
         return frozenset({host})
     return frozenset()
+
+
+def _resolves_local(host: str) -> bool:
+    """Every address ``host`` resolves to is loopback or LAN."""
+    import socket
+
+    from aiforge_core.net import egress as _egress
+    try:
+        addrs = {i[4][0] for i in socket.getaddrinfo(host, None)}
+    except OSError:
+        return False
+    return bool(addrs) and all(_egress.is_local_host(a) for a in addrs)
 
 
 def _is_served_host(host: str, started: dict | None) -> bool:
@@ -218,6 +235,20 @@ def _is_served_host(host: str, started: dict | None) -> bool:
             for svc in (_serve.list_services().get("services") or []))
     except Exception:  # noqa: BLE001 — no service list is simply no vouch
         return False
+
+
+def _blocked_report(console: list[dict]) -> dict[str, Any]:
+    """The browser only reaches local or allowlisted hosts. A blocked CDN font
+    or image changes how the page looks, so the agent must not "fix" a gap the
+    guard made."""
+    blocked = sorted({urlsplit(str(e.get("url") or "")).hostname or ""
+                      for e in console if e.get("kind") == "blocked"} - {""})
+    if not blocked:
+        return {}
+    return {"blocked_hosts": blocked[:_MAX_CONSOLE_REPORTED],
+            "blocked_note": ("requests to these hosts were blocked (not local "
+                             "or allowlisted); missing fonts/images/scripts "
+                             "from them are expected, not a UI bug")}
 
 
 def _navigate(browse, url: str, args: dict, run_id: str | None) -> dict | None:
@@ -271,7 +302,8 @@ def ui_check(args: dict, cwd: str | None = None,
     # non-loopback dev host is refused by the probe and never reaches the
     # screenshot. Everything below is inside the try, so the vouch is still
     # released on every path.
-    allow_token = _browser.allow_hosts(_vouched_hosts(url, service))
+    allow_token = _browser.allow_hosts(_vouched_hosts(url, service),
+                                       run_id=run_id)
     try:
         ready, why = _wait_ready(url,
                                  _f(args, "ready_timeout_s", _DEFAULT_READY_S))
@@ -282,8 +314,13 @@ def ui_check(args: dict, cwd: str | None = None,
                              "log or pass a longer ready_timeout_s")}
         nav_err = _navigate(_browser.browse, url, args, run_id)
         if nav_err is not None:
-            return {"ok": False, "error": "navigation_failed", "url": url,
-                    "detail": nav_err, "service": service}
+            failed = {"ok": False, "error": "navigation_failed", "url": url,
+                      "detail": nav_err, "service": service}
+            # A page refused by the egress guard says WHICH host, here rather
+            # than in the next ui_check's report.
+            failed.update(_blocked_report(
+                _browser.drain_console(run_id, errors_only=False)))
+            return failed
         png, shot_err = _browser.screenshot_bytes(
             run_id=run_id, full_page=bool(args.get("full_page")))
     finally:
@@ -332,6 +369,7 @@ def ui_check(args: dict, cwd: str | None = None,
         "viewport": {"width": _i(args, "width", _DEFAULT_WIDTH),
                      "height": _i(args, "height", _DEFAULT_HEIGHT)},
     })
+    out.update(_blocked_report(console))
     if len(all_errors) > len(errors):
         out["console_errors_omitted"] = len(all_errors) - len(errors)
     if service is not None:

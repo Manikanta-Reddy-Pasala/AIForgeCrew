@@ -15,6 +15,7 @@ import contextvars
 import logging
 import os
 import re
+import threading
 from typing import Any
 
 from ._browser_cmds import (  # noqa: F401  # re-exported
@@ -65,16 +66,36 @@ def _effective_run_id(explicit: str | None) -> str:
     return explicit or _RUN_ID.get() or "default"
 
 
-def allow_hosts(hosts):
+# The same grants, keyed by run, for the request guard and the egress proxy:
+# they run in Playwright callbacks and proxy threads, where the caller's
+# ContextVar is not visible (checked live). Added and removed together with the
+# ContextVar grant, so a vouch still dies with the call that made it.
+_vouched: dict[str, list[str]] = {}
+_vouched_lock = threading.Lock()
+
+
+def allow_hosts(hosts, run_id: str | None = None):
     """Vouch for ``hosts`` (any iterable of names) in the current context.
-    Returns the ContextVar token — reset it in a ``finally`` so the grant dies
-    with the call."""
+    Returns a token — reset it in a ``finally`` so the grant dies with the
+    call."""
     clean = tuple(h.strip().lower() for h in hosts if h and h.strip())
-    return _EXTRA_ALLOW.set(_EXTRA_ALLOW.get() + clean)
+    rid = _effective_run_id(run_id)
+    with _vouched_lock:
+        _vouched.setdefault(rid, []).extend(clean)
+    return (_EXTRA_ALLOW.set(_EXTRA_ALLOW.get() + clean), rid, clean)
 
 
 def reset_allow(token) -> None:
     import contextlib
+    if isinstance(token, tuple) and len(token) == 3:
+        token, rid, clean = token
+        with _vouched_lock:
+            hosts = _vouched.get(rid, [])
+            for h in clean:
+                with contextlib.suppress(ValueError):
+                    hosts.remove(h)
+            if not hosts:
+                _vouched.pop(rid, None)
     with contextlib.suppress(ValueError, LookupError):  # token from elsewhere
         _EXTRA_ALLOW.reset(token)
 
@@ -95,8 +116,12 @@ _console: dict[str, list[dict[str, Any]]] = {}
 _ABORTED_RE = re.compile(r"(?i)ERR_ABORTED|ERR_CANCELED|ERR_CANCELLED"
                          r"|net::ERR_BLOCKED_BY_CLIENT")
 
+# Schemes that never leave the browser process.
+_INPROCESS_SCHEMES = ("data:", "blob:", "about:")
+
 # Module-level Playwright instances, keyed by ADK run_id.
 _contexts: dict[str, Any] = {}
+_proxies: dict[str, Any] = {}       # run_id -> EgressProxy for that context
 _pw_handle: Any = None
 _browser: Any = None
 
@@ -250,6 +275,51 @@ def _attach_listeners(page: Any, run_id: str) -> None:
             continue
 
 
+def _request_ok(run_id: str, url: str) -> bool:
+    """May the page itself reach ``url``? Same rule as ``goto``."""
+    from urllib.parse import urlsplit
+
+    if url.startswith(_INPROCESS_SCHEMES):
+        return True
+    host = (urlsplit(url).hostname or "").lower()
+    with _vouched_lock:
+        if host and host in _vouched.get(run_id, ()):
+            return True
+    try:
+        return _allowlist_ok(url)
+    except Exception:  # noqa: BLE001 — fail closed
+        return False
+
+
+def _record_blocked(run_id: str, url: str, what: str) -> None:
+    # A proxy thread can finish after destroy_context; recording then would
+    # bring the run's buffer back to life.
+    if run_id not in _console:
+        return
+    _record(run_id, {"kind": "blocked", "level": "warning",
+                     "url": url[:300],
+                     "text": f"{what} blocked: host not local or allowlisted"})
+
+
+def _proxy_allows(run_id: str, host: str, port: int) -> bool:
+    netloc = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+    return _request_ok(run_id, f"https://{netloc}/")
+
+
+def _start_proxy(run_id: str) -> Any:
+    """This run's egress proxy. It is the guard: every non-loopback connection
+    the page makes (redirect hops, workers, WebSockets, preconnects) is decided
+    there. A Playwright ``route`` guard was tried first and dropped — it sees
+    only a redirect's first hop, its sync callbacks stall page requests between
+    tool calls, and interception turns the HTTP cache off."""
+    from ._egress_proxy import EgressProxy
+    proxy = EgressProxy(
+        allow=lambda host, port: _proxy_allows(run_id, host, port),
+        on_block=lambda url: _record_blocked(run_id, url, "connection"))
+    proxy.start()
+    return proxy
+
+
 def drain_console(run_id: str | None = None, *, clear: bool = True,
                   errors_only: bool = False) -> list[dict[str, Any]]:
     """Return the diagnostics collected for ``run_id`` (and clear them by
@@ -265,6 +335,11 @@ def drain_console(run_id: str | None = None, *, clear: bool = True,
 def _teardown_globals() -> None:
     """Close + null the shared browser/playwright handles (best-effort)."""
     global _pw_handle, _browser
+    # Every context dies with the browser, so every proxy goes too.
+    for proxy in list(_proxies.values()):
+        with contextlib.suppress(Exception):
+            proxy.stop()
+    _proxies.clear()
     if _browser is not None:
         try:
             _browser.close()
@@ -323,10 +398,25 @@ def _install_chromium() -> str:
     return ""
 
 
+# Contexts set their own proxy (the run's egress proxy); the launch-level one is
+# a placeholder Chromium on Windows needs before per-context proxies work.
+# WebRTC may only use proxied connections, and Chromium itself resolves nothing
+# but localhost names — every other name is resolved by the proxy, after the
+# allowlist said yes, so no lookup leaks the host either.
+_LAUNCH = {
+    "headless": True,
+    "proxy": {"server": "http://per-context"},
+    "args": ["--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+             # 127.0.0.1 is excluded or Chromium cannot reach the proxy itself.
+             "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost, "
+             "EXCLUDE *.localhost, EXCLUDE 127.0.0.1, EXCLUDE [::1]"],
+}
+
+
 def _launch_chromium(pw: Any) -> Any:
     """Headless Chromium, installing the browser build ONCE if it is missing."""
     try:
-        return pw.chromium.launch(headless=True)
+        return pw.chromium.launch(**_LAUNCH)
     except Exception as exc:  # noqa: BLE001 — decide then re-raise or retry
         msg = str(exc).lower()
         if not (_browser_install_allowed()
@@ -336,7 +426,7 @@ def _launch_chromium(pw: Any) -> Any:
         err = _install_chromium()
         if err:
             raise RuntimeError(f"chromium install failed: {err}") from exc
-        return pw.chromium.launch(headless=True)
+        return pw.chromium.launch(**_LAUNCH)
 
 
 def _get_context(run_id: str) -> Any:
@@ -353,11 +443,24 @@ def _get_context(run_id: str) -> Any:
             _pw_handle = sync_playwright().start()
         if _browser is None:
             _browser = _launch_chromium(_pw_handle)
-        ctx = _browser.new_context()
-        page = ctx.new_page()
+        # Every non-loopback connection goes through this run's egress proxy.
+        # Service workers are blocked: a page should not keep code running
+        # (and fetching) after the agent has looked at it.
+        proxy = _proxies.get(run_id) or _start_proxy(run_id)
+        _proxies[run_id] = proxy
+        ctx = _browser.new_context(
+            service_workers="block",
+            proxy={"server": f"http://127.0.0.1:{proxy.port}",
+                   "username": proxy.username, "password": proxy.password})
         _console[run_id] = []
+        page = ctx.new_page()
         _attach_listeners(page, run_id)
     except Exception:
+        _console.pop(run_id, None)
+        stale = _proxies.pop(run_id, None)
+        if stale is not None:
+            with contextlib.suppress(Exception):
+                stale.stop()
         _teardown_globals()
         raise
     _contexts[run_id] = (ctx, page)
@@ -368,6 +471,10 @@ def _get_context(run_id: str) -> Any:
 def destroy_context(run_id: str) -> None:
     """Close BrowserContext + cleanup global handles when last run is gone."""
     _console.pop(run_id, None)
+    proxy = _proxies.pop(run_id, None)
+    if proxy is not None:
+        with contextlib.suppress(Exception):
+            proxy.stop()
     pair = _contexts.pop(run_id, None)
     if pair is not None:
         ctx, _page = pair

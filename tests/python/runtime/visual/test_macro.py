@@ -254,10 +254,25 @@ def test_a_model_chosen_public_host_is_not_vouched_for(monkeypatch):
     assert _macro._vouched_hosts("http://evil.example.com/", None) == frozenset()
 
 
-def test_a_started_service_host_is_vouched_for():
+def _resolve_to(monkeypatch, ip):
+    import socket
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        lambda *a, **k: [(0, 0, 0, "", (ip, 0))])
+
+
+def test_a_started_service_host_on_the_lan_is_vouched_for(monkeypatch):
+    _resolve_to(monkeypatch, "192.168.1.20")
     hosts = _macro._vouched_hosts("http://dev-box:5173/app",
                                   {"url": "http://dev-box:5173"})
     assert hosts == frozenset({"dev-box"})
+
+
+def test_a_service_that_prints_a_public_url_vouches_for_nothing(monkeypatch):
+    # serve scrapes the URL from the service log: `echo http://evil.com` must
+    # not turn evil.com into a vouched host for the browser and its proxy.
+    _resolve_to(monkeypatch, "93.184.216.34")
+    assert _macro._vouched_hosts("https://evil.com/?d=1",
+                                 {"url": "https://evil.com"}) == frozenset()
 
 
 @pytest.mark.parametrize("base,path,expected", [
@@ -300,3 +315,26 @@ def test_url_plus_cmd_does_not_start_a_second_server(monkeypatch):
     out = _macro.ui_check({"url": "http://127.0.0.1:8788/",
                            "cmd": "python3 -m http.server 8788"})
     assert out["ok"] is True
+
+
+def test_blocked_hosts_are_named_so_the_agent_does_not_chase_them(monkeypatch):
+    fake = _FakeBrowser(console=[
+        {"kind": "blocked", "level": "warning",
+         "url": "https://fonts.googleapis.com/css2?family=Inter", "text": "x"},
+        {"kind": "blocked", "level": "warning",
+         "url": "https://fonts.googleapis.com/other", "text": "x"},
+        {"kind": "blocked", "level": "warning",
+         "url": "https://cdn.example.com/a.js", "text": "x"},
+    ])
+    _install(monkeypatch, fake)
+    out = _macro.ui_check({"url": "http://localhost:5173"})
+    assert out["blocked_hosts"] == ["cdn.example.com", "fonts.googleapis.com"]
+    assert "not a UI bug" in out["blocked_note"]
+    assert out["console_error_count"] == 0
+
+
+def test_no_blocked_key_when_nothing_was_blocked(monkeypatch):
+    fake = _FakeBrowser()
+    _install(monkeypatch, fake)
+    out = _macro.ui_check({"url": "http://localhost:5173"})
+    assert "blocked_hosts" not in out

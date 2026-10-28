@@ -353,3 +353,150 @@ def test_a_refused_url_never_launches_a_browser(monkeypatch):
     monkeypatch.setattr(br, "_get_context", _explode)
     out = br.browse("goto", url="http://not-allowed.example/")
     assert out["error"] == "url_not_in_allowlist"
+
+
+# ── request guard: every request, not just goto, answers to the allowlist ──
+
+@pytest.fixture
+def _locked(monkeypatch):
+    """No web fetching, no operator allowlist: only local hosts pass."""
+    monkeypatch.delenv("AIFORGE_ALLOW_WEB_FETCH", raising=False)
+    monkeypatch.delenv("AIFORGE_BROWSER_ALLOWLIST", raising=False)
+    br._vouched.clear()
+    yield
+    br._vouched.clear()
+
+
+@pytest.mark.parametrize("url", [
+    "http://localhost:5173/app.js", "http://127.0.0.1:8080/api",
+    "http://192.168.1.20:3000/", "data:image/png;base64,AAAA",
+    "blob:http://localhost:5173/abc", "about:blank"])
+def test_request_guard_allows_local_and_in_process(_locked, url):
+    assert br._request_ok("r", url) is True
+
+
+@pytest.mark.parametrize("url", [
+    "https://fonts.googleapis.com/css2", "https://evil.example/collect?d=1",
+    "http://169.254.169.254/latest/meta-data/", "wss://evil.example/socket",
+    "https://www.google.com/search?q=secret", ""])
+def test_request_guard_blocks_the_open_web(_locked, url):
+    assert br._request_ok("r", url) is False
+
+
+def test_request_guard_follows_the_operator_allowlist(_locked, monkeypatch):
+    from aiforge_core.net import egress
+    monkeypatch.setattr(egress, "host_allowed", lambda u: "cdn.allowed.dev" in u)
+    monkeypatch.setattr(egress, "hard_off", lambda: False)
+    monkeypatch.setenv("AIFORGE_BROWSER_ALLOWLIST", "cdn.allowed.dev")
+    assert br._request_ok("r", "https://cdn.allowed.dev/lib.js") is True
+    assert br._request_ok("r", "https://cdn.other.dev/lib.js") is False
+
+
+def test_a_vouch_reaches_callbacks_for_its_run_and_dies_with_the_call(_locked):
+    # Playwright callbacks and proxy threads cannot see the ContextVar, so the
+    # grant is mirrored per run — and must not outlive reset_allow.
+    import threading
+
+    def in_callback(run_id):        # a fresh thread: no ContextVar, like a
+        out = []                    # Playwright callback or a proxy thread
+        t = threading.Thread(target=lambda: out.append(
+            br._request_ok(run_id, "http://devbox:5173/main.js")))
+        t.start()
+        t.join()
+        return out[0]
+
+    token = br.allow_hosts(["devbox"], run_id="r1")
+    try:
+        assert in_callback("r1") is True
+        assert in_callback("r2") is False
+    finally:
+        br.reset_allow(token)
+    assert in_callback("r1") is False
+    assert "r1" not in br._vouched
+
+
+def test_nested_vouches_for_one_host_release_one_at_a_time(_locked):
+    outer = br.allow_hosts(["devbox"], run_id="r1")
+    inner = br.allow_hosts(["devbox"], run_id="r1")
+    br.reset_allow(inner)
+    assert br._vouched["r1"] == ["devbox"]
+    br.reset_allow(outer)
+    assert "r1" not in br._vouched
+    assert br._request_ok("r1", "http://devbox/") is False
+
+
+def test_blocked_connections_are_named_for_the_agent(_locked):
+    br._console["g"] = []
+    br._record_blocked("g", "https://evil.example:443/", "connection")
+    assert br.drain_console("g") == [{
+        "kind": "blocked", "level": "warning", "url": "https://evil.example:443/",
+        "text": "connection blocked: host not local or allowlisted"}]
+
+
+def test_a_late_block_after_destroy_does_not_revive_the_run(_locked):
+    br._record_blocked("gone", "https://evil.example:443/", "connection")
+    assert "gone" not in br._console
+
+
+@pytest.mark.parametrize("host,port,ok", [
+    ("fd12::5", 3000, True),          # ULA LAN dev server, bracketed correctly
+    ("::1", 8080, True),
+    ("cafe::1", 443, False),          # must not be read as host "cafe"
+    ("evil.example", 443, False),
+])
+def test_proxy_checks_ipv6_hosts_whole(_locked, host, port, ok):
+    br._vouched["r"] = ["cafe"]
+    assert br._proxy_allows("r", host, port) is ok
+
+
+def test_context_goes_through_its_own_egress_proxy(monkeypatch):
+    ctx = MagicMock()
+    browser = MagicMock()
+    browser.new_context.return_value = ctx
+    br._pw_handle = MagicMock()
+    br._browser = browser
+    br._get_context("px")
+    try:
+        port = br._proxies["px"].port
+        assert port > 0
+        px = br._proxies["px"]
+        browser.new_context.assert_called_once_with(
+            service_workers="block",
+            proxy={"server": f"http://127.0.0.1:{port}",
+                   "username": px.username, "password": px.password})
+    finally:
+        br._contexts["keep"] = (MagicMock(), MagicMock())
+        br.destroy_context("px")
+        br._contexts.pop("keep", None)
+    assert "px" not in br._proxies
+
+
+def test_a_failed_context_stops_its_proxy(monkeypatch):
+    browser = MagicMock()
+    browser.new_context.side_effect = RuntimeError("boom")
+    br._pw_handle = MagicMock()
+    br._browser = browser
+    with pytest.raises(RuntimeError):
+        br._get_context("bad")
+    assert "bad" not in br._proxies
+
+
+def test_launch_keeps_dns_and_webrtc_behind_the_proxy():
+    args = " ".join(br._LAUNCH["args"])
+    assert "disable_non_proxied_udp" in args
+    assert "MAP * ~NOTFOUND" in args and "EXCLUDE localhost" in args
+    assert br._LAUNCH["headless"] is True
+
+
+def test_a_failed_goto_lets_the_error_page_settle_before_raising(monkeypatch):
+    # Otherwise the late chrome-error commit interrupts the NEXT goto.
+    monkeypatch.setattr(br, "_playwright_available", lambda: True)
+    page = MagicMock()
+    page.goto.side_effect = RuntimeError("net::ERR_BLOCKED_BY_CLIENT")
+    monkeypatch.setattr(br, "_get_context", lambda rid: (MagicMock(), page))
+    out = br.browse("goto", url="http://localhost:5173/go-out")
+    assert out["error"] == "browser_op_failed"
+    wait = page.wait_for_url.call_args
+    assert wait.kwargs["timeout"] == 3000
+    assert wait.args[0]("chrome-error://chromewebdata/") is True
+    assert wait.args[0]("http://localhost:5173/") is False

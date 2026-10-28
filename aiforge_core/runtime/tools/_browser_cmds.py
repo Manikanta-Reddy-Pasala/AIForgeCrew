@@ -3,6 +3,7 @@ and text extraction."""
 from __future__ import annotations
 
 import base64
+import contextlib
 from typing import Any
 
 from aiforge_core.runtime.sandbox import resolve_inside_root
@@ -20,7 +21,15 @@ def _pkg():
 def _goto(page: Any, url: str) -> dict[str, Any]:
     if not _pkg()._allowlist_ok(url):
         return {"ok": False, "error": "url_not_in_allowlist", "url": url}
-    response = page.goto(url, timeout=30000)
+    try:
+        response = page.goto(url, timeout=30000)
+    except Exception:
+        # A refused or failed navigation rejects BEFORE Chromium commits its
+        # error page; left pending, that commit interrupts the NEXT goto.
+        with contextlib.suppress(Exception):
+            page.wait_for_url(lambda u: u.startswith("chrome-error://"),
+                              timeout=3000)
+        raise
     status = response.status if response else None
     return {
         "ok": True, "url": page.url, "title": page.title(), "status": status,
