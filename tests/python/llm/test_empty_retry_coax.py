@@ -172,3 +172,31 @@ def test_all_empty_returns_none(monkeypatch):
                       temperature=None, max_tokens=None, top_p=None, extras=None,
                       timeout_s=30, role="chat", source="primary")
     assert out is None
+
+
+def test_no_think_keeps_an_image_turn_an_image_turn():
+    # str() on a multimodal turn sent the picture as the text of a Python list:
+    # the VLM never saw it and described an image it made up.
+    from aiforge_core.llm.client._text import _append_no_think
+    img = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    msgs = [{"role": "user", "content": [{"type": "text", "text": "what is this"}, img]}]
+    out = _append_no_think(msgs)
+    assert out[0]["content"] == [{"type": "text", "text": "what is this"}, img,
+                                 {"type": "text", "text": "/no_think"}]
+    assert msgs[0]["content"][-1] is img            # caller's list untouched
+    assert _append_no_think(out)[0]["content"] == out[0]["content"]   # idempotent
+
+
+def test_reasoning_off_body_still_carries_the_image(monkeypatch):
+    from aiforge_core.llm import reasoning
+    from aiforge_core.llm.client import _http
+    from aiforge_core.llm.router import Endpoint
+    monkeypatch.setattr(reasoning, "reasoning_off", lambda *a, **k: True)
+    ep = Endpoint(base_url="http://x/v1", api_key="", model="vlm",
+                  provider="openai_compatible", role="vision", extras={})
+    img = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    body = json.loads(_http._build_body(
+        ep, [{"role": "user", "content": [{"type": "text", "text": "q"}, img]}],
+        None, 100, None, None))
+    content = body["messages"][-1]["content"]
+    assert isinstance(content, list) and img in content

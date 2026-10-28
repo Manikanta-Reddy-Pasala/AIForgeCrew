@@ -346,6 +346,24 @@ def test_a_missing_raw_file_is_a_404(client, store, media):
     assert client.get("/api/chat/media/99/raw").status_code == 404
 
 
+def test_a_capture_is_served_so_the_chat_can_show_it(client, monkeypatch, tmp_path):
+    from aiforge_core.runtime import visual
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    cid, _path = visual.save_capture(b"\x89PNG-shot", "ui")
+    r = client.get(f"/api/chat/captures/{cid}")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/png"
+    assert r.content == b"\x89PNG-shot"
+
+
+@pytest.mark.parametrize("cid", ["ui-1-000001-deadbeef", "..%2F..%2Fetc%2Fpasswd",
+                                 ".hidden"])
+def test_an_unknown_or_unsafe_capture_is_a_404(client, monkeypatch, tmp_path, cid):
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "secret.png").write_bytes(b"no")
+    assert client.get(f"/api/chat/captures/{cid}").status_code == 404
+
+
 # ─── the turn digest ───────────────────────────────────────────────────
 
 

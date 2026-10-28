@@ -7,6 +7,7 @@ import { fmtElapsed } from './Chat.helpers';
 import { SubtaskList } from './Chat.SubtaskList';
 import { CapturedPill } from './Chat.CapturedPill';
 import { AgentStepRow } from './Chat.AgentSteps';
+import { Screenshots, captureIds } from './Chat.Screenshots';
 import { similarText } from './Chat.reduce';
 
 // ── AssistantBubble — renders steps + final text ──────────────────────────────
@@ -176,6 +177,8 @@ export function AssistantBubble({
       )}
       {/* Evidence for every task this turn finished — shown, not asked for. */}
       {!streaming && evidenceItems && evidenceItems.some(s => s.evidence) && <EvidenceCard items={evidenceItems} />}
+      {/* Screenshots the tools took — shown, not folded into the steps. */}
+      <Screenshots ids={captureIds(steps)} />
       {/* Changes diff — always visible (the deliverable), below the answer. */}
       {changeSteps.length > 0 && (
         <div style={{ marginTop: text ? 8 : 0, display: 'flex', flexDirection: 'column', gap: 8 }}>

@@ -434,7 +434,7 @@ CATALOG: dict = {
     # the wrong key made every native browse tool-call arrive with no command.
     "browse": ("Drive a headless browser: command = goto|screenshot|click|fill|"
                "extract_text|viewport|wait_for|console|scroll|type|key_press|"
-               "close.",
+               "close. A screenshot is shown to the user under your answer.",
                {"command": "s", "url": "s", "selector": "s", "text": "s",
                 "path": "s", "width": "i", "height": "i", "state": "s",
                 "ms": "i", "full_page": "b"}, ("command",)),
@@ -442,7 +442,9 @@ CATALOG: dict = {
     "ui_check": ("Open the running app in a headless browser, screenshot it, "
                  "and report what a vision model SEES plus the page's console "
                  "and network errors. Pass url= for an app already running, or "
-                 "cmd= to start it first.",
+                 "cmd= to start it first. Also the way to answer a user who "
+                 "asks for a screenshot: the image is shown to them under "
+                 "your answer.",
                  {"url": "s", "cmd": "s", "path": "s", "port": "i",
                   "width": "i", "height": "i", "full_page": "b",
                   "settle_ms": "i", "ready_timeout_s": "i", "label": "s"}, ()),

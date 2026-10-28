@@ -602,6 +602,17 @@ def chat_media_delete(media_id: int) -> None:
         pass
 
 
+@router.get("/api/chat/captures/{capture_id}", responses={404: {"description": "Not found"}})
+def chat_capture_raw(capture_id: str) -> FileResponse:
+    """A screenshot ``ui_check`` / ``browse screenshot`` took, so the chat can
+    SHOW it. ``capture_path`` refuses any id carrying a path separator."""
+    from aiforge_core.runtime.visual import capture_path
+    path = capture_path(capture_id)
+    if path is None:
+        raise HTTPException(404, "capture not found")
+    return FileResponse(path, media_type="image/png")
+
+
 @router.get("/api/chat/media/{media_id}/raw", responses={404: {"description": "Not found"}})
 def chat_media_raw(media_id: int) -> FileResponse:
     from aiforge_core.runtime import chat_store

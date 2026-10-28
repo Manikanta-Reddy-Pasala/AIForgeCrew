@@ -124,7 +124,17 @@ def _append_no_think(messages: list[dict]) -> list[dict]:
     out = [dict(m) for m in (messages or [])]
     for m in reversed(out):
         if m.get("role") == "user":
-            cur = str(m.get("content") or "").rstrip()
+            content = m.get("content")
+            if isinstance(content, list):
+                # A multimodal turn. ``str()`` on it sent the image to the
+                # model as the text of a Python list — the VLM never saw the
+                # picture and described one it made up (every UI audit did).
+                last = content[-1] if content else {}
+                if not (isinstance(last, dict) and last.get("type") == "text"
+                        and str(last.get("text") or "").rstrip().endswith("/no_think")):
+                    m["content"] = [*content, {"type": "text", "text": "/no_think"}]
+                return out
+            cur = str(content or "").rstrip()
             # idempotent — never append twice (a fast role already coaxed on
             # attempt 0 must not become "… /no_think /no_think" on a retry).
             if not cur.endswith("/no_think"):

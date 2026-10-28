@@ -313,6 +313,10 @@ export function chatMediaDelete(mediaId: number): Promise<void> {
 export function chatMediaRawURL(mediaId: number): string {
   return `${BASE}/chat/media/${mediaId}/raw`;
 }
+// A screenshot ui_check / browse took this turn (see /api/chat/captures).
+export function chatCaptureURL(captureId: string): string {
+  return `${BASE}/chat/captures/${encodeURIComponent(captureId)}`;
+}
 
 // Stop the in-flight run for a session (halts agents + kills subprocesses).
 export function chatSessionStop(id: number): Promise<{ stopped: boolean }> {

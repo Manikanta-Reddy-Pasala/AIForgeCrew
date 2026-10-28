@@ -207,3 +207,14 @@ def test_ui_ask_tool_is_soft(monkeypatch):
     out = _pipeline._t_ui_ask({"capture_id": "x"}, ".")
     assert out["ok"] is False
     assert out["error"] == "ui_ask_failed"
+
+
+def test_the_agent_is_told_screenshots_reach_the_user():
+    # Without this the model answers "I cannot share images" to a user who
+    # asked for a screenshot — the chat shows every capture under the answer.
+    from aiforge_core.runtime.chat_agent._prompt_text import _SYSTEM
+    from aiforge_core.runtime.chat_agent._tools._schemas import CATALOG
+    text = _SYSTEM.format(cwd="/tmp/work")
+    assert "ASKS for a screenshot" in text
+    assert "shown to the user under your answer" in text
+    assert "user who asks for a screenshot" in CATALOG["ui_check"][0]
