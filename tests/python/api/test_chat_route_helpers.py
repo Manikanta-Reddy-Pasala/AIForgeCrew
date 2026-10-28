@@ -648,7 +648,7 @@ def test_a_short_chat_does_not_read_the_source_tree(pp, decide, monkeypatch):
 def test_pipeline_approvals_force_the_gated_sequential_path(pp, decide,
                                                             monkeypatch):
     from aiforge_core.config import approval_settings as aps
-    monkeypatch.setattr(aps, "required", lambda kind: True)
+    monkeypatch.setattr(aps, "required", lambda kind, session_id=None: True)
     _decide(pp, team=True)
     assert decide["team_approvals"] is True
 
@@ -657,7 +657,7 @@ def test_an_unreadable_approval_setting_fails_safe_to_gated(pp, decide,
                                                             monkeypatch):
     from aiforge_core.config import approval_settings as aps
     monkeypatch.setattr(aps, "required",
-                        lambda kind: (_ for _ in ()).throw(OSError("x")))
+                        lambda kind, session_id=None: (_ for _ in ()).throw(OSError("x")))
     _decide(pp, team=True)
     assert decide["team_approvals"] is True
 

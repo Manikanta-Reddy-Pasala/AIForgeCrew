@@ -216,6 +216,12 @@ def _forget_grants(session_id=None) -> None:
         repo_roles.forget(session_id)
     except Exception:  # noqa: BLE001
         pass
+    # A chat's own approvals choice: a new chat 1 must not inherit "off".
+    try:
+        from aiforge_core.config import approval_settings
+        approval_settings.forget_session(session_id)
+    except Exception:  # noqa: BLE001
+        pass
     try:
         from aiforge_core.runtime.chat_agent import _sticky_tools
         _sticky_tools.forget(session_id)

@@ -273,11 +273,12 @@ function ApprovalsCard() {
 
   return (
     <div className="card" style={{ marginBottom: 16 }}>
-      <h2 style={{ fontSize: 14 }}>Approvals <span className="small muted">· per chat mode</span></h2>
+      <h2 style={{ fontSize: 14 }}>Approvals <span className="small muted">· default per chat mode</span></h2>
       <div className="subtitle" style={{ marginTop: 4, marginBottom: 12 }}>
         When ON, the mode pauses for your Approve/Reject before risky or
         file-changing tool calls. Turn OFF to let a mode run uninterrupted.
-        Denied-by-policy actions and destructive deletes still confirm.
+        These are defaults: the Approvals switch in a chat changes that chat
+        only. Denied-by-policy actions and destructive deletes still confirm.
       </div>
       {APPROVAL_MODES.map(({ key, label, hint }) => {
         const on = flags[key];

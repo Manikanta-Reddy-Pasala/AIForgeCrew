@@ -142,6 +142,14 @@ export const api = {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled }),
     }),
+  // One chat's own toggles: its choice per mode, else the Settings default.
+  sessionApprovals: (sessionId: number) =>
+    j<{ chat: boolean; plan: boolean; pipeline: boolean }>(`/chat/sessions/${sessionId}/approvals`),
+  setSessionApproval: (sessionId: number, mode: 'chat' | 'plan' | 'pipeline', enabled: boolean) =>
+    j<{ chat: boolean; plan: boolean; pipeline: boolean }>(`/chat/sessions/${sessionId}/approvals/${mode}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    }),
   responseLanguage: () => j<ResponseLanguage>('/chat/response-language'),
   setResponseLanguage: (change: { language?: string; style?: string }) =>
     j<ResponseLanguage>('/chat/response-language', {

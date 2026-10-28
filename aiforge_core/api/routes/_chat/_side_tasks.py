@@ -265,6 +265,13 @@ def create(parent_id: int, content: str, mode: str = "simple") -> dict:
         # written and edits are serialised (see pump), not copied.
         if parent.get("workdir"):
             chat_store.set_session_workdir(child["id"], parent["workdir"])
+        # It works in the parent's folder, so it keeps the parent's approvals
+        # choice — a chat set to "on" for a sensitive repo stays gated.
+        try:
+            from aiforge_core.config import approval_settings
+            approval_settings.copy_session(parent["id"], child["id"])
+        except Exception:  # noqa: BLE001 — the child then uses the defaults
+            pass
     pump(parent["id"])
     return _view(chat_store.get_session(child["id"]) or child)
 

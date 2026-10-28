@@ -29,7 +29,7 @@ def app_client(monkeypatch, tmp_path):
     # These are the PARALLEL / best-of-N paths. Pipeline approvals (on by
     # default) force the gated SEQUENTIAL pipeline instead.
     monkeypatch.setattr("aiforge_core.config.approval_settings.required",
-                        lambda mode: False)
+                        lambda mode, session_id=None: False)
     import aiforge_core.config.env as envmod
     importlib.reload(envmod)
     import aiforge_core.tickets.backend_factory as bf

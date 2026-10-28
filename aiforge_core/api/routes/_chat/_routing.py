@@ -387,7 +387,7 @@ def _decide_chat_route(_pp, prompt, agent_mode, team, parallel_team, cwd,
     team_approvals = bool(team)   # fail safe → gated sequential
     try:
         from aiforge_core.config import approval_settings as _aps
-        team_approvals = bool(team and _aps.required("team"))
+        team_approvals = bool(team and _aps.required("team", session_id))
     except Exception:  # noqa: BLE001
         pass
     return _cr.decide(

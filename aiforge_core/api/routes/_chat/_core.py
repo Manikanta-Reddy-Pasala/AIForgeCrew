@@ -39,8 +39,7 @@ def approval_settings_get() -> dict:
     """Per-chat-mode approval toggles (Chat/Plan/Pipeline). True = that mode
     pauses for human Approve/Reject on ask-policy / review-gated tools."""
     from aiforge_core.config import approval_settings
-    m = approval_settings.all_modes()
-    return {"chat": m["simple"], "plan": m["plan"], "pipeline": m["team"]}
+    return _ui_keys(approval_settings.all_modes())
 
 
 @router.put("/api/chat/approval-settings/{mode}", responses={400: {"description": "Bad request"}})
@@ -52,6 +51,38 @@ def approval_settings_set(mode: str, body: _ApprovalModeBody) -> dict:
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return approval_settings_get()
+
+
+def _ui_keys(m: dict) -> dict:
+    return {"chat": m["simple"], "plan": m["plan"], "pipeline": m["team"]}
+
+
+@router.get("/api/chat/sessions/{session_id}/approvals", responses={404: {"description": "Not found"}})
+def session_approvals_get(session_id: int) -> dict:
+    """This chat's approval toggles: its own choice per mode, else the
+    Settings default for that mode."""
+    from aiforge_core.config import approval_settings
+    from aiforge_core.runtime import chat_store
+    if not chat_store.get_session(session_id):
+        raise HTTPException(404, f"session {session_id} not found")
+    return _ui_keys(approval_settings.session_modes(session_id))
+
+
+@router.put("/api/chat/sessions/{session_id}/approvals/{mode}",
+            responses={400: {"description": "Bad request"}, 404: {"description": "Not found"},
+                       409: {"description": "Per-chat approvals file unreadable"}})
+def session_approvals_set(session_id: int, mode: str, body: _ApprovalModeBody) -> dict:
+    """Enable/disable approvals for one mode in THIS chat only."""
+    from aiforge_core.config import approval_settings
+    from aiforge_core.runtime import chat_store
+    if not chat_store.get_session(session_id):
+        raise HTTPException(404, f"session {session_id} not found")
+    try:
+        return _ui_keys(approval_settings.set_session(session_id, mode, body.enabled))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except OSError as exc:
+        raise HTTPException(409, str(exc))
 
 
 class _ResponseLanguageBody(BaseModel):

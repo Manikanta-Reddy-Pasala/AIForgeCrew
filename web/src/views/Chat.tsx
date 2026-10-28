@@ -318,7 +318,7 @@ function ContextToggle({ chatMode, contextMode, setContextMode, busy, onCompact,
   );
 }
 
-// Per-mode approval toggle — pause for Approve/Reject in this mode.
+// Per-chat approval toggle — pause for Approve/Reject in this chat's mode.
 function ApprovalsToggle({ approvalsOn, toggleApprovals, modeApprovalKey, chatMode }: Readonly<{
   approvalsOn: boolean; toggleApprovals: () => void;
   modeApprovalKey: (m: ChatMode) => 'chat' | 'plan' | 'pipeline'; chatMode: ChatMode;
@@ -328,8 +328,8 @@ function ApprovalsToggle({ approvalsOn, toggleApprovals, modeApprovalKey, chatMo
       type="button"
       onClick={toggleApprovals}
       title={approvalsOn
-        ? `Approvals ON for ${modeApprovalKey(chatMode)} — pauses for Approve/Reject on risky/file-changing tools. Click to turn OFF.`
-        : `Approvals OFF for ${modeApprovalKey(chatMode)} — runs uninterrupted (hard-denied actions + destructive deletes still confirm). Click to turn ON.`}
+        ? `Approvals ON in this chat (${modeApprovalKey(chatMode)}) — pauses for Approve/Reject on risky/file-changing tools. Click to turn OFF.`
+        : `Approvals OFF in this chat (${modeApprovalKey(chatMode)}) — runs uninterrupted (hard-denied actions + destructive deletes still confirm). Click to turn ON.`}
       style={{
         display: 'flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-xs)',
         padding: '2px 8px', borderRadius: 999, cursor: 'pointer',
@@ -795,15 +795,30 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
     } catch { return 'simple'; }
   });
 
-  // Per-mode approval toggle (mirrors Settings → Approvals). ON = this mode
-  // pauses for Approve/Reject on risky/file-changing tools; OFF = runs
-  // uninterrupted (hard DENY + destructive-delete still confirm).
+  // Approval toggle for THIS chat. Settings → Approvals holds the per-mode
+  // defaults; flipping it here changes only the open chat. ON = pauses for
+  // Approve/Reject on risky/file-changing tools; OFF = runs uninterrupted
+  // (hard DENY + destructive-delete still confirm).
   const [approvalFlags, setApprovalFlags] =
     useState<{ chat: boolean; plan: boolean; pipeline: boolean }>(
       { chat: true, plan: true, pipeline: true });
+  // Bumped by every toggle: a load that started before it must not undo it.
+  const approvalSeq = useRef(0);
+  // The chat the toggle itself just created: its flags come from its PUT, a
+  // GET racing that PUT could answer with the defaults.
+  const approvalNewChat = useRef<number | null>(null);
+  const approvalCreating = useRef(false);
   useEffect(() => {
-    chatApi.approvalSettings().then(setApprovalFlags).catch(() => { /* */ });
-  }, []);
+    const sid = activeId;
+    if (sid !== null && sid === approvalNewChat.current) { approvalNewChat.current = null; return; }
+    approvalNewChat.current = null;
+    setApprovalFlags({ chat: true, plan: true, pipeline: true });   // not the last chat's
+    const seq = approvalSeq.current;
+    const load = sid === null ? chatApi.approvalSettings() : chatApi.sessionApprovals(sid);
+    load.then(f => {
+      if (activeIdRef.current === sid && approvalSeq.current === seq) setApprovalFlags(f);
+    }).catch(() => { toast.error('Could not load this chat\'s approvals'); });
+  }, [activeId]);
   const modeApprovalKey = (m: ChatMode): 'chat' | 'plan' | 'pipeline' => {
     if (m === 'team') return 'pipeline';
     if (m === 'plan') return 'plan';
@@ -813,12 +828,23 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   async function toggleApprovals() {
     const key = modeApprovalKey(chatMode);
     const next = !approvalFlags[key];
+    // A brand-new chat has no session yet: create it so the choice is its own.
+    let sid = activeId;
+    if (sid === null) {
+      if (approvalCreating.current) return;      // a double click: one chat only
+      approvalCreating.current = true;
+      try { sid = await createSession(); } finally { approvalCreating.current = false; }
+      if (sid === null) return;
+      approvalNewChat.current = sid;
+    }
+    approvalSeq.current += 1;
     setApprovalFlags(f => ({ ...f, [key]: next }));   // optimistic
     try {
-      setApprovalFlags(await chatApi.setApprovalMode(key, next));
-      toast.success(`${key} approvals ${next ? 'on' : 'off'}`);
+      const flags = await chatApi.setSessionApproval(sid, key, next);
+      if (activeIdRef.current === sid) setApprovalFlags(flags);
+      toast.success(`Approvals ${next ? 'on' : 'off'} for this chat`);
     } catch (e: any) {
-      setApprovalFlags(f => ({ ...f, [key]: !next }));
+      if (activeIdRef.current === sid) setApprovalFlags(f => ({ ...f, [key]: !next }));
       toast.error(e?.message || 'Failed to update approvals');
     }
   }

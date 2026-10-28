@@ -171,6 +171,8 @@ export const chatApi = {
   syncModels: api.syncModels,
   approvalSettings: api.approvalSettings,
   setApprovalMode: api.setApprovalMode,
+  sessionApprovals: api.sessionApprovals,
+  setSessionApproval: api.setSessionApproval,
   responseLanguage: api.responseLanguage,
   setResponseLanguage: api.setResponseLanguage,
   providersTest: api.providersTest,

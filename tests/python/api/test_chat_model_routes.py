@@ -80,6 +80,26 @@ def test_an_unknown_mode_is_a_400(client, monkeypatch):
     assert "unknown mode" in r.json()["detail"]
 
 
+def test_a_chat_toggle_changes_only_that_chat(client, monkeypatch, tmp_path):
+    from aiforge_core.config import approval_settings
+    from aiforge_core.runtime import chat_store
+    monkeypatch.setattr(approval_settings, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(chat_store, "get_session", lambda sid: {"id": sid})
+    r = client.put("/api/chat/sessions/5/approvals/chat", json={"enabled": False})
+    assert r.json() == {"chat": False, "plan": True, "pipeline": True}
+    assert client.get("/api/chat/sessions/6/approvals").json() == {
+        "chat": True, "plan": True, "pipeline": True}
+    assert client.get("/api/chat/approval-settings").json()["chat"] is True
+
+
+def test_a_chat_toggle_on_a_missing_chat_is_a_404(client, monkeypatch):
+    from aiforge_core.runtime import chat_store
+    monkeypatch.setattr(chat_store, "get_session", lambda sid: None)
+    assert client.get("/api/chat/sessions/9/approvals").status_code == 404
+    r = client.put("/api/chat/sessions/9/approvals/chat", json={"enabled": False})
+    assert r.status_code == 404
+
+
 # ─── the thin ask + the deprecated retain ──────────────────────────────
 
 

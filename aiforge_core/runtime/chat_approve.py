@@ -87,15 +87,15 @@ def get_mode(session_id: int | None) -> str:
 
 
 def approvals_required(session_id: int | None) -> bool:
-    """Whether this session's mode requires human approval (per the per-mode
-    Settings toggle). Defaults ON — an unknown session or any lookup failure
+    """Whether this session's mode requires human approval (the chat's own
+    toggle, else the per-mode Settings default). Defaults ON — an unknown session or any lookup failure
     fails safe to requiring approval. Autonomous runs (id None) return True but
     the gates independently no-op without a human approver."""
     if session_id is None:
         return True
     try:
         from aiforge_core.config import approval_settings
-        return approval_settings.required(get_mode(session_id))
+        return approval_settings.required(get_mode(session_id), session_id)
     except Exception:  # noqa: BLE001
         return True
 

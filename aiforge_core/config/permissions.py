@@ -45,6 +45,7 @@ _SECRET_FILES = (
     "jobs.db",
     "llm_rate.db",
     "approval_settings.json",
+    "chat-approvals.json",
     "runtime_settings.json",
     "captured_rules.json",
     "rule_flags.json",
