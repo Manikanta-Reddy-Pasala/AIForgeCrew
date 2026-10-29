@@ -97,9 +97,9 @@ def fold_async(session_id: int | None) -> None:
         log.info("fold for session %s deferred to the compaction window (%02d:00)",
                  session_id, _hour or 0)
         return
-    import contextvars
+    from aiforge_core.runtime.request_context import bound_to
     threading.Thread(
-        target=contextvars.copy_context().run, args=(fold_sync, session_id),
+        target=bound_to(session_id, fold_sync), args=(session_id,),
         name=f"chat-fold-{session_id}", daemon=True).start()
 
 

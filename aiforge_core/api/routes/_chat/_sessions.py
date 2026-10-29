@@ -505,7 +505,9 @@ def chat_session_delete(session_id: int) -> None:
     # idempotent + never raises; skip via AIFORGE_SESSION_COMPACT_ON_SWITCH=0.
     from aiforge_core.runtime import chat_session_fold
     if chat_session_fold._enabled():
-        chat_session_fold.fold_sync(session_id)
+        # On the chat's own model, before its pick is dropped with the rows.
+        from aiforge_core.runtime.request_context import bound_to
+        bound_to(session_id, chat_session_fold.fold_sync)(session_id)
     # Its own worktree goes with it; the branch (and so every commit) stays.
     # A team run parked for this chat (another repo's worktree) goes too.
     try:

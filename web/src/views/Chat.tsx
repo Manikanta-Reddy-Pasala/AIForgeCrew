@@ -6,7 +6,7 @@ import { Icon } from '../icons';
 import { MdLite, copyText as mdCopyText } from '../mdlite';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { AgentStep, SubtaskItem, RuleState, RuleStateCtx, LiveTurn, ChatMode, BuilderKind, PendingApproval } from './Chat.types';
-import { menuBtn, menuItem, LS_SESSION_KEY, LS_MODEL_KEY, LS_MODE_KEY, BUILDER_KINDS, BUILDER_LABELS, LS_BUILDER_KEY, relTime, dateTimeLabel, toAgentStep, msgAwaiting, getDismissedPlans, addDismissedPlan, getDismissedRecipes, addDismissedRecipe, isStoppedTurn, fmtTokens, pickDockSubtasks } from './Chat.helpers';
+import { menuBtn, menuItem, LS_SESSION_KEY, LS_MODE_KEY, BUILDER_KINDS, BUILDER_LABELS, LS_BUILDER_KEY, relTime, dateTimeLabel, toAgentStep, msgAwaiting, getDismissedPlans, addDismissedPlan, getDismissedRecipes, addDismissedRecipe, isStoppedTurn, fmtTokens, pickDockSubtasks } from './Chat.helpers';
 import { pickChatModel } from '../chatModelPick';
 import { SubtaskList } from './Chat.SubtaskList';
 import { SideTasks } from './Chat.SideTasks';
@@ -348,9 +348,9 @@ function ApprovalsToggle({ approvalsOn, toggleApprovals, modeApprovalKey, chatMo
 // The value of the "use the default model" entry: no model id contains it.
 const MODEL_DEFAULT = '\u001edefault';
 
-function ModelSelect({ busy, modelActive, selectedModel, onPick, own, onDefault,
-                       modelOptions }: Readonly<{
-  busy: boolean; modelActive: boolean; selectedModel: string;
+function ModelSelect({ busy, modelActive, selectedModel, selectedUrl, onPick, own,
+                       onDefault, modelOptions }: Readonly<{
+  busy: boolean; modelActive: boolean; selectedModel: string; selectedUrl: string;
   onPick: (model: string, baseUrl: string) => void; own: boolean;
   onDefault: () => void; modelOptions: ChatModelEntry[];
 }>) {
@@ -371,7 +371,9 @@ function ModelSelect({ busy, modelActive, selectedModel, onPick, own, onDefault,
       <select
         className="chat-model-select"
         value={modelOptionKey(
-          modelOptions.find(o => o.id === selectedModel) || { id: selectedModel })}
+          (selectedUrl && modelOptions.find(o => o.id === selectedModel
+                                             && sameUrl(o.base_url, selectedUrl)))
+          || modelOptions.find(o => o.id === selectedModel) || { id: selectedModel })}
         onChange={async e => {
           // The value carries the ENDPOINT as well as the id: two registered
           // copies of one model differ only by base_url, and an id-only value
@@ -406,6 +408,11 @@ function ModelSelect({ busy, modelActive, selectedModel, onPick, own, onDefault,
 // model can be registered against two servers, and those are two different
 // things to pick. The separator is a control character so no URL can contain it.
 const MODEL_KEY_SEP = '\u001f';
+
+function sameUrl(a?: string, b?: string): boolean {
+  const n = (u?: string) => (u || '').trim().replace(/\/+$/, '').replace(/\/v1$/i, '').toLowerCase();
+  return n(a) === n(b);
+}
 
 function modelOptionKey(opt: { id: string; base_url?: string }): string {
   return `${opt.id}${MODEL_KEY_SEP}${opt.base_url || ''}`;
@@ -856,6 +863,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
     const seq = ++modelSeq.current;
     // Not the last chat's model while this one loads.
     if (globalModel) setSelectedModel(globalModel);
+    setSelectedUrl('');
     setModelActive(true);
     setModelOwn(false);
     if (sid === null) return;
@@ -868,19 +876,21 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   function showSessionModel(m: SessionModel) {
     const model = m.model || '';
     if (!model) return;
-    setModelOptions(opts => opts.some(o => o.id === model) ? opts
+    setModelOptions(opts => opts.some(o => o.id === model
+                                      && (!m.base_url || sameUrl(o.base_url, m.base_url))) ? opts
       : [{ id: model, label: model, active: false, base_url: m.base_url } as ChatModelEntry, ...opts]);
     setSelectedModel(model);
+    setSelectedUrl(m.own ? m.base_url : '');
     setModelActive(m.active);
     setModelOwn(m.own);
   }
   async function useDefaultModel() {
     const sid = activeId;
     if (sid === null) return;
-    modelSeq.current += 1;
+    const seq = ++modelSeq.current;
     try {
       const m = await chatApi.clearSessionModel(sid);
-      if (activeIdRef.current === sid) showSessionModel(m);
+      if (activeIdRef.current === sid && modelSeq.current === seq) showSessionModel(m);
       toast.success('This chat uses the default model again');
     } catch (err: any) {
       toast.error(`Failed to reset the model: ${err.message}`);
@@ -896,13 +906,14 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
       if (sid === null) return;
       modelNewChat.current = sid;
     }
-    modelSeq.current += 1;
+    const seq = ++modelSeq.current;
     const before = selectedModel;
     setSelectedModel(model);
+    setSelectedUrl(baseUrl);
     try {
       const res = await chatApi.setSessionModel(sid, model, chatProvider || undefined,
                                                 baseUrl || undefined);
-      if (activeIdRef.current !== sid) return;
+      if (activeIdRef.current !== sid || modelSeq.current !== seq) return;
       showSessionModel(res);
       if (res.warning) {
         toast.warning(res.warning);
@@ -913,7 +924,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
         toast.warning(`${label} is not loaded — it may fail or take time to load`);
       }
     } catch (err: any) {
-      if (activeIdRef.current === sid) setSelectedModel(before);
+      if (activeIdRef.current === sid && modelSeq.current === seq) setSelectedModel(before);
       toast.error(`Failed to set model: ${err.message}`);
     }
   }
@@ -1027,9 +1038,9 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   // Model selector
   const [modelOptions, setModelOptions] = useState<ChatModelEntry[]>([]);
   const [chatProvider, setChatProvider] = useState<string>('');
-  const [selectedModel, setSelectedModel] = useState<string>(() => {
-    try { return localStorage.getItem(LS_MODEL_KEY) || ''; } catch { return ''; }
-  });
+  const [selectedModel, setSelectedModel] = useState<string>('');
+  // WHICH copy of the model (its endpoint): one id can be on two servers.
+  const [selectedUrl, setSelectedUrl] = useState<string>('');
   const [modelActive, setModelActive] = useState<boolean>(true);
   // Orchestrator model (enhancer + planner — the layer-1 splitter agents)
   const [orchModel, setOrchModel] = useState<string>('');
@@ -2628,7 +2639,8 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
             <ApprovalsToggle approvalsOn={approvalsOn} toggleApprovals={toggleApprovals}
                              modeApprovalKey={modeApprovalKey} chatMode={chatMode} />
             <ModelSelect busy={busy} modelActive={modelActive}
-                         selectedModel={selectedModel} onPick={pickModel}
+                         selectedModel={selectedModel} selectedUrl={selectedUrl}
+                         onPick={pickModel}
                          own={modelOwn} onDefault={useDefaultModel}
                          modelOptions={modelOptions} />
             <OrchSelect chatMode={chatMode} orchOptions={orchOptions} orchModel={orchModel}

@@ -62,7 +62,8 @@ def resolve_litellm(role: str) -> dict[str, Any]:
     # Cheap-tier fallback (Change 3): an unpinned cheap role (triage/enhancer)
     # uses AIFORGE_CHEAP_MODEL when set, so throwaway ops don't load the big
     # model on a serial endpoint. No-op when the env is unset.
-    _cheap = cheap_model_for(role)
+    # Not on a chat's own endpoint: the cheap model lives on the global one.
+    _cheap = None if row.get("_chat_endpoint") else cheap_model_for(role)
     if _cheap:
         model = _cheap
     # Always add LiteLLM provider prefix unless caller already supplied one.

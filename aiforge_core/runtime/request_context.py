@@ -142,6 +142,18 @@ def reset_session_id(token) -> None:
         _SESSION_ID.set(None)
 
 
+def bound_to(session_id, fn):
+    """``fn`` wrapped to run with ``session_id`` bound — for work started on
+    another thread for one chat (its model is the chat's own pick)."""
+    def run(*args, **kwargs):
+        token = set_session_id(session_id)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            reset_session_id(token)
+    return run
+
+
 def context_session_id() -> "str | None":
     """Session id bound to THIS context only — no env fallback.
 

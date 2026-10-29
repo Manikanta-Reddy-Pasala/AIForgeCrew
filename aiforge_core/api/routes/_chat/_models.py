@@ -247,6 +247,15 @@ def chat_model_set(body: _ChatModelBody) -> dict:
             "env_override": env_ovr, "warning": warning}
 
 
+def _global_chat_url(cur: dict) -> str:
+    """The URL the global chat role is actually called on (env included)."""
+    try:
+        from aiforge_core.llm.router import resolve
+        return getattr(resolve("chat"), "base_url", "") or cur.get("base_url") or ""
+    except Exception:  # noqa: BLE001
+        return cur.get("base_url") or ""
+
+
 def _session_or_404(session_id: int) -> None:
     from aiforge_core.runtime import chat_store
     if not chat_store.get_session(session_id):
@@ -289,19 +298,17 @@ def session_model_set(session_id: int, body: _ChatModelBody) -> dict:
     from aiforge_core.config import chat_models
     _session_or_404(session_id)
     cur = _acfg.get("chat") if "chat" in _acfg.archetypes() else {}
-    conn = _model_registry.connection_for(body.model, body.base_url or "") or {}
-    other = bool(body.base_url) and _url_key(body.base_url) != _url_key(cur.get("base_url"))
-    if conn.get("base_url") or other:
-        base, key, tls = _endpoint_for_picked_model(body.model, cur, body.base_url or "")
-    else:
-        # Served by the global endpoint: follow it (and its key) rather than
-        # freezing today's URL into this chat's pick.
+    base, key, tls = _endpoint_for_picked_model(body.model, cur, body.base_url or "")
+    if not base or chat_models._url(base) in (
+            chat_models._url(cur.get("base_url")), chat_models._url(_global_chat_url(cur))):
+        # Served by the global endpoint: follow it (its key, its provider)
+        # rather than freezing today's URL into this chat's pick.
         base, key, tls = None, None, False
     try:
         chat_models.set_session(
             session_id, body.model, base_url=base,
-            provider=body.provider or cur.get("provider"), api_key=key,
-            insecure_tls=tls)
+            provider=(body.provider or cur.get("provider")) if base else None,
+            api_key=key, insecure_tls=tls)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     except OSError as exc:

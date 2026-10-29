@@ -129,6 +129,12 @@ def current() -> "dict | None":
     return get(sid) if sid else None
 
 
+def _url(u) -> str:
+    """Comparable endpoint: no trailing slash or ``/v1``, any case."""
+    u = str(u or "").strip().rstrip("/").lower()
+    return u[:-3] if u.endswith("/v1") else u
+
+
 def apply(role: str, row: dict, own_roles=frozenset()) -> dict:
     """``row`` (the resolved config for ``role``) with the running chat's pick
     applied: for ``chat`` / ``_default``, and for a role with no model of its
@@ -145,8 +151,7 @@ def apply(role: str, row: dict, own_roles=frozenset()) -> dict:
     out["model"] = pick["model"]
     if pick.get("provider"):
         out["provider"] = pick["provider"]
-    same = (pick.get("base_url") or "").rstrip("/").lower() == \
-        (row.get("base_url") or "").rstrip("/").lower()
+    same = _url(pick.get("base_url")) == _url(row.get("base_url"))
     if pick.get("base_url") and not same:
         out["base_url"] = pick["base_url"]
         # A key belongs to its endpoint: never send this row's key to the

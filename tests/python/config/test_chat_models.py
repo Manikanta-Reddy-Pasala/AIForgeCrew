@@ -116,19 +116,21 @@ def test_a_role_pinned_to_the_default_model_keeps_its_pin():
     assert _in(5, "verifier")["model"] == "coder"
 
 
-def test_threads_from_background_spawn_see_the_chat_pick():
-    import threading
-    from aiforge_core.runtime import background
-    C.set_session(5, "big-model")
-    seen, done = {}, threading.Event()
-
-    def job():
-        seen["m"] = A.get("chat")["model"]
-        done.set()
-    tok = R.set_session_id(5)
+def test_a_pick_on_the_same_server_keeps_the_global_key_and_no_cheap_swap(monkeypatch):
+    A.set_role("chat", "openai_compatible", "coder", base_url="http://boxA:1234",
+               api_key="sk-A")
+    C.set_session(5, "other", base_url="http://boxA:1234/v1")
+    assert _in(5, "chat")["api_key"] == "sk-A"
+    monkeypatch.setenv("AIFORGE_CHEAP_MODEL", "tiny")
+    C.set_session(6, "far", base_url="http://boxB:9/v1")
+    tok = R.set_session_id(6)
     try:
-        background.spawn(job, name="t")
+        assert A.resolve_litellm("triage")["model_id"].endswith("far")
     finally:
         R.reset_session_id(tok)
-    done.wait(5)
-    assert seen["m"] == "big-model"
+
+
+def test_bound_to_runs_on_the_chat_pick():
+    C.set_session(5, "big-model")
+    assert R.bound_to(5, lambda: A.get("chat")["model"])() == "big-model"
+    assert A.get("chat")["model"] == "coder"
