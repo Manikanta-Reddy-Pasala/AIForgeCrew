@@ -74,6 +74,18 @@ class LLMRequestFailing(RuntimeError):
                        f"failed this request {failures} times in a row ({what})")
         super().__init__(message)
 
+class LLMStallBudget(LLMRequestFailing):
+    """The turn has waited out its whole stall budget (llm/request_health):
+    the model never answered across every send. Final — no fallback model, no
+    re-send, no persist round: more of the same silence will not answer it."""
+
+    reason = "llm_stall_budget"
+
+
+def stall_budget_spent(exc: BaseException | None) -> bool:
+    return any(isinstance(e, LLMStallBudget) for e in chain(exc))
+
+
 _OUTAGE_STATUS = frozenset({408, 502, 503, 504})
 _AUTH_STATUS = frozenset({401, 403})
 _CONFIG_STATUS = frozenset({400, 404, 405, 413, 422})

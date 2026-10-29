@@ -532,6 +532,9 @@ def make_native_complete_fn(mode: str = "act", builder: str = "",
         try:
             msg = client.complete_raw(role, msgs, tools=tools, tool_choice="auto")
         except Exception as exc:  # noqa: BLE001
+            from aiforge_core.llm import model_outage
+            if model_outage.stall_budget_spent(exc):
+                raise           # the turn waited out its budget: no fallback
             if _native_error_is_permanent(exc, model):
                 degraded[0] = True
                 return client.complete(role, convo)

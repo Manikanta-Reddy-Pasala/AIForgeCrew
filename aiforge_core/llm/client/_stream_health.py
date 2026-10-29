@@ -29,6 +29,7 @@ slower than AIFORGE_LLM_PREFILL_TOK_S, is what the first-token bound assumes.
 """
 from __future__ import annotations
 
+import errno
 import socket
 import time
 
@@ -45,10 +46,15 @@ class LLMStreamStalled(ConnectionError):
     connection failure as an LLM issue — the retry wrapper, the escalation
     policy's markers, the native-tools fallback — handles it unchanged."""
 
-    def __init__(self, phase: str, seconds: float) -> None:
+    def __init__(self, phase: str, seconds: float, keepalive: bool = False) -> None:
         self.phase = phase
         self.seconds = seconds
-        what = ("no first token" if phase == "first_token"
+        self.keepalive = keepalive
+        #: Seconds of the turn's stall budget left after this stall (None = no
+        #: budget): set by the stream watch, read by the re-send status line.
+        self.budget_left = None
+        what = ("only keep-alives, no data" if keepalive
+                else "no first token" if phase == "first_token"
                 else "the machine slept under it" if phase == "after_sleep"
                 else "stream went idle")
         super().__init__(f"LLM stream stalled: {what} for {seconds:.0f}s "
@@ -111,13 +117,36 @@ class StreamWatch:
             return 0.0
         return health
 
+    def _budget(self) -> float:
+        """The turn's stall budget as it applies to this request (0 = none)."""
+        budget = _health().stall_budget_s()
+        if budget <= 0:
+            return 0.0
+        import os
+        plain = self._first / max(1.0, _health().stall_scale())
+        budget = max(budget, 3.0 * plain)
+        if (os.environ.get("AIFORGE_LLM_TIMEOUT_S") or "").strip():
+            budget = max(budget, self.read_timeout)   # the user's own choice
+        return budget
+
+    def _budget_left(self) -> float:
+        """Seconds of the turn's stall budget still to spend; 0 = no budget.
+        Never shorter than one doubled send of this request (3x its plain
+        first-token bound), nor than ``AIFORGE_LLM_TIMEOUT_S`` when the user
+        set it: a slow prefill the doubling exists for must still fit, and a
+        user who raised the timeout is not cut short by a default."""
+        budget = self._budget()
+        if not budget:
+            return 0.0
+        return max(1.0, budget - _health().stalled_seconds())
+
     def _apply(self, health: float) -> None:
         self.bound = self._tightest(health)
-        budget = _health().stall_budget_s()
-        if self.bound and budget > 0:
-            # Never past the request's stall budget: the last send waits only
-            # what is left of it.
-            self.bound = min(self.bound, max(1.0, budget - _health().stalled_seconds()))
+        left = self._budget_left()
+        if self.bound and left and self.phase == "first_token":
+            # The last send waits only what is left of the budget. Not once
+            # data flows: a model visibly answering is alive.
+            self.bound = min(self.bound, left)
         if self.sock is None or not self.bound:
             return
         try:
@@ -133,22 +162,24 @@ class StreamWatch:
     def check_silence(self) -> None:
         """A non-data line arrived (an SSE ``: keep-alive`` comment, a blank
         line). Keep-alives are liveness — a slow prefill sends them, and is
-        given ``AIFORGE_LLM_KEEPALIVE_FACTOR`` (default 4) times the bound —
-        but not forever: a proxy that keeps the stream alive for an upstream
-        that is gone held the call with no end. Measured from the last DATA
-        event."""
-        if not self.bound:
+        given ``AIFORGE_LLM_KEEPALIVE_FACTOR`` (default 4) times the bound (the
+        caller's read timeout when no bound applies) — but not forever: a
+        proxy that keeps the stream alive for an upstream that is gone held
+        the call with no end. Measured from the last DATA event."""
+        base = self.bound or self.read_timeout
+        if not base:
             return
         from ._helpers import _float_env
         factor = max(1.0, _float_env("AIFORGE_LLM_KEEPALIVE_FACTOR", 4.0))
-        limit = self.bound * factor
-        budget = _health().stall_budget_s()
-        if budget > 0:
-            limit = min(limit, max(self.bound, budget - _health().stalled_seconds()))
+        limit = base * factor
+        left = self._budget_left()
+        if left and self.phase == "first_token":
+            limit = min(limit, max(base, left))
         quiet = time.monotonic() - self._last_data
         if quiet > limit:
             _health().note_stall(quiet)
-            raise _over_budget(LLMStreamStalled(self.phase, quiet), self.url)
+            raise _over_budget(LLMStreamStalled(self.phase, quiet, keepalive=True),
+                               self.url, self._budget())
 
     def got_data(self) -> None:
         """First real data event: from now on the idle bound applies. The
@@ -174,31 +205,42 @@ class StreamWatch:
 
     def stalled(self, exc: BaseException) -> BaseException:
         """``exc`` as an LLMStreamStalled when one of OUR bounds fired it; else
-        ``exc`` unchanged (the caller's own read timeout keeps its meaning)."""
+        ``exc`` unchanged (the caller's own read timeout keeps its meaning).
+        A read that failed with ETIMEDOUT is TCP keepalive finding the peer
+        gone: a dropped connection (re-sent), not a timeout of ours or a
+        shipped one."""
+        if getattr(exc, "errno", None) == errno.ETIMEDOUT:
+            return ConnectionResetError(
+                errno.ECONNRESET, "the connection to the model server died "
+                "(no answer to TCP keepalive)")
         if self.bound and isinstance(exc, (socket.timeout, TimeoutError)):
-            _health().note_stall(self.bound)   # the next send waits twice as long
-            return _over_budget(LLMStreamStalled(self.phase, self.bound), self.url)
+            quiet = time.monotonic() - self._last_data
+            _health().note_stall(quiet)        # the next send waits twice as long
+            return _over_budget(LLMStreamStalled(self.phase, quiet), self.url,
+                                self._budget())
         return exc
 
 
-def _over_budget(stall: "LLMStreamStalled", url: str) -> BaseException:
-    """``stall`` — or, once this request has waited out its whole stall budget
-    across its sends, the LLM issue that ends it (not retried, not waited
-    for): more of the same silence will not answer it."""
-    budget = _health().stall_budget_s()
+def _over_budget(stall: "LLMStreamStalled", url: str, budget: float) -> BaseException:
+    """``stall`` — or, once the turn has waited out its whole stall budget,
+    the LLM issue that ends it (no re-send, no fallback, no persist round):
+    more of the same silence will not answer it."""
     spent = _health().stalled_seconds()
     if budget <= 0 or spent < budget:
+        stall.budget_left = (budget - spent) if budget > 0 else None
         return stall
-    from aiforge_core.llm.model_outage import LLMRequestFailing
-    mins = spent / 60.0
-    return LLMRequestFailing(url, _health().current().stalls if _health().current() else 1,
-                             stall, (
-        f"LLM issue: the model at {url or '?'} sent nothing back for "
-        f"{mins:.0f} min in total across {_sends()} sends of this request "
-        f"(last: {stall}). The connection to it may be dropping long "
-        "requests (a Docker/WSL network that closes idle connections, a "
-        "proxy timeout), or the prompt is too big for it to start in time. "
-        "Raise AIFORGE_LLM_STALL_BUDGET_S to wait longer."))
+    from aiforge_core.llm.model_outage import LLMStallBudget
+    what = ("sent only keep-alives, no answer" if stall.keepalive
+            else "stopped sending mid-answer" if stall.phase == "idle"
+            else "never started answering")
+    return LLMStallBudget(url, _sends(), stall, (
+        f"the model at {url or '?'} {what} — {spent / 60:.0f} min "
+        f"of silence in total this turn, over {_sends()} stalled sends. The "
+        "connection may be dropping long requests (a Docker / WSL network or "
+        "a proxy that closes idle connections), or the prompt is too big for "
+        "the model to start in time. To wait longer, set "
+        "AIFORGE_LLM_STALL_BUDGET_S (seconds) in aiforge.env / the container "
+        "environment and restart."))
 
 
 def _sends() -> int:

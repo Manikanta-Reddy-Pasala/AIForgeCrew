@@ -298,6 +298,8 @@ def _bind_team_session(session_id, q) -> None:
     chat_interject.set_steerable(session_id, True)
     os.environ["AIFORGE_CURRENT_SESSION"] = str(session_id)
     _rc.set_session_id(session_id)
+    from aiforge_core.llm import request_health as _rh
+    _rh.bind_turn()                 # the turn's stall budget starts here
 
 
 def _close_turn(session_id, cwd, raw_prompt, final_text, steps, sub_items,

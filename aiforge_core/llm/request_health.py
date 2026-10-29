@@ -159,10 +159,27 @@ def current() -> "RequestHealth | None":
 
 def note_stall(seconds: float = 0.0) -> None:
     """A send of the bound request stalled (called by the stream watch)."""
+    secs = max(0.0, float(seconds or 0.0))
     h = _HEALTH.get()
     if h is not None:
         h.stalls += 1
-        h.stall_s += max(0.0, float(seconds or 0.0))
+        h.stall_s += secs
+    turn = _TURN.get()
+    if turn is not None:
+        turn[0] += secs
+
+
+#: The stall total of the TURN in flight on this context (a one-item list,
+#: shared by every thread the turn starts): the budget is the turn's, not one
+#: request's — a fallback model, a repaired re-send or a persist round each
+#: start a new request and used to start a new budget with it.
+_TURN: contextvars.ContextVar = contextvars.ContextVar(
+    "aiforge_turn_stalls", default=None)
+
+
+def bind_turn() -> None:
+    """A new turn starts on this context: its stall total starts at 0."""
+    _TURN.set([0.0])
 
 
 def stall_budget_s() -> float:
@@ -175,6 +192,11 @@ def stall_budget_s() -> float:
 
 
 def stalled_seconds() -> float:
+    """Silence waited out so far: the turn's total when a turn is bound, else
+    this request's."""
+    turn = _TURN.get()
+    if turn is not None:
+        return turn[0]
     h = _HEALTH.get()
     return h.stall_s if h is not None else 0.0
 
@@ -216,7 +238,7 @@ def _reset_for_tests() -> None:
 
 
 __all__ = ["RequestHealth", "bind", "current", "note_stall", "stall_scale",
-           "stall_budget_s", "stalled_seconds",
+           "stall_budget_s", "stalled_seconds", "bind_turn",
            "note_prefill", "prefill_tps", "same_request_fails",
            "crash_resends", "crash_window_s", "note_answer", "last_answer",
            "track_crashes", "crashes_tracked"]

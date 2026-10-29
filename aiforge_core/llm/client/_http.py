@@ -278,15 +278,18 @@ def _open_connection(ep: Endpoint, url: str, timeout_s: int):
 def _keep_alive_on_connect(conn) -> None:
     """TCP keepalive on the model connection (``AIFORGE_LLM_TCP_KEEPALIVE_S``,
     default 20; 0 off). While a big prompt is prefilled no byte crosses the
-    connection for minutes; a Docker Desktop / WSL NAT or a proxy drops such
-    an idle flow without telling either side, and the call then waited out
-    every stall bound in silence. A probe every few seconds keeps the flow
-    alive, and a peer that is really gone fails the read in about a minute."""
+    connection for minutes; a kernel NAT (WSL2, conntrack) drops such an idle
+    flow without telling either side, and the call then waited out every
+    stall bound in silence. Probes keep that flow alive, and a peer that is
+    really gone fails the read in about a minute. (A userspace proxy — Docker
+    Desktop's — answers the probes itself; there the stall budget is the
+    guard.)"""
     import os
     try:
         idle = int(float(os.environ.get("AIFORGE_LLM_TCP_KEEPALIVE_S", "20")))
-    except ValueError:
+    except (ValueError, OverflowError):
         idle = 20
+    idle = min(idle, 7200)
     if idle <= 0:
         return
     orig = conn.connect
@@ -305,7 +308,7 @@ def set_keepalive(sock, idle: int) -> None:
         return
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-    except (OSError, AttributeError, ValueError):
+    except Exception:  # noqa: BLE001 — never break the model call over it
         return
     for name, val in (("TCP_KEEPIDLE", idle), ("TCP_KEEPINTVL", 10),
                       ("TCP_KEEPCNT", 6), ("TCP_KEEPALIVE", idle)):
@@ -314,7 +317,7 @@ def set_keepalive(sock, idle: int) -> None:
             continue
         try:
             sock.setsockopt(socket.IPPROTO_TCP, opt, val)
-        except (OSError, ValueError):
+        except Exception:  # noqa: BLE001
             pass
 
 

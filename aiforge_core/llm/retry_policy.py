@@ -248,6 +248,8 @@ def persist_caps(policy: RetryPolicy, verdict, exc, model_outage) -> "tuple[int,
         return CONFIG_ROUNDS, 0.0
     if verdict == model_outage.SHIPPED:
         return 2, 0.0
+    if model_outage.stall_budget_spent(exc):
+        return 0, 0.0          # the turn already waited out its whole budget
     if model_outage.issue(exc) is not None:
         return 6, 0.0
     return _BIG, policy.persist_other_s

@@ -46,7 +46,7 @@ def as_stall(exc: BaseException, ep: dict[str, Any], messages: list):
         from aiforge_core.llm.client._stream_health import LLMStreamStalled
         from aiforge_core.runtime.pr_reviewer import _read_bound
         bound = _read_bound(ep, messages) or 0.0
-        request_health.note_stall()
+        request_health.note_stall(float(bound))
         return LLMStreamStalled("first_token", float(bound))
     except Exception:  # noqa: BLE001
         return None

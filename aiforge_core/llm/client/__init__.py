@@ -299,6 +299,9 @@ def _complete_raw_once(role: str, messages: list[dict], *,
         # A fallback chain that only existed on the other path was a fallback
         # the user could never actually reach: "chat picks one model and if it
         # fails it should go to the others" is exactly this function.
+        from aiforge_core.llm import model_outage as _mo
+        if _mo.stall_budget_spent(exc):
+            raise       # the turn's stall budget is spent: no other model either
         body = _native_model_chain(role, ep, payload, timeout_s,
                                    meter=_meter_tok)
         if body is None:

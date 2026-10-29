@@ -594,6 +594,10 @@ def _produce(pc):
         held.append(True)
         _capture_bg.start_turn(pc)   # a late capture waits for this turn
         _sess_token = _reqctx.set_session_id(pc.session_id)
+        # One stall budget for the whole turn (llm/request_health): every
+        # request, re-send and fallback of this turn draws on it.
+        from aiforge_core.llm import request_health as _rh
+        _rh.bind_turn()
         # THE turn boundary for the request meter. Here, not inside the ReAct
         # loop: the enhancer / team-downgrade classifier / capture probes
         # below are requests this message caused, and resetting after them
