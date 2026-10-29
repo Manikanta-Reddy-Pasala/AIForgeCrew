@@ -587,6 +587,7 @@ def _produce(pc):
     # Live subtask panel state, persisted so it survives a navigate-away.
     st = {"final_text": "", "awaiting": False, "subtasks": []}
     _meter = _meter_token = _sess_token = _repo_token = None
+    _turn_tok = None
     held = []                 # release only a keep-awake hold this turn took
     try:
         _ensure_chat_worktree(pc)
@@ -597,7 +598,7 @@ def _produce(pc):
         # One stall budget for the whole turn (llm/request_health): every
         # request, re-send and fallback of this turn draws on it.
         from aiforge_core.llm import request_health as _rh
-        _rh.bind_turn()
+        _turn_tok = _rh.bind_turn()
         # THE turn boundary for the request meter. Here, not inside the ReAct
         # loop: the enhancer / team-downgrade classifier / capture probes
         # below are requests this message caused, and resetting after them
@@ -625,6 +626,11 @@ def _produce(pc):
         pc.run.publish({"type": "error", "text": str(exc)})
         pc.run.publish({"type": "done"})
     finally:
+        if _turn_tok is not None:
+            # What runs after the turn (its summary, the next-step guess)
+            # does not inherit the turn's spent stall budget.
+            from aiforge_core.llm import request_health as _rh
+            _rh.end_turn(_turn_tok)
         for _cleanup in (_overlap.discard,    # an early enhance the turn never used
                          _capture_bg.flush):  # a background capture still in flight
             try:

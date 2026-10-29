@@ -326,8 +326,8 @@ def crash_evidence(exc: BaseException | None) -> bool:
     links = chain(exc)
     if any(_status(e) in (408, 429, 502, 503, 504) for e in links):
         return False
-    if is_stall(exc):
-        return False
+    if is_stall(exc) or any(type(e).__name__ == "LLMConnectionDead" for e in links):
+        return False            # our side found the connection gone, not a crash
     try:
         from aiforge_core.llm import endpoint_breaker
         if endpoint_breaker.is_connect_error(exc):

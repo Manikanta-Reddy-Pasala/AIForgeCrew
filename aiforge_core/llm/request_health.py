@@ -166,7 +166,14 @@ def note_stall(seconds: float = 0.0) -> None:
         h.stall_s += secs
     turn = _TURN.get()
     if turn is not None:
-        turn[0] += secs
+        # Wall clock, not a sum: stalls of parallel work that overlap in time
+        # (four subtasks queued on a one-slot server) count once.
+        now = time.monotonic()
+        add = max(0.0, now - max(now - secs, turn["last_end"]))
+        turn["spent"] += add
+        turn["last_add"] = add
+        turn["last_end"] = max(turn["last_end"], now)
+        turn["sends"] += 1
 
 
 #: The stall total of the TURN in flight on this context (a one-item list,
@@ -177,9 +184,47 @@ _TURN: contextvars.ContextVar = contextvars.ContextVar(
     "aiforge_turn_stalls", default=None)
 
 
-def bind_turn() -> None:
-    """A new turn starts on this context: its stall total starts at 0."""
-    _TURN.set([0.0])
+def bind_turn():
+    """A new turn starts on this context: its stall total starts at 0. Returns
+    the token for :func:`end_turn`."""
+    return _TURN.set({"spent": 0.0, "last_end": 0.0, "last_add": 0.0, "sends": 0})
+
+
+def end_turn(token) -> None:
+    """The turn is over: calls after it (a summary, the next-step guess) do
+    not inherit its spent budget."""
+    try:
+        _TURN.reset(token)
+    except (ValueError, LookupError):
+        _TURN.set(None)
+
+
+def note_turn_answer() -> None:
+    """The model answered (data flowed): the turn's stall total measures
+    silence in a ROW — a hiccup at step 3 does not shorten step 40."""
+    turn = _TURN.get()
+    if turn is not None:
+        turn["spent"] = 0.0
+        turn["sends"] = 0
+
+
+def refund_last() -> None:
+    """The last stall was the machine sleeping, not the model: not charged."""
+    turn = _TURN.get()
+    if turn is not None:
+        turn["spent"] = max(0.0, turn["spent"] - turn["last_add"])
+        turn["last_add"] = 0.0
+    h = _HEALTH.get()
+    if h is not None and h.stall_s:
+        h.stall_s = 0.0
+
+
+def stalled_sends() -> int:
+    turn = _TURN.get()
+    if turn is not None:
+        return int(turn["sends"])
+    h = _HEALTH.get()
+    return h.stalls if h is not None else 0
 
 
 def stall_budget_s() -> float:
@@ -196,7 +241,7 @@ def stalled_seconds() -> float:
     this request's."""
     turn = _TURN.get()
     if turn is not None:
-        return turn[0]
+        return turn["spent"]
     h = _HEALTH.get()
     return h.stall_s if h is not None else 0.0
 
@@ -238,7 +283,8 @@ def _reset_for_tests() -> None:
 
 
 __all__ = ["RequestHealth", "bind", "current", "note_stall", "stall_scale",
-           "stall_budget_s", "stalled_seconds", "bind_turn",
+           "stall_budget_s", "stalled_seconds", "bind_turn", "end_turn",
+           "note_turn_answer", "refund_last", "stalled_sends",
            "note_prefill", "prefill_tps", "same_request_fails",
            "crash_resends", "crash_window_s", "note_answer", "last_answer",
            "track_crashes", "crashes_tracked"]

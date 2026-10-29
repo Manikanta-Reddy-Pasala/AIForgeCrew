@@ -251,16 +251,16 @@ def _say_retry(ep: Endpoint, attempt: int, attempts: int, label: str,
             head = f"⚠ the model at {url} sent only keep-alives for {_fmt_s(secs)}"
         elif secs and phase == "after_sleep":
             head = "⚠ the machine slept during the model call"
-        elif secs:
+        elif secs and phase != "dead":
             what = "sent nothing back" if phase == "first_token" else "went quiet mid-answer"
             head = f"⚠ the model at {url} {what} for {_fmt_s(secs)}"
+        elif phase == "dead":
+            head = (f"⚠ the connection to the model at {url} died (no answer to "
+                    f"TCP keepalive for {_fmt_s(secs or 0)})")
         else:
-            head = f"⚠ the connection to the model at {url} broke"
+            head = f"⚠ could not reach the model at {url} ({str(exc)[:80]})"
         left = getattr(exc, "budget_left", None) or 0.0
         nxt = ""
-        if secs and phase == "first_token" and not getattr(exc, "keepalive", False):
-            wait = secs * 2 if not left else min(secs * 2, left)
-            nxt = f", waiting up to {_fmt_s(wait)} this time"
         tail = f" ({_fmt_s(left)} of this turn's stall budget left)" if left and secs else ""
         _wait_scope.notify({
             "type": "llm_wait", "state": "resend", "url": url,

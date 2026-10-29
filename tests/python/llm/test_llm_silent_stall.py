@@ -12,8 +12,14 @@ import pytest
 from aiforge_core.llm import _wait_scope, request_health
 from aiforge_core.llm.client import _http, _http_retry
 from aiforge_core.llm.client._stream_health import LLMStreamStalled
-from aiforge_core.llm.model_outage import LLMRequestFailing, LLMStallBudget
+from aiforge_core.llm.model_outage import LLMStallBudget
 from tests.python.llm.test_llm_stream_health import _call, _serve
+
+
+@pytest.fixture(autouse=True)
+def _reset_turn():
+    yield
+    request_health._TURN.set(None)
 
 
 def test_keep_alive_comments_alone_do_not_keep_a_dead_call_alive(monkeypatch):
@@ -65,7 +71,7 @@ def test_a_resend_after_a_stall_is_said_in_the_chat():
     assert len(seen) == 1
     text = seen[0]["text"]
     assert "sent nothing back for 3m" in text and "try 2 of 3" in text
-    assert "waiting up to 6m" in text and "15m of this turn's stall budget left" in text
+    assert "15m of this turn's stall budget left" in text
 
 
 def test_model_connections_get_tcp_keepalive(monkeypatch):
@@ -161,3 +167,74 @@ def test_the_idle_phase_is_never_clamped(monkeypatch):
     w.phase = "idle"
     w._apply(120.0)
     assert w.bound == 120.0
+
+
+def test_an_answer_resets_the_turns_silence(monkeypatch):
+    request_health.bind_turn()
+    request_health.note_stall(500)
+    assert request_health.stalled_seconds() == 500
+    request_health.note_turn_answer()
+    assert request_health.stalled_seconds() == 0 and request_health.stalled_sends() == 0
+
+
+def test_overlapping_parallel_stalls_count_once():
+    import threading
+    request_health.bind_turn()
+    import contextvars
+    ctx = contextvars.copy_context()
+    ts = [threading.Thread(target=ctx.run, args=(request_health.note_stall, 180))
+          for _ in range(4)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert request_health.stalled_seconds() < 200      # not 720
+
+
+def test_a_later_send_still_gets_its_plain_bound(monkeypatch):
+    from aiforge_core.llm.client._stream_health import StreamWatch
+    monkeypatch.setenv("AIFORGE_LLM_FIRST_TOKEN_S", "150")
+    monkeypatch.setenv("AIFORGE_LLM_STALL_BUDGET_S", "1200")
+    request_health.bind_turn()
+    request_health.note_stall(1150)
+    w = StreamWatch(None, b"{}", 0)
+    w._apply(150.0)
+    assert w.bound == 150.0
+
+
+def test_keepalive_death_is_charged_and_never_a_crash(monkeypatch):
+    import errno
+    from aiforge_core.llm import model_outage
+    from aiforge_core.llm.client._stream_health import LLMConnectionDead, StreamWatch
+    monkeypatch.setenv("AIFORGE_LLM_STALL_BUDGET_S", "1200")
+    request_health.bind_turn()
+    w = StreamWatch(None, b"{}", 30)
+    w._last_data -= 80
+    out = w.stalled(TimeoutError(errno.ETIMEDOUT, "Connection timed out"))
+    assert isinstance(out, LLMConnectionDead) and isinstance(out, ConnectionResetError)
+    assert request_health.stalled_seconds() >= 80
+    assert not model_outage.crash_evidence(out)
+
+
+def test_end_turn_gives_later_calls_a_fresh_budget():
+    tok = request_health.bind_turn()
+    request_health.note_stall(1000)
+    request_health.end_turn(tok)
+    assert request_health.stalled_seconds() == 0
+
+
+def test_a_stall_during_sleep_is_refunded():
+    request_health.bind_turn()
+    request_health.note_stall(300)
+    request_health.refund_last()
+    assert request_health.stalled_seconds() == 0
+
+
+def test_the_budget_message_counts_the_turns_sends(monkeypatch):
+    from aiforge_core.llm.client._stream_health import _over_budget
+    request_health.bind_turn()
+    request_health.note_stall(700)
+    request_health._TURN.get()["last_end"] -= 1000    # the 2nd stall came later
+    request_health.note_stall(600)
+    err = _over_budget(LLMStreamStalled("first_token", 600), "http://m", 1200)
+    assert isinstance(err, LLMStallBudget) and "over 2 stalled sends" in str(err)

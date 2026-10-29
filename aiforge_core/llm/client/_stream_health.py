@@ -138,7 +138,10 @@ class StreamWatch:
         budget = self._budget()
         if not budget:
             return 0.0
-        return max(1.0, budget - _health().stalled_seconds())
+        # Never below this request's plain first-token bound: every send
+        # gets a fair wait; the budget decides only whether there is another.
+        plain = self._first / max(1.0, _health().stall_scale())
+        return max(1.0, plain, budget - _health().stalled_seconds())
 
     def _apply(self, health: float) -> None:
         self.bound = self._tightest(health)
@@ -187,6 +190,7 @@ class StreamWatch:
         self._last_data = time.monotonic()
         if self.phase != "idle":
             self.phase = "idle"
+            _health().note_turn_answer()  # silence in a row starts again
             _health().note_prefill(self.url, self._tokens,
                                    time.monotonic() - self._armed)
             self._apply(self._idle)
@@ -210,9 +214,9 @@ class StreamWatch:
         gone: a dropped connection (re-sent), not a timeout of ours or a
         shipped one."""
         if getattr(exc, "errno", None) == errno.ETIMEDOUT:
-            return ConnectionResetError(
-                errno.ECONNRESET, "the connection to the model server died "
-                "(no answer to TCP keepalive)")
+            quiet = time.monotonic() - self._last_data
+            _health().note_stall(quiet)        # dead time counts like silence
+            return _over_budget(LLMConnectionDead(quiet), self.url, self._budget())
         if self.bound and isinstance(exc, (socket.timeout, TimeoutError)):
             quiet = time.monotonic() - self._last_data
             _health().note_stall(quiet)        # the next send waits twice as long
@@ -221,7 +225,22 @@ class StreamWatch:
         return exc
 
 
-def _over_budget(stall: "LLMStreamStalled", url: str, budget: float) -> BaseException:
+class LLMConnectionDead(ConnectionResetError):
+    """TCP keepalive found the model connection dead (a NAT or proxy dropped
+    it). Re-sent like any dropped connection; never evidence that the model
+    server crashed on the request."""
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+        self.phase = "dead"
+        self.keepalive = False
+        self.budget_left = None
+        super().__init__(errno.ECONNRESET,
+                         "the connection to the model server died (no answer "
+                         f"to TCP keepalive after {seconds:.0f}s)")
+
+
+def _over_budget(stall, url: str, budget: float) -> BaseException:
     """``stall`` — or, once the turn has waited out its whole stall budget,
     the LLM issue that ends it (no re-send, no fallback, no persist round):
     more of the same silence will not answer it."""
@@ -231,11 +250,13 @@ def _over_budget(stall: "LLMStreamStalled", url: str, budget: float) -> BaseExce
         return stall
     from aiforge_core.llm.model_outage import LLMStallBudget
     what = ("sent only keep-alives, no answer" if stall.keepalive
+            else "kept losing the connection" if stall.phase == "dead"
             else "stopped sending mid-answer" if stall.phase == "idle"
             else "never started answering")
-    return LLMStallBudget(url, _sends(), stall, (
-        f"the model at {url or '?'} {what} — {spent / 60:.0f} min "
-        f"of silence in total this turn, over {_sends()} stalled sends. The "
+    n = _sends()
+    return LLMStallBudget(url, n, stall, (
+        f"the model at {url or '?'} {what} — {_fmt(spent)} of silence in a "
+        f"row this turn, over {n} stalled send{'s' if n != 1 else ''}. The "
         "connection may be dropping long requests (a Docker / WSL network or "
         "a proxy that closes idle connections), or the prompt is too big for "
         "the model to start in time. To wait longer, set "
@@ -244,8 +265,11 @@ def _over_budget(stall: "LLMStreamStalled", url: str, budget: float) -> BaseExce
 
 
 def _sends() -> int:
-    h = _health().current()
-    return (h.stalls if h is not None else 0) or 1
+    return _health().stalled_sends() or 1
 
 
-__all__ = ["LLMStreamStalled", "StreamWatch", "first_token_s", "idle_s"]
+def _fmt(s: float) -> str:
+    return f"{s / 60:.0f} min" if s >= 90 else f"{s:.0f} s"
+
+
+__all__ = ["LLMConnectionDead", "LLMStreamStalled", "StreamWatch", "first_token_s", "idle_s"]

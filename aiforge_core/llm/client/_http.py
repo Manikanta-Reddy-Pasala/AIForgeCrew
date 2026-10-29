@@ -380,17 +380,23 @@ def _post_cancellable_once(ep: Endpoint, payload: bytes, timeout_s: int,
             return _read_sse_response(conn, url, sink, payload=payload,
                                       read_timeout=timeout_s)
         return _read_http_response(conn, url)
-    except (OSError, ValueError, AttributeError,
+    except (OSError, ValueError, AttributeError, RuntimeError,
             http.client.HTTPException) as exc:
-        # A connection closed under a read surfaces as any of these.
+        # A connection closed under a read surfaces as any of these (and a
+        # stall-budget end raised from the read).
+        if isinstance(exc, RuntimeError) and _wake.cut_by_wake(wake_tok) is None:
+            raise
         if cancel.is_set():
             if isinstance(exc, OSError):
                 raise _LLMCancelled("cancelled mid-request") from exc
             raise
         gap = _wake.cut_by_wake(wake_tok)
         if gap is not None:
-            # The machine slept under this call: a fresh connection now.
+            # The machine slept under this call: a fresh connection now, and
+            # the sleep is not charged to the turn's stall budget.
+            from aiforge_core.llm import request_health
             from ._stream_health import LLMStreamStalled
+            request_health.refund_last()
             raise LLMStreamStalled("after_sleep", gap) from exc
         raise
     finally:
