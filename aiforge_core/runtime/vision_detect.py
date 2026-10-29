@@ -293,8 +293,8 @@ def warm_vision_async(role: str = "chat") -> None:
     import threading
     # In the caller's context: a chat's own model (config/chat_models) is
     # the one to identify.
-    threading.Thread(target=contextvars.copy_context().run,
-                     args=(lambda: _safe_ensure(role),),
+    ctx = contextvars.copy_context()
+    threading.Thread(target=lambda: ctx.run(_safe_ensure, role),
                      name=f"vision-warm-{role}", daemon=True).start()
 
 
