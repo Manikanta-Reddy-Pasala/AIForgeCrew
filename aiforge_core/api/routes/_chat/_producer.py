@@ -112,6 +112,25 @@ def _without_resume_blocks(text: str) -> str:
     return text
 
 
+def _settle_early_exit(pc, answer: str) -> None:
+    """The goal pass answered the turn itself: no agent ran, so what a run
+    would leave behind is put right here — the working transcript carries
+    this exchange, and a handoff record seeded as "running" goes back to
+    what it was."""
+    try:
+        from aiforge_core.runtime import chat_transcript
+        chat_transcript.add_exchange(pc.session_id, pc.history, answer)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from aiforge_core.runtime import handoff_store
+        h = handoff_store.load(pc.session_id)
+        if h and h.get("status") == "running":
+            handoff_store.save(pc.session_id, {**h, "status": h.get("was") or "interrupted"})
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _goal_pass(pc, gctx):
     """Bring the chat's goals in line with this turn's message; a question
     for the user ends the turn waiting on the answer."""
@@ -135,6 +154,7 @@ def _goal_pass(pc, gctx):
         _af_log.debug("goal pass skipped: %s", exc)
         return
     if out.get("question"):
+        _settle_early_exit(pc, out["question"])
         yield {"type": "message", "text": out["question"], "awaiting_input": True}
         yield {"type": "done"}
         gctx["done"] = True
@@ -157,6 +177,7 @@ def _goal_pass(pc, gctx):
         reply = chat_goals.drop_reply(pc.session_id, out)
         if reply:
             # Only goals dropped, nothing to do: the harness says so.
+            _settle_early_exit(pc, reply)
             yield {"type": "message", "text": reply}
             yield {"type": "done"}
             gctx["done"] = True
@@ -167,8 +188,8 @@ def _goal_pass(pc, gctx):
         pc.history[-1] = {**pc.history[-1], "content": pc.history[-1]["content"] + note}
     # The goal pass redirected the work: a restatement of the message would
     # bring the old request back.
-    pc._goals_redirected = bool(out.get("dropped_stopped")
-                                or (out.get("called") and not out.get("current")))
+    pc._goals_redirected = bool(out.get("dropped_stopped") or any(
+        c.startswith("dropped") for c in out.get("changes") or []))
 
 
 def _events(pc):

@@ -32,6 +32,8 @@ _CUE_TAILS = (
     "\n\n---\n[Deliverable",
     "\n\n---\n[RESUME]",
     "\n\n---\n[Already read",
+    "\n\n---\n[HANDOFF",
+    "\n\n---\n[GOALS — the harness",      # runtime/chat_goals.TURN_NOTE_MARK
 )
 
 

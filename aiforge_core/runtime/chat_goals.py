@@ -51,6 +51,9 @@ _MEM: dict = {}          # temporary chats: session id -> goals
 _SESSION_LOCKS: dict = {}
 #: Chats whose current turn ran the goal pass: only those turns close goals.
 _PASSED: set = set()
+#: Chats whose turn just ended after a goal pass: its unread steers may
+#: still be kept (runtime/chat_goals.keep_unread), once.
+_ENDED_PASSED: set = set()
 
 
 def _session_lock(session_id) -> threading.RLock:
@@ -348,6 +351,17 @@ def _apply(data: dict, reply: dict, message: str, turn,
         if gid in by_id and by_id[gid]["status"] == OPEN and gid not in now:
             now.append(gid)
     now += [g for g in new_ids if g not in now]
+    if not now and (reply.get("now") or str(reply.get("current") or "").strip()):
+        # The reply named work it did not list as a goal: the message is that
+        # work (never lose it to an empty "now").
+        text = _flat(reply.get("current") or message, _GOAL_CHARS)
+        gid = _new_id(data)
+        g = {"id": gid, "text": text, "status": OPEN, "turn": turn,
+             "at": int(time.time())}
+        data["goals"].append(g)
+        by_id[gid] = g
+        now = [gid]
+        changes.append(f"added {gid}: {text[:160]}")
     kept = []
     if mid_run:
         # A steer adds to the work in hand; it never takes a goal off it
@@ -389,17 +403,22 @@ _ACT_RE = re.compile(r"\b(?:drop|remove|skip|cancel|stop|undo|revert|redo|"
                      r"delete|forget|scrap|finish|retry)\b", re.I)
 
 
-def _vague_pick(before: dict, changes: list, message: str) -> str:
+def _vague_pick(before: dict, changes: list, message: str,
+                mid_run: bool = False) -> str:
     """A short order that names no goal ("drop it", "redo that one") while
     several goals could be meant: the question to ask instead of guessing
     ("" when it is clear enough)."""
     if len(message.split()) > 8 or not _VAGUE_RE.search(message) \
             or not _ACT_RE.search(message):
         return ""
-    # What "it" can mean: the open goals and the ones the last turn finished.
-    done = [g for g in before["goals"] if g.get("status") == DONE]
-    last = max((g.get("closed_turn") or 0 for g in done), default=0)
-    cands = _open(before) + [g for g in done if (g.get("closed_turn") or 0) == last]
+    if mid_run:
+        # While the agent works, "it" is the work in hand.
+        cands = [g for g in _open(before) if g["id"] in (before.get("now") or [])]
+    else:
+        # What "it" can mean: the open goals and the ones the last turn finished.
+        done = [g for g in before["goals"] if g.get("status") == DONE]
+        last = max((g.get("closed_turn") or 0 for g in done), default=0)
+        cands = _open(before) + [g for g in done if (g.get("closed_turn") or 0) == last]
     if len(cands) < 2:
         return ""
     names = "; ".join(f"({i + 1}) {_flat(g['text'], 120)}"
@@ -465,6 +484,7 @@ def on_message(session_id, message: str, *, role: str = "chat",
         return out
     if not mid_run:
         _PASSED.add(str(session_id))
+        _ENDED_PASSED.discard(str(session_id))
     elif llm and str(session_id) not in _PASSED:
         # A run that did not set the chat's goals (a plan being executed, a
         # wake turn): its steer would become the whole goal. Left alone.
@@ -518,9 +538,12 @@ def _update(session_id, text, out, *, role, mid_run, said, turn, working_on,
             data, changes = _fallback(data, text, mid_run, turn)
         else:
             data, changes = _apply(data, reply, text, turn, mid_run)
+            out["only_drops"] = (not reply.get("now")
+                                 and not str(reply.get("current") or "").strip()
+                                 and "?" not in text)
             q = _flat(reply.get("question"), 400)
             if not q and not asked_before:
-                q = (_vague_pick(before, changes, text)
+                q = (_vague_pick(before, changes, text, mid_run)
                      or (_confirm_drop(_open(before))
                          if _drops_everything(_open(before), data, text)
                          else ""))
@@ -536,8 +559,10 @@ def _update(session_id, text, out, *, role, mid_run, said, turn, working_on,
     if not mid_run and changes:
         # The stopped turn's work itself was dropped: its handoff ("carry on
         # from NEXT") must not lead this turn back into it.
-        out["dropped_stopped"] = any(
-            g["id"] in was_now and g["status"] == DROPPED for g in data["goals"])
+        in_hand = [g for g in data["goals"] if g["id"] in was_now]
+        out["dropped_stopped"] = bool(in_hand) and \
+            any(g["status"] == DROPPED for g in in_hand) and \
+            not any(g["status"] == OPEN for g in in_hand)
     _trim(data)
     _save(session_id, data)
     out["current"] = data.get("current") or ""
@@ -553,6 +578,8 @@ def finish_turn(session_id, *, completed: bool) -> None:
         return
     passed = str(session_id) in _PASSED
     _PASSED.discard(str(session_id))
+    if passed:
+        _ENDED_PASSED.add(str(session_id))
     if not enabled() or not completed or not passed:
         return
     try:
@@ -664,7 +691,8 @@ def drop_reply(session_id, out: dict) -> str:
     changes = out.get("changes") or []
     dropped = [c.split(": ", 1)[-1] for c in changes if c.startswith("dropped")]
     if not out.get("called") or out.get("current") or not dropped \
-            or any(not c.startswith("dropped") for c in changes):
+            or any(not c.startswith("dropped") for c in changes) \
+            or not out.get("only_drops"):
         return ""
     lines = ["OK — dropped: " + "; ".join(_flat(d, 200).rstrip(".") for d in dropped) + "."]
     still = _open(goals(session_id))
@@ -691,6 +719,18 @@ def now_directive(current: str, changes: list) -> str:
     head = "[GOALS — the harness, not the user] "
     what = ("; ".join(changes[:4]) + ". ") if changes else ""
     return f"{head}{what}GOAL NOW (all of it): {current}"
+
+
+def keep_unread(session_id, texts) -> None:
+    """Steers a stopped run never read: their change to the goals is kept
+    without a model call — only for a run that set the chat's goals, and
+    never a give-up ("never mind") made into a goal."""
+    if session_id is None or str(session_id) not in _ENDED_PASSED:
+        return
+    _ENDED_PASSED.discard(str(session_id))
+    for text in texts:
+        if text and not _GIVE_UP_RE.search(text):
+            on_message(session_id, text, mid_run=True, llm=False)
 
 
 def drop_after_turn(session_id, turn: int) -> None:
@@ -731,6 +771,7 @@ def forget(session_id) -> None:
     with _session_lock(session_id):       # not under an update in flight
         _MEM.pop(str(session_id), None)
         _PASSED.discard(str(session_id))
+        _ENDED_PASSED.discard(str(session_id))
         try:
             os.remove(_path(session_id))
         except OSError:
@@ -739,6 +780,6 @@ def forget(session_id) -> None:
         _SESSION_LOCKS.pop(str(session_id), None)
 
 
-__all__ = ["MARK", "TURN_NOTE_MARK", "ask_directive", "drop_reply", "turn_note", "block", "drop_after_turn", "enabled",
+__all__ = ["MARK", "TURN_NOTE_MARK", "ask_directive", "drop_reply", "keep_unread", "turn_note", "block", "drop_after_turn", "enabled",
            "finish_turn", "forget", "goals", "now_directive", "on_message",
            "render"]

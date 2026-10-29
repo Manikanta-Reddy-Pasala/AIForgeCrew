@@ -216,6 +216,13 @@ def _step_prologue(st, n, _cwd, role, complete_fn, session_id, builder):
         # A message that could not be placed against the chat's goals: the
         # harness asks and the turn waits for the answer (the model would be
         # pushed on by the steer reply and the done check).
+        from ._turn import _steer_reply
+        _steer_reply.on_ask(st)
+        try:
+            from ._pause import save as _save_pause
+            _save_pause(session_id, st.convo, asked=False, act_ask=True)
+        except Exception:  # noqa: BLE001
+            pass
         yield {"type": "message", "text": st.goal_question, "awaiting_input": True}
         yield {"type": "done"}
         return None, "return"

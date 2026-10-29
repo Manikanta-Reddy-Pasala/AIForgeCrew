@@ -262,9 +262,9 @@ def _keep_unread_steers(session_id) -> None:
         from aiforge_core.runtime import chat_goals, chat_interject
         if not chat_goals.enabled():
             return
-        for kind, text in chat_interject.drain_items(session_id):
-            if kind != "reject":
-                chat_goals.on_message(session_id, text, mid_run=True, llm=False)
+        chat_goals.keep_unread(session_id, [
+            text for kind, text in chat_interject.drain_items(session_id)
+            if kind != "reject"])
     except Exception:  # noqa: BLE001 — never block a turn's end over goals
         pass
 

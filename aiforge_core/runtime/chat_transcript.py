@@ -246,6 +246,37 @@ def save(session_id, messages, convo, answer: "str | None" = None,
         return False
 
 
+def add_exchange(session_id, messages, answer: str) -> bool:
+    """A turn the harness answered itself (a goal question, "dropped …"):
+    its message and answer join the saved transcript, so the next turn still
+    carries the working context. False when there is none that fits."""
+    if not enabled() or session_id is None or not answer or not messages:
+        return False
+    try:
+        data = json.loads(_path(session_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    users = _users(messages)
+    if not isinstance(data, dict) or not isinstance(data.get("messages"), list) \
+            or len(users) != int(data.get("users") or 0) + 1:
+        return False
+    work = data["messages"] + [
+        {"role": "user", "content": _text(users[-1].get("content"))},
+        {"role": "assistant", "content": answer}]
+    body = json.dumps({**data, "users": len(users), "mark": _mark(users[-1]),
+                       "messages": work})
+    if len(body) > MAX_BYTES:
+        return False
+    try:
+        with _lock:
+            tmp = _path(session_id).with_suffix(".tmp")
+            tmp.write_text(body, encoding="utf-8")
+            os.replace(tmp, _path(session_id))
+        return True
+    except OSError:
+        return False
+
+
 def saved_ratio(session_id) -> "float | None":
     """The characters-per-token ratio measured when the transcript was saved."""
     try:

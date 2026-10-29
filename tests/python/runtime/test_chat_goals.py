@@ -17,6 +17,7 @@ def _env(monkeypatch, tmp_path):
     monkeypatch.setattr(G, "_temporary", lambda sid: False)
     G._MEM.clear()
     G._PASSED.clear()
+    G._ENDED_PASSED.clear()
     G._SESSION_LOCKS.clear()
 
 
@@ -306,8 +307,10 @@ def test_a_failed_call_after_a_stop_keeps_the_stopped_goal_open(monkeypatch):
 def test_a_steer_the_stopped_run_never_read_is_kept_without_a_call(monkeypatch):
     G.on_message(1, "build a login page", turn=1)
     seen = _model(monkeypatch)
-    G.on_message(1, "also add a dark mode", mid_run=True, llm=False)
+    G.finish_turn(1, completed=False)
+    G.keep_unread(1, ["also add a dark mode", "never mind"])
     assert not seen and "dark mode" in G.goals(1)["current"]
+    assert "never mind" not in G.goals(1)["current"]
     assert "build a login page" in G.goals(1)["current"]
 
 
@@ -477,3 +480,59 @@ def test_continue_carries_a_note_naming_the_goal(monkeypatch):
     G.on_message(1, "how is it going?", turn=2)
     out = G.on_message(1, "continue", turn=3)
     assert out.get("resumed") and "GOAL NOW: add power()" in G.turn_note(out)
+
+
+def test_unread_steers_of_a_run_without_the_goal_pass_are_not_kept():
+    G.keep_unread(1, ["also add a dark mode"])
+    assert G.goals(1)["goals"] == []
+
+
+def test_drop_plus_question_is_not_answered_by_the_harness(monkeypatch):
+    G.on_message(1, "add dark mode", turn=1)
+    G.finish_turn(1, completed=False)
+    _model(monkeypatch, {"goals": [{"id": "g1", "status": "dropped", "text": "x"}],
+                         "now": [], "current": "", "question": ""})
+    out = G.on_message(1, "forget the dark mode — why is the build red?", turn=2)
+    assert G.drop_reply(1, out) == ""
+
+
+def test_work_named_only_in_current_is_not_lost(monkeypatch):
+    G.on_message(1, "add csv export", turn=1)
+    G.finish_turn(1, completed=False)
+    _model(monkeypatch, {"goals": [{"id": "g1", "status": "dropped", "text": "x"}],
+                         "now": ["new"], "current": "fix the login bug", "question": ""})
+    out = G.on_message(1, "stop the csv export and fix the login bug instead", turn=2)
+    assert out["current"] == "fix the login bug" and G.drop_reply(1, out) == ""
+
+
+def test_a_partial_drop_keeps_the_stopped_handoff(monkeypatch):
+    G.on_message(1, "add power()", turn=1)
+    G.finish_turn(1, completed=False)
+    _model(monkeypatch,
+           {"goals": [{"id": None, "status": "open", "text": "add csv()"}],
+            "now": ["g1", "new"], "current": "power and csv", "question": ""},
+           {"goals": [{"id": "g2", "status": "dropped", "text": "add csv()"}],
+            "now": ["g1"], "current": "add power()", "question": ""})
+    G.on_message(1, "and add csv()", turn=2)
+    G.finish_turn(1, completed=False)
+    out = G.on_message(1, "skip the csv part", turn=3)
+    assert not out.get("dropped_stopped")
+
+
+def test_a_mid_run_it_with_one_goal_in_hand_does_not_ask(monkeypatch):
+    G.on_message(1, "add power()", turn=1)
+    G.finish_turn(1, completed=False)
+    _model(monkeypatch,
+           {"goals": [{"id": None, "status": "open", "text": "add csv()"}],
+            "now": ["new"], "current": "add csv()", "question": ""},
+           {"goals": [{"id": "g2", "status": "open", "text": "add csv() with --force"}],
+            "now": ["g2"], "current": "add csv() with --force", "question": ""})
+    G.on_message(1, "separately add csv()", turn=2)
+    out = G.on_message(1, "retry it with --force", mid_run=True, turn=2)
+    assert out["question"] == ""
+
+
+def test_the_turn_note_is_not_read_as_the_users_words_for_tools():
+    from aiforge_core.runtime.chat_agent._native_select import _cue_body
+    note = G.turn_note({"called": True, "changes": ["dropped g1: push to GitHub"], "current": ""})
+    assert "GitHub" not in _cue_body("thanks" + note)
