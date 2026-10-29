@@ -71,8 +71,11 @@ def _close_goals(st: dict, session_id, chat_cancel) -> None:
         from aiforge_core.runtime import chat_goals
         left = any(r.get("status") in (LEFT, "failed")
                    for r in st.get("subtasks") or [])
-        completed = (not st.get("awaiting") and not left
-                     and bool(str(st.get("final_text") or "").strip())
+        final = str(st.get("final_text") or "").strip()
+        # "(stopped: hit the time budget…)", "⚠ …": the turn gave up, the
+        # goal is not reached.
+        completed = (not st.get("awaiting") and not left and bool(final)
+                     and not final.startswith(("(stopped", "⚠"))
                      and not chat_cancel.is_cancelled(session_id))
         chat_goals.finish_turn(session_id, completed=completed)
     except Exception:  # noqa: BLE001 — never break a turn's end over goals

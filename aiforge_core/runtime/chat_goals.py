@@ -46,6 +46,16 @@ _BLOCK_CHARS = 5000
 
 _LOCK = threading.Lock()
 _MEM: dict = {}          # temporary chats: session id -> goals
+#: One lock per chat, held across the model call: a steer and the next turn's
+#: goal pass (or a turn's close) must not overwrite each other's change.
+_SESSION_LOCKS: dict = {}
+#: Chats whose current turn ran the goal pass: only those turns close goals.
+_PASSED: set = set()
+
+
+def _session_lock(session_id) -> threading.RLock:
+    with _LOCK:
+        return _SESSION_LOCKS.setdefault(str(session_id), threading.RLock())
 
 OPEN, DONE, DROPPED = "open", "done", "dropped"
 
@@ -78,7 +88,8 @@ _SYSTEM = (
     "(\"new\" for a new goal, in the order of new goals added): only goals "
     "this message is about. An unfinished goal the message does not mention "
     "stays open and stays out of \"now\" (\"continue\" is about the "
-    "unfinished ones). \"current\" "
+    "unfinished ones). A message sent WHILE the agent works keeps every goal "
+    "in THE AGENT IS WORKING ON in \"now\" unless it drops that goal. \"current\" "
     "states, in the user's own names (repositories, files, hosts, numbers "
     "exactly as written), everything the agent must achieve now: the goals in "
     "\"now\" with every change applied. Self-contained: readable without the "
@@ -115,7 +126,8 @@ def _temporary(session_id) -> bool:
 
 
 def _empty() -> dict:
-    return {"goals": [], "now": [], "current": "", "asked": "", "seq": 0}
+    return {"goals": [], "now": [], "current": "", "asked": "", "asked_about": "",
+            "seq": 0}
 
 
 def _load(session_id) -> dict:
@@ -135,6 +147,7 @@ def _load(session_id) -> dict:
     out["now"] = [i for i in data.get("now") or [] if i in ids]
     out["current"] = str(data.get("current") or "")
     out["asked"] = str(data.get("asked") or "")
+    out["asked_about"] = str(data.get("asked_about") or "")
     try:
         out["seq"] = int(data.get("seq") or 0)
     except (TypeError, ValueError):
@@ -249,16 +262,21 @@ def _prompt(data: dict, message: str, mid_run: bool, said: str,
         parts.append(f"THE AGENT'S LAST ANSWER (context only):\n{_flat(said, 1200)}")
     if data.get("asked"):
         parts.append(f"THE AGENT ASKED THE USER: {data['asked']}")
+        if data.get("asked_about"):
+            parts.append("THE USER'S MESSAGE THAT QUESTION WAS ABOUT: "
+                         + _flat(data["asked_about"], 1500))
     when = ("sent WHILE the agent was working" if mid_run
             else "sent as a new message")
     parts.append(f"THE USER'S NEW MESSAGE ({when}):\n{message[:6000]}")
     return "\n\n".join(parts)
 
 
-def _apply(data: dict, reply: dict, message: str, turn) -> "tuple[dict, list]":
+def _apply(data: dict, reply: dict, message: str, turn,
+           mid_run: bool = False) -> "tuple[dict, list]":
     """``data`` after the model's reply, and one line per change. An earlier
     goal the reply leaves out stays as it was; a goal is dropped only when
-    the reply says so."""
+    the reply says so; mid-run, the goals being worked on stay worked on."""
+    prev_now = list(data.get("now") or [])
     by_id = {g["id"]: g for g in data["goals"]}
     changes: list = []
     new_ids: list = []
@@ -287,15 +305,26 @@ def _apply(data: dict, reply: dict, message: str, turn) -> "tuple[dict, list]":
                 g["reopened_turn"] = turn
                 changes.append(f"reopened {gid}")
             if text and text != g["text"] and g["status"] == OPEN:
-                g.setdefault("was", g["text"])
+                prev = g["text"]
                 g["text"] = text
                 ups = [u for u in g.get("updates") or [] if isinstance(u, dict)]
-                ups.append({"text": _flat(message, _UPDATE_CHARS), "turn": turn})
+                ups.append({"text": _flat(message, _UPDATE_CHARS), "turn": turn,
+                            "prev": prev})
                 g["updates"] = ups[-_MAX_UPDATES:]
                 changes.append(f"changed {gid}: {text[:160]}")
             continue
-        if not text or status != OPEN or any(
-                g["text"] == text for g in data["goals"]):
+        if not text or status != OPEN:
+            continue
+        same = next((g for g in data["goals"] if g["text"] == text), None)
+        if same is not None:
+            # The user asks again for a goal that was dropped or done: it is
+            # that goal, open again — not a duplicate to skip.
+            if same["status"] != OPEN:
+                same["status"] = OPEN
+                same["reopened_turn"] = turn
+                changes.append(f"reopened {same['id']}")
+            if same["id"] not in new_ids:
+                new_ids.append(same["id"])
             continue
         gid = _new_id(data)
         g = {"id": gid, "text": text, "status": OPEN, "turn": turn,
@@ -312,11 +341,20 @@ def _apply(data: dict, reply: dict, message: str, turn) -> "tuple[dict, list]":
         if gid in by_id and by_id[gid]["status"] == OPEN and gid not in now:
             now.append(gid)
     now += [g for g in new_ids if g not in now]
+    kept = []
+    if mid_run:
+        # A steer adds to the work in hand; it never takes a goal off it
+        # without dropping that goal.
+        kept = [g for g in prev_now if g in by_id and by_id[g]["status"] == OPEN
+                and g not in now]
+        now = kept + now
     # Empty: the message works on no goal (a question, a thank-you). The turn
     # then closes nothing.
     data["now"] = now
     cur = _flat(reply.get("current"), _CURRENT_CHARS)
-    data["current"] = cur or " / ".join(by_id[g]["text"] for g in data["now"])
+    if kept or not cur:
+        cur = _flat(" / ".join(by_id[g]["text"] for g in now), _CURRENT_CHARS)
+    data["current"] = cur
     return data, changes
 
 
@@ -325,7 +363,7 @@ def _apply(data: dict, reply: dict, message: str, turn) -> "tuple[dict, list]":
 #: first: "skip that one" under a two-part goal is not "stop everything".
 _GIVE_UP_RE = re.compile(
     r"\b(?:stop|cancel|abort|scrap|halt|never\s*mind|nevermind|forget|"
-    r"start over|from scratch|instead|replace|all of it|everything|"
+    r"start over|from scratch|all of it|the whole lot|"
     r"whole (?:thing|task)|don'?t (?:do|bother|need)|no need)\b", re.I)
 
 
@@ -341,8 +379,7 @@ _VAGUE_RE = re.compile(r"\b(?:it|that|this|those|them|the other|that one|"
 
 #: Orders a vague "it" can carry.
 _ACT_RE = re.compile(r"\b(?:drop|remove|skip|cancel|stop|undo|revert|redo|"
-                     r"fix|delete|change|forget|finish|scrap|rewrite|redo|"
-                     r"retry|move|rename|keep|do)\b", re.I)
+                     r"delete|forget|scrap|finish|retry)\b", re.I)
 
 
 def _vague_pick(before: dict, changes: list, message: str) -> str:
@@ -373,7 +410,9 @@ def _fallback(data: dict, message: str, mid_run: bool, turn) -> "tuple[dict, lis
     """No answer from the model: nothing is dropped. A steer is a change to
     the goals being worked on; a new message is a goal of its own."""
     text = _flat(message, _GOAL_CHARS)
-    if mid_run and data.get("now"):
+    if data.get("now"):
+        # Mid-run, or the first message after a stopped turn: a change to the
+        # work in hand, never a replacement for it.
         for gid in data["now"]:
             g = next((x for x in data["goals"] if x["id"] == gid), None)
             if g is None:
@@ -396,8 +435,9 @@ def _fallback(data: dict, message: str, mid_run: bool, turn) -> "tuple[dict, lis
 def _trim(data: dict) -> None:
     while len(data["goals"]) > MAX_GOALS:
         closed = [g for g in data["goals"] if g["status"] != OPEN]
-        victim = closed[0] if closed else data["goals"][0]
-        data["goals"].remove(victim)
+        if not closed:
+            break                    # an open goal is never trimmed away
+        data["goals"].remove(closed[0])
     ids = {g["id"] for g in data["goals"]}
     data["now"] = [i for i in data["now"] if i in ids]
 
@@ -414,65 +454,91 @@ def on_message(session_id, message: str, *, role: str = "chat",
     text = _users_words(message)
     if not enabled() or session_id is None or not text:
         return out
+    if not mid_run:
+        _PASSED.add(str(session_id))
     if turn is None:
         turn = _user_turns(session_id)
     try:
-        with _LOCK:
-            data = _load(session_id)
-        if not _shown(data):
-            if _says_nothing(text) and data["goals"]:
-                return out
-            # The chat's first goal: the message is the goal. No model call.
-            data["asked"] = ""
-            data, changes = _fallback(data, text, False, turn)
-        elif _says_nothing(text) and not data.get("asked"):
-            out["current"] = data.get("current") or ""
-            return out
-        else:
-            reply = _reply_json(_ask(
-                role, _prompt(data, text, mid_run, said, working_on), session_id))
-            out["called"] = True
-            asked_before = bool(data.get("asked"))
-            before = json.loads(json.dumps(data))
-            if reply is None:
-                data, changes = _fallback(data, text, mid_run, turn)
-                data["asked"] = ""
-            else:
-                data, changes = _apply(data, reply, text, turn)
-                q = _flat(reply.get("question"), 400)
-                if not q and not asked_before:
-                    # Keep the goals as they were until the user says which.
-                    q = (_vague_pick(before, changes, text)
-                         or (_confirm_drop(_open(before))
-                             if _drops_everything(_open(before), data, text)
-                             else ""))
-                    if q:
-                        data, changes = before, []
-                # One question per message: an answer that is still unclear
-                # gets the best reading, not a second question.
-                if q and not asked_before:
-                    out["question"] = q
-                    data["asked"] = q
-                else:
-                    data["asked"] = ""
-        _trim(data)
-        with _LOCK:
-            _save(session_id, data)
-        out["current"] = data.get("current") or ""
-        out["changes"] = changes
+        with _session_lock(session_id):
+            _update(session_id, text, out, role=role, mid_run=mid_run,
+                    said=said, turn=turn, working_on=working_on)
     except Exception as exc:  # noqa: BLE001 — never break a turn over goals
         log.debug("goals update failed (session=%s): %s", session_id, exc)
     return out
 
 
+def _update(session_id, text, out, *, role, mid_run, said, turn, working_on):
+    data = _load(session_id)
+    if not _shown(data):
+        if _says_nothing(text) and data["goals"]:
+            return
+        # The chat's first goal: the message is the goal. No model call.
+        data["asked"] = data["asked_about"] = ""
+        data, changes = _fallback(data, text, False, turn)
+    elif _says_nothing(text) and not data.get("asked"):
+        # "continue": the unfinished goals are the work.
+        if not data.get("now") and _open(data):
+            data["now"] = [g["id"] for g in _open(data)]
+            data["current"] = _flat(" / ".join(g["text"] for g in _open(data)),
+                                    _CURRENT_CHARS)
+            _save(session_id, data)
+        out["current"] = data.get("current") or ""
+        return
+    else:
+        reply = _reply_json(_ask(
+            role, _prompt(data, text, mid_run, said, working_on), session_id))
+        out["called"] = True
+        if reply is None and _stopped(session_id):
+            return                    # Stop pressed: nothing of this message stays
+        asked_before = bool(data.get("asked"))
+        before = json.loads(json.dumps(data))
+        q = ""
+        if reply is None:
+            data, changes = _fallback(data, text, mid_run, turn)
+        else:
+            data, changes = _apply(data, reply, text, turn, mid_run)
+            q = _flat(reply.get("question"), 400)
+            if not q and not asked_before:
+                q = (_vague_pick(before, changes, text)
+                     or (_confirm_drop(_open(before))
+                         if _drops_everything(_open(before), data, text)
+                         else ""))
+        # One question per message: an answer that is still unclear gets the
+        # best reading, not a second question.
+        if q and not asked_before:
+            # Nothing changes until the user answers.
+            data, changes = before, []
+            out["question"] = q
+            data["asked"], data["asked_about"] = q, text
+        else:
+            data["asked"] = data["asked_about"] = ""
+    _trim(data)
+    _save(session_id, data)
+    out["current"] = data.get("current") or ""
+    out["changes"] = changes
+
+
+def _stopped(session_id) -> bool:
+    try:
+        from aiforge_core.runtime.chat_agent._turn import _plan_llm
+        return bool(_plan_llm._stopped(session_id))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def finish_turn(session_id, *, completed: bool) -> None:
     """The turn ended. ``completed`` (an answer, not stopped, not waiting on
     the user, no task left open): the goals it worked on are done. Otherwise
-    they stay open for the next message."""
-    if not enabled() or session_id is None or not completed:
+    they stay open for the next message. A turn that did not run the goal
+    pass (a wake turn, a plan being executed) closes nothing."""
+    if not enabled() or session_id is None:
+        return
+    passed = str(session_id) in _PASSED
+    _PASSED.discard(str(session_id))
+    if not completed or not passed:
         return
     try:
-        with _LOCK:
+        with _session_lock(session_id):
             data = _load(session_id)
             if not data["now"] or data.get("asked"):
                 return
@@ -560,26 +626,26 @@ def drop_after_turn(session_id, turn: int) -> None:
     if session_id is None:
         return
     try:
-        with _LOCK:
+        with _session_lock(session_id):
             data = _load(session_id)
-            data["goals"] = [g for g in data["goals"]
-                             if not (isinstance(g.get("turn"), int) and g["turn"] > turn)]
+            gone = lambda t: isinstance(t, int) and t > turn  # noqa: E731
+            data["goals"] = [g for g in data["goals"] if not gone(g.get("turn"))]
             for g in data["goals"]:
-                ups = g.get("updates") or []
-                kept = [u for u in ups if not (isinstance(u.get("turn"), int)
-                                               and u["turn"] > turn)]
-                if len(kept) != len(ups):
-                    g["updates"] = kept
-                    if not kept and g.get("was"):
-                        g["text"] = g.pop("was")
-                if isinstance(g.get("closed_turn"), int) and g["closed_turn"] > turn:
+                ups = [u for u in g.get("updates") or [] if isinstance(u, dict)]
+                while ups and gone(ups[-1].get("turn")):
+                    u = ups.pop()
+                    if u.get("prev"):
+                        g["text"] = u["prev"]
+                g["updates"] = ups
+                if gone(g.get("closed_turn")):
                     g["status"] = OPEN
                     g.pop("closed_turn", None)
-            ids = {g["id"] for g in data["goals"]}
-            data["now"] = [i for i in data["now"] if i in ids]
-            data["asked"] = ""
-            if not data["now"]:
-                data["current"] = ""
+                if gone(g.get("reopened_turn")):
+                    g["status"] = DONE
+                    g.pop("reopened_turn", None)
+            # The next message works out what the work is again.
+            data["now"], data["current"] = [], ""
+            data["asked"] = data["asked_about"] = ""
             _save(session_id, data)
     except Exception as exc:  # noqa: BLE001
         log.debug("goals write failed (session=%s): %s", session_id, exc)

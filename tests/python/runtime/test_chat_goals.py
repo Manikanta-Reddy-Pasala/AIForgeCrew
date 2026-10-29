@@ -60,7 +60,8 @@ def test_a_goal_the_reply_leaves_out_is_kept(monkeypatch):
                                     "text": "write the README"}],
                          "now": ["new"], "current": "write the README",
                          "question": ""})
-    G.on_message(1, "and write the README", mid_run=True, turn=1)
+    G.finish_turn(1, completed=False)
+    G.on_message(1, "and write the README", turn=2)
     data = G.goals(1)
     assert [g["status"] for g in data["goals"]] == ["open", "open"]
     assert data["now"] == ["g2"]
@@ -278,3 +279,101 @@ def test_a_vague_order_with_one_goal_does_not_ask(monkeypatch):
                          "now": ["g1"], "current": "add power()", "question": ""})
     out = G.on_message(1, "skip that one", mid_run=True, turn=1)
     assert out["question"] == "" and out["current"] == "add power()"
+
+
+def test_a_mid_run_addition_keeps_the_goal_in_hand(monkeypatch):
+    G.on_message(1, "build a login page", turn=1)
+    _model(monkeypatch, {"goals": [{"id": None, "status": "open", "text": "add a dark mode"}],
+                         "now": ["new"], "current": "add a dark mode", "question": ""})
+    out = G.on_message(1, "also add a dark mode", mid_run=True, turn=1)
+    assert G.goals(1)["now"] == ["g1", "g2"]
+    assert "build a login page" in out["current"] and "dark mode" in out["current"]
+
+
+def test_a_failed_call_after_a_stop_keeps_the_stopped_goal(monkeypatch):
+    G.on_message(1, "build a login page", turn=1)
+    G.finish_turn(1, completed=False)
+    _model(monkeypatch, None)
+    out = G.on_message(1, "use postgres instead", turn=2)
+    assert "build a login page" in out["current"] and "postgres" in out["current"]
+    assert [g["id"] for g in G.goals(1)["goals"]] == ["g1"]
+
+
+def test_stop_during_the_goal_call_keeps_nothing(monkeypatch):
+    G.on_message(1, "build a login page", turn=1)
+    G.finish_turn(1, completed=False)
+    _model(monkeypatch, None)
+    monkeypatch.setattr(G, "_stopped", lambda sid: True)
+    G.on_message(1, "use postgres instead", turn=2)
+    assert not G.goals(1)["goals"][0].get("updates")
+
+
+def test_a_dropped_goal_asked_for_again_is_reopened(monkeypatch):
+    G.on_message(1, "add a dark mode", turn=1)
+    _model(monkeypatch,
+           {"goals": [{"id": "g1", "status": "dropped", "text": "add a dark mode"},
+                      {"id": None, "status": "open", "text": "fix the login"}],
+            "now": ["new"], "current": "fix the login", "question": ""},
+           {"goals": [{"id": None, "status": "open", "text": "add a dark mode"}],
+            "now": ["new"], "current": "add a dark mode", "question": ""})
+    G.on_message(1, "forget the dark mode, fix the login instead", turn=2)
+    G.on_message(1, "actually do the dark mode after all", turn=3)
+    data = G.goals(1)
+    assert data["goals"][0]["status"] == "open" and "g1" in data["now"]
+
+
+def test_continue_picks_up_the_open_goals(monkeypatch):
+    G.on_message(1, "add power()", turn=1)
+    G.finish_turn(1, completed=False)
+    _model(monkeypatch, {"goals": [{"id": None, "status": "open", "text": "add csv()"}],
+                         "now": ["new"], "current": "add csv()", "question": ""})
+    G.on_message(1, "separately add csv()", turn=2)
+    G.finish_turn(1, completed=True)                   # csv done, power still open
+    out = G.on_message(1, "continue", turn=3)
+    assert out["current"] == "add power()" and G.goals(1)["now"] == ["g1"]
+    G.finish_turn(1, completed=True)
+    assert G.goals(1)["goals"][0]["status"] == "done"
+
+
+def test_a_model_question_changes_nothing_and_the_answer_sees_the_message(monkeypatch):
+    G.on_message(1, "add power()", turn=1)
+    seen = _model(monkeypatch,
+                  {"goals": [{"id": "g1", "status": "dropped", "text": "add power()"}],
+                   "now": [], "current": "", "question": "Drop power()?"},
+                  {"goals": [{"id": "g1", "status": "open", "text": "add power()"}],
+                   "now": ["g1"], "current": "add power()", "question": ""})
+    out = G.on_message(1, "scrap the extra stuff", mid_run=True, turn=1)
+    assert out["question"] == "Drop power()?"
+    assert G.goals(1)["goals"][0]["status"] == "open"
+    G.on_message(1, "no, keep it", turn=2)
+    assert "QUESTION WAS ABOUT: scrap the extra stuff" in seen[1]
+
+
+def test_a_turn_without_the_goal_pass_closes_nothing():
+    G.on_message(1, "add power()", turn=1)
+    G.finish_turn(1, completed=False)
+    G.finish_turn(1, completed=True)                   # e.g. a wake turn
+    assert G.goals(1)["goals"][0]["status"] == "open"
+
+
+def test_short_non_status_orders_do_not_ask(monkeypatch):
+    G.on_message(1, "add power()", turn=1)
+    G.finish_turn(1, completed=False)
+    _model(monkeypatch,
+           {"goals": [{"id": None, "status": "open", "text": "add csv()"}],
+            "now": ["new"], "current": "add csv()", "question": ""},
+           {"goals": [{"id": "g2", "status": "open", "text": "add csv() on port 8080"}],
+            "now": ["g2"], "current": "add csv() on port 8080", "question": ""})
+    G.on_message(1, "separately add csv()", turn=2)
+    out = G.on_message(1, "change that to 8080", mid_run=True, turn=2)
+    assert out["question"] == ""
+
+
+def test_open_goals_are_never_trimmed():
+    for i in range(G.MAX_GOALS + 3):
+        d = G.goals(1)
+        d["goals"].append({"id": f"g{i}", "text": f"t{i}", "status": "open"})
+        G._save(1, d)
+    G.on_message(1, "continue", turn=1)
+    G._trim(G.goals(1))
+    assert len(G.goals(1)["goals"]) == G.MAX_GOALS + 3
