@@ -225,10 +225,47 @@ def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
                                      role, source)
                 raise
             _log_transport_retry(ep, attempt, label, sleep_s, exc, role, source)
+            _say_retry(ep, attempt, cfg.max_attempts, label, exc)
             time.sleep(sleep_s)
     # Defensive — loop above always either returns or raises.
     assert last is not None
     raise last
+
+
+def _say_retry(ep: Endpoint, attempt: int, attempts: int, label: str,
+               exc: Exception) -> None:
+    """Tell the user (the chat's status line) that a call is being sent again:
+    a stalled or dropped call used to be re-sent in silence, and the chat read
+    "No output for 41m" with no hint of what was going on."""
+    if label not in ("stream_stalled", "os_error", "url_error"):
+        return
+    url = (ep.base_url or "?").rstrip("/")
+    secs = getattr(exc, "seconds", None)
+    if secs:
+        what = ("sent nothing back" if getattr(exc, "phase", "") == "first_token"
+                else "went quiet")
+        head = f"⚠ the model at {url} {what} for {_fmt_s(secs)}"
+    else:
+        head = f"⚠ the connection to the model at {url} broke ({label})"
+    try:
+        from aiforge_core.llm import _wait_scope, request_health
+        nxt = (f", waiting up to {_fmt_s(secs * 2)} this time"
+               if secs and getattr(exc, "phase", "") == "first_token" else "")
+        spent = request_health.stalled_seconds()
+        budget = request_health.stall_budget_s()
+        left = (f" ({_fmt_s(max(0.0, budget - spent))} of the stall budget left)"
+                if budget > 0 and spent else "")
+        _wait_scope.notify({
+            "type": "llm_wait", "state": "resend", "url": url,
+            "text": f"{head} — sending the request again (try {attempt + 1} of "
+                    f"{attempts}{nxt}){left}"})
+    except Exception:  # noqa: BLE001 — a status line never breaks a call
+        pass
+
+
+def _fmt_s(s: float) -> str:
+    s = float(s)
+    return f"{s / 60:.0f}m" if s >= 90 else f"{s:.0f}s"
 
 
 def _endpoint_down(ep: Endpoint) -> bool:

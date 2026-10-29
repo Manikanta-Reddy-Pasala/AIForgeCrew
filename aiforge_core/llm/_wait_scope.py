@@ -59,6 +59,17 @@ def bind_status_sink(fn: Callable[[dict], Any]) -> None:
     _SINKS.set(_SINKS.get() + (fn,))
 
 
+def notify(status: dict) -> None:
+    """Hand ``status`` (a dict with ``text``) to every sink of this thread —
+    for a line the user should see that is not a wait for a down model (a
+    stalled call being sent again). A sink never breaks the caller."""
+    for fn in _SINKS.get():
+        try:
+            fn(status)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def bind_wait_hooks(on_wait: Callable[[], Any],
                     on_back: Callable[[], Any]) -> None:
     """For the rest of this thread: ``on_wait()`` when a wait for a down model

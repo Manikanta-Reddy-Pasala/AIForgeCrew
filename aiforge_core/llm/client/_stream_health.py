@@ -94,6 +94,7 @@ class StreamWatch:
         self.phase = "first_token"
         self.bound = 0.0
         self._armed = time.monotonic()
+        self._last_data = self._armed
 
     def _tightest(self, health: float) -> float:
         """The health bound when it is tighter than the caller's own read
@@ -112,6 +113,11 @@ class StreamWatch:
 
     def _apply(self, health: float) -> None:
         self.bound = self._tightest(health)
+        budget = _health().stall_budget_s()
+        if self.bound and budget > 0:
+            # Never past the request's stall budget: the last send waits only
+            # what is left of it.
+            self.bound = min(self.bound, max(1.0, budget - _health().stalled_seconds()))
         if self.sock is None or not self.bound:
             return
         try:
@@ -121,12 +127,33 @@ class StreamWatch:
 
     def arm_first_token(self) -> None:
         self.phase = "first_token"
-        self._armed = time.monotonic()
+        self._armed = self._last_data = time.monotonic()
         self._apply(self._first)
+
+    def check_silence(self) -> None:
+        """A non-data line arrived (an SSE ``: keep-alive`` comment, a blank
+        line). Keep-alives are liveness — a slow prefill sends them, and is
+        given ``AIFORGE_LLM_KEEPALIVE_FACTOR`` (default 4) times the bound —
+        but not forever: a proxy that keeps the stream alive for an upstream
+        that is gone held the call with no end. Measured from the last DATA
+        event."""
+        if not self.bound:
+            return
+        from ._helpers import _float_env
+        factor = max(1.0, _float_env("AIFORGE_LLM_KEEPALIVE_FACTOR", 4.0))
+        limit = self.bound * factor
+        budget = _health().stall_budget_s()
+        if budget > 0:
+            limit = min(limit, max(self.bound, budget - _health().stalled_seconds()))
+        quiet = time.monotonic() - self._last_data
+        if quiet > limit:
+            _health().note_stall(quiet)
+            raise _over_budget(LLMStreamStalled(self.phase, quiet), self.url)
 
     def got_data(self) -> None:
         """First real data event: from now on the idle bound applies. The
         wait for it is this endpoint's prefill speed, learned."""
+        self._last_data = time.monotonic()
         if self.phase != "idle":
             self.phase = "idle"
             _health().note_prefill(self.url, self._tokens,
@@ -149,9 +176,34 @@ class StreamWatch:
         """``exc`` as an LLMStreamStalled when one of OUR bounds fired it; else
         ``exc`` unchanged (the caller's own read timeout keeps its meaning)."""
         if self.bound and isinstance(exc, (socket.timeout, TimeoutError)):
-            _health().note_stall()      # the next send waits twice as long
-            return LLMStreamStalled(self.phase, self.bound)
+            _health().note_stall(self.bound)   # the next send waits twice as long
+            return _over_budget(LLMStreamStalled(self.phase, self.bound), self.url)
         return exc
+
+
+def _over_budget(stall: "LLMStreamStalled", url: str) -> BaseException:
+    """``stall`` — or, once this request has waited out its whole stall budget
+    across its sends, the LLM issue that ends it (not retried, not waited
+    for): more of the same silence will not answer it."""
+    budget = _health().stall_budget_s()
+    spent = _health().stalled_seconds()
+    if budget <= 0 or spent < budget:
+        return stall
+    from aiforge_core.llm.model_outage import LLMRequestFailing
+    mins = spent / 60.0
+    return LLMRequestFailing(url, _health().current().stalls if _health().current() else 1,
+                             stall, (
+        f"LLM issue: the model at {url or '?'} sent nothing back for "
+        f"{mins:.0f} min in total across {_sends()} sends of this request "
+        f"(last: {stall}). The connection to it may be dropping long "
+        "requests (a Docker/WSL network that closes idle connections, a "
+        "proxy timeout), or the prompt is too big for it to start in time. "
+        "Raise AIFORGE_LLM_STALL_BUDGET_S to wait longer."))
+
+
+def _sends() -> int:
+    h = _health().current()
+    return (h.stalls if h is not None else 0) or 1
 
 
 __all__ = ["LLMStreamStalled", "StreamWatch", "first_token_s", "idle_s"]

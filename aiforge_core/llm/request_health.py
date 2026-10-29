@@ -124,6 +124,7 @@ class RequestHealth:
 
     def __init__(self) -> None:
         self.stalls = 0          # sends cut by a stream health bound
+        self.stall_s = 0.0       # silence those sends waited out, in total
         self.stalls_seen = 0     # of those, already judged by a Waiter
         self.stalls_counted = 0  # of those, counted against the request
         self.fails = 0           # other failures counted against the request
@@ -156,11 +157,26 @@ def current() -> "RequestHealth | None":
     return _HEALTH.get()
 
 
-def note_stall() -> None:
+def note_stall(seconds: float = 0.0) -> None:
     """A send of the bound request stalled (called by the stream watch)."""
     h = _HEALTH.get()
     if h is not None:
         h.stalls += 1
+        h.stall_s += max(0.0, float(seconds or 0.0))
+
+
+def stall_budget_s() -> float:
+    """Total silence one request may wait out across its sends before it is an
+    LLM issue (``AIFORGE_LLM_STALL_BUDGET_S``, default 1200; 0 = no limit).
+    Each stall doubles the next send's bounds, so without a total the sends
+    of a request whose connection keeps dying (a NAT that drops idle flows)
+    waited 3, 6, 12, 24 minutes — in silence."""
+    return _env_num("AIFORGE_LLM_STALL_BUDGET_S", 1200.0, 0.0)
+
+
+def stalled_seconds() -> float:
+    h = _HEALTH.get()
+    return h.stall_s if h is not None else 0.0
 
 
 def stall_scale() -> float:
@@ -200,6 +216,7 @@ def _reset_for_tests() -> None:
 
 
 __all__ = ["RequestHealth", "bind", "current", "note_stall", "stall_scale",
+           "stall_budget_s", "stalled_seconds",
            "note_prefill", "prefill_tps", "same_request_fails",
            "crash_resends", "crash_window_s", "note_answer", "last_answer",
            "track_crashes", "crashes_tracked"]

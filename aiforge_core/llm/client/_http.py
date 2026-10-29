@@ -271,7 +271,51 @@ def _open_connection(ep: Endpoint, url: str, timeout_s: int):
             conn.putrequest = _putrequest
     else:
         conn = http.client.HTTPConnection(host, port, timeout=timeout_s)
+    _keep_alive_on_connect(conn)
     return conn, path
+
+
+def _keep_alive_on_connect(conn) -> None:
+    """TCP keepalive on the model connection (``AIFORGE_LLM_TCP_KEEPALIVE_S``,
+    default 20; 0 off). While a big prompt is prefilled no byte crosses the
+    connection for minutes; a Docker Desktop / WSL NAT or a proxy drops such
+    an idle flow without telling either side, and the call then waited out
+    every stall bound in silence. A probe every few seconds keeps the flow
+    alive, and a peer that is really gone fails the read in about a minute."""
+    import os
+    try:
+        idle = int(float(os.environ.get("AIFORGE_LLM_TCP_KEEPALIVE_S", "20")))
+    except ValueError:
+        idle = 20
+    if idle <= 0:
+        return
+    orig = conn.connect
+
+    def connect():
+        orig()
+        set_keepalive(getattr(conn, "sock", None), idle)
+    conn.connect = connect
+
+
+def set_keepalive(sock, idle: int) -> None:
+    """SO_KEEPALIVE with ``idle`` s before the first probe, then every 10 s,
+    6 unanswered = dead. Best effort: options a platform lacks are skipped."""
+    import socket
+    if sock is None:
+        return
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    except (OSError, AttributeError, ValueError):
+        return
+    for name, val in (("TCP_KEEPIDLE", idle), ("TCP_KEEPINTVL", 10),
+                      ("TCP_KEEPCNT", 6), ("TCP_KEEPALIVE", idle)):
+        opt = getattr(socket, name, None)
+        if opt is None:
+            continue
+        try:
+            sock.setsockopt(socket.IPPROTO_TCP, opt, val)
+        except (OSError, ValueError):
+            pass
 
 
 def _cancel_watcher(conn, cancel, stop: "threading.Event") -> None:

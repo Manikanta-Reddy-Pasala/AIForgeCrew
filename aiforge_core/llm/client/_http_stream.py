@@ -175,6 +175,8 @@ def _pump_sse(resp, asm: "_StreamAssembler", watch=None) -> bool:
                 return False
             line = line.strip()
             if not line.startswith(b"data:"):
+                if watch is not None:
+                    watch.check_silence()
                 continue
             data = line[5:].strip()
             if watch is not None:

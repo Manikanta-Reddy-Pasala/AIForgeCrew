@@ -254,7 +254,8 @@ def _phase_after(event: dict, current: str) -> str:
     if kind == "approval":
         return "waiting for your approval"
     if kind == "delta":
-        return "the model is writing"
+        # A reset (a call starting afresh) is not text being written.
+        return current if event.get("phase") == "reset" else "the model is writing"
     if kind in ("tool", "approval_expired", "auto_approved"):
         return "waiting for the model"
     if kind in ("message", "done", "error"):
