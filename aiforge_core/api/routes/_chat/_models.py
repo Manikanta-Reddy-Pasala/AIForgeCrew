@@ -247,6 +247,76 @@ def chat_model_set(body: _ChatModelBody) -> dict:
             "env_override": env_ovr, "warning": warning}
 
 
+def _session_or_404(session_id: int) -> None:
+    from aiforge_core.runtime import chat_store
+    if not chat_store.get_session(session_id):
+        raise HTTPException(404, f"session {session_id} not found")
+
+
+def _session_model_view(session_id: int) -> dict:
+    """The model THIS chat runs on: its own pick, else the global one."""
+    from aiforge_core.config import chat_models
+    from aiforge_core.runtime import request_context
+    tok = request_context.set_session_id(session_id)
+    try:
+        row = _acfg.get("chat") if "chat" in _acfg.archetypes() else {}
+        served = _served_model_ids_for_role("chat")
+    finally:
+        request_context.reset_session_id(tok)
+    env_ovr = _model_env_override("chat")
+    return {"model": row.get("model"), "base_url": row.get("base_url") or "",
+            "provider": row.get("provider"),
+            "own": chat_models.get(session_id) is not None,
+            "active": (row.get("model") in served) if served else True,
+            "env_override": env_ovr,
+            "warning": (f"{env_ovr['var']}={env_ovr['model']} is set and "
+                        "overrides every chat's pick") if env_ovr else None}
+
+
+@router.get("/api/chat/sessions/{session_id}/model",
+            responses={404: {"description": "Not found"}})
+def session_model_get(session_id: int) -> dict:
+    """This chat's model: its own pick (``own``: true), else the global one."""
+    _session_or_404(session_id)
+    return _session_model_view(session_id)
+
+
+@router.put("/api/chat/sessions/{session_id}/model",
+            responses={400: {"description": "Bad request"}, 404: {"description": "Not found"}})
+def session_model_set(session_id: int, body: _ChatModelBody) -> dict:
+    """Pick the model for THIS chat only. Other chats keep theirs; the global
+    pick (PUT /api/chat/model) stays the default for chats with no pick."""
+    from aiforge_core.config import chat_models
+    _session_or_404(session_id)
+    cur = _acfg.get("chat") if "chat" in _acfg.archetypes() else {}
+    base, key, tls = _endpoint_for_picked_model(body.model, cur, body.base_url or "")
+    try:
+        chat_models.set_session(
+            session_id, body.model, base_url=base,
+            provider=body.provider or cur.get("provider"), api_key=key,
+            insecure_tls=tls)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except OSError as exc:
+        raise HTTPException(409, str(exc))
+    try:
+        from aiforge_core.runtime import vision_detect
+        vision_detect.warm_vision_async("chat")
+    except Exception:  # noqa: BLE001
+        pass
+    return _session_model_view(session_id)
+
+
+@router.delete("/api/chat/sessions/{session_id}/model",
+               responses={404: {"description": "Not found"}})
+def session_model_clear(session_id: int) -> dict:
+    """Drop this chat's own pick: it runs on the global model again."""
+    from aiforge_core.config import chat_models
+    _session_or_404(session_id)
+    chat_models.forget_session(session_id)
+    return _session_model_view(session_id)
+
+
 class _ModelReloadBody(BaseModel):
     model: str = Field(..., min_length=1)
     context_length: int = Field(..., ge=1024, le=2_097_152,

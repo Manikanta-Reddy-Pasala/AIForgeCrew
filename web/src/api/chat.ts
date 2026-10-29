@@ -173,6 +173,8 @@ export const chatApi = {
   setApprovalMode: api.setApprovalMode,
   sessionApprovals: api.sessionApprovals,
   setSessionApproval: api.setSessionApproval,
+  sessionModel: api.sessionModel,
+  setSessionModel: api.setSessionModel,
   responseLanguage: api.responseLanguage,
   setResponseLanguage: api.setResponseLanguage,
   providersTest: api.providersTest,

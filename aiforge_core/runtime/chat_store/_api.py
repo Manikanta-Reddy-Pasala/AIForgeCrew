@@ -222,6 +222,12 @@ def _forget_grants(session_id=None) -> None:
         approval_settings.forget_session(session_id)
     except Exception:  # noqa: BLE001
         pass
+    # …nor an old chat's model.
+    try:
+        from aiforge_core.config import chat_models
+        chat_models.forget_session(session_id)
+    except Exception:  # noqa: BLE001
+        pass
     try:
         from aiforge_core.runtime.chat_agent import _sticky_tools
         _sticky_tools.forget(session_id)

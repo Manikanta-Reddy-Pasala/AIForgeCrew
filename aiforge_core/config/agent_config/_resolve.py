@@ -265,10 +265,22 @@ def load_all() -> dict[str, dict[str, Any]]:
 def get(role: str) -> dict[str, Any]:
     """Return resolved config for one role: ``{provider, model, base_url}``."""
     if role == _DEFAULT_KEY:
-        return _global_default_row() or {}
+        return _chat_pick(role, _global_default_row() or {})
     if role not in _ROLES:
         raise ValueError(f"unknown role: {role}")
-    return load_all()[role]
+    return _chat_pick(role, load_all()[role])
+
+
+def _chat_pick(role: str, row: dict[str, Any]) -> dict[str, Any]:
+    """``row`` with the running chat's own model applied (config/chat_models):
+    a model picked in one chat is that chat's, not every chat's."""
+    try:
+        from aiforge_core.config import chat_models
+        if chat_models.current() is None:
+            return row
+        return chat_models.apply(role, row, _global_default_row())
+    except Exception:  # noqa: BLE001 — the global pick stands
+        return row
 
 
 def _row_for(role: str) -> dict[str, Any]:
@@ -282,9 +294,10 @@ def _row_for(role: str) -> dict[str, Any]:
     gd = _global_default_row()
     if gd and gd.get("provider"):
         model = (gd.get("model") or "").strip() or _local_default_model()
-        return {"provider": gd["provider"], "model": model,
-                "base_url": gd.get("base_url"), "api_key": gd.get("api_key"),
-                "insecure_tls": bool(gd.get("insecure_tls"))}
+        return _chat_pick(_DEFAULT_KEY, {
+            "provider": gd["provider"], "model": model,
+            "base_url": gd.get("base_url"), "api_key": gd.get("api_key"),
+            "insecure_tls": bool(gd.get("insecure_tls"))})
     return {"provider": "openai_compatible", "model": _local_default_model(),
             "base_url": None, "api_key": None, "insecure_tls": False}
 

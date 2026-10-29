@@ -561,3 +561,29 @@ def test_the_workspace_root_defaults_under_the_config_dir(monkeypatch, tmp_path)
     monkeypatch.setattr(ch._sessions, "config_dir", lambda: str(tmp_path))
     assert ch._chat_workspace_root() == os.path.join(str(tmp_path),
                                                      "chat-workspaces")
+
+
+# ─── per-chat model ────────────────────────────────────────────────────
+
+
+def test_a_chat_model_pick_changes_only_that_chat(client, monkeypatch, tmp_path, cfg):
+    from aiforge_core.config import chat_models
+    from aiforge_core.runtime import chat_store
+    monkeypatch.setattr(chat_models, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(chat_store, "get_session", lambda sid: {"id": sid})
+    monkeypatch.setattr(ch._acfg, "get", lambda role: chat_models.apply(
+        role, cfg.get(role, {}), cfg["_default"]) if chat_models.current() else cfg.get(role, {}))
+    r = client.put("/api/chat/sessions/5/model", json={"model": "big"})
+    assert r.status_code == 200 and r.json()["model"] == "big" and r.json()["own"]
+    assert client.get("/api/chat/sessions/6/model").json()["model"] == "coder"
+    assert client.get("/api/chat/models").json()["current"] == "coder"
+    assert cfg["chat"]["model"] == "coder"                      # global untouched
+    r = client.delete("/api/chat/sessions/5/model")
+    assert r.json()["model"] == "coder" and not r.json()["own"]
+
+
+def test_a_chat_model_pick_on_a_missing_chat_is_a_404(client, monkeypatch):
+    from aiforge_core.runtime import chat_store
+    monkeypatch.setattr(chat_store, "get_session", lambda sid: None)
+    assert client.get("/api/chat/sessions/9/model").status_code == 404
+    assert client.put("/api/chat/sessions/9/model", json={"model": "x"}).status_code == 404
