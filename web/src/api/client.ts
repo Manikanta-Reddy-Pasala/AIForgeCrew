@@ -164,6 +164,8 @@ export const api = {
       body: JSON.stringify({ model, ...(provider ? { provider } : {}),
                              ...(baseUrl ? { base_url: baseUrl } : {}) }),
     }),
+  clearSessionModel: (sessionId: number) =>
+    j<SessionModel>(`/chat/sessions/${sessionId}/model`, { method: 'DELETE' }),
   responseLanguage: () => j<ResponseLanguage>('/chat/response-language'),
   setResponseLanguage: (change: { language?: string; style?: string }) =>
     j<ResponseLanguage>('/chat/response-language', {

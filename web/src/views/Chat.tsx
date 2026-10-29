@@ -16,6 +16,7 @@ import SuggestionChip from './Chat.SuggestionChip';
 import RecipeOfferCard, { type RecipeOffer } from './Chat.RecipeOfferCard';
 import ScopeNetCard, { type ScopeNet } from './Chat.ScopeNetCard';
 import type { Suggestion } from '../api/chat';
+import type { SessionModel } from '../api/client';
 import { ModeBadge } from './Chat.ModeBadge';
 import { CtxReload } from './Chat.CtxReload';
 import { AutoApprovalsPanel } from './Chat.AutoApprovalsPanel';
@@ -344,12 +345,15 @@ function ApprovalsToggle({ approvalsOn, toggleApprovals, modeApprovalKey, chatMo
 }
 
 // Model selector — less relevant in team mode, so hidden there.
-function ModelSelect({ chatMode, busy, modelActive, selectedModel, onPick,
+// The value of the "use the default model" entry: no model id contains it.
+const MODEL_DEFAULT = '\u001edefault';
+
+function ModelSelect({ busy, modelActive, selectedModel, onPick, own, onDefault,
                        modelOptions }: Readonly<{
-  chatMode: ChatMode; busy: boolean; modelActive: boolean; selectedModel: string;
-  onPick: (model: string, baseUrl: string) => void; modelOptions: ChatModelEntry[];
+  busy: boolean; modelActive: boolean; selectedModel: string;
+  onPick: (model: string, baseUrl: string) => void; own: boolean;
+  onDefault: () => void; modelOptions: ChatModelEntry[];
 }>) {
-  if (chatMode === 'team') return null;
   return (
     <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--fg-2)' }}>
       <span
@@ -372,6 +376,7 @@ function ModelSelect({ chatMode, busy, modelActive, selectedModel, onPick,
           // The value carries the ENDPOINT as well as the id: two registered
           // copies of one model differ only by base_url, and an id-only value
           // made them indistinguishable in the DOM as well as on the wire.
+          if (e.target.value === MODEL_DEFAULT) { onDefault(); return; }
           const [newModel, pickedUrl] = e.target.value.split(MODEL_KEY_SEP);
           onPick(newModel, pickedUrl || '');
         }}
@@ -383,11 +388,14 @@ function ModelSelect({ chatMode, busy, modelActive, selectedModel, onPick,
             no active models — load one in LM Studio / configure on Home
           </option>
         ) : (
-          modelOptions.map(opt => (
-            <option key={modelOptionKey(opt)} value={modelOptionKey(opt)}>
-              {modelOptionLabel(opt, modelOptions)}
-            </option>
-          ))
+          <>
+            {modelOptions.map(opt => (
+              <option key={modelOptionKey(opt)} value={modelOptionKey(opt)}>
+                {modelOptionLabel(opt, modelOptions)}
+              </option>
+            ))}
+            {own && <option value={MODEL_DEFAULT}>↺ Use the default model</option>}
+          </>
         )}
       </select>
     </label>
@@ -837,6 +845,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   // The model is per chat: picking one in this chat leaves the others alone.
   // A chat with no pick of its own runs on the global model (Home/Settings).
   const [globalModel, setGlobalModel] = useState<string>('');
+  const [modelOwn, setModelOwn] = useState(false);
   const modelSeq = useRef(0);
   const modelNewChat = useRef<number | null>(null);
   const modelCreating = useRef(false);
@@ -845,20 +854,38 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
     if (sid !== null && sid === modelNewChat.current) { modelNewChat.current = null; return; }
     modelNewChat.current = null;
     const seq = ++modelSeq.current;
-    if (sid === null) {
-      if (globalModel) setSelectedModel(globalModel);
-      return;
-    }
+    // Not the last chat's model while this one loads.
+    if (globalModel) setSelectedModel(globalModel);
+    setModelActive(true);
+    setModelOwn(false);
+    if (sid === null) return;
     chatApi.sessionModel(sid).then(m => {
       if (activeIdRef.current !== sid || modelSeq.current !== seq || !m.model) return;
-      const model = m.model;
-      setModelOptions(opts => opts.some(o => o.id === model) ? opts
-        : [{ id: model, label: model, active: false, base_url: m.base_url } as ChatModelEntry, ...opts]);
-      setSelectedModel(model);
-      setModelActive(m.active);
-    }).catch(() => { /* older server: the global model stays shown */ });
+      showSessionModel(m);
+    }).catch(() => { toast.error('Could not load this chat\'s model'); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
+  function showSessionModel(m: SessionModel) {
+    const model = m.model || '';
+    if (!model) return;
+    setModelOptions(opts => opts.some(o => o.id === model) ? opts
+      : [{ id: model, label: model, active: false, base_url: m.base_url } as ChatModelEntry, ...opts]);
+    setSelectedModel(model);
+    setModelActive(m.active);
+    setModelOwn(m.own);
+  }
+  async function useDefaultModel() {
+    const sid = activeId;
+    if (sid === null) return;
+    modelSeq.current += 1;
+    try {
+      const m = await chatApi.clearSessionModel(sid);
+      if (activeIdRef.current === sid) showSessionModel(m);
+      toast.success('This chat uses the default model again');
+    } catch (err: any) {
+      toast.error(`Failed to reset the model: ${err.message}`);
+    }
+  }
   async function pickModel(model: string, baseUrl: string) {
     let sid = activeId;
     if (sid === null) {
@@ -876,7 +903,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
       const res = await chatApi.setSessionModel(sid, model, chatProvider || undefined,
                                                 baseUrl || undefined);
       if (activeIdRef.current !== sid) return;
-      setModelActive(res.active);
+      showSessionModel(res);
       if (res.warning) {
         toast.warning(res.warning);
       } else if (res.active) {
@@ -1259,7 +1286,10 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
     chatApi.chatModels().then(async resp => {
       setChatProvider(resp.provider || '');
       const models = resp.models || [];
-      setModelOptions(models);
+      // Keep an entry an open chat added for its own pick (another server's
+      // model is not in this list): its <select> value must stay an option.
+      setModelOptions(prev => [
+        ...prev.filter(p => !models.some((m: ChatModelEntry) => m.id === p.id)), ...models]);
 
       // The model you picked stays picked until you change it. This used to
       // switch to the first model in the list — and SAVE that — whenever the
@@ -1270,7 +1300,8 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
       const saved = resp.current || '';
       if (saved && !models.some((m: ChatModelEntry) => m.id === saved)) {
         // Keep it selectable even when the server did not list it this time.
-        setModelOptions([{ id: saved, label: saved, active: false } as ChatModelEntry, ...models]);
+        setModelOptions(prev => prev.some(o => o.id === saved) ? prev
+          : [{ id: saved, label: saved, active: false } as ChatModelEntry, ...prev]);
       }
       setGlobalModel(saved);
       // An open chat shows its own model (loaded per chat, below).
@@ -2596,8 +2627,9 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
               onCompact={activeId !== null ? () => compactContext(activeId) : undefined} />
             <ApprovalsToggle approvalsOn={approvalsOn} toggleApprovals={toggleApprovals}
                              modeApprovalKey={modeApprovalKey} chatMode={chatMode} />
-            <ModelSelect chatMode={chatMode} busy={busy} modelActive={modelActive}
+            <ModelSelect busy={busy} modelActive={modelActive}
                          selectedModel={selectedModel} onPick={pickModel}
+                         own={modelOwn} onDefault={useDefaultModel}
                          modelOptions={modelOptions} />
             <OrchSelect chatMode={chatMode} orchOptions={orchOptions} orchModel={orchModel}
                         setOrchModel={setOrchModel} chatProvider={chatProvider} busy={busy} />

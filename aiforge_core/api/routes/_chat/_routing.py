@@ -425,7 +425,9 @@ def _run_capture_pass(_rc, prompt, repo, cwd, session_id):
         # optional(): abandoned at its budget, the classify must not wait on
         # for a down model in the leaked thread and fire late on recovery.
         from aiforge_core.llm import model_wait
-        got = wait_future(ex.submit(model_wait.side_call(_capture_pass)),
+        import contextvars
+        got = wait_future(ex.submit(contextvars.copy_context().run,
+                                    model_wait.side_call(_capture_pass)),
                           budget, session_id)
         if got is STOPPED:
             return None

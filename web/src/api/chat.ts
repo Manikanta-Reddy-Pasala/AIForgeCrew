@@ -175,6 +175,7 @@ export const chatApi = {
   setSessionApproval: api.setSessionApproval,
   sessionModel: api.sessionModel,
   setSessionModel: api.setSessionModel,
+  clearSessionModel: api.clearSessionModel,
   responseLanguage: api.responseLanguage,
   setResponseLanguage: api.setResponseLanguage,
   providersTest: api.providersTest,
@@ -185,17 +186,6 @@ export const chatApi = {
   agentsV2Config: api.agentsV2Config,
 
   chatModels: () => j<ChatModelsResponse>('/chat/models'),
-
-  // base_url says WHICH copy of the model: the same id can be registered
-  // against two servers, and without it the backend can only guess — which is
-  // how a model added from a second host kept being called on the first.
-  setChatModel: (model: string, provider?: string, baseUrl?: string) =>
-    j<{ provider: string; model: string; active: boolean }>('/chat/model', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, ...(provider ? { provider } : {}),
-                             ...(baseUrl ? { base_url: baseUrl } : {}) }),
-    }),
 
   // (Re)load a model on the LM Studio host at a chosen context window.
   reloadModel: (model: string, context_length: number, ttl?: number) =>

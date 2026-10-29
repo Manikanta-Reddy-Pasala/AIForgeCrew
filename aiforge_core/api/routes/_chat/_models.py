@@ -289,7 +289,14 @@ def session_model_set(session_id: int, body: _ChatModelBody) -> dict:
     from aiforge_core.config import chat_models
     _session_or_404(session_id)
     cur = _acfg.get("chat") if "chat" in _acfg.archetypes() else {}
-    base, key, tls = _endpoint_for_picked_model(body.model, cur, body.base_url or "")
+    conn = _model_registry.connection_for(body.model, body.base_url or "") or {}
+    other = bool(body.base_url) and _url_key(body.base_url) != _url_key(cur.get("base_url"))
+    if conn.get("base_url") or other:
+        base, key, tls = _endpoint_for_picked_model(body.model, cur, body.base_url or "")
+    else:
+        # Served by the global endpoint: follow it (and its key) rather than
+        # freezing today's URL into this chat's pick.
+        base, key, tls = None, None, False
     try:
         chat_models.set_session(
             session_id, body.model, base_url=base,
@@ -300,8 +307,12 @@ def session_model_set(session_id: int, body: _ChatModelBody) -> dict:
     except OSError as exc:
         raise HTTPException(409, str(exc))
     try:
-        from aiforge_core.runtime import vision_detect
-        vision_detect.warm_vision_async("chat")
+        from aiforge_core.runtime import request_context, vision_detect
+        tok = request_context.set_session_id(session_id)
+        try:
+            vision_detect.warm_vision_async("chat")     # this chat's model
+        finally:
+            request_context.reset_session_id(tok)
     except Exception:  # noqa: BLE001
         pass
     return _session_model_view(session_id)

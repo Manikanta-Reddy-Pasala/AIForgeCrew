@@ -174,7 +174,14 @@ def _gen_title(prompt, session_id):
         # Titling is a ~20-token throwaway — route it to the cheap
         # 'triage' role so it doesn't contend with the main turn on a
         # serial local endpoint (was the big session role).
-        _t = chat_title.suggest_title(prompt, role="triage")
+        # Bound to the chat so the title comes from the chat's own model
+        # (config/chat_models), as every other call of the chat does.
+        from aiforge_core.runtime import request_context as _rc
+        _tok = _rc.set_session_id(session_id)
+        try:
+            _t = chat_title.suggest_title(prompt, role="triage")
+        finally:
+            _rc.reset_session_id(_tok)
         if _t:
             _cs.rename_session(session_id, _t)
     except Exception:  # noqa: BLE001 — titling must never break a run

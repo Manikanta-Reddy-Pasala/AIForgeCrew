@@ -259,7 +259,21 @@ def load_all() -> dict[str, dict[str, Any]]:
                 "agent_config.json unreadable (%s) — using defaults; "
                 "fix or reset the file (run.sh --reset-config).", exc)
     _apply_env_overrides(cfg)
-    return cfg
+    return _chat_picks(cfg)
+
+
+def _chat_picks(cfg: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """``cfg`` with the running chat's own model applied to every role it
+    covers (config/chat_models). Here, not only in :func:`get`: the LLM
+    router reads this map directly."""
+    try:
+        from aiforge_core.config import chat_models
+        if chat_models.current() is None:
+            return cfg
+        own = _roles_with_own_model()
+        return {role: chat_models.apply(role, row, own) for role, row in cfg.items()}
+    except Exception:  # noqa: BLE001 — the global pick stands
+        return cfg
 
 
 def get(role: str) -> dict[str, Any]:
@@ -268,7 +282,20 @@ def get(role: str) -> dict[str, Any]:
         return _chat_pick(role, _global_default_row() or {})
     if role not in _ROLES:
         raise ValueError(f"unknown role: {role}")
-    return _chat_pick(role, load_all()[role])
+    return load_all()[role]
+
+
+def _roles_with_own_model() -> frozenset:
+    """Roles whose stored row names a model of their own (an orchestrator
+    pick, a Settings per-role pin): a chat's pick leaves them alone. The
+    rest run on the global default, and so on the chat's pick."""
+    try:
+        p = _path()
+        disk = _fc.read_json(p) if p.exists() else {}
+    except Exception:  # noqa: BLE001
+        disk = {}
+    return frozenset(r for r, v in (disk or {}).items()
+                     if isinstance(v, dict) and str(v.get("model") or "").strip())
 
 
 def _chat_pick(role: str, row: dict[str, Any]) -> dict[str, Any]:
@@ -278,7 +305,7 @@ def _chat_pick(role: str, row: dict[str, Any]) -> dict[str, Any]:
         from aiforge_core.config import chat_models
         if chat_models.current() is None:
             return row
-        return chat_models.apply(role, row, _global_default_row())
+        return chat_models.apply(role, row, _roles_with_own_model())
     except Exception:  # noqa: BLE001 — the global pick stands
         return row
 

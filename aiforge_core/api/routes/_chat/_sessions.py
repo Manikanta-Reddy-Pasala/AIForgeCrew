@@ -570,10 +570,15 @@ async def chat_media_upload(session_id: int, file: Annotated[UploadFile, File()]
 
 @router.get("/api/chat/sessions/{session_id}/media")
 def chat_media_list(session_id: int) -> dict:
-    from aiforge_core.runtime import chat_media, chat_store
-    return {"media": chat_store.list_media(session_id),
-            "vision": chat_media.vision_enabled(
-                (chat_store.get_session(session_id) or {}).get("role") or "chat")}
+    from aiforge_core.runtime import chat_media, chat_store, request_context
+    # Bound to the chat: its own model (config/chat_models) is the one asked.
+    tok = request_context.set_session_id(session_id)
+    try:
+        vision = chat_media.vision_enabled(
+            (chat_store.get_session(session_id) or {}).get("role") or "chat")
+    finally:
+        request_context.reset_session_id(tok)
+    return {"media": chat_store.list_media(session_id), "vision": vision}
 
 
 class _MediaDescBody(BaseModel):

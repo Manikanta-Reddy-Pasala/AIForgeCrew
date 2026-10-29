@@ -27,8 +27,10 @@ from aiforge_core.config.paths import config_dir
 
 _LOCK = threading.Lock()
 _FIELDS = ("model", "base_url", "provider", "api_key", "insecure_tls")
+#: Set on a row whose endpoint is the chat's own pick (see :func:`apply`).
+ENDPOINT_MARK = "_chat_endpoint"
 # (mtime_ns, size) -> data: a role is resolved on every LLM call.
-_CACHE: dict = {"key": None, "data": {}}
+_CACHE: dict = {}
 
 
 def _path() -> Path:
@@ -43,15 +45,18 @@ def _load() -> dict:
         st = p.stat()
     except OSError:
         return {}
-    key = (str(p), st.st_mtime_ns, st.st_size)
-    if _CACHE["key"] == key:
-        return _CACHE["data"]
+    # The inode too: an atomic rewrite of the same size inside one mtime
+    # tick is still a new file.
+    key = (str(p), st.st_ino, st.st_mtime_ns, st.st_size)
+    hit = _CACHE.get("entry")
+    if hit is not None and hit[0] == key:
+        return hit[1]
     try:
         data = json.loads(p.read_text())
         data = data if isinstance(data, dict) else {}
     except Exception:  # noqa: BLE001
         data = {}
-    _CACHE.update(key=key, data=data)
+    _CACHE["entry"] = (key, data)          # one store: never a torn key/data
     return data
 
 
@@ -124,21 +129,18 @@ def current() -> "dict | None":
     return get(sid) if sid else None
 
 
-def apply(role: str, row: dict, default_row: "dict | None") -> dict:
+def apply(role: str, row: dict, own_roles=frozenset()) -> dict:
     """``row`` (the resolved config for ``role``) with the running chat's pick
-    applied: for ``chat`` / ``_default``, and for a role that runs on the
-    global default. An env pin for the role keeps winning."""
+    applied: for ``chat`` / ``_default``, and for a role with no model of its
+    own (``own_roles``: the roles whose stored row names a model) — those run
+    on the global default. An env pin for the role keeps winning."""
     pick = current()
     if not pick:
         return row
     if (os.environ.get(f"AIFORGE_{role.upper()}_MODEL") or "").strip():
         return row
-    if role not in ("chat", "_default"):
-        gd = default_row or {}
-        inherits = bool(gd.get("model")) and row.get("model") == gd.get("model") \
-            and (row.get("base_url") or None) == (gd.get("base_url") or None)
-        if not inherits:
-            return row
+    if role not in ("chat", "_default") and role in own_roles:
+        return row
     out = dict(row)
     out["model"] = pick["model"]
     if pick.get("provider"):
@@ -151,10 +153,13 @@ def apply(role: str, row: dict, default_row: "dict | None") -> dict:
         # chat's (other) server.
         out["api_key"] = pick.get("api_key")
         out["insecure_tls"] = bool(pick.get("insecure_tls"))
+        # The resolvers let env URLs/keys beat the stored row; for the
+        # chat's own endpoint they must not (an env key would go to it).
+        out[ENDPOINT_MARK] = True
     elif pick.get("api_key"):
         out["api_key"] = pick["api_key"]
     return out
 
 
-__all__ = ["apply", "copy_session", "current", "forget_session", "get",
+__all__ = ["ENDPOINT_MARK", "apply", "copy_session", "current", "forget_session", "get",
            "set_session"]

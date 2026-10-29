@@ -81,7 +81,11 @@ def _spawn_thread(fn, name: str, on_error):
                     _scrub(name))
         return None
     try:
-        t = threading.Thread(target=_guarded(fn, name, on_error),
+        # The caller's context rides along: a chat's background work runs on
+        # that chat's model (config/chat_models) and is billed to it.
+        import contextvars
+        t = threading.Thread(target=contextvars.copy_context().run,
+                             args=(_guarded(fn, name, on_error),),
                              name=name, daemon=True)
         t.start()
         return t
