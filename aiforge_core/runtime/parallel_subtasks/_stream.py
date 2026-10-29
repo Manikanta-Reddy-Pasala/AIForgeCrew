@@ -445,9 +445,13 @@ def stream_parallel_team(prompt: str, cwd: str, subtasks: list[dict] | None = No
             q.put({"type": "tool", "role": slug, "name": "wrote files",
                    "args": {"subtask": slug}, "result": {"files": files}})
 
+    # The chat's context rides along: its model (config/chat_models) and the
+    # attribution of every call the workers make.
+    import contextvars as _cv
     threading.Thread(
-        target=_make_runner(cwd, base, subs, _spec_runner(cwd, spec_md),
-                            on_status, cancelled, spec_md, q, result),
+        target=_cv.copy_context().run,
+        args=(_make_runner(cwd, base, subs, _spec_runner(cwd, spec_md),
+                           on_status, cancelled, spec_md, q, result),),
         name="parallel-chat", daemon=True).start()
     yield from _with_usage(_drain_run(q, session_id, subs, cwd, cancelled),
                            session_id)

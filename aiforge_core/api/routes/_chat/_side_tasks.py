@@ -272,6 +272,12 @@ def create(parent_id: int, content: str, mode: str = "simple") -> dict:
             approval_settings.copy_session(parent["id"], child["id"])
         except Exception:  # noqa: BLE001 — the child then uses the defaults
             pass
+        # …and the parent's model.
+        try:
+            from aiforge_core.config import chat_models
+            chat_models.copy_session(parent["id"], child["id"])
+        except Exception:  # noqa: BLE001 — the child then uses the global pick
+            pass
     pump(parent["id"])
     return _view(chat_store.get_session(child["id"]) or child)
 

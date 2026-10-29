@@ -289,8 +289,12 @@ def warm_vision_async(role: str = "chat") -> None:
     """Fire-and-forget :func:`ensure_vision_known` on a daemon thread — used at
     session start / model-set so identification never blocks the request. No-op
     if the capability is already known/cached for the role's model."""
+    import contextvars
     import threading
-    threading.Thread(target=lambda: _safe_ensure(role),
+    # In the caller's context: a chat's own model (config/chat_models) is
+    # the one to identify.
+    threading.Thread(target=contextvars.copy_context().run,
+                     args=(lambda: _safe_ensure(role),),
                      name=f"vision-warm-{role}", daemon=True).start()
 
 

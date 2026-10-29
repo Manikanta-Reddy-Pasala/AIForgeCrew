@@ -18,6 +18,7 @@ Reuses the worktree machinery from :mod:`parallel_subtasks` —
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 import logging
 import os
 import uuid
@@ -187,7 +188,8 @@ def _run_attempts(spec, cwd, base, n, runner, on_status, run_token, session_id,
             if cancelled_fn():        # stop launching new attempts (item 1)
                 cancelled = True
                 break
-            futs.append(ex.submit(_attempt, spec, cwd, base, i, runner,
+            futs.append(ex.submit(contextvars.copy_context().run,
+                                  _attempt, spec, cwd, base, i, runner,
                                   on_status, run_token, session_id,
                                   cancel_event))
         for f in concurrent.futures.as_completed(futs):
@@ -426,7 +428,9 @@ def stream_best_of_n(spec: str, cwd: str, n: int | None = None,
         finally:
             q.put(None)
 
-    _threading.Thread(target=_runner, name="best-of-n", daemon=True).start()
+    import contextvars
+    _threading.Thread(target=contextvars.copy_context().run, args=(_runner,),
+                      name="best-of-n", daemon=True).start()
     try:
         yield from _drain_queue(q, session_id, cancel_event)
     finally:

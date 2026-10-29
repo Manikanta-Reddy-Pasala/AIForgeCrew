@@ -306,9 +306,13 @@ def _persist_produce_turn(session_id, cwd, prompt, final_text, steps, awaiting,
         # pipeline runs a Learner node itself; the inline path never did, so chat
         # work never reached long-term memory. The boundary-gated per-session
         # summary refreshes cross-session recall's graph copy every N turns.
-        _bg.spawn(_partial(_chat_learn_writeback, cwd, prompt, final_text, steps,
-                           session_id), name="chat-learn")
-        _bg.spawn(_partial(_chat_summarize_session, cwd, session_id),
+        # Bound to the chat: it runs on the chat's own model (config/chat_models).
+        from aiforge_core.runtime.request_context import bound_to
+        _bg.spawn(bound_to(session_id, _partial(
+            _chat_learn_writeback, cwd, prompt, final_text, steps, session_id)),
+            name="chat-learn")
+        _bg.spawn(bound_to(session_id, _partial(_chat_summarize_session, cwd,
+                                                session_id)),
                   name="chat-summarize")
 
 

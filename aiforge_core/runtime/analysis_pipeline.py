@@ -359,7 +359,9 @@ def _fan_out_and_synthesize(prompt, units, explore_fn, topics, session_id, noun)
         explore_fn, (lambda: chat_cancel.is_cancelled(session_id))
         if session_id is not None else None)
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
-        fut_map = {ex.submit(explore, u, topics, prompt): u for u in units}
+        import contextvars
+        fut_map = {ex.submit(contextvars.copy_context().run, explore, u, topics,
+                             prompt): u for u in units}
         for fut in concurrent.futures.as_completed(fut_map):
             if session_id is not None and chat_cancel.is_cancelled(session_id):
                 # Break silently — the SSE producer stops on the first post-cancel

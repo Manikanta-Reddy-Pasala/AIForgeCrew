@@ -82,19 +82,25 @@ class OpenAICompatibleProvider:
     def endpoint(self, role: str) -> Endpoint:
         role_up = role.upper()
         row = _config_row(role)
-        base_url = (
-            os.environ.get(f"AIFORGE_{role_up}_BASE_URL")
-            or os.environ.get("AIFORGE_OPENAI_COMPAT_BASE_URL")
-            or row.get("base_url")
-            or _DEFAULT_BASE
-        )
+        if row.get("_chat_endpoint"):
+            # A chat's own endpoint (config/chat_models): env URLs and keys
+            # are for the global one and must not be sent to it.
+            base_url = row.get("base_url") or _DEFAULT_BASE
+            api_key = row.get("api_key") or _NO_TOKEN
+        else:
+            base_url = (
+                os.environ.get(f"AIFORGE_{role_up}_BASE_URL")
+                or os.environ.get("AIFORGE_OPENAI_COMPAT_BASE_URL")
+                or row.get("base_url")
+                or _DEFAULT_BASE
+            )
+            api_key = (
+                os.environ.get("AIFORGE_OPENAI_COMPAT_API_KEY")
+                or os.environ.get(f"AIFORGE_{role_up}_API_KEY")
+                or row.get("api_key")
+                or _NO_TOKEN
+            )
         base_url = _ensure_v1(base_url)
-        api_key = (
-            os.environ.get("AIFORGE_OPENAI_COMPAT_API_KEY")
-            or os.environ.get(f"AIFORGE_{role_up}_API_KEY")
-            or row.get("api_key")
-            or _NO_TOKEN
-        )
         model = (
             os.environ.get(f"AIFORGE_{role_up}_MODEL")
             or row.get("model")

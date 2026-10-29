@@ -233,8 +233,9 @@ def warm_slots() -> None:
             slots.llm_slots()
         except Exception:  # noqa: BLE001 — a warm-up never breaks a turn
             pass
-    threading.Thread(target=_warm, name="aiforge-slots-warm",
-                     daemon=True).start()
+    import contextvars
+    threading.Thread(target=contextvars.copy_context().run, args=(_warm,),
+                     name="aiforge-slots-warm", daemon=True).start()
 
 
 def take(early: EarlyEnhance, session_id) -> str:

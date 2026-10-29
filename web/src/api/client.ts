@@ -60,6 +60,12 @@ export type CaStatus = {
   applies_to: string[];
 };
 
+// The model one chat runs on: its own pick (own: true), else the global one.
+export interface SessionModel {
+  model: string | null; base_url: string; provider: string | null;
+  own: boolean; active: boolean; warning?: string | null;
+}
+
 export const api = {
   health:   () => j<any>('/health'),
   // Machine-wide LLM request meter for the toolbar badge. `series=false` skips
@@ -150,6 +156,16 @@ export const api = {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled }),
     }),
+  sessionModel: (sessionId: number) =>
+    j<SessionModel>(`/chat/sessions/${sessionId}/model`),
+  setSessionModel: (sessionId: number, model: string, provider?: string, baseUrl?: string) =>
+    j<SessionModel>(`/chat/sessions/${sessionId}/model`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, ...(provider ? { provider } : {}),
+                             ...(baseUrl ? { base_url: baseUrl } : {}) }),
+    }),
+  clearSessionModel: (sessionId: number) =>
+    j<SessionModel>(`/chat/sessions/${sessionId}/model`, { method: 'DELETE' }),
   responseLanguage: () => j<ResponseLanguage>('/chat/response-language'),
   setResponseLanguage: (change: { language?: string; style?: string }) =>
     j<ResponseLanguage>('/chat/response-language', {

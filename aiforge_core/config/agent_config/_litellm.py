@@ -62,7 +62,8 @@ def resolve_litellm(role: str) -> dict[str, Any]:
     # Cheap-tier fallback (Change 3): an unpinned cheap role (triage/enhancer)
     # uses AIFORGE_CHEAP_MODEL when set, so throwaway ops don't load the big
     # model on a serial endpoint. No-op when the env is unset.
-    _cheap = cheap_model_for(role)
+    # Not on a chat's own endpoint: the cheap model lives on the global one.
+    _cheap = None if row.get("_chat_endpoint") else cheap_model_for(role)
     if _cheap:
         model = _cheap
     # Always add LiteLLM provider prefix unless caller already supplied one.
@@ -80,8 +81,11 @@ def resolve_litellm(role: str) -> dict[str, Any]:
     # install configured by that env alone answered Simple chat from the
     # local server, while Team mode got no api_base at all.
     stored = row.get("base_url")
+    # A chat's own endpoint (config/chat_models) is used as stored: an env URL
+    # or key meant for the global endpoint must not be sent to it.
+    own = bool(row.get("_chat_endpoint"))
     base_url = (
-        os.environ.get(f"AIFORGE_{role.upper()}_BASE_URL")
+        (None if own else os.environ.get(f"AIFORGE_{role.upper()}_BASE_URL"))
         or stored
         or prov.get("base_url")
         or _compat_env_base_url()
@@ -91,10 +95,11 @@ def resolve_litellm(role: str) -> dict[str, Any]:
     # ("not-needed" sentinel so OSS-no-token endpoints still get a
     # non-empty key, which the OpenAI client requires).
     api_key = (
-        os.environ.get(prov["api_key_env"])
-        or os.environ.get(f"AIFORGE_{role.upper()}_API_KEY")
-        or row.get("api_key")
-        or prov["api_key_default"]
+        (row.get("api_key") or prov["api_key_default"]) if own else (
+            os.environ.get(prov["api_key_env"])
+            or os.environ.get(f"AIFORGE_{role.upper()}_API_KEY")
+            or row.get("api_key")
+            or prov["api_key_default"])
     )
     return {
         "model_id": model, "api_base": base_url, "api_key": api_key,

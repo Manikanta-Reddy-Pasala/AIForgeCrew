@@ -6,7 +6,7 @@ import { Icon } from '../icons';
 import { MdLite, copyText as mdCopyText } from '../mdlite';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { AgentStep, SubtaskItem, RuleState, RuleStateCtx, LiveTurn, ChatMode, BuilderKind, PendingApproval } from './Chat.types';
-import { menuBtn, menuItem, LS_SESSION_KEY, LS_MODEL_KEY, LS_MODE_KEY, BUILDER_KINDS, BUILDER_LABELS, LS_BUILDER_KEY, relTime, dateTimeLabel, toAgentStep, msgAwaiting, getDismissedPlans, addDismissedPlan, getDismissedRecipes, addDismissedRecipe, isStoppedTurn, fmtTokens, pickDockSubtasks } from './Chat.helpers';
+import { menuBtn, menuItem, LS_SESSION_KEY, LS_MODE_KEY, BUILDER_KINDS, BUILDER_LABELS, LS_BUILDER_KEY, relTime, dateTimeLabel, toAgentStep, msgAwaiting, getDismissedPlans, addDismissedPlan, getDismissedRecipes, addDismissedRecipe, isStoppedTurn, fmtTokens, pickDockSubtasks } from './Chat.helpers';
 import { pickChatModel } from '../chatModelPick';
 import { SubtaskList } from './Chat.SubtaskList';
 import { SideTasks } from './Chat.SideTasks';
@@ -16,6 +16,7 @@ import SuggestionChip from './Chat.SuggestionChip';
 import RecipeOfferCard, { type RecipeOffer } from './Chat.RecipeOfferCard';
 import ScopeNetCard, { type ScopeNet } from './Chat.ScopeNetCard';
 import type { Suggestion } from '../api/chat';
+import type { SessionModel } from '../api/client';
 import { ModeBadge } from './Chat.ModeBadge';
 import { CtxReload } from './Chat.CtxReload';
 import { AutoApprovalsPanel } from './Chat.AutoApprovalsPanel';
@@ -344,14 +345,15 @@ function ApprovalsToggle({ approvalsOn, toggleApprovals, modeApprovalKey, chatMo
 }
 
 // Model selector — less relevant in team mode, so hidden there.
-function ModelSelect({ chatMode, busy, modelActive, setModelActive, selectedModel,
-                       setSelectedModel, chatProvider, modelOptions }: Readonly<{
-  chatMode: ChatMode; busy: boolean; modelActive: boolean;
-  setModelActive: React.Dispatch<React.SetStateAction<boolean>>;
-  selectedModel: string; setSelectedModel: React.Dispatch<React.SetStateAction<string>>;
-  chatProvider: string; modelOptions: ChatModelEntry[];
+// The value of the "use the default model" entry: no model id contains it.
+const MODEL_DEFAULT = '\u001edefault';
+
+function ModelSelect({ busy, modelActive, selectedModel, selectedUrl, onPick, own,
+                       onDefault, modelOptions }: Readonly<{
+  busy: boolean; modelActive: boolean; selectedModel: string; selectedUrl: string;
+  onPick: (model: string, baseUrl: string) => void; own: boolean;
+  onDefault: () => void; modelOptions: ChatModelEntry[];
 }>) {
-  if (chatMode === 'team') return null;
   return (
     <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--fg-2)' }}>
       <span
@@ -369,40 +371,33 @@ function ModelSelect({ chatMode, busy, modelActive, setModelActive, selectedMode
       <select
         className="chat-model-select"
         value={modelOptionKey(
-          modelOptions.find(o => o.id === selectedModel) || { id: selectedModel })}
+          (selectedUrl && modelOptions.find(o => o.id === selectedModel
+                                             && sameUrl(o.base_url, selectedUrl)))
+          || modelOptions.find(o => o.id === selectedModel) || { id: selectedModel })}
         onChange={async e => {
           // The value carries the ENDPOINT as well as the id: two registered
           // copies of one model differ only by base_url, and an id-only value
           // made them indistinguishable in the DOM as well as on the wire.
+          if (e.target.value === MODEL_DEFAULT) { onDefault(); return; }
           const [newModel, pickedUrl] = e.target.value.split(MODEL_KEY_SEP);
-          setSelectedModel(newModel);
-          try {
-            const res = await chatApi.setChatModel(
-              newModel, chatProvider || undefined, pickedUrl || undefined);
-            setModelActive(res.active);
-            if (res.active) {
-              toast.success('Model updated');
-            } else {
-              const label = modelOptions.find(o => o.id === newModel)?.label || newModel;
-              toast.warning(`${label} is not loaded — it may fail or take time to load`);
-            }
-          } catch (err: any) {
-            toast.error(`Failed to set model: ${err.message}`);
-          }
+          onPick(newModel, pickedUrl || '');
         }}
         disabled={busy || modelOptions.length === 0}
-        title="Chat model"
+        title="Model for this chat (other chats keep theirs)"
       >
         {modelOptions.length === 0 ? (
           <option value="" disabled>
             no active models — load one in LM Studio / configure on Home
           </option>
         ) : (
-          modelOptions.map(opt => (
-            <option key={modelOptionKey(opt)} value={modelOptionKey(opt)}>
-              {modelOptionLabel(opt, modelOptions)}
-            </option>
-          ))
+          <>
+            {modelOptions.map(opt => (
+              <option key={modelOptionKey(opt)} value={modelOptionKey(opt)}>
+                {modelOptionLabel(opt, modelOptions)}
+              </option>
+            ))}
+            {own && <option value={MODEL_DEFAULT}>↺ Use the default model</option>}
+          </>
         )}
       </select>
     </label>
@@ -413,6 +408,11 @@ function ModelSelect({ chatMode, busy, modelActive, setModelActive, selectedMode
 // model can be registered against two servers, and those are two different
 // things to pick. The separator is a control character so no URL can contain it.
 const MODEL_KEY_SEP = '\u001f';
+
+function sameUrl(a?: string, b?: string): boolean {
+  const n = (u?: string) => (u || '').trim().replace(/\/+$/, '').replace(/\/v1$/i, '').toLowerCase();
+  return n(a) === n(b);
+}
 
 function modelOptionKey(opt: { id: string; base_url?: string }): string {
   return `${opt.id}${MODEL_KEY_SEP}${opt.base_url || ''}`;
@@ -849,6 +849,86 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
     }
   }
 
+  // The model is per chat: picking one in this chat leaves the others alone.
+  // A chat with no pick of its own runs on the global model (Home/Settings).
+  const [globalModel, setGlobalModel] = useState<string>('');
+  const [modelOwn, setModelOwn] = useState(false);
+  const modelSeq = useRef(0);
+  const modelNewChat = useRef<number | null>(null);
+  const modelCreating = useRef(false);
+  useEffect(() => {
+    const sid = activeId;
+    if (sid !== null && sid === modelNewChat.current) { modelNewChat.current = null; return; }
+    modelNewChat.current = null;
+    const seq = ++modelSeq.current;
+    // Not the last chat's model while this one loads.
+    if (globalModel) setSelectedModel(globalModel);
+    setSelectedUrl('');
+    setModelActive(true);
+    setModelOwn(false);
+    if (sid === null) return;
+    chatApi.sessionModel(sid).then(m => {
+      if (activeIdRef.current !== sid || modelSeq.current !== seq || !m.model) return;
+      showSessionModel(m);
+    }).catch(() => { toast.error('Could not load this chat\'s model'); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId]);
+  function showSessionModel(m: SessionModel) {
+    const model = m.model || '';
+    if (!model) return;
+    setModelOptions(opts => opts.some(o => o.id === model
+                                      && (!m.base_url || sameUrl(o.base_url, m.base_url))) ? opts
+      : [{ id: model, label: model, active: false, base_url: m.base_url } as ChatModelEntry, ...opts]);
+    setSelectedModel(model);
+    setSelectedUrl(m.own ? m.base_url : '');
+    setModelActive(m.active);
+    setModelOwn(m.own);
+  }
+  async function useDefaultModel() {
+    const sid = activeId;
+    if (sid === null) return;
+    const seq = ++modelSeq.current;
+    try {
+      const m = await chatApi.clearSessionModel(sid);
+      if (activeIdRef.current === sid && modelSeq.current === seq) showSessionModel(m);
+      toast.success('This chat uses the default model again');
+    } catch (err: any) {
+      toast.error(`Failed to reset the model: ${err.message}`);
+    }
+  }
+  async function pickModel(model: string, baseUrl: string) {
+    let sid = activeId;
+    if (sid === null) {
+      // A brand-new chat has no session yet: create it so the pick is its own.
+      if (modelCreating.current) return;
+      modelCreating.current = true;
+      try { sid = await createSession(); } finally { modelCreating.current = false; }
+      if (sid === null) return;
+      modelNewChat.current = sid;
+    }
+    const seq = ++modelSeq.current;
+    const before = selectedModel;
+    setSelectedModel(model);
+    setSelectedUrl(baseUrl);
+    try {
+      const res = await chatApi.setSessionModel(sid, model, chatProvider || undefined,
+                                                baseUrl || undefined);
+      if (activeIdRef.current !== sid || modelSeq.current !== seq) return;
+      showSessionModel(res);
+      if (res.warning) {
+        toast.warning(res.warning);
+      } else if (res.active) {
+        toast.success('Model set for this chat');
+      } else {
+        const label = modelOptions.find(o => o.id === model)?.label || model;
+        toast.warning(`${label} is not loaded — it may fail or take time to load`);
+      }
+    } catch (err: any) {
+      if (activeIdRef.current === sid && modelSeq.current === seq) setSelectedModel(before);
+      toast.error(`Failed to set model: ${err.message}`);
+    }
+  }
+
   // Per-session builder flow (job/skill/workflow/rule). When set for the active
   // session, every message that session sends carries `builder` so the backend
   // runs the interview charter instead of the enhancer/team pipeline.
@@ -958,9 +1038,9 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   // Model selector
   const [modelOptions, setModelOptions] = useState<ChatModelEntry[]>([]);
   const [chatProvider, setChatProvider] = useState<string>('');
-  const [selectedModel, setSelectedModel] = useState<string>(() => {
-    try { return localStorage.getItem(LS_MODEL_KEY) || ''; } catch { return ''; }
-  });
+  const [selectedModel, setSelectedModel] = useState<string>('');
+  // WHICH copy of the model (its endpoint): one id can be on two servers.
+  const [selectedUrl, setSelectedUrl] = useState<string>('');
   const [modelActive, setModelActive] = useState<boolean>(true);
   // Orchestrator model (enhancer + planner — the layer-1 splitter agents)
   const [orchModel, setOrchModel] = useState<string>('');
@@ -1217,7 +1297,10 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
     chatApi.chatModels().then(async resp => {
       setChatProvider(resp.provider || '');
       const models = resp.models || [];
-      setModelOptions(models);
+      // Keep an entry an open chat added for its own pick (another server's
+      // model is not in this list): its <select> value must stay an option.
+      setModelOptions(prev => [
+        ...prev.filter(p => !models.some((m: ChatModelEntry) => m.id === p.id)), ...models]);
 
       // The model you picked stays picked until you change it. This used to
       // switch to the first model in the list — and SAVE that — whenever the
@@ -1228,10 +1311,15 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
       const saved = resp.current || '';
       if (saved && !models.some((m: ChatModelEntry) => m.id === saved)) {
         // Keep it selectable even when the server did not list it this time.
-        setModelOptions([{ id: saved, label: saved, active: false } as ChatModelEntry, ...models]);
+        setModelOptions(prev => prev.some(o => o.id === saved) ? prev
+          : [{ id: saved, label: saved, active: false } as ChatModelEntry, ...prev]);
       }
-      setSelectedModel(prev => pickChatModel(saved, models, prev));
-      setModelActive(saved ? (resp.current_active ?? true) : (models[0]?.active ?? true));
+      setGlobalModel(saved);
+      // An open chat shows its own model (loaded per chat, below).
+      if (activeIdRef.current === null) {
+        setSelectedModel(prev => pickChatModel(saved, models, prev));
+        setModelActive(saved ? (resp.current_active ?? true) : (models[0]?.active ?? true));
+      }
     }).catch(() => { /* backend may not have the endpoint yet — ignore */ });
 
     chatApi.orchestratorModel().then(r => {
@@ -1259,11 +1347,6 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
       }
     } catch { /* ignore */ }
   }, [activeId]);
-
-  // Persist selected model
-  useEffect(() => {
-    try { if (selectedModel) localStorage.setItem(LS_MODEL_KEY, selectedModel); } catch { /* ignore */ }
-  }, [selectedModel]);
 
   // Persist chat mode
   useEffect(() => {
@@ -2555,9 +2638,10 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
               onCompact={activeId !== null ? () => compactContext(activeId) : undefined} />
             <ApprovalsToggle approvalsOn={approvalsOn} toggleApprovals={toggleApprovals}
                              modeApprovalKey={modeApprovalKey} chatMode={chatMode} />
-            <ModelSelect chatMode={chatMode} busy={busy} modelActive={modelActive}
-                         setModelActive={setModelActive} selectedModel={selectedModel}
-                         setSelectedModel={setSelectedModel} chatProvider={chatProvider}
+            <ModelSelect busy={busy} modelActive={modelActive}
+                         selectedModel={selectedModel} selectedUrl={selectedUrl}
+                         onPick={pickModel}
+                         own={modelOwn} onDefault={useDefaultModel}
                          modelOptions={modelOptions} />
             <OrchSelect chatMode={chatMode} orchOptions={orchOptions} orchModel={orchModel}
                         setOrchModel={setOrchModel} chatProvider={chatProvider} busy={busy} />

@@ -69,14 +69,17 @@ def pick_reviewer_model() -> str | None:
 def _auto_pick_reviewer() -> str | None:
     """Pick a loaded model that DIFFERS from the doer (preferring a reasoning
     model). Cached. None if only one model is loaded or the probe fails."""
-    if "model" in _reviewer_cache:
-        return _reviewer_cache["model"]
-    picked = None
+    picked = key = None
     try:
         from aiforge_core.llm.router import resolve
         endpoint = resolve("doer")
         doer_model = (getattr(endpoint, "model", "") or "").lower()
         base = (getattr(endpoint, "base_url", "") or "").rstrip("/")
+        # Per doer: each chat can run its own model (config/chat_models), and
+        # the reviewer must differ from THAT chat's doer.
+        key = f"{doer_model}|{base}"
+        if key in _reviewer_cache:
+            return _reviewer_cache[key]
         req = urllib.request.Request(
             f"{base}/models", method="GET",
             headers={"Authorization":
@@ -91,7 +94,8 @@ def _auto_pick_reviewer() -> str | None:
                   or (others[0] if others else None))
     except Exception:  # noqa: BLE001
         picked = None
-    _reviewer_cache["model"] = picked
+    if key is not None:
+        _reviewer_cache[key] = picked
     return picked
 
 

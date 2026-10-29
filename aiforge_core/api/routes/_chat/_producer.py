@@ -82,9 +82,12 @@ def _note_staleness_notice(cwd, session_id=None):
                 from aiforge_core.runtime.run_interrupt import STOPPED, wait_future
                 _nbudget = float(os.environ.get(
                     "AIFORGE_NOTE_CURATE_BUDGET_S", "10"))
+                import contextvars as _cv
+
                 from aiforge_core.llm import model_wait
                 _cres = wait_future(
-                    _nex.submit(model_wait.side_call(_nc.curate_note),
+                    _nex.submit(_cv.copy_context().run,
+                                model_wait.side_call(_nc.curate_note),
                                 _stale_note), _nbudget, session_id)
                 if _cres is STOPPED:
                     _cres = None

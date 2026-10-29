@@ -510,7 +510,9 @@ def chat_session_delete(session_id: int) -> None:
     # idempotent + never raises; skip via AIFORGE_SESSION_COMPACT_ON_SWITCH=0.
     from aiforge_core.runtime import chat_session_fold
     if chat_session_fold._enabled():
-        chat_session_fold.fold_sync(session_id)
+        # On the chat's own model, before its pick is dropped with the rows.
+        from aiforge_core.runtime.request_context import bound_to
+        bound_to(session_id, chat_session_fold.fold_sync)(session_id)
     # Its own worktree goes with it; the branch (and so every commit) stays.
     # A team run parked for this chat (another repo's worktree) goes too.
     try:
@@ -575,10 +577,15 @@ async def chat_media_upload(session_id: int, file: Annotated[UploadFile, File()]
 
 @router.get("/api/chat/sessions/{session_id}/media")
 def chat_media_list(session_id: int) -> dict:
-    from aiforge_core.runtime import chat_media, chat_store
-    return {"media": chat_store.list_media(session_id),
-            "vision": chat_media.vision_enabled(
-                (chat_store.get_session(session_id) or {}).get("role") or "chat")}
+    from aiforge_core.runtime import chat_media, chat_store, request_context
+    # Bound to the chat: its own model (config/chat_models) is the one asked.
+    tok = request_context.set_session_id(session_id)
+    try:
+        vision = chat_media.vision_enabled(
+            (chat_store.get_session(session_id) or {}).get("role") or "chat")
+    finally:
+        request_context.reset_session_id(tok)
+    return {"media": chat_store.list_media(session_id), "vision": vision}
 
 
 class _MediaDescBody(BaseModel):
