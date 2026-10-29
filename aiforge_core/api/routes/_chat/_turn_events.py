@@ -37,6 +37,7 @@ def _drive_produce_stream(_events, st: dict, steps: list, run, session_id,
         _publish_final_usage(run, session_id, steps)
         if not st.get("awaiting"):       # waiting for the user: still going on
             _settle_task_list(st, run)
+        _close_goals(st, session_id, chat_cancel)
         if st["subtasks"]:
             steps.insert(0, {"type": "subtasks", "items": st["subtasks"]})
         # The UI unblocks on a terminal `done`; a cancelled parallel/best-of-N run
@@ -60,6 +61,22 @@ def _drive_produce_stream(_events, st: dict, steps: list, run, session_id,
 
 #: A task that is neither finished nor going on: the turn ended first.
 LEFT = "left"
+
+
+def _close_goals(st: dict, session_id, chat_cancel) -> None:
+    """A turn that ended with an answer, all its tasks closed, closes the
+    goals it worked on; a stopped, waiting or half-done one leaves them open
+    for the next message (runtime/chat_goals)."""
+    try:
+        from aiforge_core.runtime import chat_goals
+        left = any(r.get("status") in (LEFT, "failed")
+                   for r in st.get("subtasks") or [])
+        completed = (not st.get("awaiting") and not left
+                     and bool(str(st.get("final_text") or "").strip())
+                     and not chat_cancel.is_cancelled(session_id))
+        chat_goals.finish_turn(session_id, completed=completed)
+    except Exception:  # noqa: BLE001 — never break a turn's end over goals
+        pass
 
 
 def _settle_task_list(st: dict, run) -> None:

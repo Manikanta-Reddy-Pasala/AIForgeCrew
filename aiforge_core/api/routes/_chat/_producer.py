@@ -103,6 +103,38 @@ def _note_staleness_notice(cwd, session_id=None):
         _af_log.debug("note staleness pass skipped: %s", _nexc2)
 
 
+def _goal_pass(pc, gctx):
+    """Bring the chat's goals in line with this turn's message; a question
+    for the user ends the turn waiting on the answer."""
+    try:
+        from aiforge_core.runtime import chat_goals, chat_runs, chat_store
+        from aiforge_core.runtime.chat_agent._native_prompt import is_plan_execution
+        if not chat_goals.enabled() or is_plan_execution(pc.prompt):
+            return
+        rows = chat_store.get_messages(pc.session_id)
+        said = ""
+        for r in reversed(rows[:-1]):
+            if r.get("role") == "assistant" and str(r.get("content") or "").strip():
+                said = str(r["content"])
+                break
+        if chat_goals.goals(pc.session_id)["goals"]:
+            chat_runs.set_phase(pc.session_id, "working out the goal")
+        out = chat_goals.on_message(
+            pc.session_id, pc.prompt, role=pc.role, said=said,
+            turn=sum(1 for r in rows if r.get("role") == "user"))
+    except Exception as exc:  # noqa: BLE001 — the turn goes on without goals
+        _af_log.debug("goal pass skipped: %s", exc)
+        return
+    if out.get("question"):
+        yield {"type": "message", "text": out["question"], "awaiting_input": True}
+        yield {"type": "done"}
+        gctx["done"] = True
+        return
+    if out.get("called") and out.get("changes"):
+        yield {"type": "thought", "role": "goals",
+               "text": "Goals: " + "; ".join(out["changes"])}
+
+
 def _events(pc):
     pctx0 = {"done": False}
     yield from _early_route_events(pc._cmd_help_text, pc.body, pc.history, pc.cwd, pc.role,
@@ -171,6 +203,14 @@ def _events(pc):
         return
     if _turn_was_stopped(pc.session_id):
         yield from _stopped_turn()
+        return
+    # The chat's goals follow the message: an earlier goal is kept and changed
+    # by it, not replaced (runtime/chat_goals). A message that cannot be
+    # placed is answered with one question before any work.
+    gctx = {"done": False}
+    if not getattr(pc, "_wake", False) and not _recipe_failed:
+        yield from _goal_pass(pc, gctx)
+    if gctx["done"]:
         return
     # Team mode → full ADK agent flow (planner→…→learner) for complex
     # builds. Simple mode → single conversational agent for quick work.

@@ -46,6 +46,11 @@ def _apply_edit_resend(session, session_id, body) -> None:
                 chat_lessons.drop_after_turn(session_id, _kept_users)
             except Exception:  # noqa: BLE001
                 pass
+            try:      # so do the goals those turns set or changed
+                from aiforge_core.runtime import chat_goals
+                chat_goals.drop_after_turn(session_id, _kept_users)
+            except Exception:  # noqa: BLE001
+                pass
         except Exception as _exc:  # noqa: BLE001 — edit-resend must fail open
             _af_log.warning("edit-resend failed (session=%s msg=%s): %s",
                             session_id, body.edit_from_message_id, _exc)

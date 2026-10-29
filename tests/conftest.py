@@ -16,6 +16,10 @@ os.environ.setdefault("AIFORGE_LLM_MAX_RPM", "0")
 # point it at the live logs.
 os.environ.setdefault("AIFORGE_LOG_CLEANUP", "0")
 os.environ.setdefault("AIFORGE_IDLE_COMPACT", "0")
+# The goal check (runtime/chat_goals) is one more model call per message once a
+# chat has a goal; a scripted agent would get it as its first call. Its own
+# tests turn it on.
+os.environ.setdefault("AIFORGE_CHAT_GOALS", "0")
 
 # HERMETIC MODEL ENDPOINT for EVERY test directory (tests/python's conftest
 # already did this for itself; tests/api had nothing). An unstubbed model call

@@ -454,6 +454,9 @@ def turn_pin(st, live_failed: bool = False) -> str | None:
             parts.append(tb)
     except Exception:  # noqa: BLE001 — the pin stands without the targets
         pass
+    goals = _goals_block(st)
+    if goals:
+        parts.append(goals)
     parts += [b for b in _repo_blocks(st) if b]
     lessons = _lessons_block(st, live_failed)
     if lessons:
@@ -461,7 +464,8 @@ def turn_pin(st, live_failed: bool = False) -> str | None:
     if not parts:
         return None
     if any(b in "\n".join(parts) for b in ("TARGETS — ", "LESSONS FROM THIS CHAT",
-                                            "REPOSITORIES IN THIS CHAT")):
+                                            "REPOSITORIES IN THIS CHAT",
+                                            "GOALS IN THIS CHAT")):
         parts.append("(These blocks are current: an older copy elsewhere in "
                      "the context is out of date.)")
     if not goal:
@@ -497,6 +501,18 @@ def _repo_blocks(st) -> list:
     except Exception:  # noqa: BLE001
         pass
     return out
+
+
+def _goals_block(st) -> str:
+    """Every goal the user set in this chat, read NOW: a steer may have
+    changed them since the turn began (runtime/chat_goals)."""
+    if getattr(st, "builder", None) or getattr(st, "strict_finish", False):
+        return ""
+    try:
+        from aiforge_core.runtime import chat_goals
+        return chat_goals.block(getattr(st, "session_id", None))
+    except Exception:  # noqa: BLE001 — the pin stands without them
+        return ""
 
 
 def _lessons_block(st, live_failed: bool = False) -> str:

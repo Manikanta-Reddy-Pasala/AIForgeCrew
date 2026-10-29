@@ -232,6 +232,19 @@ def _lessons_text(session_id) -> str:
         return ""
 
 
+def _goals_text(session_id, builder, strict_finish) -> str:
+    """This chat's GOALS block ("" when none / off): every goal the user set,
+    and the one this turn works on. Not for a builder or a pipeline worker:
+    their request is a machine-built seed, not the user's goal."""
+    if session_id is None or builder or strict_finish:
+        return ""
+    try:
+        from aiforge_core.runtime import chat_goals
+        return chat_goals.block(session_id)
+    except Exception:  # noqa: BLE001 — a goals read never breaks prompt build
+        return ""
+
+
 def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
                  analyze_mode, builder, strict_finish, session_id, native=False,
                  unlimited=False, stable_system=False, carried=False):
@@ -260,7 +273,8 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
         sys_msg, _asks, prefs, rules, analyze_mode, plan_mode, builder,
         recipes_text=_recipes_text(cwd),
         targets_text=_targets_text(session_id),
-        lessons_text=_lessons_text(session_id))
+        lessons_text=_lessons_text(session_id),
+        goals_text=_goals_text(session_id, builder, strict_finish))
     # Reply language (Settings): part of the protected core, never trimmed —
     # a half-kept block said "write in X" and lost its "never change code or
     # protocol markers" clause. (llm.client adds it for every other call.)

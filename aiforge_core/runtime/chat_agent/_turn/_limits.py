@@ -178,7 +178,16 @@ def _drain_steering(st, session_id):
             _parts = ([chat_steer.steer_block(_steers)] if _steers else [])
             _parts += [chat_steer.reject_note(g) for g in _rejects]
             _board_events: list = []
+            _goal_events: list = []
+            _asking = False
             if _steers:
+                # The goals follow the message: the earlier goal is kept and
+                # changed by it, never replaced by it (runtime/chat_goals).
+                # A message that cannot be placed is asked about first, and
+                # the board waits for the answer.
+                _gnote, _asking = _steer_goals(st, session_id, _steers, _goal_events)
+                _parts.append(_gnote)
+            if _steers and not _asking:
                 # The task list follows the message: the harness brings the
                 # board in line with it (a model call), else the model is
                 # shown the board and told to.
@@ -196,7 +205,41 @@ def _drain_steering(st, session_id):
             _append_directive(st, _directive)
             for _k, _t in _items:
                 yield chat_steer.steer_event(_t)
+            yield from _goal_events
             yield from _board_events
+
+
+def _steer_goals(st, session_id, steers, events) -> "tuple[str, bool]":
+    """Bring the chat's goals in line with mid-run message(s); the note the
+    agent gets with them: the whole goal now, or a question to ASK the user
+    when the message could not be placed, and whether it is a question. A
+    visible step goes in ``events``."""
+    if getattr(st, "builder", None) or getattr(st, "strict_finish", False):
+        return "", False
+    try:
+        from aiforge_core.runtime import chat_goals
+        if not chat_goals.enabled():
+            return "", False
+        board = getattr(st, "board", None) or {}
+        doing = [it.get("title") for it in board.values()
+                 if it.get("status") == "running"] or \
+                [it.get("title") for it in board.values()
+                 if it.get("status") == "pending"][:1]
+        out = chat_goals.on_message(
+            session_id, "\n".join(str(s) for s in steers), role=st.role,
+            mid_run=True, working_on="; ".join(str(t) for t in doing if t))
+    except Exception:  # noqa: BLE001 — the steer stands without the goals
+        return "", False
+    if out.get("question"):
+        events.append({"type": "thought", "role": "goals",
+                       "text": "Not clear how this changes the goal — asking: "
+                               + out["question"]})
+        return chat_goals.ask_directive(out["question"]), True
+    if out.get("changes"):
+        events.append({"type": "thought", "role": "goals",
+                       "text": "Goals: " + "; ".join(out["changes"])})
+    return (chat_goals.now_directive(out.get("current") or "",
+                                     out.get("changes") or []), False)
 
 
 def _board_new_targets(st, session_id, steers=()) -> bool:
