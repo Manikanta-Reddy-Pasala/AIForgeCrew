@@ -16,6 +16,8 @@ def _env(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
     monkeypatch.setattr(G, "_temporary", lambda sid: False)
     G._MEM.clear()
+    G._PASSED.clear()
+    G._SESSION_LOCKS.clear()
 
 
 def _model(monkeypatch, *replies):
@@ -67,7 +69,7 @@ def test_a_goal_the_reply_leaves_out_is_kept(monkeypatch):
     assert data["now"] == ["g2"]
     blk = G.block(1)
     assert "g1 (open, not this turn): build a login page" in blk
-    assert "still to do" in blk
+    assert "do not start them on your own" in blk
 
 
 def test_only_the_users_words_drop_a_goal(monkeypatch):
@@ -80,7 +82,7 @@ def test_only_the_users_words_drop_a_goal(monkeypatch):
     out = G.on_message(1, "forget the login page, do a signup page instead",
                        mid_run=True, turn=1)
     assert any(c.startswith("dropped g1") for c in out["changes"])
-    assert "login" not in G.block(1)
+    assert "(DROPPED by the user — do no more work on it): build a login page" in G.block(1)
 
 
 def test_a_failed_model_call_drops_nothing(monkeypatch):
@@ -251,7 +253,7 @@ def test_a_vague_drop_with_two_goals_asks_which(monkeypatch):
             "now": [], "current": "", "question": ""})
     G.on_message(1, "separately, add csv()", turn=2)
     out = G.on_message(1, "drop it", turn=3)
-    assert out["question"].startswith("Which one do you mean: (1) add power()")
+    assert out["question"].startswith('You said "drop it" — which one do you mean: (1) add power()')
     assert [g["status"] for g in G.goals(1)["goals"]] == ["open", "open"]
 
 
@@ -290,22 +292,23 @@ def test_a_mid_run_addition_keeps_the_goal_in_hand(monkeypatch):
     assert "build a login page" in out["current"] and "dark mode" in out["current"]
 
 
-def test_a_failed_call_after_a_stop_keeps_the_stopped_goal(monkeypatch):
+def test_a_failed_call_after_a_stop_keeps_the_stopped_goal_open(monkeypatch):
     G.on_message(1, "build a login page", turn=1)
     G.finish_turn(1, completed=False)
     _model(monkeypatch, None)
-    out = G.on_message(1, "use postgres instead", turn=2)
-    assert "build a login page" in out["current"] and "postgres" in out["current"]
-    assert [g["id"] for g in G.goals(1)["goals"]] == ["g1"]
+    out = G.on_message(1, "what is the capital of France?", turn=2)
+    data = G.goals(1)
+    assert out["current"] == "what is the capital of France?"
+    assert data["goals"][0]["status"] == "open" and data["now"] == ["g2"]
+    assert "g1 (open, not this turn): build a login page" in G.block(1)
 
 
-def test_stop_during_the_goal_call_keeps_nothing(monkeypatch):
+def test_a_steer_the_stopped_run_never_read_is_kept_without_a_call(monkeypatch):
     G.on_message(1, "build a login page", turn=1)
-    G.finish_turn(1, completed=False)
-    _model(monkeypatch, None)
-    monkeypatch.setattr(G, "_stopped", lambda sid: True)
-    G.on_message(1, "use postgres instead", turn=2)
-    assert not G.goals(1)["goals"][0].get("updates")
+    seen = _model(monkeypatch)
+    G.on_message(1, "also add a dark mode", mid_run=True, llm=False)
+    assert not seen and "dark mode" in G.goals(1)["current"]
+    assert "build a login page" in G.goals(1)["current"]
 
 
 def test_a_dropped_goal_asked_for_again_is_reopened(monkeypatch):
@@ -370,10 +373,107 @@ def test_short_non_status_orders_do_not_ask(monkeypatch):
 
 
 def test_open_goals_are_never_trimmed():
-    for i in range(G.MAX_GOALS + 3):
-        d = G.goals(1)
-        d["goals"].append({"id": f"g{i}", "text": f"t{i}", "status": "open"})
-        G._save(1, d)
-    G.on_message(1, "continue", turn=1)
-    G._trim(G.goals(1))
-    assert len(G.goals(1)["goals"]) == G.MAX_GOALS + 3
+    d = G._empty()
+    d["goals"] = [{"id": f"g{i}", "text": f"t{i}", "status": "open"}
+                  for i in range(G.MAX_GOALS + 3)]
+    d["goals"].append({"id": "gx", "text": "old", "status": "done"})
+    G._trim(d)
+    assert len(d["goals"]) == G.MAX_GOALS + 3 and all(g["status"] == "open" for g in d["goals"])
+
+
+def test_yes_after_an_offer_goes_to_the_model(monkeypatch):
+    G.on_message(1, "add power()", turn=1)
+    G.finish_turn(1, completed=True)
+    seen = _model(monkeypatch, {"goals": [{"id": None, "status": "open", "text": "add tests for power()"}],
+                                "now": ["new"], "current": "add tests for power()", "question": ""})
+    out = G.on_message(1, "yes", said="Done. Want me to add tests too?", turn=2)
+    assert seen and out["current"] == "add tests for power()"
+
+
+def test_a_steer_in_a_run_that_skipped_the_goal_pass_is_left_alone(monkeypatch):
+    seen = _model(monkeypatch)
+    out = G.on_message(1, "also fix lint", mid_run=True)
+    assert not seen and out["current"] == "" and G.goals(1)["goals"] == []
+
+
+def test_edit_resend_puts_a_reopened_dropped_goal_back_to_dropped(monkeypatch):
+    G.on_message(1, "add a dark mode", turn=1)
+    _model(monkeypatch,
+           {"goals": [{"id": "g1", "status": "dropped", "text": "add a dark mode"},
+                      {"id": None, "status": "open", "text": "fix login"}],
+            "now": ["new"], "current": "fix login", "question": ""},
+           {"goals": [{"id": None, "status": "open", "text": "add a dark mode"}],
+            "now": ["new"], "current": "add a dark mode", "question": ""})
+    G.on_message(1, "forget the dark mode, fix login instead", turn=2)
+    G.on_message(1, "do the dark mode after all", turn=3)
+    G.drop_after_turn(1, 2)
+    assert G.goals(1)["goals"][0]["status"] == "dropped"
+
+
+def test_the_loop_asks_and_ends_the_turn_on_an_unplaceable_steer(monkeypatch):
+    from aiforge_core.runtime.chat_agent._turn import _limits
+    G.on_message(3, "build a login page", turn=1)
+    _model(monkeypatch, {"goals": [{"id": "g1", "status": "open", "text": "build a login page"}],
+                         "now": ["g1"], "current": "build a login page",
+                         "question": "Replace the login page, or add it?"})
+    st = SimpleNamespace(role="chat", builder=None, strict_finish=False, board={})
+    _limits._steer_goals(st, 3, ["do the other page"], [])
+    assert st.goal_question == "Replace the login page, or add it?"
+
+
+def test_a_message_that_only_drops_says_so(monkeypatch):
+    G.on_message(1, "add power()", turn=1)
+    G.finish_turn(1, completed=False)
+    _model(monkeypatch, {"goals": [{"id": "g1", "status": "dropped", "text": "add power()"}],
+                         "now": [], "current": "", "question": ""})
+    G.on_message(1, "cancel the power function", turn=2)
+    blk = G.block(1)
+    assert "DROPPED by the user" in blk and "sets no goal work" in blk
+
+
+def test_the_turn_note_names_the_drop_and_is_cut_from_the_goal():
+    from aiforge_core.runtime.chat_agent._turn._state import _turn_goal
+    note = G.turn_note({"called": True, "changes": ["dropped g2: add csv()"], "current": ""})
+    assert note.startswith(G.TURN_NOTE_MARK)
+    assert "DROPPED this goal — do no more work on it: add csv()" in note
+    assert _turn_goal([{"role": "user", "content": "the csv one" + note}]) == "the csv one"
+    assert G.turn_note({"called": False, "changes": ["x"]}) == ""
+
+
+def test_dropping_the_stopped_work_is_flagged(monkeypatch):
+    G.on_message(1, "add csv()", turn=1)
+    G.finish_turn(1, completed=False)
+    _model(monkeypatch, {"goals": [{"id": "g1", "status": "dropped", "text": "add csv()"}],
+                         "now": [], "current": "", "question": ""})
+    out = G.on_message(1, "cancel the csv function", turn=2)
+    assert out["dropped_stopped"] is True
+
+
+def test_resume_blocks_are_cut_from_the_message():
+    from aiforge_core.api.routes._chat._producer import _without_resume_blocks
+    assert _without_resume_blocks("the csv one\n\n---\n[HANDOFF — x]\nNEXT: y") == "the csv one"
+
+
+def test_a_message_that_only_drops_gets_the_harness_reply(monkeypatch):
+    G.on_message(1, "add power()", turn=1)
+    G.finish_turn(1, completed=False)
+    _model(monkeypatch,
+           {"goals": [{"id": None, "status": "open", "text": "add csv()"}],
+            "now": ["new"], "current": "add csv()", "question": ""},
+           {"goals": [{"id": "g2", "status": "dropped", "text": "add csv()"}],
+            "now": [], "current": "", "question": ""})
+    G.on_message(1, "separately add csv()", turn=2)
+    out = G.on_message(1, "cancel the csv function", turn=3)
+    reply = G.drop_reply(1, out)
+    assert reply.startswith("OK — dropped: add csv().") and "Still open: add power()" in reply
+    assert G.drop_reply(1, {"called": True, "changes": ["added g3: x"], "current": "x"}) == ""
+
+
+def test_continue_carries_a_note_naming_the_goal(monkeypatch):
+    G.on_message(1, "add power()", turn=1)
+    G.finish_turn(1, completed=False)
+    _model(monkeypatch, {"goals": [{"id": "g1", "status": "open", "text": "add power()"}],
+                         "now": [], "current": "", "question": ""})
+    G.on_message(1, "how is it going?", turn=2)
+    out = G.on_message(1, "continue", turn=3)
+    assert out.get("resumed") and "GOAL NOW: add power()" in G.turn_note(out)

@@ -37,7 +37,7 @@ def _drive_produce_stream(_events, st: dict, steps: list, run, session_id,
         _publish_final_usage(run, session_id, steps)
         if not st.get("awaiting"):       # waiting for the user: still going on
             _settle_task_list(st, run)
-        _close_goals(st, session_id, chat_cancel)
+        _close_goals(st, session_id, chat_cancel, steps, turn_mode)
         if st["subtasks"]:
             steps.insert(0, {"type": "subtasks", "items": st["subtasks"]})
         # The UI unblocks on a terminal `done`; a cancelled parallel/best-of-N run
@@ -48,6 +48,11 @@ def _drive_produce_stream(_events, st: dict, steps: list, run, session_id,
             st["emitted_done"] = True
     except Exception as exc:  # noqa: BLE001
         run.publish({"type": "error", "text": str(exc)})
+        try:        # the stream broke: the goals stay open
+            from aiforge_core.runtime import chat_goals
+            chat_goals.finish_turn(session_id, completed=False)
+        except Exception:  # noqa: BLE001
+            pass
         try:        # the stream broke: the list still must not look busy
             _settle_task_list(st, run)
             if st["subtasks"] and not any(
@@ -63,14 +68,17 @@ def _drive_produce_stream(_events, st: dict, steps: list, run, session_id,
 LEFT = "left"
 
 
-def _close_goals(st: dict, session_id, chat_cancel) -> None:
+def _close_goals(st: dict, session_id, chat_cancel, steps=(),
+                 turn_mode: str = "") -> None:
     """A turn that ended with an answer, all its tasks closed, closes the
     goals it worked on; a stopped, waiting or half-done one leaves them open
-    for the next message (runtime/chat_goals)."""
+    for the next message (runtime/chat_goals). A plan turn only planned."""
     try:
         from aiforge_core.runtime import chat_goals
         left = any(r.get("status") in (LEFT, "failed")
                    for r in st.get("subtasks") or [])
+        left = left or turn_mode == "plan" or any(
+            isinstance(s, dict) and s.get("type") == "stopped" for s in steps or ())
         final = str(st.get("final_text") or "").strip()
         # "(stopped: hit the time budget…)", "⚠ …": the turn gave up, the
         # goal is not reached.
@@ -246,6 +254,21 @@ def _keep_side_replies(session_id, steps: list, cancelled) -> None:
         _af_log.warning("side replies not kept (session %s): %s", session_id, exc)
 
 
+def _keep_unread_steers(session_id) -> None:
+    """Messages sent while the run worked that it never read (it was stopped
+    first): their change to the chat's goals is kept (runtime/chat_goals) —
+    "continue" must not forget them."""
+    try:
+        from aiforge_core.runtime import chat_goals, chat_interject
+        if not chat_goals.enabled():
+            return
+        for kind, text in chat_interject.drain_items(session_id):
+            if kind != "reject":
+                chat_goals.on_message(session_id, text, mid_run=True, llm=False)
+    except Exception:  # noqa: BLE001 — never block a turn's end over goals
+        pass
+
+
 def _persist_produce_turn(session_id, cwd, prompt, final_text, steps, awaiting,
                           team, path, turn_mode, turn_t0, cancelled) -> None:
     """Finish the session's cancel/approve/steer gates, persist the turn, and
@@ -256,6 +279,8 @@ def _persist_produce_turn(session_id, cwd, prompt, final_text, steps, awaiting,
     from aiforge_core.runtime import chat_approve, chat_cancel, chat_interject, chat_persist
     chat_cancel.finish(session_id)
     _keep_side_replies(session_id, steps, cancelled)
+    if cancelled:
+        _keep_unread_steers(session_id)
     chat_interject.clear(session_id)   # no stale steers next turn
     chat_approve.finish(session_id)
     chat_persist.persist_turn(

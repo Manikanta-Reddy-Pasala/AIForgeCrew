@@ -103,6 +103,15 @@ def _note_staleness_notice(cwd, session_id=None):
         _af_log.debug("note staleness pass skipped: %s", _nexc2)
 
 
+def _without_resume_blocks(text: str) -> str:
+    """``text`` without the handoff / resume blocks the route appended."""
+    for mark in ("\n\n---\n[HANDOFF", "\n\n---\n[RESUME"):
+        i = text.find(mark)
+        if i >= 0:
+            text = text[:i]
+    return text
+
+
 def _goal_pass(pc, gctx):
     """Bring the chat's goals in line with this turn's message; a question
     for the user ends the turn waiting on the answer."""
@@ -130,9 +139,36 @@ def _goal_pass(pc, gctx):
         yield {"type": "done"}
         gctx["done"] = True
         return
+    if out.get("dropped_stopped"):
+        # The user dropped the stopped work: its handoff ("carry on from
+        # NEXT") must not lead this turn, or a later "continue", back into it.
+        pc._resume_brief = ""
+        try:
+            from aiforge_core.runtime import handoff_store
+            handoff_store.clear(pc.session_id)
+        except Exception:  # noqa: BLE001
+            pass
+        if pc.history and isinstance(pc.history[-1].get("content"), str):
+            pc.history[-1] = {**pc.history[-1], "content":
+                              _without_resume_blocks(pc.history[-1]["content"])}
     if out.get("called") and out.get("changes"):
         yield {"type": "thought", "role": "goals",
                "text": "Goals: " + "; ".join(out["changes"])}
+        reply = chat_goals.drop_reply(pc.session_id, out)
+        if reply:
+            # Only goals dropped, nothing to do: the harness says so.
+            yield {"type": "message", "text": reply}
+            yield {"type": "done"}
+            gctx["done"] = True
+            return
+    note = chat_goals.turn_note(out)
+    if note and pc.history and pc.history[-1].get("role") == "user" \
+            and isinstance(pc.history[-1].get("content"), str):
+        pc.history[-1] = {**pc.history[-1], "content": pc.history[-1]["content"] + note}
+    # The goal pass redirected the work: a restatement of the message would
+    # bring the old request back.
+    pc._goals_redirected = bool(out.get("dropped_stopped")
+                                or (out.get("called") and not out.get("current")))
 
 
 def _events(pc):
@@ -297,6 +333,10 @@ def _single_agent_route(pc, _rd, _pp, rctx, cwd, _doc_task, _is_build_task,
     # A wake turn starts from a harness note that quotes the request: there
     # is nothing of the user's to restate.
     if getattr(pc, "_wake", False):
+        _skip_enhance = True
+    # The goal pass redirected the work (dropped it, or no goal work): the
+    # restatement would bring the old request back.
+    if getattr(pc, "_goals_redirected", False):
         _skip_enhance = True
     if rctx.get("spec") is not None:
         # The build route already enhanced this exact prompt (same history,

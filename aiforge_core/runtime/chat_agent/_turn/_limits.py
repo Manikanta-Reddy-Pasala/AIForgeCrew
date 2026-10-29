@@ -234,6 +234,7 @@ def _steer_goals(st, session_id, steers, events) -> "tuple[str, bool]":
         events.append({"type": "thought", "role": "goals",
                        "text": "Not clear how this changes the goal — asking: "
                                + out["question"]})
+        st.goal_question = out["question"]      # the loop asks and ends the turn
         return chat_goals.ask_directive(out["question"]), True
     if out.get("changes"):
         events.append({"type": "thought", "role": "goals",

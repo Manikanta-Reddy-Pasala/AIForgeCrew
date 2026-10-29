@@ -212,6 +212,13 @@ def _step_prologue(st, n, _cwd, role, complete_fn, session_id, builder):
         return None, "return"
     yield from at_item_step_start(st)
     yield from _drain_steering(st, session_id)
+    if getattr(st, "goal_question", None):
+        # A message that could not be placed against the chat's goals: the
+        # harness asks and the turn waits for the answer (the model would be
+        # pushed on by the steer reply and the done check).
+        yield {"type": "message", "text": st.goal_question, "awaiting_input": True}
+        yield {"type": "done"}
+        return None, "return"
     try:
         from ._context.reducer import AgeOld
         AgeOld(protect_from=st.batch_mark if st.batch_unread else None,

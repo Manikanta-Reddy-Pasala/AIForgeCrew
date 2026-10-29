@@ -56,7 +56,8 @@ def _resolve_complete_fn(complete_fn, role, mode="act", builder="",
 
 #: Blocks the server appends to the user's message before the loop sees it.
 _ADDED_BLOCKS = ("\n\n---\n[Interpreted request", "\n\n---\n[RESUME]", "\n\n---\n[HANDOFF",
-                 "\n\n---\n[Deliverable", "\n\n---\n[Already read")
+                 "\n\n---\n[Deliverable", "\n\n---\n[Already read",
+                 "\n\n---\n[GOALS — the harness")
 
 
 def _turn_goal(messages) -> str:
