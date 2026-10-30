@@ -508,6 +508,9 @@ def test_a_stop_is_tracked_as_both_error_and_stopped():
 
 def test_a_queued_steer_is_acknowledged_to_the_user(monkeypatch):
     from aiforge_core.runtime import chat_interject, chat_steer
+    from aiforge_core.runtime import chat_runs
+    noted: list = []
+    monkeypatch.setattr(chat_runs, "note", lambda sid, ev, publish=True: noted.append(ev))
     monkeypatch.setattr(chat_interject, "pop_applied",
                         lambda sid: ["use postgres"])
     monkeypatch.setattr(chat_steer, "applied_event",
@@ -515,6 +518,10 @@ def test_a_queued_steer_is_acknowledged_to_the_user(monkeypatch):
     q: queue.Queue = queue.Queue()
     P._emit_steer_acks(7, chat_interject, q)
     assert q.get() == {"type": "steer", "text": "use postgres"}
+    # The user's own message too, shown on the right and stored with the turn.
+    assert q.get() == {"type": "thought", "role": "steer", "text": "use postgres"}
+    # ...and kept for the stored team turn.
+    assert {"type": "thought", "role": "steer", "text": "use postgres"} in noted
 
 
 def test_a_sessionless_run_has_nobody_to_acknowledge(monkeypatch):

@@ -510,6 +510,15 @@ def _emit_steer_acks(session_id, chat_interject, q) -> None:
     from aiforge_core.runtime import chat_steer
     for applied in chat_interject.pop_applied(session_id):
         q.put(chat_steer.applied_event(applied))
+        # The user's own message, as in the simple loop: shown on the right
+        # and stored with the turn.
+        steer = chat_steer.steer_event(applied)
+        q.put(steer)
+        try:        # a team turn stores its notes, not this queue (see _close_turn)
+            from aiforge_core.runtime import chat_runs
+            chat_runs.note(session_id, steer, publish=False)
+        except Exception:  # noqa: BLE001
+            pass
         reply = chat_steer.reply_event(applied, chat_steer.TEAM_REPLY)
         q.put(reply)
         try:        # kept for the stored turn (see _close_turn)

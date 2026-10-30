@@ -46,8 +46,10 @@ CATALOG: dict = {
                       "running and mark each done when it is finished. With several repositories, slug "
                       "\"repos\" + work_in / read_only folders records which "
                       "you change and which you only read, for the whole chat; "
-                      "an entry {path, branch, for} gives a branch its own folder.",
-                      {"slug": "s", "title": "s", "status": "s",
+                      "an entry {path, branch, for} gives a branch its own folder. "
+                      "decision: one line on a choice you made that the user "
+                      "should know (another approach, why an item is skipped).",
+                      {"slug": "s", "title": "s", "status": "s", "decision": "s",
                        "remove": "b", "after": "s", "before": "s",
                        "position": "i", "order": "arrs",
                        "work_in": "arr", "read_only": "arr"}, ()),

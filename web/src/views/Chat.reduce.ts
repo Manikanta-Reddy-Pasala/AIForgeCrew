@@ -45,10 +45,24 @@ function withSubtaskStatus(subtasks: SubtaskItem[], slug: string, status: string
   });
 }
 
+// The run read a message the user sent mid-run: the page's own copy of it
+// (shown since the send) becomes the read one, in its place — not a second.
+function withSteerEcho(prev: LiveTurn, text: string): LiveTurn {
+  const want = squash(text);
+  const at = prev.steps.findIndex(s => s.kind === 'thought' && s.role === 'steer' && s.sent
+    && squash(s.text) === want);
+  const read = { kind: 'thought' as const, text, role: 'steer' };
+  if (at === -1) return { ...prev, steps: [...prev.steps, read] };
+  const steps = [...prev.steps];
+  steps[at] = read;
+  return { ...prev, steps };
+}
+
 // Append a plain step (thought/tool_start/changes) — the simple, guard-free
 // event types, resolved by a small lookup so reduceTurn stays flat.
 function appendStepFor(prev: LiveTurn, evt: any): LiveTurn | null {
   if (evt.type === 'thought') {
+    if (evt.role === 'steer') return withSteerEcho(prev, String(evt.text ?? ''));
     return { ...prev, steps: [...prev.steps, { kind: 'thought' as const, text: evt.text, role: evt.role }] };
   }
   if (evt.type === 'tool_start') {
@@ -114,7 +128,9 @@ function withoutProtocol(text: string): string {
 function keepStreamed(prev: LiveTurn, evt: any): LiveTurn {
   const text = withoutProtocol(prev.streamText ?? '');
   const carriesText = (evt.type === 'message' && !evt.supplementary && similarText(text, evt.text ?? ''))
-    || (evt.type === 'thought' && evt.role !== 'system');
+    // A harness line (system, the user's own steer, a goal change) is not
+    // the model's thought: what streamed is kept.
+    || (evt.type === 'thought' && !['system', 'steer', 'goals'].includes(evt.role));
   if (!text || carriesText) return prev;
   return { ...prev, steps: [...prev.steps, { kind: 'thought' as const, text, streamed: true }] };
 }

@@ -10,6 +10,7 @@ import { menuBtn, menuItem, LS_SESSION_KEY, LS_MODE_KEY, BUILDER_KINDS, BUILDER_
 import { pickChatModel } from '../chatModelPick';
 import { SubtaskList } from './Chat.SubtaskList';
 import { SideTasks } from './Chat.SideTasks';
+import { RunOverview } from './Chat.RunOverview';
 import { ProcessDock } from './Chat.ProcessDock';
 import { evidenceItemsOf } from './Chat.TaskEvidence';
 import SuggestionChip from './Chat.SuggestionChip';
@@ -180,6 +181,8 @@ async function raiseForStatus(res: Response): Promise<void> {
   try { if (!detail) detail = await res.text(); } catch { /* ignore */ }
   throw new Error(`${res.status} ${res.statusText}${detail ? ' — ' + detail : ''}`);
 }
+
+const LS_OVERVIEW_KEY = 'aiforge.chat.overview';
 
 // Its OWN boundary fallback for the Tasks dock — a bad field from one of the six
 // producer payloads should degrade to a panel, not take the whole chat view down.
@@ -751,6 +754,24 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   useEffect(() => { busyRef.current = busy; }, [busy]);
   // Guards the Steer POST against double-fire (FE6).
   const [steering, setSteering] = useState(false);
+  // The Run overview panel on the right (goals, now, plan, decisions); open
+  // unless the user closed it, remembered per browser.
+  const [overviewOpen, setOverviewOpen] = useState<boolean>(() => {
+    // First visit: open where it fits beside the chat (it floats over it on
+    // a narrow screen).
+    // On a narrow screen it would cover the chat's controls: it opens only
+    // when asked for.
+    if (typeof window !== 'undefined' && window.innerWidth <= 1280) return false;
+    try {
+      const v = localStorage.getItem(LS_OVERVIEW_KEY);
+      if (v !== null) return v !== '0';
+    } catch { /* private mode */ }
+    return true;
+  });
+  function showOverview(on: boolean) {
+    setOverviewOpen(on);
+    try { localStorage.setItem(LS_OVERVIEW_KEY, on ? '1' : '0'); } catch { /* private mode */ }
+  }
   const [dismissedDock, setDismissedDock] = useState('');
   // Mode the CURRENTLY-running turn was launched with (not the live selector,
   // which the user can flip mid-run). All modes are steerable now — used
@@ -2231,14 +2252,14 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
           }
         }, 4000);
       } else if (r.queued) {
-        // Show the steer text IMMEDIATELY as a step in the live stream so it
-        // doesn't just vanish from the composer until the agent drains it. It
-        // commits with the turn (no orphan): the later server role:'steer' echo
-        // marks it actually applied.
-        setLiveTurn(prev => prev ? { ...prev, steps: [...prev.steps, {
-          kind: 'thought' as const, role: 'steer',
-          text: `↪ Sent: ${q}\n${r.where || 'The agent will read it at its next step.'}`,
-        }] } : prev);
+        // Show the message IMMEDIATELY, on the right like every message of
+        // the user's, where it lands in the run. The server's role:'steer'
+        // echo replaces this copy once the agent has read it (Chat.reduce).
+        // The run may have read it already (the echo came before this reply).
+        setLiveTurn(prev => prev && !prev.steps.some(s => s.kind === 'thought' && s.role === 'steer'
+            && !s.sent && s.text.replace(/\s+/g, ' ').trim().toLowerCase() === q.replace(/\s+/g, ' ').trim().toLowerCase())
+          ? { ...prev, steps: [...prev.steps, { kind: 'thought' as const, role: 'steer', text: q, sent: true }] }
+          : prev);
         toast('Message sent. The agent will read it in a moment.');
       } else if (r.unsupported) {
         putComposer(q);   // restore — nothing was queued
@@ -2440,7 +2461,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
 
   return (
     <RuleStateCtx.Provider value={ruleState}>
-    <div className={`chat-shell-v2${project ? ' in-project' : ''}`}>
+    <div className={`chat-shell-v2${project ? ' in-project' : ''}${overviewOpen && activeId !== null ? ' with-overview' : ''}`}>
       {/* ── Left sidebar: sessions list ─────────────────────────────────────── */}
       <div className="chat-sessions-sidebar">
         <div className="chat-sessions-header" style={{ display: 'flex', gap: 6 }}>
@@ -2628,6 +2649,12 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
             )}
           </div>
           <div className="row" style={{ gap: 'var(--s-2)' }}>
+            {activeId !== null && !overviewOpen && (
+              <button type="button" className="ghost sm" onClick={() => showOverview(true)}
+                      title="Show the run overview: goals, what runs now, the whole plan and what changed it">
+                ☰ Overview
+              </button>
+            )}
             <ModeToggle chatMode={chatMode} setChatMode={setChatMode} busy={busy} />
             <TemporaryToggle temporary={!!activeSession?.temporary} busy={busy}
               onStart={() => { createSession(undefined, true); }}
@@ -3255,6 +3282,16 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                           restoreCheckpoint={restoreCheckpoint} />
 
       </div>
+      {overviewOpen && activeId !== null && (
+        <ErrorBoundary fallback={tasksPanelFallback}>
+          <RunOverview sessionId={activeId} busy={busy}
+                       awaiting={!!liveTurn?.awaiting || (!busy && persistedAwaiting)}
+                       subtasks={pickedSubtasks}
+                       steps={liveTurn?.streaming ? liveTurn.steps : undefined}
+                       phase={liveTurn?.quiet?.phase}
+                       onClose={() => showOverview(false)} />
+        </ErrorBoundary>
+      )}
     </div>
     </RuleStateCtx.Provider>
   );

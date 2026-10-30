@@ -230,15 +230,21 @@ def _steer_goals(st, session_id, steers, events) -> "tuple[str, bool]":
             mid_run=True, working_on="; ".join(str(t) for t in doing if t))
     except Exception:  # noqa: BLE001 — the steer stands without the goals
         return "", False
+    from aiforge_core.runtime import chat_decisions
+    said = " / ".join(str(s) for s in steers)
     if out.get("question"):
         events.append({"type": "thought", "role": "goals",
                        "text": "Not clear how this changes the goal — asking: "
                                + out["question"]})
+        chat_decisions.record(session_id, "Asked you: " + out["question"],
+                              by="harness", kind="question", why=said)
         st.goal_question = out["question"]      # the loop asks and ends the turn
         return chat_goals.ask_directive(out["question"]), True
     if out.get("changes"):
         events.append({"type": "thought", "role": "goals",
                        "text": "Goals: " + "; ".join(out["changes"])})
+        chat_decisions.record(session_id, chat_decisions.goal_lines(out["changes"]),
+                              by="you", kind="goal", why=said)
     return (chat_goals.now_directive(out.get("current") or "",
                                      out.get("changes") or []), False)
 
@@ -290,6 +296,10 @@ def _revise_board(st, steers, events):
     if new is None:
         return steer_note(board)
     if changes:
+        from aiforge_core.runtime import chat_decisions
+        chat_decisions.record(st.session_id, chat_decisions.board_lines(changes),
+                              by="you", kind="plan",
+                              why=" / ".join(str(s) for s in steers))
         board.clear()
         board.update(new)
         # The board is in use now: a FINAL with its items open is held, as

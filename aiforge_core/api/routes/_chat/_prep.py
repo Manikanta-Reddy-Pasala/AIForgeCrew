@@ -47,8 +47,9 @@ def _apply_edit_resend(session, session_id, body) -> None:
             except Exception:  # noqa: BLE001
                 pass
             try:      # so do the goals those turns set or changed
-                from aiforge_core.runtime import chat_goals
+                from aiforge_core.runtime import chat_decisions, chat_goals
                 chat_goals.drop_after_turn(session_id, _kept_users)
+                chat_decisions.drop_after_turn(session_id, _kept_users)
             except Exception:  # noqa: BLE001
                 pass
         except Exception as _exc:  # noqa: BLE001 — edit-resend must fail open

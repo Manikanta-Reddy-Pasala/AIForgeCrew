@@ -174,6 +174,11 @@ def _goal_pass(pc, gctx):
         if pc.history and isinstance(pc.history[-1].get("content"), str):
             pc.history[-1] = {**pc.history[-1], "content":
                               _without_resume_blocks(pc.history[-1]["content"])}
+    if out.get("changes"):
+        from aiforge_core.runtime import chat_decisions, chat_goals
+        chat_decisions.record(pc.session_id, chat_decisions.goal_lines(out["changes"]),
+                              by="you", kind="goal",
+                              why=chat_goals._users_words(pc.prompt))
     if out.get("called") and out.get("changes"):
         yield {"type": "thought", "role": "goals",
                "text": "Goals: " + "; ".join(out["changes"])}

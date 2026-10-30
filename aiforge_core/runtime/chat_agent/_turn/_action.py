@@ -153,6 +153,40 @@ _TEMP_CHAT_BLOCKED = frozenset({"context_gather", "web_crawl",
 _TEMP_CHAT_NO_ATTACHMENTS = frozenset({"jira_read", "confluence_read"})
 
 
+
+def _note_decisions(st, args, result, before) -> None:
+    """The model's own course changes on its board, for the Run overview
+    (runtime/chat_decisions): an item it added that nobody asked for, one it
+    skipped, failed or took off, and the ``decision`` line it gave."""
+    try:
+        from aiforge_core.runtime import chat_decisions
+        sid = getattr(st, "session_id", None)
+        why = " ".join(str(args.get("decision") or "").split())
+        if not result.get("ok"):
+            # A call the board refused still carries the choice it reports.
+            if why:
+                chat_decisions.record(sid, why, by="agent", kind="choice")
+            return
+        board = st.board
+        slug = result.get("slug")
+        it = board.get(slug) if slug else None
+        title = (it or {}).get("title") or ""
+        lines = []
+        if it is not None and slug not in before and it.get("self_added"):
+            lines.append(("plan", f"Agent added a task of its own — {slug}: {title}"))
+        elif it is not None and before.get(slug) != it.get("status") \
+                and it.get("status") in ("skipped", "failed"):
+            lines.append(("skip" if it["status"] == "skipped" else "fail",
+                          f"Agent marked {slug} {it['status']}: {title}"))
+        if result.get("removed") and slug in before and slug not in board:
+            lines.append(("plan", f"Agent took {slug} off the task list"))
+        if why:
+            lines.append(("choice", why + (f" ({slug})" if slug else "")))
+        for kind, text in lines:
+            chat_decisions.record(sid, text, by="agent", kind=kind)
+    except Exception:  # noqa: BLE001 — the overview never breaks a step
+        pass
+
 def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
     """Pre-dispatch bookkeeping gates: plan_progress flips a UI subtask (pure
     bookkeeping, allowed in every mode); read-only Plan/Analyze mode blocks a
@@ -208,6 +242,8 @@ def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
                                         getattr(st, "steers", None)))
         result, events = review_progress(st, result, events)
         events = _with_evidence(st, result, events, _before)
+        if not readonly_mode:
+            _note_decisions(st, args, result, _before)
         st.board_used = st.board_used or any(
             ev["type"] == "subtasks" for ev in events)
         # The model is working the board (also an item that came from the

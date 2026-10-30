@@ -46,6 +46,50 @@ function isReply(s: AgentStep): s is ReplyStep {
   return s.kind === 'message' && s.role === 'reply';
 }
 
+type SteerStep = Extract<AgentStep, { kind: 'thought' }>;
+function isSteer(s: AgentStep): s is SteerStep {
+  return s.kind === 'thought' && s.role === 'steer';
+}
+
+// Shown whether the steps are open or not: the user's own mid-run messages
+// and the answers to them.
+const keepsShown = (s: AgentStep) => isReply(s) || isSteer(s);
+
+// A message the user sent while the run worked: on the right, as theirs,
+// where it landed in the run — not a row in the steps that folds away.
+function SteerBubble({ step }: Readonly<{ step: SteerStep }>) {
+  return (
+    <div className="steer-row">
+      <div className="steer-bubble">
+        <div className="xs muted" style={{ marginBottom: 2 }}>
+          You · sent while it worked{step.sent ? ' · the agent reads it at its next step' : ' · read by the agent'}
+        </div>
+        <span style={{ whiteSpace: 'pre-wrap' }}>{step.text}</span>
+      </div>
+    </div>
+  );
+}
+
+function ReplyCard({ step, quoted }: Readonly<{ step: ReplyStep; quoted?: boolean }>) {
+  return (
+    <div style={{ margin: '2px 2px', padding: '8px 12px', borderLeft: '3px solid var(--accent, #2563eb)',
+                  background: 'var(--bg-1)', borderRadius: 6 }}>
+      {step.to && !quoted && <div className="xs muted" style={{ marginBottom: 4 }}>You said: {step.to}</div>}
+      <MdLite text={step.text} />
+    </div>
+  );
+}
+
+// `prev`: the row before. A reply right under the bubble of the message it
+// answers does not quote that message again.
+function TimelineRow({ step, prev }: Readonly<{ step: AgentStep; prev?: AgentStep }>) {
+  if (isSteer(step)) return <SteerBubble step={step} />;
+  if (isReply(step)) {
+    return <ReplyCard step={step} quoted={!!prev && isSteer(prev) && !!step.to && similarText(prev.text, step.to)} />;
+  }
+  return <AgentStepRow step={step} />;
+}
+
 function fmtQuiet(seconds: number): string {
   return seconds < 90 ? `${seconds}s` : `${Math.floor(seconds / 60)}m`;
 }
@@ -119,8 +163,8 @@ export function AssistantBubble({
     ? [...steps].reverse().map(s => String((s as { role?: string }).role ?? '').trim().toLowerCase())
         .find(r => !!r && stageNames.includes(r))
     : undefined;
-  const stepCount = timeline.filter(s => !isReply(s)).length;
-  const shown = showSteps ? timeline : timeline.filter(isReply);
+  const stepCount = timeline.filter(s => !keepsShown(s)).length;
+  const shown = showSteps ? timeline : timeline.filter(keepsShown);
   const keys = uniqueKeys(shown);
   return (
     <div>
@@ -158,16 +202,7 @@ export function AssistantBubble({
       )}
       {shown.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: text ? 8 : 0 }}>
-          {shown.map((s, i) => isReply(s) ? (
-            <div key={keys[i]}
-                 style={{ margin: '2px 2px', padding: '8px 12px', borderLeft: '3px solid var(--accent, #2563eb)',
-                          background: 'var(--bg-1)', borderRadius: 6 }}>
-              {s.to && <div className="xs muted" style={{ marginBottom: 4 }}>You said: {s.to}</div>}
-              <MdLite text={s.text} />
-            </div>
-          ) : (
-            <AgentStepRow key={keys[i]} step={s} />
-          ))}
+          {shown.map((s, i) => <TimelineRow key={keys[i]} step={s} prev={i > 0 ? shown[i - 1] : undefined} />)}
         </div>
       )}
       {text && (

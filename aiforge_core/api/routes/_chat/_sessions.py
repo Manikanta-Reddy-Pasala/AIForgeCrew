@@ -496,8 +496,9 @@ def chat_session_delete(session_id: int) -> None:
     except Exception:  # noqa: BLE001
         pass
     try:
-        from aiforge_core.runtime import chat_goals
+        from aiforge_core.runtime import chat_decisions, chat_goals
         chat_goals.forget(session_id)
+        chat_decisions.forget(session_id)
     except Exception:  # noqa: BLE001
         pass
     from aiforge_core.runtime import proc_logs

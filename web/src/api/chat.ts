@@ -437,3 +437,15 @@ export async function chatProcessDownload(id: number, key: string, path?: string
   a.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
+
+/** The Run overview: the chat's goals and what changed the course of the work. */
+export type ChatGoal = { id: string; text: string; status: 'open' | 'done' | 'dropped' | string;
+                         turn?: number; closed_turn?: number };
+export type ChatDecision = { t: number; by: 'you' | 'agent' | 'harness' | string;
+                             kind: string; text: string; why?: string; turn?: number };
+export type ChatOverview = { goals: ChatGoal[]; now: string[]; current: string; asked: string;
+                             decisions: ChatDecision[] };
+
+export function chatOverview(id: number): Promise<ChatOverview> {
+  return j<ChatOverview>(`/chat/sessions/${id}/overview`);
+}

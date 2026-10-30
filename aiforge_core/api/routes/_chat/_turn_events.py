@@ -36,7 +36,7 @@ def _drive_produce_stream(_events, st: dict, steps: list, run, session_id,
                                 turn_mode, clog, emit, chat_cancel)
         _publish_final_usage(run, session_id, steps)
         if not st.get("awaiting"):       # waiting for the user: still going on
-            _settle_task_list(st, run)
+            _settle_task_list(st, run, session_id)
         _close_goals(st, session_id, chat_cancel, steps, turn_mode)
         if st["subtasks"]:
             steps.insert(0, {"type": "subtasks", "items": st["subtasks"]})
@@ -54,7 +54,7 @@ def _drive_produce_stream(_events, st: dict, steps: list, run, session_id,
         except Exception:  # noqa: BLE001
             pass
         try:        # the stream broke: the list still must not look busy
-            _settle_task_list(st, run)
+            _settle_task_list(st, run, session_id)
             if st["subtasks"] and not any(
                     isinstance(s, dict) and s.get("type") == "subtasks"
                     for s in steps):
@@ -90,15 +90,21 @@ def _close_goals(st: dict, session_id, chat_cancel, steps=(),
         pass
 
 
-def _settle_task_list(st: dict, run) -> None:
+def _settle_task_list(st: dict, run, session_id=None) -> None:
     """The turn is over: no task is "pending" or "running" any more. One the
     run did not close is shown as not done — a list that still looked busy
     after the answer read as work going on. ("planned" is a settled state.)"""
+    left = []
     for row in st.get("subtasks") or []:
         if row.get("status") in ("pending", "running"):
             row["status"] = LEFT
+            left.append(f"{row.get('slug')}: {row.get('title') or row.get('goal') or ''}")
             run.publish({"type": "subtask_update", "slug": row.get("slug"),
                          "status": LEFT})
+    if left:
+        from aiforge_core.runtime import chat_decisions
+        chat_decisions.record(session_id, "Turn ended with tasks not done — "
+                              + "; ".join(left), by="harness", kind="left")
 
 
 def _consume_produce_events(_events, st, steps, run, session_id, turn_t0,
