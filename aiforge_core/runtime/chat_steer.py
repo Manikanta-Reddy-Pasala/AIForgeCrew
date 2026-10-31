@@ -89,10 +89,15 @@ def reject_note(guidance: str) -> str:
             "this is guidance about that action, not a new request.")
 
 
-def steer_event(text: str) -> dict:
+def steer_event(text: str, routed: str = "") -> dict:
     """Stream event echoing the user's steer TEXT (shown + persisted as a
-    ``steer`` step) — used the moment a steer is drained, in every mode."""
-    return {"type": "thought", "role": "steer", "text": text}
+    ``steer`` step) — used the moment a steer is drained, in every mode.
+    ``routed``: "task" (it runs as a side task) or "status" (answered beside
+    the run) for a mid-run message that did not go into the run."""
+    ev = {"type": "thought", "role": "steer", "text": text}
+    if routed:
+        ev["routed"] = routed
+    return ev
 
 
 def reply_event(to: "list[str] | str", text: str) -> dict:

@@ -192,3 +192,14 @@ def test_a_broken_steps_payload_never_raises():
         {"content": "(stopped: x)", "steps": [{"type": "error", "text": 123}]})
     assert cr.resume_preamble([], "anything") == ""
     assert cr.resume_preamble([None, "junk"], "anything") == ""
+
+
+def test_a_message_that_went_beside_the_run_is_not_a_redirection():
+    """A side task or a status question typed mid-run is kept as the user's
+    bubble (role steer, ``routed``) but never redirected the run."""
+    steps = [_LANDED,
+             {"type": "thought", "role": "steer", "text": "also fix the docs", "routed": "task"},
+             {"type": "thought", "role": "steer", "text": "status", "routed": "status"},
+             {"type": "thought", "role": "steer", "text": "use postgres instead"}]
+    acc = cr._collect(steps)
+    assert acc["steers"] == ["use postgres instead"]

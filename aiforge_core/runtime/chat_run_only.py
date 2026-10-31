@@ -180,7 +180,8 @@ def _user_words(steps, prompt: str) -> list:
     for s in steps or []:
         if isinstance(s, dict) and s.get("to"):
             out.append(str(s.get("to")))
-        if isinstance(s, dict) and s.get("role") == "steer":
+        # A side task's words are for the side run, not this one.
+        if isinstance(s, dict) and s.get("role") == "steer" and s.get("routed") != "task":
             out.append(str(s.get("text") or ""))
     return out
 

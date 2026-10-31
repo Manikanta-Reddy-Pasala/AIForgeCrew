@@ -96,7 +96,7 @@ export function dateTimeLabel(isoStr: string): string {
 export function toAgentStep(raw: any): AgentStep | null {
   if (!raw || typeof raw !== 'object') return null;
   if (raw.type === 'thought' || raw.kind === 'thought') {
-    return { kind: 'thought', text: raw.text || '', role: raw.role };
+    return { kind: 'thought', text: raw.text || '', role: raw.role, ...(raw.routed ? { routed: String(raw.routed) } : {}) };
   }
   if (raw.type === 'tool' || raw.kind === 'tool') {
     return { kind: 'tool', name: raw.name || '', args: raw.args || {}, result: raw.result || {}, role: raw.role, description: typeof raw.description === 'string' ? raw.description : undefined, secs: typeof raw.secs === 'number' ? raw.secs : undefined };

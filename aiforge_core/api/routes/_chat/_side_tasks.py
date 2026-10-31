@@ -498,6 +498,9 @@ def chat_side_message(session_id: int, body: _SideBody) -> dict:
                 # Into the run's stream and the turn's stored steps: a card
                 # held only by the open page was gone when the turn ended.
                 from aiforge_core.runtime import chat_steer
+                # The question itself first: the user's own bubble in the
+                # chat, the answer right under it.
+                chat_runs.note(session_id, chat_steer.steer_event(body.content, routed="status"))
                 noted = chat_runs.note(session_id, chat_steer.reply_event(
                     body.content, out["text"]))
                 return {"action": "status", "noted": noted, **out}
@@ -515,4 +518,9 @@ def chat_side_message(session_id: int, body: _SideBody) -> dict:
             return {"action": "steer", **res}
         # This run cannot be steered (best-of-N): the message still deserves
         # an answer, so it runs beside it.
-    return {"action": "task", "task": create(session_id, body.content, body.mode)}
+    task = create(session_id, body.content, body.mode)
+    # Started beside the run, but typed in THIS chat: it shows here as the
+    # user's bubble too, not only as a toast and a side task elsewhere.
+    from aiforge_core.runtime import chat_runs, chat_steer
+    chat_runs.note(session_id, chat_steer.steer_event(body.content, routed="task"))
+    return {"action": "task", "task": task}

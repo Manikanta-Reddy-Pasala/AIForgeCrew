@@ -57,12 +57,18 @@ const keepsShown = (s: AgentStep) => isReply(s) || isSteer(s);
 
 // A message the user sent while the run worked: on the right, as theirs,
 // where it landed in the run — not a row in the steps that folds away.
+const ROUTED_NOTE: Record<string, string> = {
+  task: ' · runs as a side task', status: ' · answered below',
+};
+
 function SteerBubble({ step }: Readonly<{ step: SteerStep }>) {
+  let note = step.sent ? ' · the agent reads it at its next step' : ' · read by the agent';
+  if (step.routed) note = ROUTED_NOTE[step.routed] ?? '';
   return (
     <div className="steer-row">
       <div className="steer-bubble">
         <div className="xs muted" style={{ marginBottom: 2 }}>
-          You · sent while it worked{step.sent ? ' · the agent reads it at its next step' : ' · read by the agent'}
+          You · sent while it worked{note}
         </div>
         <span style={{ whiteSpace: 'pre-wrap' }}>{step.text}</span>
       </div>

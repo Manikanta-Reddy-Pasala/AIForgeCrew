@@ -3,11 +3,11 @@ import { chatOverview, ChatOverview, ChatDecision } from '../api';
 import { AgentStep, SubtaskItem } from './Chat.types';
 import { describeStep } from '../stepDescribe';
 
-// ── Run overview — the whole picture beside the chat ─────────────────────────
-// The task dock says which item runs; the steps say which file is read. What
-// the run is FOR (the goals), how far it got (every task, done or not) and
-// what changed its course (a message of yours, an item the agent skipped or
-// added, a choice it made) had no place: the user asked "what is the status?".
+// ── Run overview — progress beside the chat ──────────────────────────────────
+// What runs now and how far the task list got, at a glance. Your own
+// messages (steers included) stay in the chat as your bubbles: the panel
+// never repeats them, nor goals worded from them. Only the agent's own
+// changes to the plan (an item it skipped, added or left) show here.
 
 const STATUS_ICON: Record<string, string> = {
   done: '✓', won: '✓', running: '▶', failed: '✗', skipped: '–', cancelled: '–',
@@ -17,10 +17,12 @@ const STATUS_COLOR: Record<string, string> = {
   done: 'var(--ok)', won: 'var(--ok)', running: 'var(--accent)', failed: 'var(--err)',
   left: 'var(--warn)', skipped: 'var(--fg-3)', cancelled: 'var(--fg-3)',
 };
-const BY_LABEL: Record<string, string> = { you: 'you', agent: 'agent', harness: 'AIForge' };
 const CLOSED = new Set(['done', 'won', 'skipped', 'failed', 'cancelled', 'left']);
 const POLL_MS = 4000;
-const DECISIONS_SHOWN = 8;
+const DECISIONS_SHOWN = 5;
+// Lines worded from the user's message (goal changes, a question on it) are
+// the chat's to show; the panel keeps what the agent did to the plan.
+const OWN_KINDS = new Set(['plan', 'skip', 'fail', 'left', 'choice']);
 
 function hhmm(t: number): string {
   const d = new Date(t * 1000);
@@ -37,6 +39,12 @@ function lastAction(steps: AgentStep[] | undefined): string {
   return '';
 }
 
+// A task's name only: the "— check: …" the planner appends shows on hover.
+function shortTitle(s: SubtaskItem): string {
+  const full = s.title || s.goal || s.slug;
+  return full.split(/\s+[—-]\s+check:/i)[0] || full;
+}
+
 function Section({ title, extra, children }: Readonly<{
   title: string; extra?: ReactNode; children: ReactNode;
 }>) {
@@ -49,20 +57,9 @@ function Section({ title, extra, children }: Readonly<{
 }
 
 function DecisionRow({ d }: Readonly<{ d: ChatDecision }>) {
-  const [open, setOpen] = useState(false);
   return (
     <li className="run-ov-decision">
-      <span className={`run-ov-by by-${d.by}`}>{BY_LABEL[d.by] ?? d.by}</span>
-      <span style={{ flex: 1, minWidth: 0 }}>
-        {d.text}
-        {d.why && (
-          <button type="button" className="ghost xs" style={{ padding: '0 4px', marginLeft: 4 }}
-                  onClick={() => setOpen(v => !v)} title="What led to it">
-            {open ? 'hide why' : 'why'}
-          </button>
-        )}
-        {open && d.why && <div className="xs muted" style={{ marginTop: 2 }}>Your message: {d.why}</div>}
-      </span>
+      <span style={{ flex: 1, minWidth: 0 }}>{d.text}</span>
       <span className="xs muted" style={{ flexShrink: 0 }}>{hhmm(d.t)}</span>
     </li>
   );
@@ -73,11 +70,11 @@ function NowLine({ running, next, busy, items }: Readonly<{
 }>) {
   if (running) {
     return (
-      <div><span style={{ color: 'var(--accent)' }}>▶</span> {running.title || running.goal || running.slug}
+      <div><span style={{ color: 'var(--accent)' }}>▶</span> {shortTitle(running)}
         <span className="xs muted"> · task {items.indexOf(running) + 1} of {items.length}</span></div>
     );
   }
-  if (next) return <div className="muted">Next up: {next.title || next.goal || next.slug}</div>;
+  if (next) return <div className="muted">Next up: {shortTitle(next)}</div>;
   return <div className="xs muted">{busy ? 'Starting…' : 'Nothing running.'}</div>;
 }
 
@@ -96,11 +93,9 @@ export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase,
 }>) {
   const [ov, setOv] = useState<ChatOverview | null>(null);
   const [allDecisions, setAllDecisions] = useState(false);
-  // null: open when no goal is open (the finished work is then the news).
-  const [showClosedGoals, setShowClosedGoals] = useState<boolean | null>(null);
 
   // Another chat: nothing of the last one's stays on screen.
-  useEffect(() => { setOv(null); setAllDecisions(false); setShowClosedGoals(null); }, [sessionId]);
+  useEffect(() => { setOv(null); setAllDecisions(false); }, [sessionId]);
 
   useEffect(() => {
     let live = true;
@@ -120,11 +115,8 @@ export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase,
     : items.find(s => !CLOSED.has(s.status) && s.status !== 'planned');
   const closed = items.filter(s => CLOSED.has(s.status) && s.status !== 'left').length;
   const pct = items.length ? Math.round((closed / items.length) * 100) : 0;
-  const goals = ov?.goals ?? [];
-  const openGoals = goals.filter(g => g.status === 'open');
-  const closedGoals = goals.filter(g => g.status !== 'open');
-  const closedShown = showClosedGoals ?? openGoals.length === 0;
-  const decisions = [...(ov?.decisions ?? [])].reverse();
+  const decisions = (ov?.decisions ?? [])
+    .filter(d => d.by !== 'you' && OWN_KINDS.has(d.kind)).reverse();
   const shownDecisions = allDecisions ? decisions : decisions.slice(0, DECISIONS_SHOWN);
   const action = busy ? lastAction(steps) : '';
 
@@ -135,55 +127,21 @@ export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase,
   return (
     <aside className="run-overview" aria-label="Run overview">
       <div className="run-ov-head">
-        <strong>Run overview</strong>
+        <strong>Progress</strong>
         <span className={`run-ov-state ${busy && !awaiting ? 'on' : ''}`}>{state}</span>
         <button type="button" className="ghost xs" onClick={onClose} aria-label="Hide the run overview"
                 title="Hide the run overview" style={{ marginLeft: 'auto', padding: '0 6px' }}>✕</button>
       </div>
 
       <div className="run-ov-body">
-        <Section title="Goal">
-          {ov?.asked && <div className="run-ov-ask">❓ Asked you: {ov.asked}</div>}
-          {ov?.current && busy && <div className="run-ov-current">{ov.current}</div>}
-          {openGoals.length > 0 ? (
-            <ul className="run-ov-list">
-              {openGoals.map(g => (
-                <li key={g.id}>
-                  <span style={{ color: ov?.now.includes(g.id) ? 'var(--accent)' : 'var(--fg-3)' }}>
-                    {ov?.now.includes(g.id) ? '▶' : '○'}
-                  </span>
-                  <span>{g.text}</span>
-                </li>
-              ))}
-            </ul>
-          ) : (!ov?.current && <div className="xs muted">No open goal{closedGoals.length ? '' : ' — your next message sets one'}.</div>)}
-          {closedGoals.length > 0 && (
-            <>
-              <button type="button" className="ghost xs" style={{ padding: '0 4px' }}
-                      onClick={() => setShowClosedGoals(!closedShown)}>
-                {closedShown ? '▾' : '▸'} {closedGoals.length} finished or dropped
-              </button>
-              {closedShown && (
-                <ul className="run-ov-list muted">
-                  {closedGoals.map(g => (
-                    <li key={g.id}>
-                      <span>{g.status === 'done' ? '✓' : '✕'}</span>
-                      <span style={{ textDecoration: g.status === 'dropped' ? 'line-through' : undefined }}>{g.text}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </>
-          )}
-        </Section>
-
         <Section title="Now">
+          {awaiting && <div className="run-ov-ask">Waiting for your reply in the chat.</div>}
           <NowLine running={running} next={next} busy={busy} items={items} />
           {action && <div className="xs muted" style={{ marginTop: 2 }}>Last step: {action}</div>}
           {busy && phase && <div className="xs" style={{ marginTop: 2, color: 'var(--warn)' }}>⏳ {phase}</div>}
         </Section>
 
-        <Section title="Plan" extra={items.length > 0 && <span className="xs muted">{closed}/{items.length} · {pct}%</span>}>
+        <Section title="Progress" extra={items.length > 0 && <span className="xs muted">{closed}/{items.length} · {pct}%</span>}>
           {items.length === 0 ? (
             <div className="xs muted">No task list for this turn.</div>
           ) : (
@@ -195,9 +153,10 @@ export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase,
                     <span style={{ color: STATUS_COLOR[s.status] ?? 'var(--fg-3)', width: 14, flexShrink: 0 }}>
                       {STATUS_ICON[s.status] ?? '○'}
                     </span>
-                    <span style={{ flex: 1, minWidth: 0,
+                    <span title={s.title || s.goal || s.slug}
+                          style={{ flex: 1, minWidth: 0,
                                    textDecoration: s.status === 'skipped' ? 'line-through' : undefined }}>
-                      {s.title || s.goal || s.slug}
+                      {shortTitle(s)}
                       {s.self_added && <span className="run-ov-tag" title="The agent added this itself — nobody asked for it">agent added</span>}
                       {s.status === 'left' && <span className="run-ov-tag warn">not done</span>}
                     </span>
@@ -208,7 +167,7 @@ export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase,
           )}
         </Section>
 
-        <Section title="Decisions & changes"
+        <Section title="Agent changes"
                  extra={decisions.length > DECISIONS_SHOWN && (
                    <button type="button" className="ghost xs" style={{ padding: '0 4px' }}
                            onClick={() => setAllDecisions(v => !v)}>
@@ -216,7 +175,7 @@ export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase,
                    </button>
                  )}>
           {decisions.length === 0 ? (
-            <div className="xs muted">None yet. A message that changes the plan, a task the agent skips or adds, and the choices it reports show here.</div>
+            <div className="xs muted">None. A task the agent adds, skips or leaves undone shows here.</div>
           ) : (
             <ul className="run-ov-decisions">
               {/* index in the key: lines written together share t and may share text */}

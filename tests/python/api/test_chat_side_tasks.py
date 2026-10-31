@@ -472,3 +472,26 @@ def test_a_running_side_task_never_shows_a_bare_spinner(env):
         assert "waiting for the model" in s and "queued behind 1" in s
     finally:
         chat_runs.finish(t["id"])
+
+
+def test_a_mid_run_message_not_given_to_the_run_still_shows_in_the_chat(env, monkeypatch):
+    """A side task and a status question are typed in THIS chat: each is kept
+    in the run as the user's own bubble (a ``steer`` step with ``routed``),
+    the status answer right under its question."""
+    from aiforge_core.runtime import chat_interject, chat_runs
+    monkeypatch.setattr(chat_runs, "_ensure_watchdog", lambda: None)
+    pid = env.parent()
+    chat_runs.start(pid)
+    chat_interject.set_steerable(pid, True)
+    r = env.client.post(f"/api/chat/sessions/{pid}/side",
+                        json={"content": "also handle the empty list case", "as": "task"}).json()
+    assert r["action"] == "task"
+    r = env.client.post(f"/api/chat/sessions/{pid}/side", json={"content": "status"}).json()
+    assert r["action"] == "status"
+    notes = chat_runs.take_notes(pid)
+    assert [(n.get("role"), n.get("routed"), n.get("text")) for n in notes] == [
+        ("steer", "task", "also handle the empty list case"),
+        ("steer", "status", "status"),
+        ("reply", None, notes[2]["text"]),
+    ]
+    chat_runs.finish_all()

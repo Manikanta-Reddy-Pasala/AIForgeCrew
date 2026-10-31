@@ -47,11 +47,12 @@ function withSubtaskStatus(subtasks: SubtaskItem[], slug: string, status: string
 
 // The run read a message the user sent mid-run: the page's own copy of it
 // (shown since the send) becomes the read one, in its place — not a second.
-function withSteerEcho(prev: LiveTurn, text: string): LiveTurn {
+function withSteerEcho(prev: LiveTurn, text: string, routed?: string): LiveTurn {
   const want = squash(text);
-  const at = prev.steps.findIndex(s => s.kind === 'thought' && s.role === 'steer' && s.sent
+  // One that went beside the run (routed) never had a page copy: it is added.
+  const at = routed ? -1 : prev.steps.findIndex(s => s.kind === 'thought' && s.role === 'steer' && s.sent
     && squash(s.text) === want);
-  const read = { kind: 'thought' as const, text, role: 'steer' };
+  const read = { kind: 'thought' as const, text, role: 'steer', ...(routed ? { routed } : {}) };
   if (at === -1) return { ...prev, steps: [...prev.steps, read] };
   const steps = [...prev.steps];
   steps[at] = read;
@@ -62,7 +63,7 @@ function withSteerEcho(prev: LiveTurn, text: string): LiveTurn {
 // event types, resolved by a small lookup so reduceTurn stays flat.
 function appendStepFor(prev: LiveTurn, evt: any): LiveTurn | null {
   if (evt.type === 'thought') {
-    if (evt.role === 'steer') return withSteerEcho(prev, String(evt.text ?? ''));
+    if (evt.role === 'steer') return withSteerEcho(prev, String(evt.text ?? ''), evt.routed);
     return { ...prev, steps: [...prev.steps, { kind: 'thought' as const, text: evt.text, role: evt.role }] };
   }
   if (evt.type === 'tool_start') {

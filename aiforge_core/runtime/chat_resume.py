@@ -182,7 +182,10 @@ def _collect_steer(s: dict, acc: dict) -> None:
     """A steer can REPLACE the request (see chat_steer.steer_directive), and
     resume re-sends the ORIGINAL words — so without this the brief lists
     postgres files as landed under a prompt that still says MySQL, and the
-    agent dutifully reverts them."""
+    agent dutifully reverts them. A message that went beside the run (a side
+    task, a status question: ``routed``) never redirected it."""
+    if s.get("routed"):
+        return
     t = _txt(s.get("text"))
     if t:
         acc["steers"].append(t[:300])

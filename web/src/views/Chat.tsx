@@ -754,7 +754,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   useEffect(() => { busyRef.current = busy; }, [busy]);
   // Guards the Steer POST against double-fire (FE6).
   const [steering, setSteering] = useState(false);
-  // The Run overview panel on the right (goals, now, plan, decisions); open
+  // The Run overview panel on the right (now, progress, agent changes); open
   // unless the user closed it, remembered per browser.
   const [overviewOpen, setOverviewOpen] = useState<boolean>(() => {
     // First visit: open where it fits beside the chat (it floats over it on
@@ -2257,7 +2257,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
         // echo replaces this copy once the agent has read it (Chat.reduce).
         // The run may have read it already (the echo came before this reply).
         setLiveTurn(prev => prev && !prev.steps.some(s => s.kind === 'thought' && s.role === 'steer'
-            && !s.sent && s.text.replace(/\s+/g, ' ').trim().toLowerCase() === q.replace(/\s+/g, ' ').trim().toLowerCase())
+            && !s.sent && !s.routed && s.text.replace(/\s+/g, ' ').trim().toLowerCase() === q.replace(/\s+/g, ' ').trim().toLowerCase())
           ? { ...prev, steps: [...prev.steps, { kind: 'thought' as const, role: 'steer', text: q, sent: true }] }
           : prev);
         toast('Message sent. The agent will read it in a moment.');
@@ -2651,8 +2651,8 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
           <div className="row" style={{ gap: 'var(--s-2)' }}>
             {activeId !== null && !overviewOpen && (
               <button type="button" className="ghost sm" onClick={() => showOverview(true)}
-                      title="Show the run overview: goals, what runs now, the whole plan and what changed it">
-                ☰ Overview
+                      title="Show the run overview: what runs now and how far the plan got">
+                ☰ Progress
               </button>
             )}
             <ModeToggle chatMode={chatMode} setChatMode={setChatMode} busy={busy} />
