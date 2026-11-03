@@ -57,6 +57,8 @@ def test_unknown_slots_is_one(monkeypatch):
 
 
 def test_several_slots_lift_the_idle_cap(monkeypatch):
+    from aiforge_core.config import runtime_settings as rs
+    rs.set_many({"llm_max_rpm": 0})                       # no global (the default is 25)
     _slots(monkeypatch, 4)
     assert rl._category_limit("compaction") == 0          # idle, no global
     gate.note_interactive()

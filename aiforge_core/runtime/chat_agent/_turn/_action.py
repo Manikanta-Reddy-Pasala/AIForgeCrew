@@ -257,6 +257,8 @@ def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
             allow_request_removal=user_dropped_work(getattr(st, "steers", None)),
             context_words=context_words(st.board, getattr(st, "goal", ""),
                                         getattr(st, "steers", None)))
+        from ._section_check import check_back
+        result, events = check_back(st, result, events, _before)
         result, events = review_progress(st, result, events)
         events = _with_evidence(st, result, events, _before)
         if not readonly_mode:

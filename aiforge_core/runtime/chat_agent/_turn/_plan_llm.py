@@ -218,6 +218,22 @@ def sections(text: str) -> list:
     return [t[:200] for t in out] if len(out) >= 2 else []
 
 
+def section_texts(text: str) -> list:
+    """``(title, body)`` of each numbered top-level section (as
+    :func:`sections` finds them), the body running to the next one."""
+    found = [(len(m.group(1)), m.group(2).strip(), m.start(), m.end())
+             for m in _SECTION.finditer(text or "")]
+    if len(found) < 2:
+        return []
+    top = min(f[0] for f in found)
+    heads = [f for f in found if f[0] == top]
+    out = []
+    for k, (_, title, _start, end) in enumerate(heads):
+        stop = heads[k + 1][2] if k + 1 < len(heads) else len(text)
+        out.append((title, text[end:stop].strip()))
+    return out
+
+
 def plan_asks(role: str, message: str, messages, cwd=None, session_id=None):
     """The refined task list for ``message`` (``[]``: no board), or None when
     the model could not give one (the caller falls back to the splitter)."""

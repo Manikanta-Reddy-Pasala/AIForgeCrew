@@ -86,8 +86,8 @@ def test_append_no_think_is_idempotent():
     msgs = [{"role": "user", "content": "hi"}]
     once = c._append_no_think(msgs)
     twice = c._append_no_think(once)
-    assert once[-1]["content"] == "hi /no_think"
-    assert twice[-1]["content"] == "hi /no_think"      # not doubled
+    assert once == [{"role": "user", "content": "hi"}, {"role": "user", "content": "/no_think"}]
+    assert twice == once                                 # not doubled
 
 
 def test_is_fast_role_classification():
@@ -181,10 +181,10 @@ def test_no_think_keeps_an_image_turn_an_image_turn():
     img = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
     msgs = [{"role": "user", "content": [{"type": "text", "text": "what is this"}, img]}]
     out = _append_no_think(msgs)
-    assert out[0]["content"] == [{"type": "text", "text": "what is this"}, img,
-                                 {"type": "text", "text": "/no_think"}]
+    assert out[0]["content"] == [{"type": "text", "text": "what is this"}, img]  # untouched
+    assert out[-1] == {"role": "user", "content": "/no_think"}
     assert msgs[0]["content"][-1] is img            # caller's list untouched
-    assert _append_no_think(out)[0]["content"] == out[0]["content"]   # idempotent
+    assert _append_no_think(out) == out             # idempotent
 
 
 def test_reasoning_off_body_still_carries_the_image(monkeypatch):
@@ -198,8 +198,9 @@ def test_reasoning_off_body_still_carries_the_image(monkeypatch):
     body = json.loads(_http._build_body(
         ep, [{"role": "user", "content": [{"type": "text", "text": "q"}, img]}],
         None, 100, None, None))
-    content = body["messages"][-1]["content"]
+    content = body["messages"][0]["content"]          # the image turn, as sent
     assert isinstance(content, list) and img in content
+    assert body["messages"][-1] == {"role": "user", "content": "/no_think"}
 
 
 def test_no_think_never_edits_an_earlier_message():
@@ -213,4 +214,6 @@ def test_no_think_never_edits_an_earlier_message():
     assert out[:4] == msgs                                  # nothing before changes
     assert out[-1] == {"role": "user", "content": "/no_think"}
     last_user = msgs[:2]
-    assert _append_no_think(last_user)[-1]["content"] == "build it /no_think"
+    out2 = _append_no_think(last_user)
+    assert out2[:2] == last_user and out2[-1] == {"role": "user", "content": "/no_think"}
+    assert _append_no_think(out2) == out2                 # idempotent

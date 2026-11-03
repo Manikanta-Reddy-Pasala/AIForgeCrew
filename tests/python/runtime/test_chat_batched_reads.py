@@ -115,7 +115,19 @@ def test_a_new_model_call_forgets_an_untaken_batch(monkeypatch):
     assert fn.take_queued() == ([], 0)
 
 
-def test_a_text_fallback_turn_queues_nothing(monkeypatch):
+def test_a_malformed_call_queues_nothing(monkeypatch):
+    """Arguments that do not parse come back to the model as that tool's
+    invalid_arguments result (native calling stays); nothing is queued."""
+    broken = _reply({"function": {"name": "file_read", "arguments": "{bad"}},
+                    _call("file_read", path="b.py"))
+    fn = _native_fn(monkeypatch, broken)
+    step = fn("chat", [])
+    assert "file_read" in step and "_invalid_args" in step
+    assert fn.take_queued() == ([], 0)
+
+
+def test_the_text_redo_is_still_there_behind_its_switch(monkeypatch):
+    monkeypatch.setenv("AIFORGE_NATIVE_BAD_ARGS_TEXT", "1")
     broken = _reply({"function": {"name": "file_read", "arguments": "{bad"}},
                     _call("file_read", path="b.py"))
     fn = _native_fn(monkeypatch, broken)

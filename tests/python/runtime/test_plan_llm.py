@@ -366,3 +366,29 @@ def test_the_planner_reads_a_long_request_whole(monkeypatch):
     long = "Build it. " + "x" * 20000 + " FEATURE-AT-THE-END"
     _plan_llm.plan_asks("chat", long, [])
     assert "FEATURE-AT-THE-END" in seen["ask"]
+
+
+def test_section_texts_run_to_the_next_section():
+    secs = _plan_llm.section_texts(SPEC)
+    assert [t for t, _ in secs][:2] == ["1. Batches and expiry dates (FEFO)", "2. Coupon codes"]
+    assert "1.1 details stay inside part 1" in secs[0][1] and "Coupon" not in secs[0][1]
+
+
+def test_a_section_is_checked_against_its_text_once_before_it_closes():
+    from types import SimpleNamespace
+    from aiforge_core.runtime.chat_agent._turn import _section_check as C, _tasks
+    board = _tasks.seed_board(_plan_llm.sections(SPEC))
+    st = SimpleNamespace(board=board, goal=SPEC)
+    before = {s: it["status"] for s, it in board.items()}
+    res, ev = _tasks.apply_progress(board, {"slug": "part-1", "status": "done"})
+    res, ev = C.check_back(st, res, ev, before)
+    assert not res["ok"] and "1.1 details stay inside part 1" in res["section"]
+    assert board["part-1"]["status"] != "done"
+    before = {s: it["status"] for s, it in board.items()}
+    res, ev = _tasks.apply_progress(board, {"slug": "part-1", "status": "done"})
+    res, ev = C.check_back(st, res, ev, before)
+    assert res["ok"] and board["part-1"]["status"] == "done"      # second close stands
+    plain = SimpleNamespace(board=_tasks.seed_board(["fix login", "add tests"]), goal="fix login, add tests")
+    b2 = {s: it["status"] for s, it in plain.board.items()}
+    r2, _ = _tasks.apply_progress(plain.board, {"slug": "part-1", "status": "done"})
+    assert C.check_back(plain, r2, [], b2)[0]["ok"]               # no sections: no check

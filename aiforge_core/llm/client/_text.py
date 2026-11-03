@@ -118,39 +118,20 @@ def _is_garbage(text: str, *, allow_empty_json: bool = False) -> bool:
 
 def _append_no_think(messages: list[dict]) -> list[dict]:
     """Return a copy of ``messages`` nudging the model to answer WITHOUT its
-    reasoning phase — used only on an empty-response retry. Appends ' /no_think'
-    to the last user turn (the Qwen3 / DeepSeek-R1 convention); harmless text for
-    models that ignore it.
+    reasoning phase (the Qwen3 / DeepSeek-R1 ``/no_think`` soft switch;
+    harmless text for models that ignore it).
 
-    Only the LAST message is ever touched: with native tool calling the newest
-    messages are tool results, and "the last user turn" was often an old
-    message deep in the history (the request itself) — switched on for one
-    request and off for the next, it made a local server re-read the whole
-    prompt from there (a benchmark run: 46 such re-reads). When the last
-    message is not the user's, the switch goes in its own trailing message."""
+    The switch is its own trailing user message; no message is ever edited.
+    It used to go on "the last user turn" — with native tool calling often an
+    old message (the request itself), and even when it was the newest, the
+    next request no longer carried it there: either way a local server
+    re-read the prompt from that message (65 re-reads in one benchmark run,
+    a quarter of its model time). A trailing message leaves everything
+    before it byte for byte the same."""
     out = [dict(m) for m in (messages or [])]
-    if out and out[-1].get("role") != "user":
-        out.append({"role": "user", "content": "/no_think"})
-        return out
-    for m in reversed(out[-1:]):
-        if m.get("role") == "user":
-            content = m.get("content")
-            if isinstance(content, list):
-                # A multimodal turn. ``str()`` on it sent the image to the
-                # model as the text of a Python list — the VLM never saw the
-                # picture and described one it made up (every UI audit did).
-                last = content[-1] if content else {}
-                if not (isinstance(last, dict) and last.get("type") == "text"
-                        and str(last.get("text") or "").rstrip().endswith("/no_think")):
-                    m["content"] = [*content, {"type": "text", "text": "/no_think"}]
-                return out
-            cur = str(content or "").rstrip()
-            # idempotent — never append twice (a fast role already coaxed on
-            # attempt 0 must not become "… /no_think /no_think" on a retry).
-            if not cur.endswith("/no_think"):
-                cur = cur + " /no_think"
-            m["content"] = cur
-            return out
+    last = out[-1] if out else {}
+    if last.get("role") == "user" and str(last.get("content") or "").strip() == "/no_think":
+        return out                       # idempotent on a retry
     out.append({"role": "user", "content": "/no_think"})
     return out
 
