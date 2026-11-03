@@ -54,6 +54,9 @@ os.environ.setdefault("AIFORGE_CHAT_PERSIST_S", "-1")
 # The "say what you will change" step costs a scripted model one extra reply;
 # the tests of that step turn it on themselves.
 os.environ.setdefault("AIFORGE_CHAT_SAY_PLAN", "0")
+# The suite has no model server, which reads as one slot: keep the background
+# condense summary on so its own tests exercise it (test_compact_behind).
+os.environ.setdefault("AIFORGE_COMPACT_SUMMARY_ONE_SLOT", "1")
 # The "is the request done?" check at the end of a turn is one more model
 # call a scripted model has no reply for; the tests of it turn it on.
 os.environ.setdefault("AIFORGE_CHAT_DONE_CHECK", "0")

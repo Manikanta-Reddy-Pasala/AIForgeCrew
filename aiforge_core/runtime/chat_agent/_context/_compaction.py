@@ -138,6 +138,16 @@ def _summary_role() -> str:
 _UNSUMMARISED: dict = {}
 
 
+def _one_slot_server() -> bool:
+    """The summary's model serves one request at a time (``llm/slots``;
+    unknown counts as one slot, as everywhere else)."""
+    try:
+        from aiforge_core.llm import slots
+        return not slots.parallel_ok(_summary_role(), slots.CHAT_ROLE)
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def _schedule_llm_summary(middle, complete_fn, run_key, gen: int,
                           prior: str = "") -> None:
     """Start the model summary of condense ``gen`` and return at once.
@@ -148,6 +158,13 @@ def _schedule_llm_summary(middle, complete_fn, run_key, gen: int,
     keeps parallel runs from reading each other's result.
     """
     if not run_key or _compact_mode() != "llm" or not middle:
+        return
+    if _one_slot_server() and os.environ.get("AIFORGE_COMPACT_SUMMARY_ONE_SLOT", "0") \
+            not in ("1", "true", "yes", "on"):
+        # One request at a time (a local server): the "background" summary
+        # held the slot 50-80 s per condense while every agent step queued
+        # behind it. The structural breadcrumb stands; switch it back on with
+        # AIFORGE_COMPACT_SUMMARY_ONE_SLOT=1.
         return
     middle = list(middle)
     if _summary_bg.pending(run_key) not in (None, gen):

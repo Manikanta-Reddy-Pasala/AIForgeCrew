@@ -244,3 +244,15 @@ def test_a_step_under_budget_leaves_the_note_alone(c):
     same = c._compact_convo(out, keep_recent=8, complete_fn=fast, run_key="run-hold")
     assert same[1]["content"] == out[1]["content"]          # held back
     assert "- edited foo.py" in c._splice_ready_summary(same, "run-hold")[1]["content"]
+
+
+def test_a_one_slot_server_gets_no_background_summary(c, monkeypatch):
+    """One request at a time: the summary would hold the slot while every
+    agent step queues behind it — the breadcrumb stands instead."""
+    monkeypatch.setenv("AIFORGE_COMPACT_SUMMARY_ONE_SLOT", "0")
+    monkeypatch.setattr(c, "_one_slot_server", lambda: True)
+    called = []
+    c._compact_convo(_long_convo(), keep_recent=8,
+                     complete_fn=lambda r, m: called.append(1) or "x", run_key="run-one")
+    from aiforge_core.runtime.chat_agent._context import _summary_bg
+    assert _summary_bg.pending("run-one") is None and called == []
