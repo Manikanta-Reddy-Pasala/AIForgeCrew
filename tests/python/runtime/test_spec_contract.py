@@ -213,7 +213,7 @@ def test_probe_guard_speaks_every_ten_shell_commands_without_an_edit(monkeypatch
     from aiforge_core.runtime.chat_agent._turn import _probe_guard as P
     # (a write under a temp folder is not a change to the work: not /tmp here)
     st = SimpleNamespace(edits_made=0, cwd="/srv/work")
-    said = [P.note(st, "run_command", {"cmd": "python3 -c 'x'"}) for _ in range(20)]
+    said = [P.note(st, "run_command", {"cmd": "ls -la shopkit"}) for _ in range(20)]
     assert [i for i, s in enumerate(said) if s] == [9, 19]
     P.note(st, "multi_edit", {"edits": []})            # refused: no landed edit
     assert st.shell_streak == 20
@@ -273,3 +273,16 @@ def test_malformed_tool_args_come_back_as_that_tools_error():
         assert stop.value == "handled"
     assert events[0]["result"]["error"] == "invalid_arguments"
     assert "valid JSON" in st.convo[-1]["content"]
+
+
+def test_probe_guard_counts_python_probes_across_edits():
+    from aiforge_core.runtime.chat_agent._turn import _probe_guard as P
+    st = SimpleNamespace(edits_made=0, cwd="/srv/work")
+    said = []
+    for i in range(16):
+        said.append(P.note(st, "run_command", {"cmd": 'cd x && python3 -c "import a; print(hasattr(a, \'b\'))"'}))
+        st.edits_made += 1                      # an edit between every probe
+        P.note(st, "file_write", {"path": "a.py"})
+    assert [i for i, s in enumerate(said) if s] == [7, 15]
+    assert "grep tool" in said[7]
+    assert not P.note(st, "run_command", {"cmd": "python3 -m pytest -q"})   # tests are not probes

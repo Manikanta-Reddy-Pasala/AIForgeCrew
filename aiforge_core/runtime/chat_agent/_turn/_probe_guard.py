@@ -13,9 +13,15 @@ Off switch: ``AIFORGE_CHAT_PROBE_GUARD=0``.
 from __future__ import annotations
 
 import os
+import re
 
 #: Shell commands in a row (no landed edit between) before each note.
 EVERY = 10
+#: Throwaway python probes in the whole turn (edits between them or not)
+#: before each note: a later run made 56 `python -c "...hasattr(...)"` checks
+#: between edits, which the in-a-row count never saw.
+PROBES_EVERY = 8
+_PROBE = re.compile(r"\bpython[0-9.]*\s+(?:-c\b|-\s*<<|<<)")
 
 
 def _shell_tools() -> frozenset:
@@ -29,6 +35,15 @@ def _writes_through_shell(args, cwd) -> bool:
         return bool(shell_write_targets(command_of(args) or "", str(cwd or ".")))
     except Exception:  # noqa: BLE001
         return False
+
+
+def _is_probe(args) -> bool:
+    try:
+        from aiforge_core.runtime.shell_writes import command_of
+        cmd = command_of(args) or ""
+    except Exception:  # noqa: BLE001
+        cmd = str((args or {}).get("cmd") or "")
+    return bool(_PROBE.search(cmd)) and "pytest" not in cmd
 
 
 def note(st, name: str, args) -> str:
@@ -47,6 +62,14 @@ def note(st, name: str, args) -> str:
     if _writes_through_shell(args, getattr(st, "cwd", None)):
         st.shell_streak = 0          # sed -i / cat > f: a change, made the shell way
         return ""
+    if _is_probe(args):
+        st.probe_count = getattr(st, "probe_count", 0) + 1
+        if st.probe_count % PROBES_EVERY == 0:
+            return (f"[harness — not the user] {st.probe_count} throwaway python "
+                    "scripts this turn to check the code. To see whether a name, "
+                    "method or parameter exists, use the grep tool or read the "
+                    "file; to see whether it works, write a test in the repo's "
+                    "test files and run the tests.")
     st.shell_streak = getattr(st, "shell_streak", 0) + 1
     if st.shell_streak % EVERY:
         return ""
