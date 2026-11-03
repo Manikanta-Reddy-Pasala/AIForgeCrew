@@ -182,7 +182,38 @@ def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
     retry is made only when a FULL attempt still fits inside what is left —
     never a stub with a few seconds on it, which would manufacture exactly the
     abandoned generation this is written to avoid. The bound is per CHAIN;
-    ``client.complete``'s empty-response loop can start several."""
+    ``client.complete``'s empty-response loop can start several.
+
+    FAILOVER (llm/model_failover). Inside a chat turn a guard may move the
+    request to another model — the turn's sticky failover model, the next
+    listed model when this one stalls or keeps failing, or the user's new pick
+    made mid-run — and the same request starts again there with a fresh retry
+    budget. Outside a chat there is no guard and nothing changes."""
+    from aiforge_core.llm import model_failover
+    guard = model_failover.begin(ep, payload, role, source)
+    if guard is None:
+        return _post_with_retry_on(ep, payload, timeout_s, role=role,
+                                   source=source, meter=meter, guard=None)
+    try:
+        while True:
+            try:
+                with guard.bound():
+                    return _post_with_retry_on(guard.ep, guard.payload, timeout_s,
+                                               role=role, source=source,
+                                               meter=meter, guard=guard)
+            except _Retarget:
+                continue        # the guard moved the request: the same step again
+    finally:
+        guard.close()
+
+
+class _Retarget(Exception):
+    """Internal: the failover guard moved the request to another model."""
+
+
+def _post_with_retry_on(ep: Endpoint, payload: bytes, timeout_s: int,
+                        *, role: str, source: str, meter, guard) -> dict:
+    """The retry loop of :func:`_post_with_retry` against ONE endpoint."""
     pkg = _pkg()
     cfg = _RetryCfg(timeout_s)
     last: Exception | None = None
@@ -200,6 +231,10 @@ def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
                              max_wait_s=cfg.left(), throttled=throttled, **extra)
         except Exception as exc:  # noqa: BLE001 — classifier handles
             retry, label = pkg._is_transient_exc(exc)
+            if guard is not None and guard.take(
+                    exc, label, down=label in ("url_error", "os_error")
+                    and _endpoint_down(ep)):
+                raise _Retarget() from exc
             if retry and _endpoint_down(ep):
                 # Keep the label: a shipped timeout / 429 is still marked as
                 # such below, only the pointless retry is dropped.
@@ -226,7 +261,10 @@ def _post_with_retry(ep: Endpoint, payload: bytes, timeout_s: int,
                 raise
             _log_transport_retry(ep, attempt, label, sleep_s, exc, role, source)
             _say_retry(ep, attempt, cfg.max_attempts, label, exc)
-            time.sleep(sleep_s)
+            from aiforge_core.llm import model_failover
+            if model_failover.sleep_or_switch(sleep_s, guard, time.sleep) \
+                    and guard.take(model_failover.ModelSwitched(), "ModelSwitched"):
+                raise _Retarget() from exc   # picked during the backoff: go now
     # Defensive — loop above always either returns or raises.
     assert last is not None
     raise last

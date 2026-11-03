@@ -64,6 +64,20 @@ export type CaStatus = {
 export interface SessionModel {
   model: string | null; base_url: string; provider: string | null;
   own: boolean; active: boolean; warning?: string | null;
+  // Set when the pick was made while the chat's turn runs: "retrying" = the
+  // request waiting on the old model was aborted and the step is sent again
+  // on this one; "next_step" = nothing was in flight, the next step uses it.
+  switch?: 'retrying' | 'next_step';
+}
+
+// Chat failover (Settings): the 1-3 registry models a turn switches to when
+// its model stops answering, and the two thresholds.
+export interface ChatFailover {
+  models: string[];
+  stall_s: number; fails: number;
+  stall_s_saved: number | null; fails_saved: number | null;
+  enabled: boolean; max_models: number;
+  options: { id: string; label: string; model: string; base_url: string }[];
 }
 
 export const api = {
@@ -166,6 +180,12 @@ export const api = {
     }),
   clearSessionModel: (sessionId: number) =>
     j<SessionModel>(`/chat/sessions/${sessionId}/model`, { method: 'DELETE' }),
+  chatFailover: () => j<ChatFailover>('/chat/failover'),
+  setChatFailover: (models: string[], stall_s: number | null, fails: number | null) =>
+    j<ChatFailover>('/chat/failover', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ models, stall_s, fails }),
+    }),
   responseLanguage: () => j<ResponseLanguage>('/chat/response-language'),
   setResponseLanguage: (change: { language?: string; style?: string }) =>
     j<ResponseLanguage>('/chat/response-language', {

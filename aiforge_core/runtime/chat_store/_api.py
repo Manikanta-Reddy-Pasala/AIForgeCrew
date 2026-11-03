@@ -226,6 +226,8 @@ def _forget_grants(session_id=None) -> None:
     try:
         from aiforge_core.config import chat_models
         chat_models.forget_session(session_id)
+        from aiforge_core.llm import model_switch
+        model_switch.forget(session_id)
     except Exception:  # noqa: BLE001
         pass
     try:

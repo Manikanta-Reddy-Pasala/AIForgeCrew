@@ -282,6 +282,36 @@ def _session_model_view(session_id: int) -> dict:
                         "overrides every chat's pick") if env_ovr else None}
 
 
+def _effective_chat_model(session_id: int) -> tuple:
+    """``(model, base_url)`` this chat's ``chat`` role resolves to right now
+    (its own pick, else the global one; an env pin included). The endpoint
+    too: the same id on another server is another model. No network."""
+    from aiforge_core.runtime import request_context
+    tok = request_context.set_session_id(session_id)
+    try:
+        row = (_acfg.get("chat") if "chat" in _acfg.archetypes() else {}) or {}
+        return str(row.get("model") or ""), str(row.get("base_url") or "")
+    except Exception:  # noqa: BLE001
+        return "", ""
+    finally:
+        request_context.reset_session_id(tok)
+
+
+def _note_switch(session_id: int, before: tuple, view: dict) -> dict:
+    """A pick made while the chat's turn runs: the request waiting on the old
+    model is aborted and the step retried on the new one (llm/model_switch).
+    ``switch`` in the answer tells the UI which: "retrying", "next_step", or
+    absent when no turn runs / the model did not change."""
+    from aiforge_core.runtime import chat_cancel
+    if chat_cancel.get(session_id) is None:
+        return view
+    from aiforge_core.llm import model_switch
+    after = _effective_chat_model(session_id)
+    how = model_switch.request(session_id, before[0], after[0],
+                               from_url=before[1], to_url=after[1])
+    return {**view, "switch": how} if how else view
+
+
 @router.get("/api/chat/sessions/{session_id}/model",
             responses={404: {"description": "Not found"}})
 def session_model_get(session_id: int) -> dict:
@@ -297,6 +327,7 @@ def session_model_set(session_id: int, body: _ChatModelBody) -> dict:
     pick (PUT /api/chat/model) stays the default for chats with no pick."""
     from aiforge_core.config import chat_models
     _session_or_404(session_id)
+    before = _effective_chat_model(session_id)
     cur = _acfg.get("chat") if "chat" in _acfg.archetypes() else {}
     base, key, tls = _endpoint_for_picked_model(body.model, cur, body.base_url or "")
     if not base or chat_models._url(base) in (
@@ -322,7 +353,7 @@ def session_model_set(session_id: int, body: _ChatModelBody) -> dict:
             request_context.reset_session_id(tok)
     except Exception:  # noqa: BLE001
         pass
-    return _session_model_view(session_id)
+    return _note_switch(session_id, before, _session_model_view(session_id))
 
 
 @router.delete("/api/chat/sessions/{session_id}/model",
@@ -331,8 +362,9 @@ def session_model_clear(session_id: int) -> dict:
     """Drop this chat's own pick: it runs on the global model again."""
     from aiforge_core.config import chat_models
     _session_or_404(session_id)
+    before = _effective_chat_model(session_id)
     chat_models.forget_session(session_id)
-    return _session_model_view(session_id)
+    return _note_switch(session_id, before, _session_model_view(session_id))
 
 
 class _ModelReloadBody(BaseModel):

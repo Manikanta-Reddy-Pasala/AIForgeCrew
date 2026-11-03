@@ -66,16 +66,21 @@ def _health():
     return request_health
 
 
-def first_token_s(payload: bytes | None, url: str = "") -> float:
-    base = _float_env("AIFORGE_LLM_FIRST_TOKEN_S", 180.0)
-    if base <= 0:
-        return 0.0
+def prefill_s(payload: bytes | None, url: str = "") -> float:
+    """How long prefilling this prompt is expected to take on ``url``: its
+    tokens over the assumed (or learned, when slower) prefill speed."""
     tps = _float_env("AIFORGE_LLM_PREFILL_TOK_S", 200.0)
     learned = _health().prefill_tps(url) if url else None
     if learned and (tps <= 0 or learned < tps):
         tps = learned
-    scaled = (_estimate_tokens(payload or b"") / tps) if tps > 0 else 0.0
-    return max(base, scaled) * _health().stall_scale()
+    return (_estimate_tokens(payload or b"") / tps) if tps > 0 else 0.0
+
+
+def first_token_s(payload: bytes | None, url: str = "") -> float:
+    base = _float_env("AIFORGE_LLM_FIRST_TOKEN_S", 180.0)
+    if base <= 0:
+        return 0.0
+    return max(base, prefill_s(payload, url)) * _health().stall_scale()
 
 
 def idle_s() -> float:
@@ -97,6 +102,20 @@ class StreamWatch:
         self._tokens = _estimate_tokens(payload or b"")
         self._first = first_token_s(payload, url)
         self._idle = idle_s()
+        self._plain_first = self._first
+        # While the chat has another model to fail over to (llm/model_failover)
+        # the failover threshold replaces the BASE of the bounds only: the
+        # prompt-size scaling (a 40k-token prompt on a slow local box needs
+        # its minutes) and the doubling on a re-send are kept, so a healthy
+        # slow server is never cut short of its own expected prefill.
+        from aiforge_core.llm import model_failover
+        self._cap = model_failover.stall_cap()
+        if self._cap:
+            scale = _health().stall_scale()
+            first = max(self._cap, prefill_s(payload, url)) * scale
+            self._first = min(self._first, first) if self._first else first
+            idle = self._cap * scale
+            self._idle = min(self._idle, idle) if self._idle else idle
         self.phase = "first_token"
         self.bound = 0.0
         self._armed = time.monotonic()
@@ -170,6 +189,10 @@ class StreamWatch:
         proxy that keeps the stream alive for an upstream that is gone held
         the call with no end. Measured from the last DATA event."""
         base = self.bound or self.read_timeout
+        if self._cap and self.phase == "first_token":
+            # Keep-alives mean the server is alive: the failover cap does not
+            # shorten their allowance — the ordinary bound decides it.
+            base = self._tightest(self._plain_first) or self.read_timeout
         if not base:
             return
         from ._helpers import _float_env

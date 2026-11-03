@@ -212,7 +212,10 @@ def _waiting(role: str, call):
 
     def _endpoint():
         try:
-            ep = resolve(role)
+            # The model the request really goes to: the turn's failover
+            # target once it moved there (llm/model_failover).
+            from aiforge_core.llm import model_failover
+            ep = model_failover.sticky_endpoint(resolve(role))
             return ep.base_url, ep.api_key or "", ep.model
         except Exception:  # noqa: BLE001 — cannot resolve: nothing to probe
             return "", "", ""

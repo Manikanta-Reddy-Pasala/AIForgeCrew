@@ -173,6 +173,10 @@ class Waiter:
             (lambda u, k, m: probe_fn(u, k)) if probe_fn is not None
             else (lambda u, k, m: probe(u, k, model=m)))
         self.health = health or request_health.RequestHealth()
+        #: True once the user picked another model for the chat (set by
+        #: call_with_wait): the wait ends and the request goes to the new one.
+        self.switched: Callable[[], bool] = lambda: False
+        self._switch_hit = False
 
     # — classification ——————————————————————————————————————————————
     def waitable(self, exc: BaseException) -> bool:
@@ -387,6 +391,9 @@ class Waiter:
                 gap = self._next_gap(exc)
                 self._sleep_cancellable(gap, exc)
                 self.waited += gap
+                if self._switch_hit or self.switched():
+                    self._switch_hit = False
+                    return False    # another model picked: send there, now
                 if self._after_probe(self._up()):
                     self.health.up_at = time.monotonic()
                     return False
@@ -437,6 +444,9 @@ class Waiter:
             left = end - time.monotonic()
             if left <= 0:
                 return
+            if self.switched():
+                self._switch_hit = True
+                return
             _SHUTDOWN.wait(min(_SLICE_S, left))
 
 
@@ -447,6 +457,28 @@ def _step_counter() -> "dict | None":
         return cur if isinstance(cur, dict) else None
     except Exception:  # noqa: BLE001
         return None
+
+
+def _switch_watch() -> Callable[[], bool]:
+    """True once the running chat's model is switched by the user after now
+    (llm/model_switch) — a wait for the OLD model must not outlast that."""
+    try:
+        from aiforge_core.llm import model_failover, model_switch
+        from aiforge_core.runtime import request_context
+        sid = request_context.context_session_id()
+        if not sid:
+            return lambda: False
+        seq = [model_switch.seq_now(sid)]
+
+        def fired() -> bool:
+            # Once per switch: a later wait (for the NEW model) waits as usual.
+            if not model_failover.switch_pending(sid, seq[0]):
+                return False
+            seq[0] = model_switch.seq_now(sid)
+            return True
+        return fired
+    except Exception:  # noqa: BLE001
+        return lambda: False
 
 
 def call_with_wait(call: Callable[[], Any], *, url: str = "",
@@ -466,6 +498,7 @@ def call_with_wait(call: Callable[[], Any], *, url: str = "",
     spend the step's budget — they were real generations)."""
     waiter: Waiter | None = None
     health = request_health.RequestHealth()
+    switched = _switch_watch()
     counter = _step_counter()
     spent0 = int(counter.get("n") or 0) if counter is not None else 0
     while True:
@@ -474,11 +507,16 @@ def call_with_wait(call: Callable[[], Any], *, url: str = "",
                 health.sent_at = time.monotonic()
                 out = call()
         except Exception as exc:
-            if waiter is None:
-                if endpoint is not None:
-                    url, api_key, model = endpoint()
+            if endpoint is not None:
+                # Asked on EVERY failure: a user switch or a failover moves the
+                # request to another model, and a waiter still probing the old
+                # one would wait forever while the current one is up.
+                url, api_key, model = endpoint()
+            if waiter is None or (waiter.url, waiter.model) != (str(url or ""),
+                                                                model or ""):
                 waiter = Waiter(url, api_key=api_key, model=model, what=what,
                                 health=health)
+                waiter.switched = switched
             if waiter.wait(exc):
                 spent0 = int(counter.get("n") or 0) if counter is not None else 0
             elif counter is not None:

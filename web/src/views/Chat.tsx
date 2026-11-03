@@ -386,8 +386,12 @@ function ModelSelect({ busy, modelActive, selectedModel, selectedUrl, onPick, ow
           const [newModel, pickedUrl] = e.target.value.split(MODEL_KEY_SEP);
           onPick(newModel, pickedUrl || '');
         }}
-        disabled={busy || modelOptions.length === 0}
-        title="Model for this chat (other chats keep theirs)"
+        // Not locked while a turn runs: a pick mid-run aborts the request
+        // waiting on the old model and retries that step on the new one.
+        disabled={modelOptions.length === 0}
+        title={busy
+          ? 'Model for this chat — changing it now retries the current step on the new model'
+          : 'Model for this chat (other chats keep theirs)'}
       >
         {modelOptions.length === 0 ? (
           <option value="" disabled>
@@ -939,6 +943,10 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
       showSessionModel(res);
       if (res.warning) {
         toast.warning(res.warning);
+      } else if (res.switch === 'retrying') {
+        toast.success(`Switched to ${model} — retrying the step`);
+      } else if (res.switch === 'next_step') {
+        toast.success(`Switched to ${model} — the next step uses it`);
       } else if (res.active) {
         toast.success('Model set for this chat');
       } else {

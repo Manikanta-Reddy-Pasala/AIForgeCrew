@@ -321,11 +321,19 @@ def set_keepalive(sock, idle: int) -> None:
             pass
 
 
-def _cancel_watcher(conn, cancel, stop: "threading.Event") -> None:
-    """Start a daemon that closes ``conn`` the instant ``cancel`` fires,
+def _cancel_watcher(conn, cancel, stop: "threading.Event", abort=None) -> None:
+    """Start a daemon that closes ``conn`` the instant ``cancel`` fires — or
+    ``abort()`` says the user switched the chat's model (llm/model_switch) —
     unblocking ``getresponse()`` on the main thread."""
     def _watch():
         while not stop.wait(0.15):
+            if _aborted(abort):
+                # shutdown + close: a bare close does not wake a recv blocked
+                # in the other thread on Linux, and the retry on the new
+                # model must not wait for the old one to answer.
+                from . import _wake
+                _wake._cut(conn)
+                return
             if cancel.is_set():
                 try:
                     conn.close()
@@ -333,6 +341,13 @@ def _cancel_watcher(conn, cancel, stop: "threading.Event") -> None:
                     pass
                 return
     threading.Thread(target=_watch, daemon=True).start()
+
+
+def _aborted(abort) -> bool:
+    try:
+        return bool(abort is not None and abort())
+    except Exception:  # noqa: BLE001 — a broken check never cuts a call
+        return False
 
 
 def _post_cancellable(ep: Endpoint, payload: bytes, timeout_s: int,
@@ -362,12 +377,16 @@ def _post_cancellable_once(ep: Endpoint, payload: bytes, timeout_s: int,
     url = f"{ep.base_url.rstrip('/')}/chat/completions"
     conn, path = _open_connection(ep, url, timeout_s)
     stop = threading.Event()
-    _cancel_watcher(conn, cancel, stop)
+    from aiforge_core.llm import model_failover
+    abort = model_failover.abort_check()
+    _cancel_watcher(conn, cancel, stop, abort)
     from . import _wake
     wake_tok = _wake.track(conn)
     try:
         if cancel.is_set():
             raise _LLMCancelled("cancelled before request")
+        if _aborted(abort):
+            raise model_failover.ModelSwitched()
         conn.request("POST", path, body=payload, headers=_post_headers(ep))
         # The prompt is now the SERVER's problem — everything after this point
         # is waiting for it to answer, and a retry would duplicate work it is
@@ -390,6 +409,9 @@ def _post_cancellable_once(ep: Endpoint, payload: bytes, timeout_s: int,
             if isinstance(exc, OSError):
                 raise _LLMCancelled("cancelled mid-request") from exc
             raise
+        if _aborted(abort):
+            # Cut for the user's new pick, not a failure of this model.
+            raise model_failover.ModelSwitched() from exc
         gap = _wake.cut_by_wake(wake_tok)
         if gap is not None:
             # The machine slept under this call: a fresh connection now, and

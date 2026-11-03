@@ -14,6 +14,7 @@ import { Icon } from '../icons';
 import { JiraCard, ConfluenceCard, GitlabCard, SonarCard, BlackduckCard, EmailCard } from '../components/Integrations';
 import AgentSettings from './AgentSettings';
 import MemorySyncCard from './Home.MemorySyncCard';
+import FailoverCard from './Home.FailoverCard';
 import EgressCard from './Settings.EgressCard';
 import CaCard from './Settings.CaCard';
 import MountsCard from './Settings.MountsCard';
@@ -461,6 +462,7 @@ export default function Home() {
         {/* Simplified: add models once — the system auto-decides everything
             (agent→model by capability, token limits, context window). */}
         <AgentSettings />
+        <FailoverCard />
         <AgentLimitsCard />
         <MemorySyncCard />
         <EgressCard />

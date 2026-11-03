@@ -199,6 +199,13 @@ def end_turn(token) -> None:
         _TURN.set(None)
 
 
+def turn_state() -> "dict | None":
+    """The turn in flight's shared record (None outside a turn) — the one
+    object every thread of the turn sees, so llm/model_failover keeps the
+    model a turn switched to here and every later step of the turn finds it."""
+    return _TURN.get()
+
+
 def note_turn_answer() -> None:
     """The model answered (data flowed): the turn's stall total measures
     silence in a ROW — a hiccup at step 3 does not shorten step 40."""
@@ -284,7 +291,7 @@ def _reset_for_tests() -> None:
 
 __all__ = ["RequestHealth", "bind", "current", "note_stall", "stall_scale",
            "stall_budget_s", "stalled_seconds", "bind_turn", "end_turn",
-           "note_turn_answer", "refund_last", "stalled_sends",
+           "note_turn_answer", "turn_state", "refund_last", "stalled_sends",
            "note_prefill", "prefill_tps", "same_request_fails",
            "crash_resends", "crash_window_s", "note_answer", "last_answer",
            "track_crashes", "crashes_tracked"]
