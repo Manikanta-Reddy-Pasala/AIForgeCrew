@@ -49,12 +49,16 @@ def _write_paths(args: dict) -> list[str]:
 
 
 def _multi_edit_paths(args: dict) -> list[str]:
-    # batch edit: {"edits": [{"path", ...}, ...]} — every path counts.
+    # batch edit: {"edits": [{"path", ...}, ...]} — every path counts. An
+    # edit without its own path takes the call's top-level ``path`` /
+    # ``file_path``, exactly as multi_edit applies it — so the jail and the
+    # scope allowlist see every file the call writes.
+    shared = str(args.get("path") or args.get("file_path") or "").strip()
     out: list[str] = []
     for e in (args.get("edits") or []):
         if isinstance(e, dict):
-            p = str(e.get("path") or "").strip()
-            if p:
+            p = str(e.get("path") or "").strip() or shared
+            if p and p not in out:
                 out.append(p)
     return out
 

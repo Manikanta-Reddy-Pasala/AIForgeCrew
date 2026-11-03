@@ -863,5 +863,14 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
              "specify.") if _bundle.skills_md else ""
     if seen:
         _tail += "\n" + seen[1]
+    try:
+        from ._probe_guard import note as _probe_note
+        _probe = _probe_note(st, name, args)
+    except Exception:  # noqa: BLE001 — a nudge never ends a turn
+        _probe = ""
+    if _probe and not seen:          # one nudge per observation
+        yield {"type": "thought", "role": "system",
+               "text": "↺ many shell commands and no edit — asking the agent to write the change"}
+        _tail += "\n" + _probe
     st.convo.append({"role": "user", "content": f"OBSERVATION: {obs}{_tail}"})
     return None

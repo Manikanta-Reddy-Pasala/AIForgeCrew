@@ -197,7 +197,12 @@ def _t_multi_edit(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": "edits must be a non-empty list of "
                 "{path, old_str, new_str, replace_all?}"}
     batch = _EditBatch()
+    # One file for all edits, named once (`{"path": "a.py", "edits": [{old,
+    # new}, ...]}`) — the shape a model often sends; an edit's own path wins.
+    shared = str(args.get("path") or args.get("file_path") or "").strip()
     for i, e in enumerate(edits):
+        if shared and isinstance(e, dict) and not str(e.get("path") or "").strip():
+            e = {**e, "path": shared}
         err = _stage_edit(i, e, batch, cwd)
         if err is not None:
             return err

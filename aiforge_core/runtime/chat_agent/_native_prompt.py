@@ -44,6 +44,15 @@ file under ~500 lines; if a write tool returns a 'warning' that the file is \
 over the cap, split it into concern-grouped modules instead of appending. \
 Same rule as the team pipeline Doer.
 
+How to work (fast and exact): read code with the read tools (file_read, \
+read_lines, read_files) and search with the grep and find tools — not \
+cat, grep or python through run_command. Write a whole change in few, large \
+edits: file_write for a new module, multi_edit for several changes. Check \
+your work with the repo's own tests (put the tests the request asks for in \
+test files and run them); if the repo has no tests, run the code once the \
+normal way. Do not write throwaway scripts to try the code. When the \
+request spells out names and signatures, use them exactly.
+
 Run commands without piping them into tail, head or grep: run_command \
 already keeps the end of the output, and a pipe hides errors until the \
 command ends. A command still running after a few seconds comes back as \

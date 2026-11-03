@@ -207,3 +207,42 @@ def test_a_prune_that_frees_little_is_not_done(monkeypatch):
     monkeypatch.setattr(_limits, "_PRUNE_MIN_SHARE", 5.0)              # never enough
     assert _limits._prune_at_condense_point(st, "chat") == 0
     assert all(m["content"] == big for m in convo[2:9:2])
+
+
+def test_probe_guard_speaks_every_ten_shell_commands_without_an_edit(monkeypatch):
+    from aiforge_core.runtime.chat_agent._turn import _probe_guard as P
+    # (a write under a temp folder is not a change to the work: not /tmp here)
+    st = SimpleNamespace(edits_made=0, cwd="/srv/work")
+    said = [P.note(st, "run_command", {"cmd": "python3 -c 'x'"}) for _ in range(20)]
+    assert [i for i, s in enumerate(said) if s] == [9, 19]
+    P.note(st, "multi_edit", {"edits": []})            # refused: no landed edit
+    assert st.shell_streak == 20
+    st.edits_made = 1                                   # an edit landed
+    P.note(st, "file_write", {"path": "a.py"})
+    assert st.shell_streak == 0
+    P.note(st, "run_command", {"cmd": "sed -i 's/a/b/' x.py"})   # a shell write
+    assert st.shell_streak == 0
+    ro = SimpleNamespace(edits_made=0, cwd="/tmp", readonly_mode=True)
+    assert not any(P.note(ro, "run_command", {"cmd": "ls"}) for _ in range(12))
+    monkeypatch.setenv("AIFORGE_CHAT_PROBE_GUARD", "0")
+    st2 = SimpleNamespace(edits_made=0, cwd="/tmp")
+    assert not any(P.note(st2, "run_command", {"cmd": "ls"}) for _ in range(12))
+
+
+def test_a_top_level_multi_edit_path_is_seen_by_the_guards():
+    from aiforge_core.runtime import scope_guard
+    args = {"path": "/elsewhere/x.py", "edits": [{"old_str": "a", "new_str": "b"},
+                                                  {"path": "own.py", "old_str": "c", "new_str": "d"}]}
+    assert scope_guard._multi_edit_paths(args) == ["/elsewhere/x.py", "own.py"]
+    assert scope_guard._multi_edit_paths({"file_path": "f.py", "edits": [{"old_str": "a"}]}) == ["f.py"]
+
+
+def test_multi_edit_takes_one_path_for_all_edits(tmp_path):
+    from aiforge_core.runtime.chat_agent._tools import _skills
+    f = tmp_path / "m.py"
+    f.write_text("a = 1\nb = 2\n")
+    res = _skills._t_multi_edit({"path": "m.py", "edits": [
+        {"old_text": "a = 1", "new_text": "a = 10"},
+        {"old_str": "b = 2", "new_str": "b = 20"}]}, str(tmp_path))
+    assert res.get("ok"), res
+    assert f.read_text() == "a = 10\nb = 20\n"
