@@ -547,11 +547,19 @@ def make_native_complete_fn(mode: str = "act", builder: str = "",
         _log_native_step(msg.get("tool_calls") or [])
         step = _synth_step(msg)
         if step == _NATIVE_ARGS_UNRECOVERABLE:
-            # the model attempted tool args but they were truncated/malformed —
-            # redo this turn on the hardened text path rather than emit empty args
-            log.info("native args unrecoverable → text fallback for this turn")
-            degraded[0] = True
-            return client.complete(role, convo)
+            # The model attempted tool args but they were truncated/malformed:
+            # the call comes back to it as an error result of that tool (it
+            # sends them again), on native tool calling. The text-protocol redo
+            # stays behind AIFORGE_NATIVE_BAD_ARGS_TEXT=1.
+            if os.environ.get("AIFORGE_NATIVE_BAD_ARGS_TEXT", "0") in ("1", "true"):
+                log.info("native args unrecoverable → text fallback for this turn")
+                degraded[0] = True
+                return client.complete(role, convo)
+            fn0 = ((msg.get("tool_calls") or [{}])[0] or {}).get("function") or {}
+            raw = str(fn0.get("arguments") or "")
+            log.info("native args unrecoverable → invalid_arguments result (%s)", fn0.get("name"))
+            return _action_text(fn0.get("name") or "unknown",
+                                {"_invalid_args": f"{len(raw)} chars, ends: {raw[-120:]!r}"})
         queued[:], skipped[0] = _queued_steps(msg)
         return step
 

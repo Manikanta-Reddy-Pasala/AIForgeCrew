@@ -258,3 +258,18 @@ def test_a_clean_spec_check_stands_in_for_the_model_done_check(monkeypatch):
     assert D._applies(st, None, False)
     st2 = SimpleNamespace(session_id=1, done_check_calls=D._CALLS_PER_TURN)
     assert not D._applies(st2, None, False)                # bounded per turn
+
+
+def test_malformed_tool_args_come_back_as_that_tools_error():
+    from aiforge_core.runtime.chat_agent._turn import _action
+    st = SimpleNamespace(convo=[])
+    gen = _action._pre_dispatch_gates(st, "file_write", {"_invalid_args": "12 chars, ends: '{\"path\": \"a'"},
+                                      False, False)
+    events = []
+    try:
+        while True:
+            events.append(next(gen))
+    except StopIteration as stop:
+        assert stop.value == "handled"
+    assert events[0]["result"]["error"] == "invalid_arguments"
+    assert "valid JSON" in st.convo[-1]["content"]

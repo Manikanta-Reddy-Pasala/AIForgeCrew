@@ -193,6 +193,19 @@ def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
     bookkeeping, allowed in every mode); read-only Plan/Analyze mode blocks a
     mutating tool. Returns "handled" (bookkeeping done, nothing refused),
     continue, or None."""
+    if isinstance(args, dict) and "_invalid_args" in args:
+        # The model's arguments did not parse (cut off, malformed JSON). Its
+        # own tool says so and the model sends them again — the turn stays on
+        # native tool calling (a switch to the text protocol was a different
+        # prompt: no prefix cache, and a ~40K catalog to read).
+        result = {"ok": False, "error": "invalid_arguments",
+                  "detail": f"The arguments of your {name} call are not valid JSON "
+                            f"(cut off or malformed): {args['_invalid_args']}. Call "
+                            f"{name} again with complete, valid JSON arguments; for a "
+                            "long file, write it in parts or patch it."}
+        yield {"type": "tool", "name": name, "args": {}, "result": result}
+        st.convo.append({"role": "user", "content": f"OBSERVATION: {json.dumps(result)}"})
+        return "handled"
     # Simple-mode task tracker: plan_progress flips a checklist item in
     # the UI's subtasks dock. Pure bookkeeping — no side effects, allowed
     # in every mode (incl. plan), never gated.
