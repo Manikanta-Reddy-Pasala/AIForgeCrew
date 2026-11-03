@@ -1,0 +1,33 @@
+# System unit template for AIForge on the NUC.
+# install-system-boot.sh fills __USER__ / __HOME__ / __CREW__ and installs to
+# /etc/systemd/system/aiforge-api.service so the API starts at boot with NO
+# graphical login and NO linger dependency.
+#
+# NUC-only registry / longer timeout live in a DROP-IN
+# (aiforge-api.service.d/nuc-registry.conf) so re-running this installer does
+# not erase operator overrides.
+[Unit]
+Description=AIForge sandbox (system, boots without login)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# First start installs deps from the public index — can take many minutes.
+TimeoutStartSec=2400
+User=__USER__
+Group=__USER__
+WorkingDirectory=__CREW__
+# Same knobs as the user unit: WG reverse-proxy fronts this bind.
+Environment=HOME=__HOME__
+Environment=PATH=__HOME__/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1
+Environment=AIFORGE_BIND_HOST=0.0.0.0
+# docker.sock access: user must be in the docker group (ensure-boot adds it).
+ExecStart=__CREW__/run.sh --host 0.0.0.0
+ExecStop=__CREW__/run.sh --stop
+
+[Install]
+WantedBy=multi-user.target

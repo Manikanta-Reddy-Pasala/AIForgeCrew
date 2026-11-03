@@ -1005,6 +1005,9 @@ EOF_SEED
     esac
   done
   export AIFORGE_RUN_ARGS="${_pass[*]:-}"
+  # Compose only sees env vars that exist at `up` time. Bind host must be
+  # exported so the sandbox boot guard observes the same address `--host` set.
+  export AIFORGE_BIND_HOST="$HOST"
 
   # Host half of keep-awake (scripts/awake-bridge.sh): the box cannot hold
   # this machine's power assertion itself, so a run in flight writes a
