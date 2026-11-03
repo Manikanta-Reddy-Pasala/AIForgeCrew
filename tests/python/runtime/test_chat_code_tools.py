@@ -24,7 +24,11 @@ def src(tmp_path):
     return tmp_path
 
 
-def test_a_line_range_is_returned_with_the_files_length(src):
+def test_a_line_range_is_returned_with_the_files_length(src, monkeypatch):
+    # (widening off: this is about the range itself; a small file otherwise
+    # comes back whole — see test_edit_match)
+    monkeypatch.setenv("AIFORGE_CHAT_READ_WHOLE_LINES", "0")
+    monkeypatch.setenv("AIFORGE_CHAT_READ_MIN_LINES", "0")
     res = T._t_read_lines({"path": "app.py", "start": 2, "end": 4}, str(src))
     assert res["text"] == "line 2\nline 3\nline 4\n"
     assert res["total_lines"] == 10
@@ -286,3 +290,8 @@ def test_an_unreadable_file_is_skipped(project, monkeypatch):
                         lambda *a, **k: (_ for _ in ()).throw(OSError("io")))
     assert T._rename_in_file("/x.py", __import__("re").compile("x"), "n",
                              dry=True) == 0
+
+
+def test_a_small_range_of_a_small_file_comes_back_whole(src):
+    res = T._t_read_lines({"path": "app.py", "start": 2, "end": 4}, str(src))
+    assert (res["start"], res["end"]) == (1, 10) and "note" in res
