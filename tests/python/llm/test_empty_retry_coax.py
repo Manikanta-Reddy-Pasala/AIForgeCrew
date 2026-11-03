@@ -200,3 +200,17 @@ def test_reasoning_off_body_still_carries_the_image(monkeypatch):
         None, 100, None, None))
     content = body["messages"][-1]["content"]
     assert isinstance(content, list) and img in content
+
+
+def test_no_think_never_edits_an_earlier_message():
+    """Switched on for one request and off for the next, a /no_think on an
+    old message made a local server re-read the prompt from there."""
+    from aiforge_core.llm.client._text import _append_no_think
+    msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "build it"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
+            {"role": "tool", "tool_call_id": "1", "content": "ok"}]
+    out = _append_no_think(msgs)
+    assert out[:4] == msgs                                  # nothing before changes
+    assert out[-1] == {"role": "user", "content": "/no_think"}
+    last_user = msgs[:2]
+    assert _append_no_think(last_user)[-1]["content"] == "build it /no_think"

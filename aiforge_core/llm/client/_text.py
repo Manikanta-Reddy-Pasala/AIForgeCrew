@@ -120,9 +120,19 @@ def _append_no_think(messages: list[dict]) -> list[dict]:
     """Return a copy of ``messages`` nudging the model to answer WITHOUT its
     reasoning phase — used only on an empty-response retry. Appends ' /no_think'
     to the last user turn (the Qwen3 / DeepSeek-R1 convention); harmless text for
-    models that ignore it."""
+    models that ignore it.
+
+    Only the LAST message is ever touched: with native tool calling the newest
+    messages are tool results, and "the last user turn" was often an old
+    message deep in the history (the request itself) — switched on for one
+    request and off for the next, it made a local server re-read the whole
+    prompt from there (a benchmark run: 46 such re-reads). When the last
+    message is not the user's, the switch goes in its own trailing message."""
     out = [dict(m) for m in (messages or [])]
-    for m in reversed(out):
+    if out and out[-1].get("role") != "user":
+        out.append({"role": "user", "content": "/no_think"})
+        return out
+    for m in reversed(out[-1:]):
         if m.get("role") == "user":
             content = m.get("content")
             if isinstance(content, list):
