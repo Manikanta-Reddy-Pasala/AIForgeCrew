@@ -6,27 +6,65 @@ import { describeStep } from '../stepDescribe';
 // ── Run overview — progress beside the chat ──────────────────────────────────
 // What runs now and how far the task list got, at a glance. Your own
 // messages (steers included) stay in the chat as your bubbles: the panel
-// never repeats them, nor goals worded from them. Only the agent's own
-// changes to the plan (an item it skipped, added or left) show here.
+// never repeats them, nor goals worded from them.
+//
+// The agent's lines are sorted by what they are about: a note on a task of
+// the list shows under that task (newest only, the rest on a click); a change
+// to the list (added, skipped, failed, left) shows under "Agent changes".
+// Lines of an older turn, or about a task no longer on the list (the list was
+// redone), are history: folded under "Earlier", never mixed with the live run.
 
 const STATUS_ICON: Record<string, string> = {
-  done: '✓', won: '✓', running: '▶', failed: '✗', skipped: '–', cancelled: '–',
-  left: '!', pending: '○', planned: '○',
-};
-const STATUS_COLOR: Record<string, string> = {
-  done: 'var(--ok)', won: 'var(--ok)', running: 'var(--accent)', failed: 'var(--err)',
-  left: 'var(--warn)', skipped: 'var(--fg-3)', cancelled: 'var(--fg-3)',
+  done: '✓', won: '✓', running: '', failed: '✕', skipped: '–', cancelled: '–',
+  left: '!', pending: '', planned: '',
 };
 const CLOSED = new Set(['done', 'won', 'skipped', 'failed', 'cancelled', 'left']);
 const POLL_MS = 4000;
-const DECISIONS_SHOWN = 5;
+const TICK_MS = 30000;
+const CHANGES_SHOWN = 4;
 // Lines worded from the user's message (goal changes, a question on it) are
 // the chat's to show; the panel keeps what the agent did to the plan.
 const OWN_KINDS = new Set(['plan', 'skip', 'fail', 'left', 'choice']);
+const KIND: Record<string, { icon: string; label: string }> = {
+  plan: { icon: '+', label: 'Task list changed' },
+  skip: { icon: '–', label: 'Skipped' },
+  fail: { icon: '✕', label: 'Failed' },
+  left: { icon: '!', label: 'Left undone' },
+  choice: { icon: '•', label: 'Agent note' },
+};
 
-function hhmm(t: number): string {
-  const d = new Date(t * 1000);
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+/** "now", "4m", "2h", else the date: how old a line is, at a glance. */
+function ago(t: number, now: number): string {
+  const s = Math.max(0, Math.round(now / 1000 - t));
+  if (s < 60) return 'now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return new Date(t * 1000).toLocaleDateString([], { day: 'numeric', month: 'short' });
+}
+
+function stamp(t: number): string {
+  return new Date(t * 1000).toLocaleString([], { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' });
+}
+
+// Rows written before the slug field: the task is in the words.
+const SLUG_IN_TEXT = [/\(([\w.-]+)\)\s*$/, /^Agent marked ([\w.-]+) /, /^Agent took ([\w.-]+) off/,
+                      /of its own — ([\w.-]+):/];
+function slugOf(d: ChatDecision): string | undefined {
+  if (d.slug) return d.slug;
+  for (const re of SLUG_IN_TEXT) {
+    const m = re.exec(d.text);
+    if (m) return m[1];
+  }
+  return undefined;
+}
+
+/** A note's words without the "(slug)" tail — it shows under that task.
+ *  Plain string work: the slug is the model's own and may hold any sign. */
+function noteText(d: ChatDecision): string {
+  const slug = slugOf(d);
+  const t = d.text.trimEnd();
+  const tail = ` (${slug})`;
+  return slug && t.endsWith(tail) ? t.slice(0, -tail.length) : d.text;
 }
 
 // The newest thing the run did, in words: a tool row says what it does.
@@ -45,6 +83,35 @@ function shortTitle(s: SubtaskItem): string {
   return full.split(/\s+[—-]\s+check:/i)[0] || full;
 }
 
+type Sorted = { notes: Map<string, ChatDecision[]>; changes: ChatDecision[]; earlier: ChatDecision[] };
+
+/** Newest first: notes per task of the list, this turn's changes, history. */
+export function sortDecisions(rows: ChatDecision[], turn: number | null | undefined,
+                              items: SubtaskItem[]): Sorted {
+  const onList = new Set(items.map(s => s.slug));
+  const isThisTurn = (d: ChatDecision) => turn == null || d.turn === turn;
+  // Tasks the agent itself added or took off this turn: a line about one is
+  // that change (the why of a removal), not a leftover of an older list.
+  const changed = new Set(rows.filter(d => d.kind === 'plan' && isThisTurn(d))
+    .map(slugOf).filter((x): x is string => !!x));
+  const notes = new Map<string, ChatDecision[]>();
+  const changes: ChatDecision[] = [];
+  const earlier: ChatDecision[] = [];
+  for (const d of [...rows].reverse()) {
+    if (d.by === 'you' || !OWN_KINDS.has(d.kind)) continue;
+    const slug = slugOf(d);
+    const thisTurn = isThisTurn(d);
+    // A line about a task the list no longer has: the list was redone since.
+    const gone = !!slug && items.length > 0 && !onList.has(slug) && d.kind !== 'plan'
+      && !changed.has(slug);
+    if (!thisTurn || gone) earlier.push(d);
+    else if (d.kind === 'choice' && slug && onList.has(slug)) {
+      notes.set(slug, [...(notes.get(slug) ?? []), d]);
+    } else changes.push(d);
+  }
+  return { notes, changes, earlier };
+}
+
 function Section({ title, extra, children }: Readonly<{
   title: string; extra?: ReactNode; children: ReactNode;
 }>) {
@@ -56,26 +123,83 @@ function Section({ title, extra, children }: Readonly<{
   );
 }
 
-function DecisionRow({ d }: Readonly<{ d: ChatDecision }>) {
+function ChangeRow({ d, now, old }: Readonly<{ d: ChatDecision; now: number; old?: boolean }>) {
+  const [open, setOpen] = useState(false);
+  const k = KIND[d.kind] ?? KIND.choice;
   return (
-    <li className="run-ov-decision">
-      <span style={{ flex: 1, minWidth: 0 }}>{d.text}</span>
-      <span className="xs muted" style={{ flexShrink: 0 }}>{hhmm(d.t)}</span>
+    <li className={`run-ov-change kind-${d.kind}${old ? ' is-old' : ''}`}>
+      <span className="run-ov-kind" role="img" title={k.label} aria-label={k.label}>{k.icon}</span>
+      <button type="button" className={`run-ov-text${open ? ' open' : ''}`} aria-expanded={open}
+              onClick={() => setOpen(v => !v)} title={open ? undefined : d.text}>
+        <span className="run-ov-clamp">{d.text}</span>
+      </button>
+      <span className="run-ov-ago" title={stamp(d.t)}>{ago(d.t, now)}</span>
     </li>
   );
 }
 
-function NowLine({ running, next, busy, items }: Readonly<{
-  running?: SubtaskItem; next?: SubtaskItem; busy: boolean; items: SubtaskItem[];
+function TaskRow({ s, notes, now }: Readonly<{ s: SubtaskItem; notes: ChatDecision[]; now: number }>) {
+  const [open, setOpen] = useState(false);
+  const latest = notes[0];
+  return (
+    <li className={`run-ov-task st-${s.status}`}>
+      <span className="run-ov-dot" role="img" aria-label={s.status}>{STATUS_ICON[s.status] ?? ''}</span>
+      <div className="run-ov-task-body">
+        <div className="run-ov-task-title" title={s.title || s.goal || s.slug}>
+          {shortTitle(s)}
+          {s.self_added && <span className="run-ov-tag" title="The agent added this itself — nobody asked for it">agent added</span>}
+          {s.status === 'left' && <span className="run-ov-tag warn">not done</span>}
+        </div>
+        {latest && (
+          <button type="button" className={`run-ov-note${open ? ' open' : ''}`} onClick={() => setOpen(v => !v)}
+                  aria-expanded={open}
+                  title={open ? 'Show less' : 'Show the whole note'}>
+            <span className="run-ov-clamp">
+              {noteText(latest)} <span className="run-ov-ago" title={stamp(latest.t)}>· {ago(latest.t, now)}</span>
+              {!open && notes.length > 1 && <span className="run-ov-more"> +{notes.length - 1}</span>}
+            </span>
+          </button>
+        )}
+        {open && notes.slice(1).map((d, i) => (
+          <div key={`${d.t}:${i}`} className="run-ov-note old">
+            {noteText(d)} <span className="run-ov-ago" title={stamp(d.t)}>· {ago(d.t, now)}</span>
+          </div>
+        ))}
+      </div>
+    </li>
+  );
+}
+
+function NowCard({ running, next, busy, awaiting, items, action, phase }: Readonly<{
+  running?: SubtaskItem; next?: SubtaskItem; busy: boolean; awaiting?: boolean;
+  items: SubtaskItem[]; action: string; phase?: string;
 }>) {
-  if (running) {
+  if (awaiting) {
+    return <div className="run-ov-now ask"><div className="run-ov-now-title">Waiting for your reply in the chat</div></div>;
+  }
+  if (!busy) {
+    // A task still marked running when nothing runs: the run stopped there.
     return (
-      <div><span style={{ color: 'var(--accent)' }}>▶</span> {shortTitle(running)}
-        <span className="xs muted"> · task {items.indexOf(running) + 1} of {items.length}</span></div>
+      <div className="run-ov-now idle">
+        {running && <div className="run-ov-now-label idle">Stopped at task {items.indexOf(running) + 1} of {items.length}</div>}
+        <div className="run-ov-now-title">{running ? shortTitle(running) : 'Nothing running'}</div>
+      </div>
     );
   }
-  if (next) return <div className="muted">Next up: {shortTitle(next)}</div>;
-  return <div className="xs muted">{busy ? 'Starting…' : 'Nothing running.'}</div>;
+  const task = running ?? next;
+  return (
+    <div className="run-ov-now">
+      <div className="run-ov-now-head">
+        <span className="run-ov-pulse" aria-hidden="true" />
+        <span className="run-ov-now-label">
+          {running ? `Task ${items.indexOf(running) + 1} of ${items.length}` : task ? 'Next up' : 'Starting'}
+        </span>
+      </div>
+      {task && <div className="run-ov-now-title" title={task.title || task.goal}>{shortTitle(task)}</div>}
+      {action && <div className="run-ov-now-step"><span>Last step</span>{action}</div>}
+      {phase && <div className="run-ov-now-wait">⏳ {phase}</div>}
+    </div>
+  );
 }
 
 export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase, onClose }: Readonly<{
@@ -92,21 +216,29 @@ export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase,
   onClose: () => void;
 }>) {
   const [ov, setOv] = useState<ChatOverview | null>(null);
-  const [allDecisions, setAllDecisions] = useState(false);
+  const [allChanges, setAllChanges] = useState(false);
+  const [showEarlier, setShowEarlier] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
 
   // Another chat: nothing of the last one's stays on screen.
-  useEffect(() => { setOv(null); setAllDecisions(false); }, [sessionId]);
+  useEffect(() => { setOv(null); setAllChanges(false); setShowEarlier(false); }, [sessionId]);
 
   useEffect(() => {
     let live = true;
     const load = () => chatOverview(sessionId)
-      .then(r => { if (live) setOv(r); })
+      .then(r => { if (live) { setOv(r); setNow(Date.now()); } })
       .catch(() => { /* the panel keeps what it had */ });
     load();
     // Polled while the run goes on; once more when it ends (busy flips).
     const h = busy ? setInterval(load, POLL_MS) : undefined;
     return () => { live = false; if (h) clearInterval(h); };
   }, [sessionId, busy]);
+
+  // "4m ago" keeps counting while nothing new comes in.
+  useEffect(() => {
+    const h = setInterval(() => setNow(Date.now()), TICK_MS);
+    return () => clearInterval(h);
+  }, []);
 
   const items = subtasks ?? [];
   const running = items.find(s => s.status === 'running');
@@ -115,72 +247,73 @@ export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase,
     : items.find(s => !CLOSED.has(s.status) && s.status !== 'planned');
   const closed = items.filter(s => CLOSED.has(s.status) && s.status !== 'left').length;
   const pct = items.length ? Math.round((closed / items.length) * 100) : 0;
-  const decisions = (ov?.decisions ?? [])
-    .filter(d => d.by !== 'you' && OWN_KINDS.has(d.kind)).reverse();
-  const shownDecisions = allDecisions ? decisions : decisions.slice(0, DECISIONS_SHOWN);
+  const rows = ov?.decisions ?? [];
+  const { notes, changes, earlier } = sortDecisions(rows, ov?.turn, items);
+  // Keys count from the oldest row: a new row on top remounts nothing, so an
+  // opened line stays open across polls.
+  const keyOf = new Map(rows.map((d, i) => [d, i]));
+  const shownChanges = allChanges ? changes : changes.slice(0, CHANGES_SHOWN);
   const action = busy ? lastAction(steps) : '';
 
   let state = 'Idle';
-  if (awaiting) state = 'Waiting for you';
-  else if (busy) state = 'Running';
+  let stateCls = '';
+  if (awaiting) { state = 'Waiting for you'; stateCls = 'ask'; }
+  else if (busy) { state = 'Running'; stateCls = 'on'; }
 
   return (
     <aside className="run-overview" aria-label="Run overview">
       <div className="run-ov-head">
         <strong>Progress</strong>
-        <span className={`run-ov-state ${busy && !awaiting ? 'on' : ''}`}>{state}</span>
+        <span className={`run-ov-state ${stateCls}`}>{state}</span>
         <button type="button" className="ghost xs" onClick={onClose} aria-label="Hide the run overview"
                 title="Hide the run overview" style={{ marginLeft: 'auto', padding: '0 6px' }}>✕</button>
       </div>
 
       <div className="run-ov-body">
-        <Section title="Now">
-          {awaiting && <div className="run-ov-ask">Waiting for your reply in the chat.</div>}
-          <NowLine running={running} next={next} busy={busy} items={items} />
-          {action && <div className="xs muted" style={{ marginTop: 2 }}>Last step: {action}</div>}
-          {busy && phase && <div className="xs" style={{ marginTop: 2, color: 'var(--warn)' }}>⏳ {phase}</div>}
-        </Section>
+        <NowCard running={running} next={next} busy={busy} awaiting={awaiting} items={items}
+                 action={action} phase={busy ? phase : undefined} />
 
-        <Section title="Progress" extra={items.length > 0 && <span className="xs muted">{closed}/{items.length} · {pct}%</span>}>
+        <Section title="Tasks" extra={items.length > 0 && <span className="run-ov-count">{closed}/{items.length} · {pct}%</span>}>
           {items.length === 0 ? (
-            <div className="xs muted">No task list for this turn.</div>
+            <div className="run-ov-empty">No task list for this turn.</div>
           ) : (
             <>
-              <div className="run-ov-bar"><span style={{ width: `${pct}%` }} /></div>
-              <ol className="run-ov-plan">
-                {items.map(s => (
-                  <li key={s.slug} className={s.status === 'running' ? 'is-running' : ''}>
-                    <span style={{ color: STATUS_COLOR[s.status] ?? 'var(--fg-3)', width: 14, flexShrink: 0 }}>
-                      {STATUS_ICON[s.status] ?? '○'}
-                    </span>
-                    <span title={s.title || s.goal || s.slug}
-                          style={{ flex: 1, minWidth: 0,
-                                   textDecoration: s.status === 'skipped' ? 'line-through' : undefined }}>
-                      {shortTitle(s)}
-                      {s.self_added && <span className="run-ov-tag" title="The agent added this itself — nobody asked for it">agent added</span>}
-                      {s.status === 'left' && <span className="run-ov-tag warn">not done</span>}
-                    </span>
-                  </li>
-                ))}
+              <div className="run-ov-bar" role="progressbar" aria-label="Tasks done" aria-valuenow={pct}
+                   aria-valuemin={0} aria-valuemax={100} aria-valuetext={`${closed} of ${items.length} tasks`}>
+                {items.map(s => <span key={s.slug} className={`st-${s.status}`} title={`${shortTitle(s)} — ${s.status}`} />)}
+              </div>
+              <ol className="run-ov-tasks">
+                {items.map(s => <TaskRow key={s.slug} s={s} notes={notes.get(s.slug) ?? []} now={now} />)}
               </ol>
             </>
           )}
         </Section>
 
         <Section title="Agent changes"
-                 extra={decisions.length > DECISIONS_SHOWN && (
-                   <button type="button" className="ghost xs" style={{ padding: '0 4px' }}
-                           onClick={() => setAllDecisions(v => !v)}>
-                     {allDecisions ? 'fewer' : `all ${decisions.length}`}
+                 extra={changes.length > CHANGES_SHOWN && (
+                   <button type="button" className="ghost xs run-ov-link" onClick={() => setAllChanges(v => !v)}>
+                     {allChanges ? 'fewer' : `all ${changes.length}`}
                    </button>
                  )}>
-          {decisions.length === 0 ? (
-            <div className="xs muted">None. A task the agent adds, skips or leaves undone shows here.</div>
+          {changes.length === 0 ? (
+            <div className="run-ov-empty">None this turn. A task the agent adds, skips or leaves undone shows here.</div>
           ) : (
-            <ul className="run-ov-decisions">
-              {/* index in the key: lines written together share t and may share text */}
-              {shownDecisions.map((d, i) => <DecisionRow key={`${d.t}:${d.kind}:${d.text}:${i}`} d={d} />)}
+            <ul className="run-ov-changes">
+              {shownChanges.map(d => <ChangeRow key={keyOf.get(d)} d={d} now={now} />)}
             </ul>
+          )}
+          {earlier.length > 0 && (
+            <div className="run-ov-earlier">
+              <button type="button" className="ghost xs run-ov-link" onClick={() => setShowEarlier(v => !v)}
+                      aria-expanded={showEarlier} title="Lines of older turns, or of a task list the agent has since redone">
+                {showEarlier ? '▾' : '▸'} Earlier ({earlier.length})
+              </button>
+              {showEarlier && (
+                <ul className="run-ov-changes">
+                  {earlier.map(d => <ChangeRow key={keyOf.get(d)} d={d} now={now} old />)}
+                </ul>
+              )}
+            </div>
           )}
         </Section>
       </div>

@@ -976,31 +976,135 @@ button.voice-btn.recording:hover:not(:disabled) {
   font-size: var(--fs-xs); color: var(--fg-3);
   border: 1px solid var(--border-1); border-radius: 999px; padding: 0 8px;
 }
-.run-ov-state.on { color: var(--accent); border-color: var(--accent); }
-.run-ov-body { flex: 1; overflow-y: auto; padding: var(--s-2) var(--s-3) var(--s-4); }
-.run-ov-section { padding: var(--s-2) 0; border-bottom: 1px solid var(--border-0); }
-.run-ov-section:last-child { border-bottom: 0; }
+.run-ov-state.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.run-ov-state.ask { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
+.run-ov-body { flex: 1; overflow-y: auto; padding: var(--s-3); display: flex; flex-direction: column; gap: var(--s-3); }
+.run-ov-section { padding: 0; }
 .run-ov-title {
   display: flex; justify-content: space-between; align-items: center;
-  font-size: var(--fs-xs); font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
-  color: var(--fg-3); margin-bottom: 4px;
+  font-size: var(--fs-xs); font-weight: 600; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--fg-2); margin-bottom: 6px;
 }
-.run-ov-current { margin-bottom: 4px; line-height: 1.45; }
-.run-ov-ask {
-  margin-bottom: 4px; padding: 4px 8px; border-radius: var(--r-sm);
-  border-left: 3px solid var(--accent); background: var(--bg-1);
+.run-ov-count { font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--fg-2); font-variant-numeric: tabular-nums; }
+button.run-ov-link, button.run-ov-link:hover:not(:disabled) {
+  padding: 0 4px; text-transform: none; letter-spacing: 0; font-weight: 500;
+  color: var(--accent); border-color: transparent; background: none;
+  white-space: normal; text-align: left;
 }
-.run-ov-list, .run-ov-plan, .run-ov-decisions { list-style: none; margin: 0; padding: 0; }
-.run-ov-list li, .run-ov-plan li { display: flex; gap: 6px; padding: 2px 0; line-height: 1.4; }
-.run-ov-plan li.is-running { font-weight: 600; }
-.run-ov-bar { height: 4px; background: var(--bg-3); border-radius: 2px; overflow: hidden; margin: 2px 0 6px; }
-.run-ov-bar > span { display: block; height: 100%; background: var(--ok); }
+button.run-ov-link:hover:not(:disabled) { text-decoration: underline; }
+.run-ov-empty { font-size: var(--fs-xs); color: var(--fg-3); line-height: 1.45; }
+
+/* Now: one card, the live task and its last step. */
+.run-ov-now {
+  padding: 10px 12px; border-radius: var(--r-md, 8px);
+  background: var(--accent-soft); border: 1px solid var(--accent-ring);
+}
+.run-ov-now.idle { background: var(--bg-3); border-color: var(--border-0); }
+.run-ov-now.idle .run-ov-now-title { color: var(--fg-2); font-weight: 500; }
+.run-ov-now.ask { background: var(--warn-soft); border-color: var(--warn); }
+.run-ov-now-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.run-ov-now-label { font-size: var(--fs-xs); color: var(--accent); font-weight: 600; }
+.run-ov-now-label.idle { color: var(--fg-2); margin-bottom: 2px; }
+.run-ov-pulse {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0;
+  animation: session-pulse 1.4s ease-in-out infinite;
+}
+.run-ov-now-title { font-weight: 600; color: var(--fg-0); line-height: 1.4; }
+.run-ov-now-step {
+  margin-top: 6px; font-size: var(--fs-xs); color: var(--fg-1); line-height: 1.45;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.run-ov-now-step > span { color: var(--fg-3); margin-right: 6px; }
+.run-ov-now-wait { margin-top: 4px; font-size: var(--fs-xs); color: var(--warn); }
+
+/* Tasks: a bar with one segment per task, then the list as a timeline. */
+.run-ov-bar { display: flex; gap: 3px; height: 6px; margin: 0 0 10px; }
+.run-ov-bar > span { flex: 1; border-radius: 3px; background: var(--bg-4); }
+.run-ov-bar > .st-done, .run-ov-bar > .st-won { background: var(--ok); }
+.run-ov-bar > .st-running { background: var(--accent); animation: session-pulse 1.6s ease-in-out infinite; }
+.run-ov-bar > .st-failed { background: var(--err); }
+.run-ov-bar > .st-left { background: var(--warn); }
+.run-ov-bar > .st-skipped, .run-ov-bar > .st-cancelled { background: var(--border-2); }
+.run-ov-tasks, .run-ov-changes { list-style: none; margin: 0; padding: 0; }
+.run-ov-task { position: relative; display: flex; gap: 10px; padding: 0 0 10px; }
+.run-ov-task:not(:last-child)::before {
+  content: ''; position: absolute; left: 8px; top: 20px; bottom: 2px; width: 1px; background: var(--border-1);
+}
+.run-ov-dot {
+  width: 17px; height: 17px; border-radius: 50%; flex-shrink: 0; margin-top: 1px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 700; line-height: 1;
+  border: 1.5px solid var(--border-2); color: var(--fg-3); background: var(--bg-2);
+}
+.st-done > .run-ov-dot, .st-won > .run-ov-dot { background: var(--ok); border-color: var(--ok); color: #fff; }
+.st-running > .run-ov-dot { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.st-running > .run-ov-dot::after { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+.st-failed > .run-ov-dot { background: var(--err); border-color: var(--err); color: #fff; }
+/* Dark: the bright ok/err fills need a dark glyph to read. */
+:root[data-theme="dark"] .st-done > .run-ov-dot, :root[data-theme="dark"] .st-won > .run-ov-dot,
+:root[data-theme="dark"] .st-failed > .run-ov-dot { color: #0b1a10; }
+@media (prefers-reduced-motion: reduce) {
+  .run-ov-pulse, .run-ov-bar > .st-running { animation: none; }
+}
+.st-left > .run-ov-dot { border-color: var(--warn); color: var(--warn); }
+.st-skipped > .run-ov-dot, .st-cancelled > .run-ov-dot { border-style: dashed; }
+.run-ov-task-body { flex: 1; min-width: 0; }
+.run-ov-task-title { line-height: 1.4; color: var(--fg-1); }
+.st-running .run-ov-task-title { font-weight: 600; color: var(--fg-0); }
+.st-done .run-ov-task-title, .st-won .run-ov-task-title { color: var(--fg-2); }
+.st-skipped .run-ov-task-title, .st-cancelled .run-ov-task-title { color: var(--fg-3); text-decoration: line-through; }
+.run-ov-note {
+  display: block; width: 100%; text-align: left; margin-top: 3px; padding: 4px 8px;
+  font: inherit; font-size: var(--fs-xs); line-height: 1.45; color: var(--fg-2);
+  background: var(--bg-3); border: 0; border-radius: 6px; cursor: pointer;
+}
+/* Clamped on an inner span (a button won't clamp in every browser), inside
+   the padding, so a third line never peeks out. */
+.run-ov-note:not(.open) > .run-ov-clamp, .run-ov-text:not(.open) > .run-ov-clamp {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.run-ov-note.old { cursor: default; opacity: .75; }
+.run-ov-more { color: var(--accent); font-weight: 600; }
+.run-ov-ago { color: var(--fg-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .run-ov-tag {
   margin-left: 6px; font-size: 10px; color: var(--fg-3);
   border: 1px solid var(--border-1); border-radius: 4px; padding: 0 4px; font-weight: 400;
 }
 .run-ov-tag.warn { color: var(--warn); border-color: var(--warn); }
-.run-ov-decision { display: flex; gap: 6px; align-items: flex-start; padding: 3px 0; line-height: 1.4; }
+
+/* The note and change lines are buttons (click to open): none of the
+   app-wide button look — plain wrapping text. */
+button.run-ov-note, button.run-ov-text {
+  display: block; white-space: normal; overflow-wrap: anywhere; height: auto; min-height: 0;
+  font-weight: 400; box-shadow: none; transform: none; justify-content: flex-start;
+}
+button.run-ov-note, button.run-ov-note:hover:not(:disabled) { background: var(--bg-3); color: var(--fg-2); }
+button.run-ov-note:hover:not(:disabled) { background: var(--bg-4); }
+button.run-ov-text, button.run-ov-text:hover:not(:disabled) { background: none; color: var(--fg-1); }
+button.run-ov-text:hover:not(:disabled) { color: var(--fg-0); }
+button.run-ov-note:active:not(:disabled), button.run-ov-text:active:not(:disabled) { transform: none; }
+/* Agent changes: kind badge, two lines (click for all), age. */
+.run-ov-change { display: flex; gap: 8px; align-items: flex-start; padding: 5px 0; }
+.run-ov-change + .run-ov-change { border-top: 1px solid var(--border-0); }
+.run-ov-kind {
+  width: 18px; height: 18px; border-radius: 5px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; background: var(--bg-3); color: var(--fg-2);
+}
+.kind-plan .run-ov-kind { background: var(--accent-soft); color: var(--accent); }
+.kind-skip .run-ov-kind { background: var(--bg-4); color: var(--fg-2); }
+.kind-fail .run-ov-kind { background: var(--err-soft); color: var(--err); }
+.kind-left .run-ov-kind { background: var(--warn-soft); color: var(--warn); }
+.run-ov-text {
+  flex: 1; min-width: 0; text-align: left; padding: 0; border: 0; background: none; cursor: pointer;
+  font: inherit; font-size: var(--fs-xs); line-height: 1.45; color: var(--fg-1);
+}
+.run-ov-change .run-ov-ago { font-size: 10px; padding-top: 2px; flex-shrink: 0; }
+.run-ov-change.is-old { opacity: .6; }
+.run-ov-earlier { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border-1); }
+.run-ov-earlier > .run-ov-link,
+.run-ov-earlier > .run-ov-link:hover:not(:disabled) { color: var(--fg-2); padding: 0; border: 0; background: none; }
+.run-ov-earlier > .run-ov-link:hover:not(:disabled) { color: var(--fg-0); }
 @media (max-width: 1280px) {
   /* No room for a third column: the panel floats over the chat's right edge. */
   .chat-shell-v2.with-overview,

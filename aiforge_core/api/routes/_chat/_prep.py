@@ -36,10 +36,9 @@ def _apply_edit_resend(session, session_id, body) -> None:
             if _sha and _own_scratch:
                 from aiforge_core.runtime import checkpoints as _ckpt
                 _ckpt.restore(_cwd_er, _sha)
-            _kept_users = sum(
-                1 for r in chat_store.get_messages(session_id)
-                if r.get("role") == "user" and int(r.get("id") or 0)
-                < int(body.edit_from_message_id))
+            _kept_rows = [r for r in chat_store.get_messages(session_id)
+                          if int(r.get("id") or 0) < int(body.edit_from_message_id)]
+            _kept_users = sum(1 for r in _kept_rows if r.get("role") == "user")
             chat_store.delete_messages_from(session_id, body.edit_from_message_id)
             try:      # corrections made in the erased turns go with them
                 from aiforge_core.runtime import chat_lessons
@@ -49,7 +48,8 @@ def _apply_edit_resend(session, session_id, body) -> None:
             try:      # so do the goals those turns set or changed
                 from aiforge_core.runtime import chat_decisions, chat_goals
                 chat_goals.drop_after_turn(session_id, _kept_users)
-                chat_decisions.drop_after_turn(session_id, _kept_users)
+                chat_decisions.drop_after_turn(
+                    session_id, sum(1 for r in _kept_rows if chat_decisions.is_turn(r)))
             except Exception:  # noqa: BLE001
                 pass
         except Exception as _exc:  # noqa: BLE001 — edit-resend must fail open

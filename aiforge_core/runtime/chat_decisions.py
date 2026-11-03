@@ -75,18 +75,33 @@ def _save(session_id, rows: list) -> None:
     _atomic.write_text(path, json.dumps({"rows": rows}, indent=1))
 
 
+def is_turn(row) -> bool:
+    """A stored message that starts a turn: the user's own, not a hook's
+    note (runtime/hooks.note_into stores those as ``user`` mid-run, which
+    would move the turn on while the run still goes)."""
+    return row.get("role") == "user" \
+        and not str(row.get("content") or "").startswith("[hook ")
+
+
 def _user_turns(session_id) -> "int | None":
     try:
         from aiforge_core.runtime import chat_store
-        return sum(1 for r in chat_store.get_messages(session_id)
-                   if r.get("role") == "user")
+        return sum(1 for r in chat_store.get_messages(session_id) if is_turn(r))
     except Exception:  # noqa: BLE001
         return None
 
 
-def record(session_id, lines, *, by: str, kind: str, why: str = "") -> None:
+def current_turn(session_id) -> "int | None":
+    """The chat's turn now (its user messages so far): the rows of this turn
+    carry it, older ones a smaller number."""
+    return _user_turns(session_id)
+
+
+def record(session_id, lines, *, by: str, kind: str, why: str = "",
+           slug: str = "") -> None:
     """Add one row per line. ``kind``: goal / plan / skip / fail / choice /
-    left. ``why``: what led to it (the user's message, in their words)."""
+    left. ``why``: what led to it (the user's message, in their words).
+    ``slug``: the task the line is about, so the panel can show it there."""
     if session_id is None or not enabled():
         return
     items = [lines] if isinstance(lines, str) else list(lines or [])
@@ -106,6 +121,8 @@ def record(session_id, lines, *, by: str, kind: str, why: str = "") -> None:
                     row["why"] = why          # not when the line already says it
                 if turn is not None:
                     row["turn"] = turn
+                if slug:
+                    row["slug"] = str(slug)
                 last = rows[-1] if rows else {}
                 if (last.get("by"), last.get("kind"), last.get("text")) == (by, kind, text):
                     continue          # the same line again (a repeated decision arg)
@@ -184,5 +201,5 @@ def goal_lines(changes) -> list:
     return out
 
 
-__all__ = ["MAX_ROWS", "board_lines", "drop_after_turn", "enabled", "forget",
-           "goal_lines", "record", "rows"]
+__all__ = ["MAX_ROWS", "board_lines", "current_turn", "drop_after_turn", "enabled", "forget",
+           "goal_lines", "is_turn", "record", "rows"]

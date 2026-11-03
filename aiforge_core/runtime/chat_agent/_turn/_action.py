@@ -183,7 +183,7 @@ def _note_decisions(st, args, result, before) -> None:
         if why:
             lines.append(("choice", why + (f" ({slug})" if slug else "")))
         for kind, text in lines:
-            chat_decisions.record(sid, text, by="agent", kind=kind)
+            chat_decisions.record(sid, text, by="agent", kind=kind, slug=slug or "")
     except Exception:  # noqa: BLE001 — the overview never breaks a step
         pass
 

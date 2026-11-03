@@ -12,6 +12,8 @@ from fastapi.testclient import TestClient
 from aiforge_core.runtime import chat_decisions as D
 from aiforge_core.runtime.chat_agent._turn import _action, _limits, _tasks
 
+_REAL_USER_TURNS = D._user_turns
+
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch, tmp_path):
@@ -93,6 +95,8 @@ def test_agent_board_changes_are_recorded():
     assert texts[2] == "login already fixed upstream (part-1)" and rows[2]["kind"] == "choice"
     assert texts[3] == "Agent took lint off the task list"
     assert {r["by"] for r in rows} == {"agent"}
+    # Each line names its task, so the panel can show it under that task.
+    assert [r.get("slug") for r in rows] == ["lint", "part-1", "part-1", "lint"]
 
 
 def test_a_refused_or_plain_progress_call_records_nothing():
@@ -153,6 +157,9 @@ def test_overview_route_has_goals_and_decisions(monkeypatch):
     assert body["goals"] == [{"id": "g1", "text": "build login", "status": "open"}]
     assert body["now"] == ["g1"] and body["current"] == "build login"
     assert body["decisions"][0]["text"] == "Added task msg-1: x"
+    assert "slug" not in body["decisions"][0]
+    # The turn now, so the panel can tell this turn's rows from older ones.
+    assert body["turn"] == 2 and body["decisions"][0]["turn"] == 2
     assert c.get("/api/chat/sessions/2/overview").status_code == 404
 
 
@@ -188,3 +195,17 @@ def test_the_same_line_twice_in_a_row_is_kept_once():
     D.record(1, "other", by="agent", kind="choice")
     D.record(1, "kept sqlite", by="agent", kind="choice")
     assert [r["text"] for r in D.rows(1)] == ["kept sqlite", "other", "kept sqlite"]
+
+
+def test_a_hook_note_does_not_start_a_turn(monkeypatch):
+    """A hook's note is stored as ``user`` mid-run: the run's rows must stay
+    in the turn they were written in."""
+    from aiforge_core.runtime import chat_store
+    monkeypatch.setattr(D, "_user_turns", _REAL_USER_TURNS)
+    monkeypatch.setattr(chat_store, "get_messages", lambda sid: [
+        {"role": "user", "content": "build it"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "[hook PostToolUse — not the user]\nlint ok"},
+    ])
+    assert D._user_turns(1) == 1 and D.current_turn(1) == 1
+    assert not D.is_turn({"role": "assistant", "content": "x"})

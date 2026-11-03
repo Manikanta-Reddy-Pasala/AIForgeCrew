@@ -442,9 +442,10 @@ export async function chatProcessDownload(id: number, key: string, path?: string
 export type ChatGoal = { id: string; text: string; status: 'open' | 'done' | 'dropped' | string;
                          turn?: number; closed_turn?: number };
 export type ChatDecision = { t: number; by: 'you' | 'agent' | 'harness' | string;
-                             kind: string; text: string; why?: string; turn?: number };
+                             kind: string; text: string; why?: string; turn?: number;
+                             slug?: string };
 export type ChatOverview = { goals: ChatGoal[]; now: string[]; current: string; asked: string;
-                             decisions: ChatDecision[] };
+                             decisions: ChatDecision[]; turn?: number | null };
 
 export function chatOverview(id: number): Promise<ChatOverview> {
   return j<ChatOverview>(`/chat/sessions/${id}/overview`);

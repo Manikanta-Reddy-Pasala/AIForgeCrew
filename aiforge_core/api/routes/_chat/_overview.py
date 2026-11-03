@@ -20,7 +20,8 @@ def chat_overview(session_id: int,
                   limit: int = Query(150, ge=1, le=150)) -> dict:
     """``goals`` (open, done, dropped), ``now`` (ids worked on), ``current``
     (the whole of the work now, in one statement), ``asked`` (a question
-    waiting on the user) and ``decisions`` (newest last)."""
+    waiting on the user), ``decisions`` (newest last) and ``turn`` (the
+    chat's turn now: rows of older turns carry a smaller one)."""
     from aiforge_core.runtime import chat_decisions, chat_goals, chat_store
     if not chat_store.get_session(session_id):
         raise HTTPException(404, f"session {session_id} not found")
@@ -30,4 +31,5 @@ def chat_overview(session_id: int,
             "now": list(g.get("now") or []),
             "current": g.get("current") or "",
             "asked": g.get("asked") or "",
-            "decisions": chat_decisions.rows(session_id)[-limit:]}
+            "decisions": chat_decisions.rows(session_id)[-limit:],
+            "turn": chat_decisions.current_turn(session_id)}
