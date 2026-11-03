@@ -156,3 +156,25 @@ def test_turn_notes_a_reformat_and_a_broken_checker_is_quiet(monkeypatch, tmp_pa
     monkeypatch.setattr(PE, "diagnostics", boom)
     assert list(T.post_edit_diagnostics(st, files, str(tmp_path))) == []
     assert list(T.post_edit_format(st, [], str(tmp_path))) == []
+
+
+@needs_ruff
+def test_a_chat_folder_behind_a_symlink_still_finds_the_config(tmp_path):
+    real = tmp_path / "real"
+    _write(real / "ruff.toml", "")
+    f = _write(real / "pkg" / "m.py", UGLY)
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    assert PE.format_file(os.path.realpath(f), str(link)) == "ruff"
+
+
+def test_a_tsconfig_error_is_not_clean(monkeypatch, tmp_path):
+    _write(tmp_path / "tsconfig.json", "{}")
+    _write(tmp_path / "node_modules" / ".bin" / "tsc", "")
+    f = _write(tmp_path / "src" / "a.ts", "let x = 1\n")
+    PE._SLOW_TSC.clear()
+    run = SimpleNamespace(returncode=2, stdout="error TS18003: No inputs were found\n", stderr="")
+    monkeypatch.setattr(PE, "_run", lambda cmd, cwd, timeout=30: run)
+    assert PE.diagnostics(f, str(tmp_path)) is None
+    run.stdout = "src/a.ts(1,5): error TS2322: bad\nsrc/b.ts(2,1): error TS2322: other\n"
+    assert PE.diagnostics(f, str(tmp_path)) == ["src/a.ts(1,5): error TS2322: bad"]

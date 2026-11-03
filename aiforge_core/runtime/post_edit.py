@@ -55,8 +55,10 @@ def _up_to(path: str, top: str):
     """The file's folder and each parent up to ``top`` (the chat's cwd). A
     file outside ``top`` gets its own folder only: a config found higher up
     (the home folder) is not this project's."""
-    d = os.path.dirname(os.path.abspath(path))
-    top = os.path.abspath(top)
+    # realpath both: the edited path comes resolved (_progress._full), and a
+    # chat folder behind a symlink (/tmp on macOS) must still match.
+    d = os.path.dirname(os.path.realpath(path))
+    top = os.path.realpath(top)
     yield d
     while d != top and d.startswith(top + os.sep):
         d = os.path.dirname(d)
@@ -135,7 +137,8 @@ def _formatter(path: str, top: str) -> "tuple[str, list] | None":
         p = _prettier(path, top)
         return ("prettier", [*p, "--write"]) if p else None
     if ext == ".go" and shutil.which("gofmt") \
-            and "vendor" not in os.path.relpath(path, top).split(os.sep):
+            and "vendor" not in os.path.relpath(os.path.realpath(path),
+                                                os.path.realpath(top)).split(os.sep):
         return ("gofmt", ["gofmt", "-w"])
     # No rustfmt: it follows `mod x;` and rewrites the whole crate.
     return None
@@ -188,10 +191,13 @@ def _py_errors(path: str, cwd: str) -> "list | None":
     # --select narrows the rules to errors.
     p = _run([*r, "check", "--no-cache", "--force-exclude", "--output-format", "concise",
               "--select", "E9,F63,F7,F82", path], cwd)
-    if p is None:
-        return None
+    if p is None or p.returncode not in (0, 1):
+        return None          # a broken ruff config: not checked, not "clean"
     # "path:line:col: F821 Undefined name `x`" — the summary lines go.
     return [ln for ln in p.stdout.splitlines() if _RUFF_LINE.match(ln)]
+
+
+_TSC_LINE = re.compile(r"^[^\s(][^(]*\(\d+,\d+\): error TS")
 
 
 def _ts_errors(path: str, cwd: str) -> "list | None":
@@ -207,8 +213,11 @@ def _ts_errors(path: str, cwd: str) -> "list | None":
         _SLOW_TSC.add(root)
     if p is None:
         return None
-    rel = os.path.relpath(path, root).replace(os.sep, "/")
-    return [ln for ln in p.stdout.splitlines() if ln.startswith(rel + "(") and "error TS" in ln]
+    rel = os.path.relpath(os.path.realpath(path), os.path.realpath(root)).replace(os.sep, "/")
+    lines = p.stdout.splitlines()
+    if p.returncode != 0 and not any(_TSC_LINE.match(ln) for ln in lines):
+        return None          # a tsconfig error (no file named): not checked, not "clean"
+    return [ln for ln in lines if ln.startswith(rel + "(") and "error TS" in ln]
 
 
 def _go_errors(path: str, cwd: str) -> "list | None":
