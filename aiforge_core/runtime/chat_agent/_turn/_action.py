@@ -17,6 +17,7 @@ from .._registry import (
     _READONLY_TOOLS,
 )
 from .._obs_text import render_observation
+from ._post_edit import edited_files, post_edit_diagnostics, post_edit_format
 from .._shell import _MAX_OBS, _MAX_OBS_READ, _READ_OBS_TOOLS
 from ._approval import (
     _handle_rejection,
@@ -647,17 +648,24 @@ def _pre_tool_checks(st, name, args, cwd, _scope_globs):
 
 
 def _record_edit(st, name, args, result, cwd):
-    """When an edit tool landed: bump the edit counter, invalidate the duplicate-
-    read guard, and run a post-edit syntax self-check that surfaces + feeds back
-    any error this step. Yields the syntax-warning events."""
+    """When an edit tool landed: format the files (project's formatter), bump
+    the edit counter, invalidate the duplicate-read guard, and run the post-
+    edit checks — syntax, then the language's error check — that surface +
+    feed back any error this step. Yields the events."""
+    _check = os.environ.get("AIFORGE_CHAT_POST_EDIT_CHECK", "1") not in ("0", "false")
+    files = edited_files(name, args, result, cwd) if _check else []
+    # Formatted before note_write hashes the files: the progress state sees
+    # the file as it stays.
+    formatted = list(post_edit_format(st, files, cwd))
     if _safely(note_write, st, name, args, result, cwd):
         st.edits_made += 1
         st.read_sigs_seen.clear()   # a file just changed → re-reads are valid again
+        yield from formatted
         # D: post-edit self-check. Immediately syntax-check the file just
         # written and, if broken, hand the model the error THIS step (tight
         # feedback) instead of letting it surface only at the end-of-run test
         # gate. Best-effort + opt-out (AIFORGE_CHAT_POST_EDIT_CHECK=0).
-        if os.environ.get("AIFORGE_CHAT_POST_EDIT_CHECK", "1") not in ("0", "false"):
+        if _check:
             try:
                 _pe = _post_edit_syntax_error(name, args, cwd)
             except Exception:  # noqa: BLE001
@@ -669,7 +677,8 @@ def _record_edit(st, name, args, result, cwd):
                 st.convo.append({"role": "user", "content":
                     "[automated syntax check — not the user] The file you just "
                     f"wrote has a syntax error; fix it before continuing:\n{_pe[:600]}"})
-
+            else:
+                yield from post_edit_diagnostics(st, files, cwd)
 
 def _git_target_after(st, name, args, result, cwd) -> str:
     from aiforge_core.runtime import git_target
