@@ -29,13 +29,14 @@ from __future__ import annotations
 import contextvars
 import json
 import os
+import re
 import threading
 import time
 
 from ._shared import _log
 
 #: Items one plan may hold; the board itself takes more as the run adds them.
-_MAX_TASKS = 12
+_MAX_TASKS = 20
 _MAX_TITLE = 300
 #: Shorter than this, a message is "continue" / "yes" / "ok": nothing to plan.
 _MIN_CHARS = 25
@@ -196,17 +197,41 @@ def _earlier(messages, limit: int = 3000) -> str:
     return "\n".join(lines)[-limit:]
 
 
+#: The request text the planner reads (a 17K-char spec cut at 8K lost its
+#: last three features: the board had parts 1-2 only, and the run ended
+#: "all parts completed").
+_PLAN_CHARS = 40000
+# A numbered top-level section: "## 1. Batches", "### Part 2: …", "# Step 3 —".
+_SECTION = re.compile(r"^(#{1,4})\s+((?:\d+[.)]|(?:part|step|feature|task|phase|stage)\s+\d+\b)"
+                      r"[^\n]*)$", re.I | re.M)
+
+
+def sections(text: str) -> list:
+    """The numbered top-level sections of a written spec, one title each, or
+    [] when it has fewer than two. Each section is one board item: the board
+    then covers the whole request, in its order, with no model call."""
+    found = [(len(m.group(1)), m.group(2).strip()) for m in _SECTION.finditer(text or "")]
+    if len(found) < 2:
+        return []
+    top = min(level for level, _ in found)
+    out = [title for level, title in found if level == top]
+    return [t[:200] for t in out] if len(out) >= 2 else []
+
+
 def plan_asks(role: str, message: str, messages, cwd=None, session_id=None):
     """The refined task list for ``message`` (``[]``: no board), or None when
     the model could not give one (the caller falls back to the splitter)."""
     text = (message or "").strip()
     if len(text) < _MIN_CHARS:
         return []
+    parts = sections(text)
+    if parts:
+        return parts[:_MAX_TASKS]
     earlier = _earlier(messages)
     ask = ((f"EARLIER IN THIS CONVERSATION (context only, already handled):\n"
             f"{earlier}\n\n" if earlier else "")
            + (f"THE AGENT WORKS IN: {cwd}\n\n" if cwd else "")
-           + f"THE USER'S NEWEST MESSAGE (plan this):\n{text[:8000]}")
+           + f"THE USER'S NEWEST MESSAGE (plan this):\n{text[:_PLAN_CHARS]}")
     tasks = _tasks_json(_ask(role, _PLAN_SYSTEM, ask, session_id))
     if tasks is None:
         return None

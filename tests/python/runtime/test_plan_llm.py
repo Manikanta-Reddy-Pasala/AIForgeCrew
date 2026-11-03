@@ -328,3 +328,41 @@ def test_a_message_mid_run_changes_the_approved_plans_steps(monkeypatch):
     assert "plan-2" not in st.board
     assert "svc-c" in st.board["plan-3"]["title"] and st.board_used and events
     assert "replaces any checklist" in note
+
+
+SPEC = """# shopkit: five features
+
+Please extend shopkit. Conventions below.
+
+## 1. Batches and expiry dates (FEFO)
+...
+### 1.1 details stay inside part 1
+## 2. Coupon codes
+...
+## 3. Partial returns and refunds
+## 4. GST invoices
+## 5. New reports
+"""
+
+
+def test_a_numbered_spec_gets_one_item_per_section_without_a_model_call(monkeypatch):
+    def boom(*_a, **_k):
+        raise AssertionError("no model call for a sectioned spec")
+    monkeypatch.setattr(_plan_llm, "_ask", boom)
+    assert _plan_llm.plan_asks("chat", SPEC, []) == [
+        "1. Batches and expiry dates (FEFO)", "2. Coupon codes",
+        "3. Partial returns and refunds", "4. GST invoices", "5. New reports"]
+
+
+def test_sections_need_numbered_headings_and_two_of_them():
+    assert _plan_llm.sections("## Context\nx\n## Acceptance criteria\ny") == []
+    assert _plan_llm.sections("## 1. only one\nx") == []
+    assert _plan_llm.sections("### Part 1: a\n### Part 2: b") == ["Part 1: a", "Part 2: b"]
+
+
+def test_the_planner_reads_a_long_request_whole(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(_plan_llm, "_ask", lambda role, sys, ask, sid: seen.setdefault("ask", ask) and None)
+    long = "Build it. " + "x" * 20000 + " FEATURE-AT-THE-END"
+    _plan_llm.plan_asks("chat", long, [])
+    assert "FEATURE-AT-THE-END" in seen["ask"]
