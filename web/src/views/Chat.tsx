@@ -24,6 +24,7 @@ import { AutoApprovalsPanel } from './Chat.AutoApprovalsPanel';
 import { MediaStrip } from './Chat.MediaStrip';
 import { AssistantBubble } from './Chat.AssistantBubble';
 import { VoiceButton } from './Chat.VoiceButton';
+import { DraftPreview, previewInChatFirst, isAffirmative, isNegative } from './Chat.DraftPreview';
 import { applySpokenCorrection, planSpokenInsert, type SpokenAnchor } from '../voicePhrase';
 import { reduceTurn } from './Chat.reduce';
 import { followAfterScroll } from '../chatFollow';
@@ -1027,6 +1028,10 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
 
   // Pending approval gate (#1) + checkpoints panel (#3).
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
+  // The draft the user already said yes to. A reconnect replays the whole run's
+  // events (an earlier tool event clears the card first), so the stage cannot
+  // be carried on the card itself.
+  const confirmedDraft = useRef<{ sid: number; id: number } | null>(null);
   // Optional guidance the user types on the approval card — on reject it steers
   // the agent ("use single-star bold") so it adjusts + continues, no separate
   // follow-up message needed.
@@ -1171,18 +1176,45 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   }
 
   // ── Approval gate (#1) ──────────────────────────────────────────────────────
-  async function resolveApproval(decision: 'approve' | 'reject') {
+  async function resolveApproval(decision: 'approve' | 'reject', typed?: string) {
     const p = pendingApproval;
-    const note = approvalNote.trim();
+    const note = (typed ?? approvalNote).trim();
     setPendingApproval(null);   // optimistic — run resumes server-side
     setApprovalNote('');
     if (!p || activeId === null) return;
     if (p.sessionId !== activeId) return;   // stale card from another session
     try {
-      await chatApi.approve(p.sessionId, decision, p.id, note || undefined);
+      const r = await chatApi.approve(p.sessionId, decision, p.id, note || undefined);
+      // The server no longer held this approval (timed out, replaced). A typed
+      // change is the user's whole reply — give it back rather than drop it.
+      if (r && r.resolved === false && typed) {
+        if (activeIdRef.current === p.sessionId && !inputMirror.current.trim()) putComposer(typed);
+        toast.error('That approval had already closed — your text is back in the box.');
+      }
     } catch (e: any) {
+      if (typed && activeIdRef.current === p.sessionId && !inputMirror.current.trim()) putComposer(typed);
       toast.error(`Approval failed: ${e.message}`);
     }
+  }
+
+  // A Jira/Confluence draft shown in the chat: "yes" opens the pop-up for the
+  // final Approve; anything else goes back to the agent as the change to make.
+  const draftInChat = pendingApproval?.stage === 'chat';
+  function answerDraft(text: string) {
+    if (isAffirmative(text)) {
+      if (pendingApproval) confirmedDraft.current = { sid: pendingApproval.sessionId, id: pendingApproval.id };
+      setPendingApproval(p => (p ? { ...p, stage: 'confirm' } : p));
+    } else if (isNegative(text)) {
+      resolveApproval('reject', '');
+    } else {
+      resolveApproval('reject', text);
+    }
+  }
+  function replyToDraft() {
+    const text = input.trim();
+    if (!text) return;
+    putComposer('');
+    answerDraft(text);
   }
 
   // ── Checkpoints (#3) ────────────────────────────────────────────────────────
@@ -1900,11 +1932,24 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
       // + diff so the user can Approve/Reject. Cleared when the next
       // tool/message event arrives (the run resumed).
       if (evt.type === 'approval') {
-        setPendingApproval({ id: evt.id, sessionId, name: evt.name, args: evt.args || {}, reason: evt.reason, preview: evt.preview });
+        const said = confirmedDraft.current;
+        const stage = !previewInChatFirst(evt.name, evt.preview)
+          || (said?.sid === sessionId && said.id === evt.id) ? 'confirm' : 'chat';
+        setPendingApproval({ id: evt.id, sessionId, name: evt.name, args: evt.args || {}, reason: evt.reason, preview: evt.preview,
+                             stage });
         return;
       }
       // A note said beside the run (supplementary) does not mean it resumed.
-      if (evt.type === 'tool' || (evt.type === 'message' && !evt.supplementary)) setPendingApproval(null);
+      // A draft being read in the chat can sit open for minutes while other
+      // subtasks of the run keep streaming: only its own tool call, or the run
+      // ending, closes it.
+      if (evt.type === 'tool' || (evt.type === 'message' && !evt.supplementary)) {
+        setPendingApproval(prev => (prev?.stage === 'chat' && !(evt.type === 'tool' && evt.name === prev.name)
+          ? prev : null));
+      }
+      if (evt.type === 'done' || evt.type === 'stopped') {
+        setPendingApproval(prev => (prev?.stage === 'chat' ? null : prev));
+      }
 
       // The predicted next step, emitted after the reply it follows. Held in
       // its own slot rather than folded into the message: it is about the turn
@@ -2449,6 +2494,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   function onKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      if (draftInChat) { replyToDraft(); return; }   // answers the draft
       if (awaitingReply) { send(); return; }   // FE1: reply, not steer
       if (busy) {
         if (pendingApproval) return;            // FE2: resolve the gate first
@@ -2909,7 +2955,12 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
               ))}
 
               {/* Approval gate (#1): run is paused, awaiting Approve/Reject */}
-              {pendingApproval && (
+              {draftInChat && pendingApproval && (
+                <DraftPreview p={pendingApproval}
+                              onYes={() => answerDraft('yes')}
+                              onCancel={() => resolveApproval('reject', '')} />
+              )}
+              {pendingApproval && !draftInChat && (
                 <div style={{
                   // STICKY so a pending Approve/Reject is ALWAYS visible at the
                   // bottom of the chat as it streams — an inline card scrolls
@@ -2976,7 +3027,8 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                   {pendingApproval.preview && (
                     // Collapsible so the change PREVIEW (a diff / page body) is
                     // available but doesn't dominate the card as a wall of code.
-                    <details open>
+                    // Already read in the chat when it was a draft there.
+                    <details open={!previewInChatFirst(pendingApproval.name, pendingApproval.preview)}>
                       <summary style={{ cursor: 'pointer', fontSize: 12,
                                         color: 'var(--fg-2)', marginBottom: 6 }}>
                         Preview changes
@@ -3128,8 +3180,9 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                   /* Short while a run is active (you're mostly steering/watching,
                      not composing) — full height when idle. It grows with the
                      text up to COMPOSER_MAX_LINES, then scrolls. */
-                  rows={busy ? 1 : 3}
+                  rows={busy && !draftInChat ? 1 : 3}
                   placeholder={(() => {
+                    if (draftInChat) return "Type yes to go ahead, or say what to change in the draft…";
                     if (pendingApproval) return "Resolve the approval above first (Approve / Reject)…";
                     if (awaitingReply) return "The agent is waiting for your reply — type your answer, Enter to send…";
                     if (busy) return activeRunMode === 'team'
@@ -3140,7 +3193,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                   value={input}
                   onChange={e => onComposerChange(e.target.value)}
                   onKeyDown={onKey}
-                  style={{ flex: 1, resize: 'vertical', minHeight: busy ? 34 : 64 }}
+                  style={{ flex: 1, resize: 'vertical', minHeight: busy && !draftInChat ? 34 : 64 }}
                 />
                 <VoiceButton onText={appendSpoken} onCorrect={replaceSpoken} />
                 <button type="button" onClick={() => mediaInputRef.current?.click()} disabled={uploadingMedia}
@@ -3158,6 +3211,13 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                   </button>
                 )}
                 {(() => {
+                  if (draftInChat) return (
+                  <button type="button" onClick={replyToDraft} disabled={!input.trim()}
+                          title="Yes goes ahead; anything else is sent to the agent as the change to make"
+                          style={{ whiteSpace: 'nowrap' }}>
+                    Reply
+                  </button>
+                  );
                   if (canSteer) return (
                   <>
                   <button type="button" onClick={() => steer('steer')} disabled={!input.trim() || steering}

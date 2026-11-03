@@ -34,4 +34,7 @@ export type PendingApproval = {
   args: object;
   reason?: string;
   preview?: string;
+  // 'chat' = a Jira/Confluence draft shown in the transcript, waiting for a
+  // yes there; 'confirm' (or unset) = the Approve/Reject pop-up.
+  stage?: 'chat' | 'confirm';
 };
