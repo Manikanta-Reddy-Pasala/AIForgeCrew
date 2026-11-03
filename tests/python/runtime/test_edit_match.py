@@ -136,7 +136,9 @@ def test_a_nesting_mismatch_is_said_not_guessed():
     assert not r["ok"] and r["error"] == "indent_mismatch" and r["line"] == 1
 
 
-def test_read_lines_reads_whole_small_files_and_widens_small_ranges(tmp_path):
+def test_read_lines_reads_whole_small_files_and_widens_small_ranges(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_READ_WHOLE_LINES", "400")
+    monkeypatch.setenv("AIFORGE_CHAT_READ_MIN_LINES", "200")
     from aiforge_core.runtime.chat_agent._tools import _code
     small = tmp_path / "s.py"
     small.write_text("".join(f"line {i}\n" for i in range(1, 301)))
