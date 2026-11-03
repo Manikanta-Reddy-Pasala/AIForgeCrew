@@ -134,3 +134,19 @@ def test_a_nesting_mismatch_is_said_not_guessed():
     body = "a:\n  b: 1\n  c: 2\n  d: 3\ne: 4\n"
     r = R(body, "a:\nb: 1\nc: 2\nd: 3", "a:\nb: 9\nc: 2\nd: 3")
     assert not r["ok"] and r["error"] == "indent_mismatch" and r["line"] == 1
+
+
+def test_read_lines_reads_whole_small_files_and_widens_small_ranges(tmp_path):
+    from aiforge_core.runtime.chat_agent._tools import _code
+    small = tmp_path / "s.py"
+    small.write_text("".join(f"line {i}\n" for i in range(1, 301)))
+    r = _code._t_read_lines({"path": "s.py", "start": 50, "end": 60}, str(tmp_path))
+    assert (r["start"], r["end"]) == (1, 300) and "note" in r
+    big = tmp_path / "b.py"
+    big.write_text("".join(f"line {i}\n" for i in range(1, 2001)))
+    r = _code._t_read_lines({"path": "b.py", "start": 1000, "end": 1040}, str(tmp_path))
+    assert (r["start"], r["end"]) == (980, 1179)
+    r = _code._t_read_lines({"path": "b.py", "start": 1990, "end": 2000}, str(tmp_path))
+    assert r["end"] == 2000 and r["end"] - r["start"] + 1 == 200
+    r = _code._t_read_lines({"path": "b.py", "start": 100, "end": 600}, str(tmp_path))
+    assert (r["start"], r["end"]) == (100, 600) and "note" not in r

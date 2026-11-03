@@ -44,8 +44,40 @@ def _t_read_lines(args: dict, cwd: str) -> dict:
     e = n if not args.get("end") else min(_coerce_int(args.get("end"), n), n)
     if s > n:
         return {"ok": True, "path": path, "total_lines": n, "text": ""}
-    return {"ok": True, "path": path, "start": s, "end": e, "total_lines": n,
-            "text": "".join(lines[s - 1:e][:5000])[:60000]}
+    s, e, widened = _widen(s, e, n)
+    out = {"ok": True, "path": path, "start": s, "end": e, "total_lines": n,
+           "text": "".join(lines[s - 1:e][:5000])[:60000]}
+    if widened:
+        out["note"] = (f"widened to lines {s}-{e} of {n}: read a file once, "
+                       "not in many small pieces")
+    return out
+
+
+def _read_env(key: str, default: int) -> int:
+    import os as _os
+    try:
+        return max(0, int(_os.environ.get(key, default)))
+    except ValueError:
+        return default
+
+
+def _widen(s: int, e: int, n: int) -> "tuple[int, int, bool]":
+    """A whole small file, or at least READ_MIN_LINES around the range asked.
+
+    A benchmark run read files 40 lines at a time (median): models.py 15
+    times, inventory.py 13 — a model call each. OpenCode reads a file whole
+    (up to 2,000 lines). Env AIFORGE_CHAT_READ_WHOLE_LINES (400) and
+    AIFORGE_CHAT_READ_MIN_LINES (200); 0 turns either off."""
+    whole, least = (_read_env("AIFORGE_CHAT_READ_WHOLE_LINES", 400),
+                    _read_env("AIFORGE_CHAT_READ_MIN_LINES", 200))
+    if whole and n <= whole:
+        return 1, n, (s, e) != (1, n)
+    if least and e - s + 1 < least:
+        lo = max(1, s - 20)
+        hi = min(n, lo + least - 1)
+        lo = max(1, min(lo, hi - least + 1))
+        return lo, hi, True
+    return s, e, False
 
 
 def _resolve_doc(path: str, cwd: str) -> str | None:

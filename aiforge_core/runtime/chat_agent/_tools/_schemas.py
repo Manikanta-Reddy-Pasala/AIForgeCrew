@@ -92,7 +92,9 @@ CATALOG: dict = {
              {"name": "s", "kind": "s"}, ("name",)),
     "grep": ("Recursively search file contents.", {"pattern": "s", "path": "s"},
              ("pattern",)),
-    "read_lines": ("Read a line range from a file.",
+    "read_lines": ("Read a line range from a file. A file of up to 400 lines "
+                   "comes back whole, and a range shorter than 200 lines is "
+                   "widened: read a file once, not in many small pieces.",
                    {"path": "s", "start": "i", "end": "i"}, ("path",)),
     "summarize_doc": ("Summarize an attached/loaded document (pdf/docx/xlsx). "
                       "Give the file name/path. Optional `pages` selects a page "

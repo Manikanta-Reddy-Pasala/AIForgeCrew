@@ -45,7 +45,10 @@ def big_py(tmp_path, monkeypatch):
     return tmp_path, path
 
 
-def test_read_lines_shows_the_lines_with_their_numbers(tmp_path):
+def test_read_lines_shows_the_lines_with_their_numbers(tmp_path, monkeypatch):
+    # (no widening: this is about how a range is shown)
+    monkeypatch.setenv("AIFORGE_CHAT_READ_WHOLE_LINES", "0")
+    monkeypatch.setenv("AIFORGE_CHAT_READ_MIN_LINES", "0")
     (tmp_path / "a.txt").write_text("one\ntwo\nthree\nfour\n")
     result = _t_read_lines({"path": "a.txt", "start": 2, "end": 3}, str(tmp_path))
     obs = render_observation("read_lines", result, 80000)
