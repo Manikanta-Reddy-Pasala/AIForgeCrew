@@ -455,11 +455,12 @@ def turn_pin(st, live_failed: bool = False) -> str | None:
     parts: list = []
     if goal:
         from .._native_prompt import is_plan_execution
-        limit = 4000 if is_plan_execution(goal) else 1200
-        if getattr(st, "item_resets", 0):
-            # After a reset between board items the goal is the ONLY copy of
-            # the request (its message is gone): keep it whole.
-            limit = max(limit, 8000)
+        # The whole request stays in view after a condense (up to
+        # PIN_TASK_CHARS): cut at 1,200 chars, a 17K spec lost every section
+        # but the first, and work done before the condense was redone from
+        # memory (a feature fell from 10/12 to 1/12). OpenCode keeps it whole.
+        from .._context._compaction import PIN_TASK_CHARS
+        limit = PIN_TASK_CHARS
         parts += ["ORIGINAL TASK (stay on this until it's fully done + verified):",
                   goal[:limit]]
     if (getattr(st, "unlimited", False) and not getattr(st, "readonly_mode", False)

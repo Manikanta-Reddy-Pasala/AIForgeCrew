@@ -488,6 +488,14 @@ def _after_condense(st, unread, before):
         pin_board(st.convo, st.board)
     if len(st.convo) < before:
         _repin_turn_note(st)
+        # The action log goes back into the note on THIS step too: pinned on
+        # the next step's start, it was a second edit of the note right after
+        # the condense — one more full prompt re-read on a local server.
+        try:
+            from aiforge_core.runtime import action_log
+            action_log.ensure_pinned(st)
+        except Exception:  # noqa: BLE001 — the note never blocks a step
+            pass
 
 
 def _repin_turn_note(st) -> None:

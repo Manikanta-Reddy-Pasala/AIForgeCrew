@@ -116,6 +116,20 @@ def _is_garbage(text: str, *, allow_empty_json: bool = False) -> bool:
     return False
 
 
+def _system_no_think(messages: list[dict]) -> list[dict]:
+    """``/no_think`` at the end of the SYSTEM message — for a role whose
+    reasoning is off on every request. The system message is the same on each
+    request of a turn, so the server's prompt cache keeps it; a trailing
+    message came and went between requests (15 prompt re-reads in one
+    benchmark run). No system message: the trailing message instead."""
+    out = [dict(m) for m in (messages or [])]
+    if out and out[0].get("role") == "system" and isinstance(out[0].get("content"), str):
+        if not out[0]["content"].rstrip().endswith("/no_think"):
+            out[0]["content"] = out[0]["content"].rstrip() + "\n\n/no_think"
+        return out
+    return _append_no_think(out)
+
+
 def _append_no_think(messages: list[dict]) -> list[dict]:
     """Return a copy of ``messages`` nudging the model to answer WITHOUT its
     reasoning phase (the Qwen3 / DeepSeek-R1 ``/no_think`` soft switch;

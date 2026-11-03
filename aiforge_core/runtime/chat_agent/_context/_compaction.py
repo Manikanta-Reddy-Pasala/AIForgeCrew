@@ -139,11 +139,15 @@ _UNSUMMARISED: dict = {}
 
 
 def _one_slot_server() -> bool:
-    """The summary's model serves one request at a time (``llm/slots``;
-    unknown counts as one slot, as everywhere else)."""
+    """The summary would run on the chat model's own server (or one that
+    serves one request at a time; unknown counts as that). Its prompt there
+    replaces the agent's cached conversation: a benchmark run paid 16-20 s
+    per summary and then 8-23 s re-reading the agent's history on the next
+    step, though the server reported several slots."""
     try:
         from aiforge_core.llm import slots
-        return not slots.parallel_ok(_summary_role(), slots.CHAT_ROLE)
+        return (slots.same_server(_summary_role(), slots.CHAT_ROLE)
+                or not slots.parallel_ok(_summary_role(), slots.CHAT_ROLE))
     except Exception:  # noqa: BLE001
         return True
 
@@ -161,10 +165,10 @@ def _schedule_llm_summary(middle, complete_fn, run_key, gen: int,
         return
     if _one_slot_server() and os.environ.get("AIFORGE_COMPACT_SUMMARY_ONE_SLOT", "0") \
             not in ("1", "true", "yes", "on"):
-        # One request at a time (a local server): the "background" summary
-        # held the slot 50-80 s per condense while every agent step queued
-        # behind it. The structural breadcrumb stands; switch it back on with
-        # AIFORGE_COMPACT_SUMMARY_ONE_SLOT=1.
+        # On the chat model's own server (or a one-slot one) the "background"
+        # summary held the slot and replaced the agent's cached prompt. The
+        # structural breadcrumb stands (with the whole task pinned); switch it
+        # back on with AIFORGE_COMPACT_SUMMARY_ONE_SLOT=1.
         return
     middle = list(middle)
     if _summary_bg.pending(run_key) not in (None, gen):
@@ -477,11 +481,16 @@ def _pin_goal(sys_text: str, convo: list[dict], pin: "str | None" = None) -> str
     if not goal:
         return sys_text
     return (sys_text + "\n\n" + _GOAL_PIN_OPEN + "\nORIGINAL TASK (stay on this "
-            "until it's fully done + verified):\n" + goal[:1200] + "\n"
+            "until it's fully done + verified):\n" + goal[:PIN_TASK_CHARS] + "\n"
             + _GOAL_PIN_CLOSE).strip()
 
 
 _TASK_HEAD = "ORIGINAL TASK (stay on this until it's fully done + verified):"
+#: How much of the request a condense keeps in view (``AIFORGE_CHAT_PIN_TASK_CHARS``).
+try:
+    PIN_TASK_CHARS = max(1200, int(os.environ.get("AIFORGE_CHAT_PIN_TASK_CHARS", "20000")))
+except ValueError:
+    PIN_TASK_CHARS = 20000
 _PIN_PART = re.compile(
     r"\n(?:KEEP IN VIEW:|LATER INSTRUCTIONS|FILES CHANGED SO FAR:|TARGETS — |"
     r"REPOSITORIES IN THIS CHAT|GIT TARGETS:|LESSONS FROM THIS CHAT|"

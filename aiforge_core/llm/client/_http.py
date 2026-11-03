@@ -108,8 +108,8 @@ def _apply_reasoning_off(ep: Endpoint, body: dict) -> None:
     try:
         from aiforge_core.llm import reasoning as _reasoning
         if _reasoning.reasoning_off(ep.model, ep.base_url, ep.role):
-            from ._text import _append_no_think
-            body["messages"] = _append_no_think(body["messages"])
+            from ._text import _system_no_think
+            body["messages"] = _system_no_think(body["messages"])
             body.update(_reasoning.NO_THINK_KWARGS)
         # The switch that actually works on LM Studio: see reasoning.effort_for.
         for k, v in _reasoning.effort_extras(ep.model, ep.base_url, ep.role).items():

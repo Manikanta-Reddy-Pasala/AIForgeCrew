@@ -16,7 +16,7 @@ import aiforge_core.runtime.chat_agent._context._window as w
 def test_compaction_is_at_50_percent_in_and_out_of_cave(monkeypatch, cave):
     monkeypatch.delenv("AIFORGE_CTX_HISTORY_FRACTION", raising=False)
     monkeypatch.setenv("AIFORGE_CAVE_MODE", cave)
-    assert w._history_fraction("chat") == w._CONDENSE_FRACTION == 0.50
+    assert w._history_fraction("chat") == w._CONDENSE_FRACTION == 0.85
 
 
 def test_env_override_wins(monkeypatch):
@@ -38,7 +38,7 @@ def test_on_a_256k_model_the_context_compacts_near_131k(monkeypatch):
     sys_chars = 60000
     history = w._ctx_budget_chars("chat", sys_chars=sys_chars)
     compact_at_tokens = (history + sys_chars) // 4
-    assert compact_at_tokens == int(262144 * 4 * 0.50) // 4      # ≈ 131K
+    assert compact_at_tokens == int(262144 * 4 * 0.85) // 4      # ≈ 223K
 
 
 def test_the_reply_always_keeps_its_room_on_a_small_window(monkeypatch):

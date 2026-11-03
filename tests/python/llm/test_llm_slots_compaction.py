@@ -76,3 +76,12 @@ def test_several_slots_turn_summary_runs_beside_chat(monkeypatch):
 def test_chat_category_is_never_touched(monkeypatch):
     _slots(monkeypatch, 1)
     assert rl._category_limit("chat") == 0
+
+
+def test_same_server_is_by_base_url(monkeypatch):
+    from aiforge_core.llm import slots
+    urls = {"chat": "http://a/v1", "learner": "http://a/v1", "doer": "http://b/v1"}
+    monkeypatch.setattr(slots, "_endpoint", lambda r: (urls.get(r, ""), None))
+    assert slots.same_server("chat", "learner")
+    assert not slots.same_server("chat", "doer")
+    assert not slots.same_server("chat", "unknown")

@@ -133,17 +133,17 @@ _CTX_BUDGET_FLOOR_CHARS = 4000
 
 
 # Auto-compaction fires when the context (system prompt + live history)
-# reaches this fraction of the model's window — 50% (user, 2026-10-15: past
-# 70-80% the model starts making things up, so the context must never get
-# there). It was 80% from 2026-09-11, and 40% in cave mode before that, when
-# the meter showed the compaction budget as if it were the window. Cave mode
-# still keeps the context lean (smaller repo map, fewer optional blocks).
-_CONDENSE_FRACTION = 0.50
+# reaches this fraction of the model's window — 85% (owner, 2026-11-03). It
+# was 50% from 2026-10-15 ("past 70-80% the model makes things up"), but on a
+# 5-feature spec benchmark against OpenCode (which compacts near the full
+# window) every condense cost a full prompt re-read and lost detail the run
+# then redid; 80% from 2026-09-11, 40% in cave mode before that. The reply
+# reserve below still keeps every request inside the window.
+_CONDENSE_FRACTION = 0.85
 #: The condense point when the characters-per-token ratio was measured.
-_MEASURED_FRACTION = 0.50
-#: Below this window (tokens) the system prompt and one big read already take
-#: most of half the window, so 50% would condense on every step: a small
-#: model keeps the old 75%.
+_MEASURED_FRACTION = 0.85
+#: Below this window (tokens) the system prompt, one big read and the reply
+#: reserve already fill most of it: a small window condenses at 75%.
 _SMALL_WINDOW_TOKENS = 65536
 _SMALL_WINDOW_FRACTION = 0.75
 

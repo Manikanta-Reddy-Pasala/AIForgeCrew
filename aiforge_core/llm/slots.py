@@ -141,6 +141,12 @@ def parallel_ok(*roles: str) -> bool:
     return True
 
 
+def same_server(a: str, b: str) -> bool:
+    """Roles ``a`` and ``b`` are served by the same server (base URL)."""
+    ea, eb = _endpoint(a)[0], _endpoint(b)[0]
+    return bool(ea) and ea == eb
+
+
 def reset() -> None:
     """Forget every probe answer (tests, and after reloading models)."""
     with _LOCK:
@@ -148,4 +154,4 @@ def reset() -> None:
         _KEY_LOCKS.clear()
 
 
-__all__ = ["CHAT_ROLE", "configured", "llm_slots", "parallel_ok", "reset"]
+__all__ = ["CHAT_ROLE", "configured", "llm_slots", "parallel_ok", "reset", "same_server"]

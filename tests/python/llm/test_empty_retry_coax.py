@@ -217,3 +217,20 @@ def test_no_think_never_edits_an_earlier_message():
     out2 = _append_no_think(last_user)
     assert out2[:2] == last_user and out2[-1] == {"role": "user", "content": "/no_think"}
     assert _append_no_think(out2) == out2                 # idempotent
+
+
+def test_reasoning_off_puts_no_think_in_the_system_message(monkeypatch):
+    """Every request of the role carries it in the same place: the prompt
+    cache keeps the whole history."""
+    from aiforge_core.llm import reasoning
+    from aiforge_core.llm.client import _http
+    from aiforge_core.llm.router import Endpoint
+    monkeypatch.setattr(reasoning, "reasoning_off", lambda *a, **k: True)
+    ep = Endpoint(base_url="http://x/v1", api_key="", model="m",
+                  provider="openai_compatible", role="chat", extras={})
+    msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "go"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
+            {"role": "tool", "tool_call_id": "1", "content": "ok"}]
+    body = json.loads(_http._build_body(ep, msgs, None, 100, None, None))
+    assert body["messages"][0]["content"] == "sys\n\n/no_think"
+    assert body["messages"][1:] == msgs[1:]                    # history untouched, nothing after

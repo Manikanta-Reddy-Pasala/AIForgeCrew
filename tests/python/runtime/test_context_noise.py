@@ -103,7 +103,7 @@ def test_small_windows_keep_the_old_condense_point(monkeypatch):
     monkeypatch.setattr(w, "_window_tokens", lambda role=None: 32768)
     assert w._history_fraction("chat") == 0.75
     monkeypatch.setattr(w, "_window_tokens", lambda role=None: 131072)
-    assert w._history_fraction("chat") == 0.50
+    assert w._history_fraction("chat") == 0.85
 
 
 def test_a_new_folder_with_a_non_ascii_name_counts(tmp_path):

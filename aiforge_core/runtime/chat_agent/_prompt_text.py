@@ -499,10 +499,10 @@ _DECOMPOSE = (
     "its own, and say in its title how you will know it is done (a test, a "
     "build, a file). Do them ONE BY ONE: keep a single item running, finish "
     "it, run the check, mark it done. An item is accepted as done only with "
-    "evidence (files really changed, or a test/build that ran green); the "
-    "harness then clears your working context for the next item and carries "
-    "over only the original task, the board and a short result note per "
-    "finished item, so put what a later item needs in files, not in your head. ")
+    "evidence (files really changed, or a test/build that ran green); keep "
+    "an item going until its tests cover what the request says about it. "
+    "Older messages of a long run are condensed, so put what a later item "
+    "needs in files, not in your head. ")
 
 
 #: Added to the system prompt only when the run has no step cap and no

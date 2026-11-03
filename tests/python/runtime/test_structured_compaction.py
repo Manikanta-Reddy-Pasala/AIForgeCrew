@@ -376,7 +376,7 @@ def window(monkeypatch):
 
 def test_the_default_reserve_is_the_output_cap_as_before(window):
     win_chars = window * 4
-    expect = min(int(win_chars * 0.5), win_chars - 4096 * 4) - 5000
+    expect = min(int(win_chars * W._CONDENSE_FRACTION), win_chars - 4096 * 4) - 5000
     assert W._ctx_budget_chars("chat", sys_chars=5000) == expect
 
 
