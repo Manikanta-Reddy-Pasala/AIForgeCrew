@@ -249,9 +249,16 @@ export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase,
   const pct = items.length ? Math.round((closed / items.length) * 100) : 0;
   const rows = ov?.decisions ?? [];
   const { notes, changes, earlier } = sortDecisions(rows, ov?.turn, items);
-  // Keys count from the oldest row: a new row on top remounts nothing, so an
-  // opened line stays open across polls.
-  const keyOf = new Map(rows.map((d, i) => [d, i]));
+  // Keys from the row itself (time, kind, words), not its place: a new row,
+  // or the oldest one dropped at the store's cap, remounts nothing, so an
+  // opened line stays open across polls. Same row twice gets a counter.
+  const seen = new Map<string, number>();
+  const keyOf = new Map(rows.map(d => {
+    const base = `${d.t}|${d.kind}|${d.text}`;
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    return [d, `${base}|${n}`];
+  }));
   const shownChanges = allChanges ? changes : changes.slice(0, CHANGES_SHOWN);
   const action = busy ? lastAction(steps) : '';
 
