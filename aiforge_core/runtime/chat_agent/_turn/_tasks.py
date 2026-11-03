@@ -253,8 +253,8 @@ def _remove(board: dict, slug: str, allow_request: bool) -> "tuple[dict, list]":
     if board[slug].get("from_request") and not allow_request:
         return {"ok": False, "slug": slug, "error": (
             f"{slug} is a part of the user's request: it stays on the board (the "
-            "user sees what happened to it). If it is dropped or cannot be done, "
-            "mark it status skipped and say why in the title.")}, []
+            "user sees what happened to it). Do it. Only if something outside your "
+            "reach blocks it, mark it status failed and name the blocker.")}, []
     if board[slug]["status"] in ("done", "failed"):
         return {"ok": False, "slug": slug, "error": (
             f"{slug} is {board[slug]['status']}: finished work stays on the board "
@@ -277,6 +277,35 @@ def _enforced_refusal(board: dict, slug: str, status: str, args: dict) -> dict |
     return {"ok": False, "slug": slug, "status": board[slug]["status"],
             "error": "target items close only on a passing compare command "
                      "(diff/cmp/jq/python) on the target file — run one"}
+
+
+_DROP_WORDS = re.compile(r"\b(skip|drop|remove|cancel|forget|leave out|no need|not needed|"
+                         r"don'?t|do not|stop|without)\b", re.I)
+
+
+def user_dropped_work(steers) -> bool:
+    """A message the user sent mid-run that drops work ("skip the invoices",
+    "don't do coupons"): then a part of the request may be taken off. Any
+    other message ("how is it going?", "also add tests") is not."""
+    return any(_DROP_WORDS.search(str(s)) for s in (steers or []))
+
+
+def _request_skip_refusal(board: dict, slug: str, status: str, args: dict,
+                          allow_request: bool) -> dict | None:
+    """A part of the user's request is not the model's to skip: a live run
+    skipped "coupons" as "not explicitly required" — it was the whole of
+    part 2. Only the user drops it (a message mid-run: ``allow_request``).
+    Work that truly cannot be done is ``failed``, with what blocks it."""
+    if status != "skipped" or not board[slug].get("from_request") or allow_request \
+            or args.get("_harness") or board[slug].get("status") == "skipped":
+        return None
+    if "optional" in str(board[slug].get("title") or "").lower():
+        return None          # an approved plan step the plan itself marks optional
+    return {"ok": False, "slug": slug, "status": board[slug]["status"],
+            "error": (f"{slug} is part of the user's request, so it is not optional "
+                      "and cannot be skipped. Do it now. Only if something outside "
+                      "your reach blocks it (a missing service, access, a file you "
+                      "cannot create), mark it failed and name the blocker.")}
 
 
 def apply_progress(board: dict, args: dict, *,
@@ -348,7 +377,8 @@ def apply_progress(board: dict, args: dict, *,
         placing = any(args.get(k) not in (None, "") for k in ("after", "before", "position"))
         new_status = status or ("done" if not (title or placing) else
                                 board[slug]["status"])
-        refused = _enforced_refusal(board, slug, new_status, args)
+        refused = _enforced_refusal(board, slug, new_status, args) \
+            or _request_skip_refusal(board, slug, new_status, args, allow_request_removal)
         if refused:
             return refused, []
         if title:
@@ -552,6 +582,7 @@ def unfinished_reminder(board: dict, slugs=None) -> str:
                       for s in (open_planned(board) if slugs is None else slugs))
     return ("[task board — not the user] These items on your task board are "
             f"still open:\n{items}\nDo the remaining work now, marking each "
-            "item with plan_progress as you go. If an item cannot be done or is "
-            "no longer needed, mark it failed or skipped and say why in your "
-            "FINAL.")
+            "item with plan_progress as you go. A part of the user's request is "
+            "not optional: if something outside your reach blocks it, mark it "
+            "failed and name the blocker in your FINAL. An item you added "
+            "yourself that is no longer needed may be skipped.")

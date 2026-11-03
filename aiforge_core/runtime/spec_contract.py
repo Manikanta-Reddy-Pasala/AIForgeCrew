@@ -1,0 +1,402 @@
+"""The names a request spells out, checked against the code before a turn ends.
+
+A long request often states its API exactly: "`Inventory.receive(sku,
+quantity, ref=None, note="", *, batch_id=None, expiry=None)`", "new module
+`shopkit/invoices.py`", "`MovementKind` gains `RESTOCK`". A run that ended
+on "all parts completed" had `receive` without `expiry`, no `return_items`,
+no invoices module — and its own tests passed against its own API. The
+model's word ("done") and an LLM read of the reply both missed it.
+
+This reads the backticked names out of the request and looks for each in the
+Python code under the work folder (``ast``, no import, no run):
+
+- ``Cls.meth(a, b=1, *, c=None)`` — class ``Cls`` has ``meth``; when the
+  span is written as a signature (a default, an annotation, a ``*``), it
+  takes every named parameter;
+- ``func(...)`` — a function ``func`` defined or imported somewhere;
+- ``Cls.NAME`` — ``Cls`` has ``NAME`` (method, attribute, ``self.NAME``,
+  enum member), here or in a base class the index has;
+- ``pkg.mod.Name`` — ``pkg/mod.py`` defines ``Name`` (only for a package
+  that lives in the work folder);
+- ``path/to/file.py`` — the file exists.
+
+It says only what it can know. Names after remove / delete / rename /
+replace / deprecate are what the user wants GONE and are not looked for.
+A class with a base outside the index (a framework's), a module with
+``__getattr__`` or ``import *``, a name imported from a library, a tree that
+is mostly not Python, an index cut short by its size: all unverifiable, so
+nothing is said about them. Off switch: ``AIFORGE_CHAT_SPEC_CONTRACT=0``.
+"""
+from __future__ import annotations
+
+import ast
+import builtins
+import logging
+import os
+import re
+import sys
+
+log = logging.getLogger("aiforge.spec_contract")
+
+#: Python files read at most; past that only file paths are checked.
+MAX_FILES = 3000
+#: Files of any kind looked at while walking (a huge data folder ends the walk).
+MAX_WALK = 30000
+_MAX_BYTES = 400_000
+_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".tox",
+              "build", "dist", ".mypy_cache", ".pytest_cache", ".aiforge", "site-packages"}
+_SOURCE_EXT = {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".java", ".kt", ".rs",
+               ".cs", ".rb", ".php", ".swift", ".scala", ".c", ".cc", ".cpp", ".h"}
+#: Below this share of Python among the source files, the tree is not Python.
+_MIN_PY_SHARE = 0.3
+
+_SPAN = re.compile(r"`([^`\n]{2,400})`")
+_IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
+_CALL = re.compile(rf"^((?:{_IDENT}\.)*{_IDENT})\((.*)\)(?:\s*->.*)?$", re.S)
+_DOTTED = re.compile(rf"^{_IDENT}(?:\.{_IDENT})+$")
+_PYFILE = re.compile(r"^[\w./-]+\.py$")
+# What the user wants gone: the names right after these words are not claims.
+_GONE = re.compile(r"\b(remove[sd]?|delete[sd]?|drop(?:s|ped)?|rename[sd]?|replace[sd]?|"
+                   r"deprecat\w*|instead of|get rid of|no longer|retire[sd]?|"
+                   r"move[sd]?|split|merge[sd]?)\b", re.I)
+_GONE_WINDOW = 60
+# Bases that bring no member a request would name: an `Enum`'s members are
+# its own, so `MovementKind.RESTOCK` is still checked.
+_PLAIN_BASES = {"object", "Generic", "Protocol", "ABC", "Enum", "IntEnum", "StrEnum",
+                "Flag", "IntFlag", "NamedTuple", "TypedDict", "str", "int", "float",
+                "dict", "list", "tuple", "set", "Exception", "BaseException",
+                "ValueError", "KeyError", "TypeError", "RuntimeError", "LookupError"}
+#: A function the code lacks is said only for a signature, or in a tree this
+#: much Python (a call in a mixed repo may be JS: `useEffect(...)`).
+_FUNC_PY_SHARE = 0.8
+_STDLIB = set(getattr(sys, "stdlib_module_names", ()))
+
+
+def enabled() -> bool:
+    return os.environ.get("AIFORGE_CHAT_SPEC_CONTRACT", "1").strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
+def _params(text: str) -> list:
+    """Parameter names of a written signature: ``a, b: int = 1, *, c=None``."""
+    out, depth, cur = [], 0, ""
+    for ch in text:
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        if ch == "," and depth == 0:
+            out.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    out.append(cur)
+    names = []
+    for part in out:
+        m = re.match(rf"\s*\**({_IDENT})\s*(?:[:=]|$)", part)
+        if m and m.group(1) not in ("self", "cls"):
+            names.append(m.group(1))
+    return names
+
+
+def _is_signature(params_text: str) -> bool:
+    """``f(a, b=1)`` / ``f(a: int)`` / ``f(a, *, b)`` is a signature; ``f(data)``
+    may be a call site quoted from the code ("`process(data)` crashes")."""
+    return bool(re.search(r"[=:*]", params_text))
+
+
+def claims(request: str) -> list:
+    """What the request says the code has, one dict per backticked name."""
+    out, seen = [], set()
+    for m in _SPAN.finditer(request or ""):
+        s = m.group(1).strip()
+        if s in seen:
+            continue
+        seen.add(s)
+        before = (request[max(0, m.start() - _GONE_WINDOW):m.start()]).split("\n")[-1]
+        after = re.split(r"[.;\n]", request[m.end():m.end() + _GONE_WINDOW], maxsplit=1)[0]
+        if _GONE.search(before) or _GONE.search(after):
+            continue          # "remove `X.y`", "`a.py` is no longer needed": not a claim
+        if _PYFILE.match(s) and "/" in s:
+            out.append({"kind": "file", "path": s, "text": s})
+            continue
+        c = _CALL.match(s)
+        if c:
+            name, ptext = c.group(1), c.group(2)
+            params = _params(ptext) if _is_signature(ptext) else []
+            parts = name.split(".")
+            if len(parts) == 1:
+                out.append({"kind": "func", "name": name, "params": params, "text": s})
+            elif parts[-2][:1].isupper():
+                out.append({"kind": "method", "cls": parts[-2], "name": parts[-1],
+                            "params": params, "text": s})
+            continue
+        if not _DOTTED.match(s):
+            continue
+        parts = s.split(".")
+        if parts[0][:1].isupper() and len(parts) == 2:
+            out.append({"kind": "member", "cls": parts[0], "name": parts[1], "text": s})
+        elif parts[-1][:1].isupper() and all(p[:1].islower() for p in parts[:-1]) \
+                and len(parts) >= 3:
+            out.append({"kind": "export", "module": parts[:-1], "name": parts[-1], "text": s})
+    return out
+
+
+class _Index:
+    """Classes (members, bases), functions (parameters), imported names and
+    what each module defines, from the Python files under ``root``."""
+
+    def __init__(self, root: str):
+        self.root = root
+        self.classes: dict = {}      # name -> {member: params | None}
+        self.bases: dict = {}        # name -> [base names]
+        self.funcs: dict = {}        # name -> [params, ...]
+        self.imported: set = set()   # names brought in by `from x import y`
+        self.modules: dict = {}      # rel path -> set of top-level names
+        self.open_modules: set = set()   # rel paths with __getattr__ / import *
+        self.truncated = False
+        self.py = self.source = 0
+        walked = 0
+        for d, dirs, files in os.walk(root):
+            dirs[:] = [x for x in dirs if x not in _SKIP_DIRS and not x.startswith(".")]
+            for f in files:
+                walked += 1
+                if walked > MAX_WALK:
+                    self.truncated = True
+                    return
+                ext = os.path.splitext(f)[1].lower()
+                if ext in _SOURCE_EXT:
+                    self.source += 1
+                if ext != ".py":
+                    continue
+                self.py += 1
+                if self.py > MAX_FILES:
+                    self.truncated = True
+                    return
+                self._add(os.path.join(d, f))
+
+    def _add(self, path: str) -> None:
+        try:
+            if os.path.getsize(path) > _MAX_BYTES:
+                return
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                tree = ast.parse(fh.read())
+        except (OSError, SyntaxError, ValueError):
+            return
+        rel = os.path.relpath(path, self.root).replace(os.sep, "/")
+        top = self.modules.setdefault(rel, set())
+        for node in tree.body:
+            for name in _defined(node):
+                top.add(name)
+            if isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names):
+                self.open_modules.add(rel)
+            if isinstance(node, ast.FunctionDef) and node.name == "__getattr__":
+                self.open_modules.add(rel)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                self.imported.update(a.asname or a.name for a in node.names)
+            elif isinstance(node, ast.ClassDef):
+                self._add_class(node)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self.funcs.setdefault(node.name, []).append(_arg_names(node))
+
+    def _add_class(self, node: ast.ClassDef) -> None:
+        members = self.classes.setdefault(node.name, {})
+        for b in node.bases:
+            base = b.id if isinstance(b, ast.Name) else (
+                b.attr if isinstance(b, ast.Attribute) else "?")
+            # `class Session(requests.Session)`: the base is not this class.
+            self.bases.setdefault(node.name, []).append("?" if base == node.name else base)
+        for item in node.body:
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                members[item.name] = _arg_names(item)
+                # attributes the methods set: self.items = {}
+                for sub in ast.walk(item):
+                    if isinstance(sub, ast.Attribute) and isinstance(sub.ctx, ast.Store) \
+                            and isinstance(sub.value, ast.Name) and sub.value.id == "self":
+                        members.setdefault(sub.attr, None)
+            else:
+                for name in _defined(item):
+                    members.setdefault(name, None)
+
+    def member(self, cls: str, name: str, _seen=None):
+        """``(True, params)`` when ``cls`` (or a base the index has) has
+        ``name`` (params None: an attribute); ``(True, "MISSING")`` when it
+        surely does not; ``(False, None)`` when a base outside the index
+        might supply it."""
+        _seen = _seen if _seen is not None else set()
+        if cls in _seen:
+            return True, "MISSING"      # a diamond: that path is told already
+        _seen.add(cls)
+        members = self.classes.get(cls, {})
+        if name in members:
+            return True, members[name]
+        unknown = False
+        for base in self.bases.get(cls, []):
+            if base in _PLAIN_BASES:
+                continue
+            if base not in self.classes:
+                unknown = True
+                continue
+            known, params = self.member(base, name, _seen)
+            if known and params != "MISSING":
+                return True, params
+            unknown = unknown or not known
+        return (False, None) if unknown else (True, "MISSING")
+
+
+def _defined(node) -> list:
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return [node.name]
+    if isinstance(node, ast.Assign):
+        return [t.id for t in node.targets if isinstance(t, ast.Name)]
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+        return [node.target.id]
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return [(a.asname or a.name).split(".")[0] for a in node.names]
+    return []
+
+
+def _arg_names(fn) -> list:
+    a = fn.args
+    names = [x.arg for x in (*a.posonlyargs, *a.args, *a.kwonlyargs)]
+    if a.vararg:
+        names.append(a.vararg.arg)
+    if a.kwarg:
+        names.append("**")
+    return names
+
+
+def _takes(have, want: list) -> list:
+    """Parameters of ``want`` the signature ``have`` lacks (``**kw`` takes all)."""
+    if not isinstance(have, list) or "**" in have:
+        return []
+    return [p for p in want if p not in have]
+
+
+def _local_package(module: list, ix: "_Index") -> bool:
+    top = module[0]
+    if top in _STDLIB:
+        return False
+    return any(p == top + ".py" or p.startswith(top + "/") or ("/" + top + "/") in p
+               for p in ix.modules)
+
+
+def _declared(request: str, cs: list, ix: "_Index") -> set:
+    """Classes the request says the code defines: a ``pkg.mod.Cls`` path of a
+    package in the work folder, or "class/dataclass/enum/new … `Cls`". A
+    method of any other class the code lacks is a library's, not a gap."""
+    out = {c["name"] for c in cs if c["kind"] == "export" and _local_package(c["module"], ix)}
+    for m in re.finditer(rf"\b(?:class|dataclass|enum|exception|new)\b[^`\n]{{0,40}}`({_IDENT})`",
+                         request or "", re.I):
+        out.add(m.group(1))
+    return out
+
+
+def _module_names(module: list, ix: "_Index"):
+    base = "/".join(module)
+    for p in (base + ".py", base + "/__init__.py"):
+        if p in ix.modules:
+            return p, ix.modules[p]
+    for p, names in ix.modules.items():      # a src/ layout
+        if p.endswith("/" + base + ".py") or p.endswith("/" + base + "/__init__.py"):
+            return p, names
+    return None, None
+
+
+def _check(c: dict, ix: _Index, declared: set) -> "str | None":
+    k = c["kind"]
+    if k == "file":
+        return None if os.path.isfile(os.path.join(ix.root, c["path"])) \
+            else f"{c['path']} does not exist"
+    if k in ("method", "member"):
+        if c["cls"] not in ix.classes:
+            if c["cls"] in ix.imported or c["cls"] not in declared:
+                return None
+            return f"class {c['cls']} not found (for {c['text']})"
+        known, params = ix.member(c["cls"], c["name"])
+        if not known:
+            return None                      # a framework base may supply it
+        if params == "MISSING":
+            return f"{c['cls']}.{c['name']} is missing"
+        lacks = _takes(params, c.get("params") or [])
+        return f"{c['cls']}.{c['name']} does not take {', '.join(lacks)}" if lacks else None
+    if k == "func":
+        name = c["name"]
+        if hasattr(builtins, name) or name in ix.imported:
+            return None
+        if name[:1].isupper() and name not in ix.classes:
+            # `Decimal("1.5")`: a class called — a library's unless the
+            # request says the code defines it.
+            return f"class {name} not found (for {c['text']})" if name in declared else None
+        sigs = ix.funcs.get(name)
+        if not sigs:
+            if name in ix.classes or not (c.get("params") or ix.py >= _FUNC_PY_SHARE * max(ix.source, 1)):
+                return None
+            return f"function {name} is missing"
+        best = min((_takes(s, c.get("params") or []) for s in sigs), key=len)
+        return f"{name}() does not take {', '.join(best)}" if best else None
+    if k == "export":
+        if not _local_package(c["module"], ix):
+            return None                      # a library path: django.db.models.Model
+        path, names = _module_names(c["module"], ix)
+        if names is None:
+            return f"module {'.'.join(c['module'])} does not exist (for {c['text']})"
+        if path in ix.open_modules:
+            return None
+        return None if c["name"] in names else f"{c['text']} is not defined"
+    return None
+
+
+_CACHE: dict = {}
+
+
+def _index(root: str, key) -> "_Index":
+    """The index of ``root``, kept while ``key`` (the turn's edit count)
+    stays the same: a finish tried again without an edit does not re-parse."""
+    hit = _CACHE.get(root)
+    if key is not None and hit and hit[0] == key:
+        return hit[1]
+    ix = _Index(root)
+    _CACHE.clear()          # one tree at a time is enough
+    _CACHE[root] = (key, ix)
+    return ix
+
+
+def missing(request: str, root: str, key=None) -> list:
+    """Lines naming what the request spells out and the code lacks. Empty
+    when everything is there, nothing can be told, or it is off. ``key``:
+    changes when the files may have (an edit count) — same key, same index."""
+    if not enabled() or not root or not os.path.isdir(root):
+        return []
+    cs = claims(request)
+    if not cs:
+        return []
+    files = [c for c in cs if c["kind"] == "file"]
+    code = [c for c in cs if c["kind"] != "file"]
+    ix = None
+    if code:
+        try:
+            ix = _index(root, key)
+        except Exception as exc:  # noqa: BLE001 — the check never breaks a turn
+            log.debug("spec contract index failed: %s", exc)
+            ix = None
+        if ix is None or ix.truncated or not ix.py \
+                or ix.py < _MIN_PY_SHARE * max(ix.source, 1):
+            code = []       # not (all of) a Python tree: only the files are told
+    if ix is None:
+        ix = _Index.__new__(_Index)
+        ix.root = root
+    declared = _declared(request, cs, ix) if code else set()
+    out = []
+    for c in files + code:
+        try:
+            gap = _check(c, ix, declared)
+        except Exception:  # noqa: BLE001
+            gap = None
+        if gap and gap not in out:
+            out.append(gap)
+    return out
+
+
+__all__ = ["claims", "enabled", "missing"]

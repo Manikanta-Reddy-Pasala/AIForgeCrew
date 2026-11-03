@@ -81,7 +81,8 @@ def test_agent_board_changes_are_recorded():
                                    context_words={"login"})
     _action._note_decisions(st, {"slug": "lint", "title": "tidy imports"}, res, before)
     before = {s: it.get("status") for s, it in board.items()}
-    args = {"slug": "part-1", "status": "skipped",
+    # (a part of the request cannot be skipped by the model — it fails, with why)
+    args = {"slug": "part-1", "status": "failed",
             "decision": "login already fixed upstream"}
     res, _ = _tasks.apply_progress(board, args)
     _action._note_decisions(st, args, res, before)
@@ -91,7 +92,7 @@ def test_agent_board_changes_are_recorded():
     rows = D.rows(1)
     texts = [r["text"] for r in rows]
     assert texts[0].startswith("Agent added a task of its own — lint")
-    assert texts[1] == "Agent marked part-1 skipped: fix login — check: tests pass"
+    assert texts[1] == "Agent marked part-1 failed: fix login — check: tests pass"
     assert texts[2] == "login already fixed upstream (part-1)" and rows[2]["kind"] == "choice"
     assert texts[3] == "Agent took lint off the task list"
     assert {r["by"] for r in rows} == {"agent"}

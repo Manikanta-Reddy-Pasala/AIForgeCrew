@@ -39,7 +39,7 @@ from ._shared import (
     _ACTION_SIG_MAX,
 )
 from ._items import note_evidence, review_progress
-from ._tasks import apply_progress, context_words
+from ._tasks import apply_progress, context_words, user_dropped_work
 
 
 def _action_stall_guard(st, name, args, sig, _long_chain_help):
@@ -239,6 +239,9 @@ def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
         _before = {s: it.get("status") for s, it in st.board.items()}
         result, events = apply_progress(
             st.board, args,
+            # A message the user sent mid-run may drop a part of the request:
+            # then the model may take it off (or skip it) as the user asked.
+            allow_request_removal=user_dropped_work(getattr(st, "steers", None)),
             context_words=context_words(st.board, getattr(st, "goal", ""),
                                         getattr(st, "steers", None)))
         result, events = review_progress(st, result, events)

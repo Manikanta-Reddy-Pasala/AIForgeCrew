@@ -125,6 +125,12 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
     _sig = yield from _do_what_you_said(st, step, builder, strict_finish)
     if _sig:
         return _sig
+    # What the request spells out (names, signatures, files) must be in the
+    # code: checked with ast, before the model is asked.
+    from . import _contract_gate
+    _sig = yield from _contract_gate.gate(st, step, builder, strict_finish)
+    if _sig:
+        return _sig
     # The wording rules above are free and catch the plain cases; what they
     # miss is asked of the model once: is the request done?
     from . import _done_check
@@ -151,13 +157,15 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
 
 #: Opens that line (so a copy of it in a later answer can be taken out).
 _OPEN_ITEMS_HEAD = "Not done from the task list:"
+#: Opens the line naming what the request spells out and the code lacks.
+_CONTRACT_HEAD = "Missing from what the request names:"
 
 
 def _strip_own_notes(text: str) -> str:
     """``text`` without a copy of the harness's own closing lines (the model
     sees them in the history and may write them again)."""
     from ._done_check import UNFINISHED_HEAD
-    heads = "|".join(re.escape(h) for h in (_OPEN_ITEMS_HEAD, UNFINISHED_HEAD))
+    heads = "|".join(re.escape(h) for h in (_OPEN_ITEMS_HEAD, _CONTRACT_HEAD, UNFINISHED_HEAD))
     return re.sub(rf"\n*^_(?:{heads})[^\n]*_[ \t]*$", "", text or "", flags=re.M).rstrip()
 
 
@@ -169,12 +177,19 @@ def _open_items_note(st, builder, text: str = "") -> str:
         if (builder or getattr(st, "readonly_mode", False) or getattr(st, "plan_mode", False)
                 or str(text or "").rstrip().endswith("?")):
             return ""               # a plan presents them; a question waits on the user
+        out = ""
         left = open_for_final(st)
-        if not left or not (st.board_used or getattr(st, "board_touched", False)):
-            return ""
-        names = "; ".join(str(st.board[s].get("title") or s) for s in left[:6])
-        more = f" and {len(left) - 6} more" if len(left) > 6 else ""
-        return f"\n\n_{_OPEN_ITEMS_HEAD} {names}{more}._"
+        if left and (st.board_used or getattr(st, "board_touched", False)):
+            names = "; ".join(str(st.board[s].get("title") or s) for s in left[:6])
+            more = f" and {len(left) - 6} more" if len(left) > 6 else ""
+            out = f"\n\n_{_OPEN_ITEMS_HEAD} {names}{more}._"
+        # The spec check's send-backs ran out with names still missing: the
+        # answer says so, never "done" over them.
+        gaps = getattr(st, "contract_gaps", None) or []
+        if gaps:
+            more = f" and {len(gaps) - 6} more" if len(gaps) > 6 else ""
+            out += f"\n\n_{_CONTRACT_HEAD} {'; '.join(gaps[:6])}{more}._"
+        return out
     except Exception:  # noqa: BLE001 — the line never blocks an answer
         return ""
 

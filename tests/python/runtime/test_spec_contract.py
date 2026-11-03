@@ -1,0 +1,188 @@
+# tests/python/runtime/test_spec_contract.py
+"""What a request spells out in backticks is looked for in the code before a
+turn ends: a run that said "all parts completed" lacked half the API."""
+from types import SimpleNamespace
+
+from aiforge_core.runtime import spec_contract as S
+from aiforge_core.runtime.chat_agent._turn import _contract_gate as G, _tasks
+
+REQ = """Extend `shop` with:
+1. New dataclass `shop.inv.Batch` with fields ...
+2. `Inventory.receive(sku, quantity, ref=None, *, batch_id: str | None = None, expiry: date | None = None) -> StockLevel`
+3. `MovementKind` gains `MovementKind.RESTOCK`.
+4. New module `shop/invoices.py` with `issue(order, on)`.
+Round with `money(x)`, use `Decimal("1.5")`, `sorted(xs)`, `Path.exists()`.
+"""
+
+
+def _repo(tmp_path, inv: str, extra: dict | None = None):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "shop" / "__init__.py").write_text("")
+    (tmp_path / "shop" / "models.py").write_text(
+        "def money(x):\n    return x\n\nclass MovementKind:\n    SALE = 'sale'\n")
+    (tmp_path / "shop" / "inv.py").write_text(inv)
+    for k, v in (extra or {}).items():
+        (tmp_path / k).write_text(v)
+    return str(tmp_path)
+
+
+def test_claims_read_the_backticked_api():
+    kinds = {(c["kind"], c.get("name") or c.get("path")) for c in S.claims(REQ)}
+    assert ("export", "Batch") in kinds and ("method", "receive") in kinds
+    assert ("member", "RESTOCK") in kinds and ("file", "shop/invoices.py") in kinds
+    rec = next(c for c in S.claims(REQ) if c.get("name") == "receive")
+    assert rec["params"] == ["sku", "quantity", "ref", "batch_id", "expiry"]
+
+
+def test_missing_names_the_gaps_and_not_library_calls(tmp_path):
+    root = _repo(tmp_path, "class Inventory:\n    def receive(self, sku, quantity, ref=None):\n        pass\n")
+    gaps = S.missing(REQ, root)
+    assert "Inventory.receive does not take batch_id, expiry" in gaps
+    assert "shop.inv.Batch is not defined" in gaps
+    assert "MovementKind.RESTOCK is missing" in gaps
+    assert "shop/invoices.py does not exist" in gaps
+    assert "function issue is missing" in gaps
+    joined = " ".join(gaps)
+    for lib in ("Decimal", "sorted", "Path", "money"):
+        assert lib not in joined
+
+
+def test_a_complete_tree_has_no_gaps(tmp_path):
+    inv = ("from dataclasses import dataclass\n@dataclass\nclass Batch:\n    sku: str\n\n"
+           "class Inventory:\n    def receive(self, sku, quantity, ref=None, *, batch_id=None, expiry=None):\n        pass\n")
+    root = _repo(tmp_path, inv)
+    (tmp_path / "shop" / "models.py").write_text(
+        "def money(x):\n    return x\n\nclass MovementKind:\n    SALE = 'sale'\n    RESTOCK = 'restock'\n")
+    (tmp_path / "shop" / "invoices.py").write_text("def issue(order, on):\n    pass\n")
+    assert S.missing(REQ, root) == []
+
+
+def test_kwargs_take_any_parameter_and_off_switch(tmp_path, monkeypatch):
+    root = _repo(tmp_path, "class Inventory:\n    def receive(self, sku, quantity, **kw):\n        pass\n")
+    assert not any("receive" in g for g in S.missing(REQ, root))
+    monkeypatch.setenv("AIFORGE_CHAT_SPEC_CONTRACT", "0")
+    assert S.missing(REQ, root) == []
+
+
+def test_no_python_or_no_names_says_nothing(tmp_path):
+    (tmp_path / "a.js").write_text("x")
+    assert S.missing(REQ, str(tmp_path)) == ["shop/invoices.py does not exist"]   # files only
+    assert S.missing("just fix the login bug", str(tmp_path)) == []
+
+
+def test_gate_sends_back_then_lets_go(tmp_path):
+    root = _repo(tmp_path, "class Inventory:\n    pass\n")
+    st = SimpleNamespace(goal=REQ, cwd=root, edits_made=2, convo=[], readonly_mode=False,
+                         plan_mode=False)
+    outs = []
+    for _ in range(4):
+        gen = G.gate(st, {"text": "All done."})
+        try:
+            while True:
+                next(gen)
+        except StopIteration as stop:
+            outs.append(stop.value)
+    assert outs[:3] == ["continue"] * 3 and outs[3] is None      # bounded
+    assert "Inventory.receive is missing" in st.convo[0]["content"]
+    st2 = SimpleNamespace(goal=REQ, cwd=root, edits_made=0, convo=[])
+    assert list(G.gate(st2, {"text": "x"})) == []                  # nothing built: no check
+
+
+def test_a_request_part_cannot_be_skipped_by_the_model():
+    board = _tasks.seed_board(["add coupons", "add invoices"])
+    res, _ = _tasks.apply_progress(board, {"slug": "part-1", "status": "skipped"})
+    assert not res["ok"] and "not optional" in res["error"]
+    assert board["part-1"]["status"] == "pending"
+    res, _ = _tasks.apply_progress(board, {"slug": "part-1", "status": "failed"})
+    assert res["ok"]                                                # a named blocker is allowed
+    res, _ = _tasks.apply_progress(board, {"slug": "part-2", "status": "skipped"},
+                                   allow_request_removal=True)
+    assert res["ok"]                                                # the user dropped it
+    res, _ = _tasks.apply_progress(board, {"slug": "extra", "title": "tidy", "status": "skipped"})
+    assert res["ok"]                                                # the model's own item
+
+
+def test_what_the_user_wants_gone_is_not_a_claim(tmp_path):
+    root = _repo(tmp_path, "class Inventory:\n    def add_stock(self, sku):\n        pass\n")
+    req = ("Remove `Inventory.legacy_receive()`, rename `Inventory.receive` to "
+           "`Inventory.add_stock(sku)` and delete `shop/old.py`.")
+    assert S.missing(req, root) == []
+
+
+def test_inherited_self_set_and_framework_members_are_not_gaps(tmp_path):
+    inv = ("class Base:\n    def save(self, force=False):\n        pass\n\n"
+           "class Svc(Base):\n    def __init__(self):\n        self.items = {}\n\n"
+           "from django.db import models\n"
+           "class Order(models.Model):\n    pass\n\n"
+           "class Plain:\n    pass\n")
+    root = _repo(tmp_path, inv)
+    req = ("`Svc.save(force=True)`, `Svc.items`, `Order.objects`, `Order.DoesNotExist`, "
+           "`Plain.nothing`")
+    assert S.missing(req, root) == ["Plain.nothing is missing"]
+
+
+def test_library_paths_imports_and_varargs(tmp_path):
+    inv = ("from django.shortcuts import render\n"
+           "def log(msg, *args):\n    pass\n")
+    root = _repo(tmp_path, inv)
+    req = ("Use `django.db.models.Model`, `collections.abc.Mapping`, `render(request, t)`, "
+           "`log(msg, *args)`, and the crash in `process(data)`: see `shop.missing.Thing`.")
+    gaps = S.missing(req, root)
+    assert gaps == ["function process is missing", "module shop.missing does not exist (for shop.missing.Thing)"]
+
+
+def test_a_call_site_is_not_a_signature(tmp_path):
+    root = _repo(tmp_path, "def process(payload):\n    pass\n")
+    assert S.missing("`process(data)` crashes on empty input", root) == []
+
+
+def test_a_mostly_js_tree_checks_files_only(tmp_path):
+    for i in range(5):
+        (tmp_path / f"m{i}.ts").write_text("export const x = 1\n")
+    (tmp_path / "tool.py").write_text("x = 1\n")
+    req = "Call `fetchData(url)` from `UserService.load()`; add `scripts/gen.py`."
+    assert S.missing(req, str(tmp_path)) == ["scripts/gen.py does not exist"]
+
+
+def test_a_truncated_index_tells_files_only(tmp_path, monkeypatch):
+    root = _repo(tmp_path, "class Inventory:\n    pass\n")
+    monkeypatch.setattr(S, "MAX_FILES", 1)
+    assert S.missing(REQ, root) == ["shop/invoices.py does not exist"]
+
+
+def test_strict_finish_and_plan_skip_rules():
+    st = SimpleNamespace(goal=REQ, cwd="/nowhere", edits_made=1, convo=[])
+    assert list(G.gate(st, {"text": "x"}, None, True)) == []          # a subtask run
+    board = {"plan-1": {"title": "optional: tidy docs", "status": "pending",
+                        "from_request": True}}
+    res, _ = _tasks.apply_progress(board, {"slug": "plan-1", "status": "skipped"})
+    assert res["ok"]
+
+
+def test_the_contract_note_line_is_stripped_from_a_later_answer():
+    from aiforge_core.runtime.chat_agent._turn import _finish
+    text = "Done.\n\n_Missing from what the request names: Inventory.receive does not take expiry._"
+    assert "Missing from" not in _finish._strip_own_notes(text)
+
+
+def test_round_two_cases(tmp_path):
+    inv = ("import requests\nfrom enum import Enum\n"
+           "class Session(requests.Session):\n    pass\n\n"
+           "class MovementKind(Enum):\n    SALE = 'sale'\n")
+    root = _repo(tmp_path, inv)
+    for i in range(3):
+        (tmp_path / f"w{i}.js").write_text("x\n")          # mixed repo, still >30% py
+    req = ("`Session.request(method, url, timeout=5)`; `MovementKind.RESTOCK` is new; "
+           "`Cls.old_api` should be removed; `legacy.py` is no longer needed; "
+           "call `useEffect(() => {})` in the page.")
+    assert S.missing(req, root) == ["MovementKind.RESTOCK is missing"]
+
+
+def test_a_steer_drops_its_gaps_and_only_drop_words_unlock_removal(tmp_path):
+    root = _repo(tmp_path, "class Inventory:\n    pass\n")
+    st = SimpleNamespace(goal=REQ, cwd=root, edits_made=1, convo=[],
+                         steers=["skip the invoices module for now"])
+    gaps = G._gaps(st)
+    assert gaps and not any("invoices" in g for g in gaps)
+    assert _tasks.user_dropped_work(["don't do coupons"])
+    assert not _tasks.user_dropped_work(["how is it going?", "also add tests"])
