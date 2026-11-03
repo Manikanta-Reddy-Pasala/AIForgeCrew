@@ -821,10 +821,16 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
         model_result = dedupe_tool_result(st.convo, name, args, result, cwd)
     except Exception:  # noqa: BLE001 — a dedupe miss must still deliver the result
         model_result = result
-    from .._shell import _MAX_OBS_TEST, is_test_command
+    from .._shell import _MAX_OBS_TEST, compact_test_output, is_test_command
+    _test_run = is_test_command(name, args)
     _obs_cap = _MAX_OBS_READ if (
         name in _READ_OBS_TOOLS or carries_fresh_body(name, model_result)
-    ) else (_MAX_OBS_TEST if is_test_command(name, args) else _MAX_OBS)
+    ) else (_MAX_OBS_TEST if _test_run else _MAX_OBS)
+    if _test_run and isinstance(model_result, dict) \
+            and isinstance(model_result.get("stdout"), str):
+        # (what the model reads; the UI event above had the whole output)
+        model_result = {**model_result, "stdout": compact_test_output(
+            model_result["stdout"], _MAX_OBS_TEST - 1000)}
     # Content-READ tools: cut oversized documents at a STRUCTURE boundary
     # (chonkie) with a continuation note, instead of a blunt slice that
     # hands the model a broken JSON/sentence tail. Others keep the slice.

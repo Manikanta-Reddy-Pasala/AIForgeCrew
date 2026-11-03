@@ -82,13 +82,43 @@ _MAX_CMD_KEEP = 40000
 #: failures is ~15K, and the 6K tail kept only the last two (OpenCode keeps
 #: 50K). Env ``AIFORGE_CHAT_MAX_OBS_TEST``.
 try:
-    _MAX_OBS_TEST = max(_MAX_OBS, int(os.environ.get("AIFORGE_CHAT_MAX_OBS_TEST", "20000")))
+    _MAX_OBS_TEST = max(_MAX_OBS, int(os.environ.get("AIFORGE_CHAT_MAX_OBS_TEST", "12000")))
 except (TypeError, ValueError):
-    _MAX_OBS_TEST = 20000
+    _MAX_OBS_TEST = 12000
 _TEST_CMD = re.compile(r"\b(pytest|py\.test|unittest|tox|nox|npm (?:run )?test|yarn test|"
                        r"pnpm test|jest|vitest|mocha|mvn|gradle|gradlew|go (?:test|build|vet)|"
                        r"cargo (?:test|build|check)|dotnet (?:test|build)|make(?: \w+)?|"
                        r"ctest|tsc|eslint|ruff|mypy|pyright)\b")
+
+
+_FAIL_HEAD = re.compile(r"^_{3,} .+ _{3,}$")
+
+
+def compact_test_output(out: str, cap: int) -> str:
+    """A test run's output the model needs: every failure heading, every
+    ``E`` line (bounded), the short summary, and the tail. Passing noise goes.
+
+    A ``pytest -v`` on a big project is tens of KB a run; shown whole it
+    filled the context (86K tokens a call against OpenCode's 69K on the same
+    task, 4 condenses in 51 min — every one a full prompt re-read)."""
+    if len(out) <= cap:
+        return out
+    lines = out.splitlines()
+    summary_at = next((i for i, ln in enumerate(lines) if "short test summary info" in ln), None)
+    summary = lines[summary_at:] if summary_at is not None else []
+    heads = [ln for ln in lines if _FAIL_HEAD.match(ln)][:40]
+    errs = [ln for ln in lines if ln.startswith(("E ", "E\t"))][:80]
+    parts = [f"[test output compacted: {len(out)} chars — failure headings, error lines, "
+             "summary and tail; run one test with -x for its full trace]"]
+    if heads:
+        parts += ["", *heads]
+    if errs:
+        parts += ["", *errs]
+    if summary:
+        parts += ["", *summary[:120]]
+    body = "\n".join(parts)
+    tail = out[-max(1500, min(3000, cap - len(body) - 40)):]
+    return (body + "\n…\n" + tail)[-cap:] if len(body) < cap else body[:cap]
 
 
 def is_test_command(name: str, args) -> bool:

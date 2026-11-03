@@ -113,7 +113,7 @@ def test_test_and_build_commands_get_a_bigger_window():
     assert _shell.is_test_command("run_tests", {})
     for cmd in ("ls -la", "cat a.py", "python3 -c 'print(1)'", "git status"):
         assert not _shell.is_test_command("run_command", {"cmd": cmd}), cmd
-    assert _shell._MAX_OBS_TEST >= 20000 > _shell._MAX_OBS
+    assert _shell._MAX_OBS_TEST > _shell._MAX_OBS
 
 
 def test_prefixed_old_with_plain_new_keeps_the_indent():
@@ -152,3 +152,18 @@ def test_read_lines_reads_whole_small_files_and_widens_small_ranges(tmp_path, mo
     assert r["end"] == 2000 and r["end"] - r["start"] + 1 == 200
     r = _code._t_read_lines({"path": "b.py", "start": 100, "end": 600}, str(tmp_path))
     assert (r["start"], r["end"]) == (100, 600) and "note" not in r
+
+
+def test_a_long_test_run_is_compacted_to_its_failures():
+    from aiforge_core.runtime.chat_agent import _shell
+    passing = "".join(f"tests/test_a.py::test_ok_{i} PASSED\n" for i in range(2000))
+    fail = ("____ test_bad ____\n    def test_bad():\n>       assert f() == 2\n"
+            "E       assert 1 == 2\n")
+    summary = "=== short test summary info ===\nFAILED tests/test_a.py::test_bad - assert 1 == 2\n=== 1 failed, 2000 passed ===\n"
+    out = passing + fail + passing + summary
+    c = _shell.compact_test_output(out, 8000)
+    assert len(c) <= 8000 and "compacted" in c
+    assert "____ test_bad ____" in c and "E       assert 1 == 2" in c
+    assert "FAILED tests/test_a.py::test_bad" in c and "1 failed, 2000 passed" in c
+    assert c.count("PASSED") < 200
+    assert _shell.compact_test_output("short", 8000) == "short"
