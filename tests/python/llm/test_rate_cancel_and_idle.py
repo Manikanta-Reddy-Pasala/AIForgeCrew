@@ -40,11 +40,12 @@ def _fake_clock(monkeypatch, on_sleep=None):
     return clock
 
 
-def test_chat_is_never_parked_by_default():
-    """A local model has no per-minute limit: 200 chat sends in a row go
-    straight through with the default settings."""
+def test_chat_is_never_parked_with_the_ceiling_off():
+    """A local model has no per-minute limit (llm_max_rpm 0 — the default is
+    the office's 25): 200 chat sends in a row go straight through."""
     from aiforge_core.config import runtime_settings as rs
-    rs.unset(["llm_max_rpm", "chat_rpm", "compaction_rpm"])
+    rs.unset(["chat_rpm", "compaction_rpm"])
+    rs.set_many({"llm_max_rpm": 0})
     t0 = time.monotonic()
     for _ in range(200):
         assert rl.acquire_global(role="doer", max_wait_s=120) == 0.0

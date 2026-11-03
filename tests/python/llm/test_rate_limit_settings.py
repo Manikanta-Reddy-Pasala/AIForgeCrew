@@ -120,11 +120,11 @@ def test_the_effective_default_is_the_documented_one():
     assert rl.global_rpm() == rl._DEFAULT_GLOBAL_RPM
 
 
-def test_the_machine_ceiling_is_off_by_default():
-    """No ceiling of our own by default: a local model has no per-minute
-    limit, and a cap there only parks fast tool steps. Chat is uncapped too.
+def test_the_machine_ceiling_is_25_by_default():
+    """25 requests a minute by default — the office gateway's budget (owner,
+    2026-11-03); a local model sets 0. Chat has no ceiling of its own.
     Compaction keeps its own 5 so background work never crowds chat."""
-    assert rl.global_rpm() == 0
+    assert rl.global_rpm() == 25
     assert rl._cat_rpm("chat") == 0
     assert rl._cat_rpm("compaction") == 5
 

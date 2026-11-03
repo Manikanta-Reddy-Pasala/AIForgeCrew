@@ -121,7 +121,10 @@ _SPEC: dict[str, tuple[str, int]] = {
     #
     # Kept in step with ``rate_limiter._DEFAULT_GLOBAL_RPM`` by
     # ``tests/python/llm/test_rate_limit_settings.py``.
-    "llm_max_rpm": ("AIFORGE_LLM_MAX_RPM", 0),
+    # 25 model requests a minute: the office gateway's budget (owner, 11-03).
+    # A local model has no such limit — set llm_max_rpm / AIFORGE_LLM_MAX_RPM
+    # to 0 there (Settings → "No limits", or the env for a test run).
+    "llm_max_rpm": ("AIFORGE_LLM_MAX_RPM", 25),
     # Sub-ceiling for memory/compaction LLM calls (okf tier folds,
     # work_notes.consolidate, the boot fold, and a background chat condense —
     # everything on the "learner" role). While chat has been served in the

@@ -155,10 +155,11 @@ def _now() -> float:
 
 
 #: Machine-wide default requests-per-minute ceiling when nothing overrides it:
-#: 0 = off. A local model has no per-minute limit, and a cloud provider's own
-#: 429 / Retry-After is honoured regardless. Set ``llm_max_rpm`` or
-#: ``AIFORGE_LLM_MAX_RPM`` to turn it on.
-_DEFAULT_GLOBAL_RPM = 0.0
+#: 25, the office gateway's budget (owner, 2026-11-03). A local model has no
+#: per-minute limit: set ``llm_max_rpm`` / ``AIFORGE_LLM_MAX_RPM`` to 0 there
+#: (a provider's own 429 / Retry-After is honoured regardless). Must equal the
+#: runtime_settings table default (a test pins them together).
+_DEFAULT_GLOBAL_RPM = 25.0
 
 
 def global_rpm() -> float:

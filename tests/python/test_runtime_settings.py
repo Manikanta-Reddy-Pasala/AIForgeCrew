@@ -38,10 +38,10 @@ def test_defaults(rs, monkeypatch):
         "chat_safety_cap": 0, "chat_turn_deadline_s": 0,
         "chat_cap_extensions": 2,
         "chat_unattended_cap": 2000,
-        # No machine or chat ceiling by default (a local model has no
-        # per-minute limit; a provider's 429 is still honoured). Compaction
-        # keeps 5 while chat is active so it never crowds a person out.
-        "llm_max_rpm": 0,
+        # 25 requests a minute by default: the office gateway's budget (a
+        # local model sets 0). No chat ceiling of its own. Compaction keeps 5
+        # while chat is active so it never crowds a person out.
+        "llm_max_rpm": 25,
         "compaction_rpm": 5,
         "chat_rpm": 0,
         "llm_rate_limit_backoff_s": 20,
