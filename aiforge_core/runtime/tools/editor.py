@@ -167,13 +167,12 @@ def _str_replace(
     if not p.is_file():
         return {"ok": False, "error": "not_found", "path": path}
     body = p.read_text(encoding="utf-8")
-    count = body.count(old_str)
-    if count == 0:
-        return {"ok": False, "error": "old_text_not_found", "path": path}
-    if count > 1:
-        return {"ok": False, "error": "ambiguous_match",
-                "path": path, "occurrences": count}
-    new_body = body.replace(old_str, new_str, 1)
+    from aiforge_core.runtime.edit_match import replace_once
+    hit = replace_once(body, old_str, new_str)
+    if not hit["ok"]:
+        return {**hit, "path": path}
+    new_body = hit["body"]
+    matched = hit["how"] if hit["how"] != "exact" else None
     ok, err_msg = _syntax_check(path, new_body)
     if not ok:
         return {"ok": False, "error": err_msg, "path": path,
@@ -181,8 +180,10 @@ def _str_replace(
     _push_snapshot(p)
     p.write_text(new_body, encoding="utf-8")
     _record_touch(path)
-    return attach_oversize(
-        {"ok": True, "path": path, "replaced": True}, path, new_body)
+    out = {"ok": True, "path": path, "replaced": True}
+    if matched:
+        out["matched"] = matched
+    return attach_oversize(out, path, new_body)
 
 
 def _insert(

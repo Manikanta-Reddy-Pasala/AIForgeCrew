@@ -156,16 +156,17 @@ def _stage_edit(i: int, e: dict, batch: _EditBatch, cwd: str) -> dict | None:
         return {"ok": False, "error": str(exc)}
     if not batch.load(ap, path):
         return {"ok": False, "error": f"edit #{i}: file not found: {path}"}
-    body = batch.pending[ap]
-    cnt = body.count(old)
-    if cnt == 0:
-        return {"ok": False, "error": f"edit #{i}: old_str not found in {path}"}
-    if cnt > 1 and not e.get("replace_all"):
-        return {"ok": False, "error": f"edit #{i}: old_str appears {cnt}× in "
+    from aiforge_core.runtime.edit_match import replace_once
+    every = str(e.get("replace_all") or "").strip().lower() in ("1", "true", "yes", "on")
+    hit = replace_once(batch.pending[ap], str(old), str(new), every)
+    if hit["ok"]:
+        batch.pending[ap] = hit["body"]
+        return None
+    if hit["error"] == "ambiguous_match":
+        return {"ok": False, "error": f"edit #{i}: old_str appears {hit['occurrences']}× in "
                 f"{path} — pass replace_all:true or make it unique"}
-    batch.pending[ap] = (body.replace(old, new) if e.get("replace_all")
-                         else body.replace(old, new, 1))
-    return None
+    return {"ok": False, "error": f"edit #{i}: old_str not found in {path}",
+            "closest": hit.get("closest") or [], "hint": hit.get("hint", "")}
 
 
 def _write_batch(batch: _EditBatch) -> tuple[list, str]:

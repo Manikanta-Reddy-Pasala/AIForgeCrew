@@ -41,6 +41,16 @@ def _gaps(st) -> list:
     return gaps
 
 
+def _checked(st) -> int:
+    """How many names, signatures and files the request spells out (what
+    the check looked for in the code)."""
+    from aiforge_core.runtime import spec_contract
+    try:
+        return len(spec_contract.claims(str(getattr(st, "goal", "") or "")))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def message(gaps: list) -> str:
     more = f"\n- … and {len(gaps) - _SHOWN} more" if len(gaps) > _SHOWN else ""
     return ("[automated spec check — not the user] The request spells out these "
@@ -62,6 +72,7 @@ def gate(st, step, builder=None, strict_finish=False):
         return None          # a question, a review: nothing was built
     gaps = _gaps(st)
     st.contract_gaps = gaps
+    st.contract_checked = _checked(st)
     if not gaps:
         return None
     from ._finish import _budget_left

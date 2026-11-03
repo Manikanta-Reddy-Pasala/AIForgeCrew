@@ -236,17 +236,17 @@ def file_patch(path: str, old_text: str, new_text: str) -> dict:
         if not p.is_file():
             return {"ok": False, "error": "not_found"}
         body = p.read_text(encoding="utf-8")
-        count = body.count(old_text)
-        if count == 0:
-            return {"ok": False, "error": "old_text_not_found"}
-        if count > 1:
-            return {"ok": False, "error": "ambiguous_match",
-                    "occurrences": count}
-        new_body = body.replace(old_text, new_text, 1)
+        from aiforge_core.runtime.edit_match import replace_once
+        hit = replace_once(body, old_text, new_text)
+        if not hit["ok"]:
+            return hit
+        new_body = hit["body"]
         p.write_text(new_body, encoding="utf-8")
         record_touch(path)
-        return attach_oversize(
-            {"ok": True, "path": path, "replaced": True}, path, new_body)
+        out = {"ok": True, "path": path, "replaced": True}
+        if hit["how"] != "exact":
+            out["matched"] = hit["how"]
+        return attach_oversize(out, path, new_body)
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
 

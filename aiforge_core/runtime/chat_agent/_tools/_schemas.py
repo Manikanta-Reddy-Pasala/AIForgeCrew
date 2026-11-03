@@ -69,11 +69,20 @@ CATALOG: dict = {
                    ("path", "content")),
     "file_create": ("Create a new file.", {"path": "s", "content": "s"},
                     ("path", "content")),
-    "file_patch": ("Replace old_text with new_text in a file.",
-                   {"path": "s", "old_text": "s", "new_text": "s", "force": "b"},
+    "file_patch": ("Replace old_text with new_text in a file. old_text is the "
+                   "file's text as it is now — copy it from a read WITHOUT the "
+                   "line-number prefix, include enough lines to make it unique "
+                   "(or pass replace_all:true to change every occurrence). Small "
+                   "whitespace/indent slips are forgiven; on a miss the closest "
+                   "lines come back.",
+                   {"path": "s", "old_text": "s", "new_text": "s", "replace_all": "b",
+                    "force": "b"},
                    ("path", "old_text", "new_text")),
     "multi_edit": ("Apply several find/replace edits across one or many files "
-                   "atomically.", {"edits": "arr"}, ("edits",)),
+                   "atomically: {\"edits\": [{\"path\", \"old_str\", "
+                   "\"new_str\", \"replace_all\"?}]} (a top-level \"path\" serves "
+                   "edits without their own). Same matching rules as file_patch.",
+                   {"edits": "arr", "path": "s"}, ("edits",)),
     "editor": ("Structured editor with syntax-check + undo. command: view|"
                "create|str_replace|insert|undo_edit.",
                {"command": "s", "path": "s", "old_str": "s", "new_str": "s",

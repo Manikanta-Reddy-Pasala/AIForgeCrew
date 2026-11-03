@@ -45,6 +45,9 @@ from ._shared import _log
 
 #: How often one turn asks (each later answer of the turn is checked again).
 _CALLS_PER_TURN = 30
+#: Named items the spec check must have found in the code to stand in for
+#: this check (runtime/spec_contract via _contract_gate).
+_SPEC_ENOUGH = 3
 #: How often in a row one turn is sent back by the verdict.
 _SEND_BACKS = 3
 #: In all, per turn. Each send-back is two model calls, and a model that runs
@@ -122,6 +125,12 @@ def _applies(st, builder, strict_finish) -> bool:
                 and not job_note_holds(st)
                 # The loop guard asked for "what is done, what remains".
                 and not getattr(st, "wrapping_up", False)
+                # The spec check read the code itself: the request named at
+                # least _SPEC_ENOUGH things and every one is there. A model
+                # reading the reply adds a call (its own prompt: on a one-slot
+                # server also a re-read of the turn's prompt) and no proof.
+                and not (getattr(st, "contract_checked", 0) >= _SPEC_ENOUGH
+                         and not getattr(st, "contract_gaps", None))
                 and getattr(st, "done_check_calls", 0) < _CALLS_PER_TURN)
 
 

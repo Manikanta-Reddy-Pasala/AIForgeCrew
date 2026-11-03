@@ -75,6 +75,28 @@ _THOUGHT_RE = re.compile(r"THOUGHT:[ \t]*((?:(?!\n[A-Z_]+:)[\s\S])*)",
                          re.IGNORECASE)
 
 _MAX_OBS = 6000  # truncate tool output fed back to the model
+#: Output a finished command keeps (the observation cap then decides what the
+#: model sees): enough for a test run's whole failure list.
+_MAX_CMD_KEEP = 40000
+#: What the model sees of a test or build command: a pytest run with a dozen
+#: failures is ~15K, and the 6K tail kept only the last two (OpenCode keeps
+#: 50K). Env ``AIFORGE_CHAT_MAX_OBS_TEST``.
+try:
+    _MAX_OBS_TEST = max(_MAX_OBS, int(os.environ.get("AIFORGE_CHAT_MAX_OBS_TEST", "20000")))
+except (TypeError, ValueError):
+    _MAX_OBS_TEST = 20000
+_TEST_CMD = re.compile(r"\b(pytest|py\.test|unittest|tox|nox|npm (?:run )?test|yarn test|"
+                       r"pnpm test|jest|vitest|mocha|mvn|gradle|gradlew|go (?:test|build|vet)|"
+                       r"cargo (?:test|build|check)|dotnet (?:test|build)|make(?: \w+)?|"
+                       r"ctest|tsc|eslint|ruff|mypy|pyright)\b")
+
+
+def is_test_command(name: str, args) -> bool:
+    """A test, build or check run: its whole failure list matters."""
+    if name in ("run_tests", "typecheck"):
+        return True
+    cmd = str((args or {}).get("cmd") or (args or {}).get("command") or "")
+    return bool(_TEST_CMD.search(cmd))
 # Content-READ tools return a document the model must see IN FULL to work with
 # (a long Confluence page, a Jira issue, a file). The generic 6k cap truncated
 # them mid-page — the model then reported "API truncation" and gave up. Give
@@ -348,19 +370,21 @@ def _t_file_patch(args: dict, cwd: str) -> dict:
     if not p.is_file():
         return {"ok": False, "error": "not_found"}
     body = p.read_text(encoding="utf-8")
-    old = args["old_text"]
-    n = body.count(old)
-    if n == 0:
-        return {"ok": False, "error": "old_text_not_found"}
-    if n > 1:
-        return {"ok": False, "error": "ambiguous_match", "occurrences": n}
-    new_body = body.replace(old, args["new_text"], 1)
+    from aiforge_core.runtime.edit_match import replace_once
+    hit = replace_once(body, args["old_text"], args["new_text"],
+                       _truthy(args.get("replace_all")))
+    if not hit["ok"]:
+        return hit
+    new_body = hit["body"]
     bad = _syntax_check(str(p), new_body, args)
     if bad:
         return {"ok": False, "error": "syntax_invalid", "detail": bad,
                 "hint": "the edit would break the file; fix it or pass force:true"}
     p.write_text(new_body, encoding="utf-8")
-    return attach_oversize({"ok": True, "path": str(p)}, str(p), new_body)
+    out = {"ok": True, "path": str(p)}
+    if hit["how"] != "exact":
+        out["matched"] = hit["how"]          # what was forgiven, for the model
+    return attach_oversize(out, str(p), new_body)
 
 
 def _t_list_dir(args: dict, cwd: str) -> dict:
@@ -532,6 +556,13 @@ def _t_run_command(args: dict, cwd: str) -> dict:
     handed = False
     try:
         res = _run_to_end(proc, timeout, spool, idle_s)
+        if not is_test_command("run_command", {"cmd": cmd}):
+            # 40K is kept for a test or build run's failure list only; any
+            # other command's result (UI event, action log, stored steps)
+            # stays at the usual size.
+            for key in ("stdout", "stderr"):
+                if isinstance(res.get(key), str):
+                    res[key] = res[key][-_MAX_OBS:]
         if res.get("_handoff"):
             handed = True
             try:
@@ -581,4 +612,4 @@ def _run_to_end(proc, timeout: float, spool, idle_s: float = 0.0) -> dict:
         return stopped
     out, err = _collect_output(proc, spool)
     return {"ok": proc.returncode == 0, "code": proc.returncode,
-            "stdout": out[-_MAX_OBS:], "stderr": err[-_MAX_OBS:]}
+            "stdout": out[-_MAX_CMD_KEEP:], "stderr": err[-_MAX_CMD_KEEP:]}

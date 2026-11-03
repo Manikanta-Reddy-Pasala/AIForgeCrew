@@ -246,3 +246,15 @@ def test_multi_edit_takes_one_path_for_all_edits(tmp_path):
         {"old_str": "b = 2", "new_str": "b = 20"}]}, str(tmp_path))
     assert res.get("ok"), res
     assert f.read_text() == "a = 10\nb = 20\n"
+
+
+def test_a_clean_spec_check_stands_in_for_the_model_done_check(monkeypatch):
+    from aiforge_core.runtime.chat_agent._turn import _done_check as D
+    monkeypatch.setattr(D, "enabled", lambda: True)
+    monkeypatch.setattr(D, "job_note_holds", lambda st: False)
+    st = SimpleNamespace(session_id=1, contract_checked=5, contract_gaps=[])
+    assert not D._applies(st, None, False)                 # proven by the code
+    st.contract_gaps = ["X.y is missing"]
+    assert D._applies(st, None, False)
+    st2 = SimpleNamespace(session_id=1, done_check_calls=D._CALLS_PER_TURN)
+    assert not D._applies(st2, None, False)                # bounded per turn
