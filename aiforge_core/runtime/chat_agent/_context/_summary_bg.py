@@ -27,8 +27,11 @@ _READY: "collections.OrderedDict[str, tuple[int, str, float]]" = \
     collections.OrderedDict()
 #: key -> (generation, cancel event) of the call in flight.
 _INFLIGHT: "dict[str, tuple[int, threading.Event]]" = {}
-_READY_MAX = 64
-_READY_TTL_S = 3600.0
+# A finished summary now waits for the next condense (not the next step), so
+# it may sit for hours on a slow local model; release() drops it when the run
+# ends, so these only bound runs that never released.
+_READY_MAX = 256
+_READY_TTL_S = 6 * 3600.0
 
 
 def _prune_locked(now: float) -> None:

@@ -194,8 +194,9 @@ def _splice_ready_summary(convo: list[dict], run_key) -> list[dict]:
 
     The breadcrumb is in the condense note (the message after the system
     prompt) or, with ``AIFORGE_STABLE_PREFIX=0``, at the end of the system
-    message. Checked every step, so the summary lands as soon as it is ready
-    instead of one condense later. A summary for any other condense is
+    message. Called when a condense rewrites the note anyway (and when the
+    run ends), never on its own: an edit of the note costs a local server a
+    re-read of everything after it. A summary for any other condense is
     discarded."""
     if not run_key or not convo or convo[0].get("role") != "system":
         return convo
@@ -610,7 +611,6 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
     a local server's prompt cache survives a condense. A history that was
     already condensed once restarts from a handoff built from ``handoff_st``
     (the run's state) instead of stacking a second breadcrumb."""
-    convo = _splice_ready_summary(convo, run_key)
     plen = _note.prefix_len(convo)
     note_msgs = convo[1:plen]
     work = [convo[0]] + convo[plen:] if plen > 1 else convo
@@ -634,6 +634,18 @@ def _compact_convo(convo: list[dict], *, keep_recent: int = 18, role: str | None
     # grants a runaway-cap extension.
     if not force and _hist_chars(convo[1:]) <= budget:
         return convo
+    # A model summary written since the last condense goes in now, when the
+    # note is rewritten anyway — not on the step it lands: an edit of the
+    # note makes a local server re-read the whole history after it (a live
+    # run paid 28 s for it right after a condense had paid 98 s).
+    spliced = _splice_ready_summary(convo, run_key)
+    if spliced is not convo:
+        convo = spliced
+        # (with AIFORGE_STABLE_PREFIX=0 the splice grows the system message)
+        budget = _ctx_budget_chars(role, sys_chars=_system_chars(convo))
+        plen = _note.prefix_len(convo)
+        note_msgs = convo[1:plen]
+        work = [convo[0]] + convo[plen:] if plen > 1 else convo
     room = max(0, budget - _hist_chars(work[-keep_recent:])
                - _hist_chars(note_msgs))
     start, needs_opener = _tail_cut.tail_start(work, keep_recent, room or 1)

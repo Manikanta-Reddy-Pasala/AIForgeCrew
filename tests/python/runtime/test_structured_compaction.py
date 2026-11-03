@@ -136,8 +136,8 @@ def _bg_run(monkeypatch, reply):
                               complete_fn=lambda role, msgs: reply)
     assert _wait(lambda: _summary_bg.pending("run-s") is None)
     time.sleep(0.05)
-    return out, comp._compact_convo(out, keep_recent=8, run_key="run-s",
-                                    complete_fn=lambda role, msgs: reply)
+    # (the summary goes in when the note is rewritten next: the splice itself)
+    return out, comp._splice_ready_summary(out, "run-s")
 
 
 def test_a_typed_reply_is_spliced_into_the_note(monkeypatch):

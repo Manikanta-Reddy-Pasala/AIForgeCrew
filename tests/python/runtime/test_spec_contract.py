@@ -186,3 +186,24 @@ def test_a_steer_drops_its_gaps_and_only_drop_words_unlock_removal(tmp_path):
     assert gaps and not any("invoices" in g for g in gaps)
     assert _tasks.user_dropped_work(["don't do coupons"])
     assert not _tasks.user_dropped_work(["how is it going?", "also add tests"])
+
+
+def test_a_prune_that_frees_little_is_not_done(monkeypatch):
+    """Ageing old outputs edits the middle of the history (a full re-read on a
+    local server): only worth it when it frees a real share of the budget."""
+    from aiforge_core.runtime.chat_agent._turn import _limits
+    from aiforge_core.runtime.chat_agent._context import _aging
+    big = "OBSERVATION: " + "x" * 6000
+    convo = [{"role": "system", "content": "s"}]
+    for i in range(4):
+        convo += [{"role": "assistant", "content": 'ACTION: file_read\nARGS_JSON: {"path": "a%d"}' % i},
+                  {"role": "user", "content": big}]
+    convo += [{"role": "user", "content": "y" * 200}] * 12
+    assert _aging.age_observations(convo, force=True, keep_chars=100, dry=True) > 15000
+    assert all(m["content"] == big for m in convo[2:9:2])             # dry changed nothing
+    st = SimpleNamespace(convo=convo, batch_unread=False, batch_mark=None)
+    monkeypatch.setattr("aiforge_core.runtime.chat_agent._context._window._ctx_budget_chars",
+                        lambda *a, **k: 20000)
+    monkeypatch.setattr(_limits, "_PRUNE_MIN_SHARE", 5.0)              # never enough
+    assert _limits._prune_at_condense_point(st, "chat") == 0
+    assert all(m["content"] == big for m in convo[2:9:2])

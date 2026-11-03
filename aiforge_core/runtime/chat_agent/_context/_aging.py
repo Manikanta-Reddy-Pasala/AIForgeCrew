@@ -78,7 +78,7 @@ def _keep_by_chars(convo: list, keep_chars: int) -> int:
 def age_observations(convo: list, protect_from: "int | None" = None,
                      forget: "set | None" = None, *, force: bool = False,
                      keep_chars: "int | None" = None,
-                     keep_msgs: "int | None" = None) -> int:
+                     keep_msgs: "int | None" = None, dry: bool = False) -> int:
     """Shrink old, large read/search observations in place. Returns how many.
 
     ``protect_from``: messages at or after this index are results the model has
@@ -86,7 +86,10 @@ def age_observations(convo: list, protect_from: "int | None" = None,
     of reads already done; an aged read leaves it, so reading the file again is
     allowed instead of being refused as a duplicate of text that is now a stub.
     ``force``: the condense point was reached — age now, whatever the switch
-    and the burst size say, keeping the newest ``keep_chars`` of history whole."""
+    and the burst size say, keeping the newest ``keep_chars`` of history whole.
+    ``dry``: change nothing, save nothing; return how many characters the
+    ageing WOULD free (every edit of an old message costs the model server a
+    re-read of everything after it, so a caller weighs that first)."""
     if not convo or not (force or _on()):
         return 0
     keep = _int_env("AIFORGE_CHAT_AGE_KEEP", 10)       # newest messages untouched
@@ -121,14 +124,17 @@ def age_observations(convo: list, protect_from: "int | None" = None,
         tool = mt.group(1).lower() if mt else ""
         if tool not in _AGEABLE and tool not in _AGEABLE_CMD:
             continue
-        oid = context_offload.save(text)
-        if not oid:
-            continue
         body = text[len("OBSERVATION:"):].strip()
         if tool in _AGEABLE_CMD:
             shrunk = _shrink_command(body)
         else:
             shrunk = f"{body[:_HEAD]}\n…\n{body[-_TAIL:]}"
+        if dry:
+            aged += max(0, len(text) - len(shrunk) - 120)
+            continue
+        oid = context_offload.save(text)
+        if not oid:
+            continue
         convo[i] = {**m, "content": (
             f"OBSERVATION: {_MARK} {tool} output, {len(body)} chars — "
             f'full text saved: memory_lookup {{"id": "{oid}"}}, or run it '

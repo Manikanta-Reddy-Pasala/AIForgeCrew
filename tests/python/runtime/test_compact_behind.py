@@ -70,8 +70,8 @@ def test_llm_compact_returns_before_the_model_answers(c):
 
 
 def test_the_summary_lands_in_its_own_breadcrumb_next_step(c):
-    """Not one condense behind: the very next step splices it in, and the
-    tool tally stays next to it."""
+    """The summary goes into its own breadcrumb (when the note is next
+    rewritten), and the tool tally stays next to it."""
     def fast(_role, _messages):
         return "- edited foo.py\n- ran tests"
 
@@ -80,8 +80,7 @@ def test_the_summary_lands_in_its_own_breadcrumb_next_step(c):
     assert "(condense #1)" in out[1]["content"]
     from aiforge_core.runtime.chat_agent._context import _summary_bg
     assert _wait_for(lambda: _summary_bg.pending("run-splice") is None)
-    nxt = c._compact_convo(out, keep_recent=8, complete_fn=fast,
-                           run_key="run-splice")
+    nxt = c._splice_ready_summary(out, "run-splice")
     sys = nxt[1]["content"]
     assert "- edited foo.py" in sys
     assert "Work done so far: file_read" in sys
@@ -104,8 +103,8 @@ def test_parallel_runs_without_a_session_never_share_a_summary(c):
     from aiforge_core.runtime.chat_agent._context import _summary_bg
     assert _wait_for(lambda: _summary_bg.pending("run-a") is None
                      and _summary_bg.pending("run-b") is None)
-    a2 = c._compact_convo(a, keep_recent=8, complete_fn=by_tag, run_key="run-a")
-    b2 = c._compact_convo(b, keep_recent=8, complete_fn=by_tag, run_key="run-b")
+    a2 = c._splice_ready_summary(a, "run-a")
+    b2 = c._splice_ready_summary(b, "run-b")
     assert "SUMMARY-A" in a2[1]["content"] and "SUMMARY-B" not in a2[1]["content"]
     assert "SUMMARY-B" in b2[1]["content"] and "SUMMARY-A" not in b2[1]["content"]
 
@@ -146,8 +145,7 @@ def test_a_newer_condense_discards_the_older_summary(c):
     gate1.set()
     assert _wait_for(lambda: _summary_bg.pending("run-gen") is None)
     time.sleep(0.1)
-    out3 = c._compact_convo(out2, keep_recent=8, complete_fn=fn,
-                            run_key="run-gen")
+    out3 = c._splice_ready_summary(out2, "run-gen")
     assert "NEW SLICE SUMMARY" in out3[1]["content"]
     assert "OLD SLICE SUMMARY" not in out3[1]["content"]
     # A stale generation is refused outright too.
@@ -189,8 +187,7 @@ def test_background_summary_does_not_use_the_turns_tool_queue(c, monkeypatch):
                            complete_fn=native, run_key="run-native")
     from aiforge_core.runtime.chat_agent._context import _summary_bg
     assert _wait_for(lambda: _summary_bg.pending("run-native") is None)
-    out = c._compact_convo(out, keep_recent=8, complete_fn=native,
-                           run_key="run-native")
+    out = c._splice_ready_summary(out, "run-native")
     assert "PLAIN SUMMARY" in out[1]["content"]
     assert seen["role"] == "learner"
     assert not called.is_set()
@@ -232,3 +229,18 @@ def test_the_summary_is_not_preempted_by_its_own_turn(c, monkeypatch):
         assert _wait_for(lambda: _summary_bg.pending("run-exempt") is None)
     finally:
         gate.reset()
+
+
+def test_a_step_under_budget_leaves_the_note_alone(c):
+    """A ready summary is not spliced on a step that does not condense: an
+    edit of the note costs a local server a re-read of the whole history."""
+    def fast(_role, _messages):
+        return "- edited foo.py"
+
+    out = c._compact_convo(_long_convo(), keep_recent=8, complete_fn=fast,
+                           run_key="run-hold")
+    from aiforge_core.runtime.chat_agent._context import _summary_bg
+    assert _wait_for(lambda: _summary_bg.pending("run-hold") is None)
+    same = c._compact_convo(out, keep_recent=8, complete_fn=fast, run_key="run-hold")
+    assert same[1]["content"] == out[1]["content"]          # held back
+    assert "- edited foo.py" in c._splice_ready_summary(same, "run-hold")[1]["content"]
