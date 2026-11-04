@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from ._shared import _coerce_int
 
 
 def _t_codegraph_query(args: dict, cwd: str) -> dict:
@@ -40,8 +39,7 @@ def _t_read_lines(args: dict, cwd: str) -> dict:
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
     n = len(lines)
-    s = max(1, _coerce_int(args.get("start"), 1) or 1)
-    e = n if not args.get("end") else min(_coerce_int(args.get("end"), n), n)
+    s, e = _line_range(args, n)
     if s > n:
         return {"ok": True, "path": path, "total_lines": n, "text": ""}
     s, e, widened = _widen(s, e, n)
@@ -51,6 +49,32 @@ def _t_read_lines(args: dict, cwd: str) -> dict:
         out["note"] = (f"widened to lines {s}-{e} of {n}: read a file once, "
                        "not in many small pieces")
     return out
+
+
+def _num(v):
+    """A line number from a tool argument: 1850, 1850.0 or "1850.0"."""
+    try:
+        return int(float(v)) if v is not None and str(v).strip() != "" else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _line_range(args: dict, n: int) -> "tuple[int, int]":
+    """``(start, end)`` from start/end, or the offset/limit pair OpenCode's
+    read tool takes. A bench run sent ``{"end": 1850, "limit": 200}`` and
+    ``{"offset": 1700, "end": 1750}`` in 28 of 97 reads; with only start/end
+    read, each came back from line 1 (66k chars of core.py) and the model
+    asked again."""
+    s = _num(args.get("start"))
+    if s is None:
+        s = _num(args.get("offset"))
+    e, limit = _num(args.get("end")), _num(args.get("limit"))
+    if e and limit and limit > 0 and s is None:
+        s = e - limit + 1
+    elif not e and limit and limit > 0:
+        e = (s or 1) + limit - 1
+    s = max(1, s or 1)
+    return s, (n if not e else min(e, n))
 
 
 def _read_env(key: str, default: int) -> int:

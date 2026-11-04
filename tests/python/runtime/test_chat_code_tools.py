@@ -36,6 +36,21 @@ def test_a_line_range_is_returned_with_the_files_length(src, monkeypatch):
     assert res["end"] == 4
 
 
+@pytest.mark.parametrize("args,want", [
+    ({"end": 8.0, "limit": 3.0}, (6, 8)),          # the window that ends at `end`
+    ({"offset": 4, "end": 5}, (4, 5)),
+    ({"offset": 3, "limit": 2}, (3, 4)),
+    ({"limit": 2}, (1, 2)),
+    ({"start": "2.0", "end": "3"}, (2, 3)),
+    ({"start": 2, "end": 4, "limit": 9}, (2, 4)),   # start/end win
+])
+def test_offset_and_limit_are_read_like_opencodes_read_tool(src, monkeypatch, args, want):
+    monkeypatch.setenv("AIFORGE_CHAT_READ_WHOLE_LINES", "0")
+    monkeypatch.setenv("AIFORGE_CHAT_READ_MIN_LINES", "0")
+    res = T._t_read_lines({"path": "app.py", **args}, str(src))
+    assert (res["start"], res["end"]) == want
+
+
 def test_no_range_reads_the_whole_file(src):
     res = T._t_read_lines({"path": "app.py"}, str(src))
     assert res["start"] == 1
