@@ -533,7 +533,7 @@ def test_a_leading_write_does_not_start_the_reads_beside_it(
 
 def test_the_batch_rule_runs_a_leading_patch():
     from aiforge_core.runtime.chat_agent._prompt_text import BATCH_READS_RULE
-    assert "if the first call is file_patch, it runs now" in BATCH_READS_RULE
+    assert "comes first runs now" in BATCH_READS_RULE
     assert "later in that reply is held until your next turn" in BATCH_READS_RULE
 
 

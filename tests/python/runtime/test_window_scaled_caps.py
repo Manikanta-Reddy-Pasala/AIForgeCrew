@@ -35,7 +35,7 @@ def _reload_rs():
 _CAPS = [
     (ps._ctx_section_cap, 8000, "AIFORGE_CTX_SECTION_CHARS", 0.03),
     (mn._mentions_total_chars, 48000, "AIFORGE_MENTIONS_TOTAL_CHARS", 0.10),
-    (ca._repomap_max_chars, 6000, "AIFORGE_REPOMAP_MAX_CHARS", 0.02),
+    (ca._repomap_max_chars, 4000, "AIFORGE_REPOMAP_MAX_CHARS", 0.01),
 ]
 
 

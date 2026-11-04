@@ -492,17 +492,12 @@ it succeeded from the OBSERVATION, then summarize what you did in FINAL."""
 #: Added to the system prompt only when the run has no step cap and no
 #: deadline (an interactive Act-mode run with the defaults).
 _DECOMPOSE = (
-    "BIG TASK = SMALL TASKS, ONE BY ONE: a request that holds several parts, "
-    "is long, or that you realise needs 3 or more steps is BIG. Before any "
-    "other work, write it as small tasks on your board: one plan_progress "
-    "call per task (slug + title), each small enough to finish and check on "
-    "its own, and say in its title how you will know it is done (a test, a "
-    "build, a file). Do them ONE BY ONE: keep a single item running, finish "
-    "it, run the check, mark it done. An item is accepted as done only with "
-    "evidence (files really changed, or a test/build that ran green); keep "
-    "an item going until its tests cover what the request says about it. "
-    "Older messages of a long run are condensed, so put what a later item "
-    "needs in files, not in your head. ")
+    "BIG TASK = SMALL TASKS, ONE BY ONE: a request with several parts or 3 or "
+    "more steps goes on your board first (plan_progress, slug + title, each "
+    "checkable on its own). Keep one item running; mark it done only with "
+    "evidence (files changed, tests green) and once its tests cover what the "
+    "request says about it. Old messages get condensed: keep what a later "
+    "item needs in files. ")
 
 
 #: Added to the system prompt only when the run has no step cap and no
@@ -510,14 +505,10 @@ _DECOMPOSE = (
 LONG_RUN_RULE = (
     "LONG AND MULTI-TASK WORK: this run has no step or time limit. "
     + _DECOMPOSE +
-    "Then keep going "
-    "until every item is done, failed or skipped. Do not stop to report "
-    "partial progress; stop early only when you are blocked, and say what "
-    "blocks you. A part that is independent research or analysis can go to "
-    "a second agent with spawn_task while you work on the rest; its answer is "
-    "posted in this chat. When older messages have been condensed, trust the task "
-    "board and the files on disk, and re-read what you need rather than "
-    "guessing.")
+    "Keep going until every item is done or failed; stop early only when "
+    "blocked, and say what blocks you. Independent research can go to a second "
+    "agent with spawn_task. After a condense, trust the board and the files on "
+    "disk; re-read rather than guess.")
 
 
 #: The same decomposition rule for a big request on a run that has a step cap.
@@ -540,16 +531,10 @@ GOAL_LOOP_RULE = (
 #: Added to the system prompt only when the model is driven through the
 #: tool-calling API, where one reply can carry several calls.
 BATCH_READS_RULE = (
-    "BATCH READS: when you need several independent lookups (reads, searches, "
-    "or read-only commands such as ls, git status, git log), request them "
-    "as separate tool calls in ONE reply. They run at the same time, and "
-    "you are told if any did not run. For several files, one read_files "
-    "call is still best. A write, edit or command that is the first call "
-    "in the reply runs this turn: if the first call is file_patch, "
-    "it runs now. A write, edit or command later in that reply is held until "
-    "your next turn, so you see the reads before you change anything. "
-    "Request that later write then, on its own. Exception: when a reply holds "
-    "ONLY file_write/file_patch calls to DIFFERENT files (no reads, no "
-    "commands), send them all together in that one reply — they run in order "
-    "without another model turn. Do this whenever the files do not depend on "
-    "each other's output.")
+    # (was 1.8K chars on every request; the model sent one call per reply in
+    # 1,016 of 1,018 benchmark replies anyway)
+    "BATCH READS: several independent lookups go in ONE reply (or one "
+    "read_files call); they run together. A write or command that comes first "
+    "runs now; one later in that reply is held until your next turn — except "
+    "a reply of only file_write/file_patch calls to different files, which "
+    "run in order.")

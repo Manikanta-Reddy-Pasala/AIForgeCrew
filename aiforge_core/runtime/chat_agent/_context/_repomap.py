@@ -10,15 +10,17 @@ from ._window import _window_scaled
 
 def _repomap_max_chars() -> int:
     """Char cap for the repo-map block. An explicit ``AIFORGE_REPOMAP_MAX_CHARS``
-    wins verbatim (0 disables); otherwise window-relative (A2): floor 6000,
-    growing at ~2% of the window."""
+    wins verbatim (0 disables); otherwise window-relative (A2): floor 4000,
+    growing at ~1% of the window. (It was 6000 + 2%: 7.8K chars of a big
+    repo's first prompt, against OpenCode's none — the model finds its way
+    with grep/find; the map only has to point.)"""
     env = os.environ.get("AIFORGE_REPOMAP_MAX_CHARS")
     if env is not None:
         try:
             return max(0, int(env))
         except (TypeError, ValueError):
             pass
-    return _window_scaled(6000, 0.02)
+    return _window_scaled(4000, 0.01)
 
 
 _SYM_PATTERNS = {

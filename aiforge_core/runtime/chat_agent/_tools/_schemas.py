@@ -38,17 +38,12 @@ _T = {
 # stays open (additionalProperties) so an extra documented key still passes.
 CATALOG: dict = {
     # ── handled by the loop itself, not the TOOLS registry ───────────────
-    "plan_progress": ("Your task board for long or multi-part work. A new slug "
-                      "with a title adds an item (after/before a slug, or "
-                      "position, puts it in its place); a known slug changes "
-                      "its status; remove:true takes an item off; order (a "
-                      "list of slugs) re-sorts the board. Keep one item "
-                      "running and mark each done when it is finished. With several repositories, slug "
-                      "\"repos\" + work_in / read_only folders records which "
-                      "you change and which you only read, for the whole chat; "
-                      "an entry {path, branch, for} gives a branch its own folder. "
-                      "decision: one line on a choice you made that the user "
-                      "should know (another approach, why an item is skipped).",
+    "plan_progress": ("Your task board. New slug + title adds an item "
+                      "(after/before/position places it); known slug + status "
+                      "moves it; remove:true drops it; order re-sorts. Slug "
+                      "\"repos\" + work_in/read_only records which repositories "
+                      "you change. decision: one line on a choice the user "
+                      "should know.",
                       {"slug": "s", "title": "s", "status": "s", "decision": "s",
                        "remove": "b", "after": "s", "before": "s",
                        "position": "i", "order": "arrs",
