@@ -213,3 +213,23 @@ def test_narration_written_as_text_protocol_keeps_only_the_prose():
            "tool_calls": [{"function": {"name": "file_read",
                                         "arguments": {"path": "a.yaml"}}}]}
     assert _parse(_native._synth_step(msg))["thought"] == "check the config"
+
+
+def test_a_forced_write_step_offers_only_edit_tools_once(monkeypatch):
+    """click af6: 135 shell commands, two "write the change" notes ignored."""
+    _native.reset_native_cache()
+    monkeypatch.setattr(_native, "_model_for", lambda role: "m-fw")
+    from aiforge_core.llm import client
+    seen = []
+
+    def raw(role, msgs, tools=None, tool_choice=None):
+        seen.append(({(t.get("function") or {}).get("name") for t in tools}, tool_choice))
+        return {"role": "assistant", "content": "ok"}
+    monkeypatch.setattr(client, "complete_raw", raw)
+    fn = _native.make_native_complete_fn(session_id=77)
+    _native.force_write_next(77)
+    fn("chat", [{"role": "user", "content": "fix the bug in a.py"}])
+    fn("chat", [{"role": "user", "content": "fix the bug in a.py"}])
+    (first, c1), (second, c2) = seen
+    assert c1 == "required" and first and first <= _native.WRITE_TOOLS
+    assert c2 == "auto" and "run_command" in second

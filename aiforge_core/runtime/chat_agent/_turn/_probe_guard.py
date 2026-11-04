@@ -21,6 +21,14 @@ EVERY = 10
 #: before each note: a later run made 56 `python -c "...hasattr(...)"` checks
 #: between edits, which the in-a-row count never saw.
 PROBES_EVERY = 8
+#: Shell commands in a row (two notes ignored) before the next call may only
+#: edit files. Off switch: ``AIFORGE_CHAT_FORCE_WRITE=0``.
+FORCE_AT = 20
+
+
+def _force_on() -> bool:
+    return os.environ.get("AIFORGE_CHAT_FORCE_WRITE", "1").strip().lower() not in (
+        "0", "false", "no", "off")
 _PROBE = re.compile(r"\bpython[0-9.]*\s+(?:-c\b|-\s*<<|<<)")
 
 
@@ -73,6 +81,19 @@ def note(st, name: str, args) -> str:
     st.shell_streak = getattr(st, "shell_streak", 0) + 1
     if st.shell_streak % EVERY:
         return ""
+    if st.shell_streak >= FORCE_AT and edits and _force_on():
+        # Two notes ignored, in a run that writes code: the next call can only
+        # edit (click af6 ran 135 shell commands, 25 minutes, no edit).
+        try:
+            from .._native import force_write_next
+            force_write_next(getattr(st, "session_id", None))
+        except Exception:  # noqa: BLE001
+            return ""
+        st.shell_streak = 0
+        return (f"[harness — not the user] {FORCE_AT}+ shell commands and no change "
+                "to the files after two notes. Your next step can only edit files: "
+                "write the change you have been investigating now (file_patch / "
+                "multi_edit), then run the tests.")
     return (f"[harness — not the user] {st.shell_streak} shell commands in a row "
             "and no change to the files. If the task needs a code change, stop "
             "probing with throwaway scripts and cat/grep: read what you need with "

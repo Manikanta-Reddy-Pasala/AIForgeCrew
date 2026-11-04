@@ -35,6 +35,20 @@ log = logging.getLogger("aiforge.chat.native")
 
 # model id -> native-tool support (probed once, then cached).
 _NATIVE_CACHE: dict[str, bool] = {}
+#: Chats whose NEXT model call may only edit files (see force_write_next).
+_FORCE_WRITE: set = set()
+#: The tools a forced write step offers.
+WRITE_TOOLS = frozenset({"file_patch", "multi_edit", "file_write", "file_create", "editor"})
+
+
+def force_write_next(session_id) -> None:
+    """The next native call of this chat offers only the edit tools, with
+    tool_choice="required": a model that ignored two "write the change"
+    notes (20 shell probes, no edit) is made to write. One call only; it
+    costs a prompt re-read (the tool list changes), the loops it ends cost
+    20+ minutes."""
+    if session_id is not None:
+        _FORCE_WRITE.add(session_id)
 
 
 def _protocol_setting() -> str:
@@ -529,8 +543,15 @@ def make_native_complete_fn(mode: str = "act", builder: str = "",
                 tools.append(schema)
         remember_session_tools(convo, session_id)
         msgs = to_native_messages(convo)
+        send, choice = tools, "auto"
+        if session_id in _FORCE_WRITE:
+            _FORCE_WRITE.discard(session_id)
+            only = [t for t in tools if (t.get("function") or {}).get("name") in WRITE_TOOLS]
+            if only:
+                send, choice = only, "required"
+                log.info("forced write step: %d edit tools only", len(only))
         try:
-            msg = client.complete_raw(role, msgs, tools=tools, tool_choice="auto")
+            msg = client.complete_raw(role, msgs, tools=send, tool_choice=choice)
         except Exception as exc:  # noqa: BLE001
             from aiforge_core.llm import model_outage
             if model_outage.stall_budget_spent(exc):

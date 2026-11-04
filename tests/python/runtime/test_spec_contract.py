@@ -605,3 +605,17 @@ def test_not_type_checking_body_is_exported_and_its_else_is_not(tmp_path):
                                 "    A = dict\nelse:\n    from ._t import B\n")
     assert S.missing("Use `pkg.mod.A` and `pkg.mod.B`.", str(tmp_path)) == [
         "pkg.mod.B is not defined"]
+
+
+def test_probe_guard_forces_a_write_step_after_two_ignored_notes(monkeypatch):
+    from aiforge_core.runtime.chat_agent._turn import _probe_guard as P
+    from aiforge_core.runtime.chat_agent import _native
+    st = SimpleNamespace(edits_made=1, probe_edits_seen=1, cwd="/srv/work", session_id=5)
+    said = [P.note(st, "run_command", {"cmd": "ls -la shopkit"}) for _ in range(20)]
+    assert "can only edit files" in said[19] and 5 in _native._FORCE_WRITE
+    _native._FORCE_WRITE.discard(5)
+    assert st.shell_streak == 0
+    # no edit yet this turn (an ops run): notes only, never forced
+    st2 = SimpleNamespace(edits_made=0, cwd="/srv/work", session_id=6)
+    said = [P.note(st2, "run_command", {"cmd": "ls"}) for _ in range(20)]
+    assert 6 not in _native._FORCE_WRITE and "can only edit" not in said[19]
