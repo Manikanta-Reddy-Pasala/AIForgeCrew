@@ -621,3 +621,41 @@ def test_a_lint_only_failure_is_not_told_the_tests_fail():
     assert "The tests pass" in msg and "do NOT pass" not in msg
     assert not lint_only("1 failed, 4 passed")
     assert "do NOT pass" in _verify_fix_message("1 failed, 4 passed")
+
+
+def _git(cwd, *args):
+    subprocess.run(["git", "-C", cwd, "-c", "user.email=t@t", "-c", "user.name=t",
+                    *args], check=True, capture_output=True)
+
+
+def test_work_committed_after_the_pre_turn_baseline_is_still_linted(tmp_path):
+    # the team pipeline commits each subtask: a diff against HEAD is empty
+    py = _ruff_py()
+    cwd = _git_repo(tmp_path, {"m.py": "x = 1\n"})
+    _git(cwd, "commit", "--allow-empty", "-qm", "pre-turn baseline")
+    (tmp_path / "m.py").write_text("x = 1\ny = missing\n")
+    _git(cwd, "commit", "-qam", "subtask: a")
+    ok, out = ir._static_lint_python(cwd, py, dict(os.environ))
+    assert ok is False and "missing" in out
+
+
+def test_a_renamed_file_keeps_the_findings_it_came_with(tmp_path):
+    py = _ruff_py()
+    cwd = _git_repo(tmp_path, {"old.py": "def f():\n    return sqlfluff\n"})
+    _git(cwd, "mv", "old.py", "moved.py")
+    assert ir._static_lint_python(cwd, py, dict(os.environ)) == (True, "")
+
+
+def test_a_shifted_redefinition_is_the_same_finding(tmp_path):
+    py = _ruff_py()
+    cwd = _git_repo(tmp_path, {"m.py": "import os\nimport os\n\nprint(os)\n"})
+    (tmp_path / "m.py").write_text("import sys\nimport os\nimport os\n\nprint(os, sys)\n")
+    assert ir._static_lint_python(cwd, py, dict(os.environ)) == (True, "")
+
+
+def test_a_non_ascii_file_name_is_linted(tmp_path):
+    py = _ruff_py()
+    cwd = _git_repo(tmp_path, {"m.py": "x = 1\n"})
+    (tmp_path / "módulo.py").write_text("y = missing\n")
+    ok, out = ir._static_lint_python(cwd, py, dict(os.environ))
+    assert ok is False and "missing" in out

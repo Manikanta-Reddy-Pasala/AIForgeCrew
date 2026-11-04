@@ -215,8 +215,10 @@ def _verify_fix(st, step, cwd, plan_mode, builder):
             msg += "\n\n" + seen[1]
         st.convo.append({"role": "user", "content": msg})
         return "continue"
+    what = ("lint still finds new undefined names" if lint_only(_vout)
+            else f"tests still failing ({_fails})")
     yield {"type": "thought", "role": "system",
-           "text": f"⚠ tests still failing ({_fails}) after "
+           "text": f"⚠ {what} after "
                    f"{st.verify_rounds} fix rounds — stopping with "
                    "the honest state."}
     # The state is only honest if the ANSWER says so. Live: the run stopped

@@ -14,6 +14,7 @@ Public surface:
 from __future__ import annotations
 
 import os
+import re
 
 from aiforge_core.config import languages as _languages
 
@@ -154,37 +155,62 @@ def _absent(err: str) -> bool:
 _LINT_CODES = "F821,F822,F811"
 
 
-def _git_lines(cwd: str, *args: str) -> "list[str] | None":
+_LINT_DEADLINE_S = 120
+
+
+def _git_out(cwd: str, *args: str) -> "str | None":
     import subprocess
-    p = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True,
-                       timeout=30)
+    p = subprocess.run(["git", "-c", "core.quotePath=false", "-C", cwd, *args],
+                       capture_output=True, timeout=30)
     if p.returncode != 0:
         return None
-    return [ln for ln in (p.stdout or "").splitlines() if ln.strip()]
+    return p.stdout.decode("utf-8", "replace")
 
 
-def _changed_python(cwd: str) -> "tuple[list[str], set[str]] | None":
-    """``(changed .py files, the tracked ones among them)`` relative to
+def _lint_base(cwd: str) -> str:
+    """The commit the run started from: the pipeline's "pre-turn baseline"
+    when there is one (its subtasks COMMIT their work, so a diff against HEAD
+    would be empty and check nothing), else HEAD."""
+    base = (_git_out(cwd, "rev-list", "--max-count=1", "--grep=^pre-turn baseline",
+                     "HEAD") or "").strip()
+    return base or "HEAD"
+
+
+def _changed_python(cwd: str) -> "tuple[list[str], dict, str] | None":
+    """``(changed .py files, {file: its path at base}, base)`` relative to
     ``cwd``, or None when ``cwd`` is not a git tree with a commit (then the
-    whole tree is linted)."""
+    whole tree is linted). A renamed file maps to its old path."""
     try:
-        tracked = _git_lines(cwd, "diff", "--name-only", "--relative", "HEAD")
-        if tracked is None:
+        base = _lint_base(cwd)
+        diff = _git_out(cwd, "diff", "--name-status", "-M", "--relative", base)
+        if diff is None:
             return None
-        new = _git_lines(cwd, "ls-files", "--others", "--exclude-standard") or []
+        new = _git_out(cwd, "ls-files", "--others", "--exclude-standard") or ""
     except Exception:  # noqa: BLE001
         return None
-    keep = [p for p in dict.fromkeys(tracked + new)
+    was: dict = {}
+    files: list = []
+    for row in diff.splitlines():
+        cols = row.split("\t")
+        if len(cols) < 2 or cols[0].startswith("D"):
+            continue
+        files.append(cols[-1])
+        was[cols[-1]] = cols[1]          # R100 old new → old; M f → f
+    files += [ln for ln in new.splitlines() if ln.strip()]
+    keep = [p for p in dict.fromkeys(files)
             if p.endswith(".py") and os.path.isfile(os.path.join(cwd, p))]
-    return keep, set(tracked)
+    return keep, was, base
 
 
 def _ruff_findings(py, cwd, env, args, stdin=None) -> list:
     import subprocess
+    # --force-exclude: a file named on the command line still obeys ruff's
+    # own excludes (site-packages, the repo's exclude list), as "." did.
     lp = subprocess.run(
         [py, "-m", "ruff", "check", "--select", _LINT_CODES, "--no-cache",
-         "--output-format", "concise", "-q", *args], cwd=cwd, env=env,
-        input=stdin, capture_output=True, text=True, timeout=90)
+         "--force-exclude", "--output-format", "concise", "-q", *args],
+        cwd=cwd, env=env, input=stdin, capture_output=True, text=True,
+        errors="replace", timeout=90)
     return [ln for ln in (lp.stdout or "").splitlines() if ln.strip()]
 
 
@@ -192,27 +218,44 @@ def _finding_key(line: str) -> str:
     """``path:row:col: F821 msg`` → ``F821 msg`` (the row moves with any edit
     above it, so the code + message is what says "the same finding")."""
     parts = line.split(": ", 1)
-    return parts[1] if len(parts) == 2 else line
+    key = parts[1] if len(parts) == 2 else line
+    # F811 says "redefinition of unused `x` from line 12" — that line moves too
+    return re.sub(r"\bfrom line \d+", "from line N", key)
 
 
-def _new_findings(py, cwd, env, files, tracked) -> list:
-    """Findings in ``files`` that their HEAD version did not already have —
-    a finding the file came with is not this run's to fix."""
+def _finding_file(line: str, files: list) -> "str | None":
+    return next((f for f in files if line.startswith(f + ":")), None)
+
+
+def _new_findings(py, cwd, env, files, was, base) -> list:
+    """Findings in ``files`` that their version at ``base`` did not already
+    have — a finding the file came with is not this run's to fix. One ruff
+    call for all files; the old version is linted only for a file with
+    findings. A file whose check errors or runs past the deadline keeps
+    its findings (counted as new) and the rest are still reported."""
     import collections
-    out = []
-    for f in files:
-        now = _ruff_findings(py, cwd, env, [f])
-        if not now:
-            continue
+    import subprocess
+    import time
+    now = _ruff_findings(py, cwd, env, list(files))
+    by_file: dict = collections.defaultdict(list)
+    for line in now:
+        by_file[_finding_file(line, files)].append(line)
+    out = list(by_file.pop(None, []))
+    stop = time.monotonic() + _LINT_DEADLINE_S
+    for f, lines in by_file.items():
         before: collections.Counter = collections.Counter()
-        if f in tracked:
-            import subprocess
-            old = subprocess.run(["git", "-C", cwd, "show", f"HEAD:./{f}"],
-                                 capture_output=True, text=True, timeout=30)
-            if old.returncode == 0:
-                before.update(_finding_key(x) for x in _ruff_findings(
-                    py, cwd, env, ["--stdin-filename", f, "-"], stdin=old.stdout))
-        for line in now:
+        if f in was and time.monotonic() < stop:
+            try:
+                old = subprocess.run(
+                    ["git", "-C", cwd, "show", f"{base}:./{was[f]}"],
+                    capture_output=True, timeout=30)
+                if old.returncode == 0:
+                    before.update(_finding_key(x) for x in _ruff_findings(
+                        py, cwd, env, ["--stdin-filename", f, "-"],
+                        stdin=old.stdout.decode("utf-8", "replace")))
+            except Exception:  # noqa: BLE001
+                pass
+        for line in lines:
             k = _finding_key(line)
             if before[k] > 0:
                 before[k] -= 1
@@ -225,7 +268,7 @@ def _new_findings(py, cwd, env, files, tracked) -> list:
 # linter/typechecker (no heavy universal dep). Real-bug level only, never style.
 def _static_lint_python(cwd, py, env):
     """``(ok, output)``. In a git tree only the run's NEW findings count — in
-    the .py files it changed, minus what their HEAD version already had. A
+    the .py files it changed, minus what their base version already had. A
     repo that came with old F821s (sqlglot's benchmarks/) otherwise failed
     every finish: "tests do NOT pass" while every test passed, three verify
     rounds of the whole suite, then a false "checks still FAIL" on the answer."""
