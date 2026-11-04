@@ -172,9 +172,10 @@ def _is_scratch(path: str) -> bool:
     return bool(_SCRATCH_NAME.match(os.path.basename(path)))
 
 
-def hits(cmd: str, cwd: str, edited, git: "_Git | None" = None) -> list:
+def hits(cmd: str, cwd: str, edited, git: "_Git | None" = None, goal: str = "") -> list:
     """The edited files ``cmd`` would remove or overwrite (paths as given in
-    ``edited``)."""
+    ``edited``). ``goal``: the request — a new file it does not name, removed
+    by name, is the run's own scratch."""
     from aiforge_core.runtime import shell_writes as sw
     git = git or _Git()
     live = {os.path.realpath(p): p for p in (edited or ()) if os.path.exists(p)}
@@ -207,7 +208,7 @@ def hits(cmd: str, cwd: str, edited, git: "_Git | None" = None) -> list:
                 flag = next((i for i, a in enumerate(args)
                              if re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", a)), None)
                 if flag is not None and flag + 1 < len(args):
-                    found += hits(args[flag + 1], here, edited, git)
+                    found += hits(args[flag + 1], here, edited, git, goal)
             elif head in ("rm", "unlink"):
                 ops = _operands(args)
                 named = [o for o in ops if not _GLOB.search(o)]
@@ -215,8 +216,13 @@ def hits(cmd: str, cwd: str, edited, git: "_Git | None" = None) -> list:
                 one_by_one = len(named) == len(ops) and not any(
                     os.path.isdir(t) for t in targets)
                 got = cover(targets)
-                # naming a throwaway (debug.py) file by file is cleanup
-                found += [p for p in got if not (one_by_one and _is_scratch(p))]
+                # removing, by name, a throwaway (debug.py) or a new file the
+                # request does not name (a probe test the run wrote) is
+                # cleanup: click af11 was refused 61 times deleting its own
+                # untracked test_completion_item.py
+                found += [p for p in got if not (one_by_one and (
+                    _is_scratch(p) or (not git.tracked(p)
+                                       and os.path.basename(p) not in goal)))]
             elif head in sw._DEST_LAST or head == "truncate":
                 found += cover(_paths(sw._destination(args) if head != "truncate"
                                       else _operands(args, ("-s", "--size")), here))
@@ -237,19 +243,28 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
             return None
         # where run_command really runs (a workspace root, not the file cwd)
         base = git_target.command_base(cwd) or str(cwd or ".")
-        lost = hits(command_of(args) or "", base,
-                    (getattr(st, "file_hashes", None) or {}).keys())
+        cmd = command_of(args) or ""
+        lost = hits(cmd, base, (getattr(st, "file_hashes", None) or {}).keys(),
+                    goal=str(getattr(st, "goal", "") or ""))
     except Exception:  # noqa: BLE001 — the guard never blocks on its own error
         return None
     if not lost:
         return None
+    # The same command sent again after a refusal: the model means it (it
+    # was told the files; looping on refusals cost 61 calls in one run).
+    seen = st.__dict__.setdefault("discard_refused", set()) if hasattr(st, "__dict__") else set()
+    key = " ".join(cmd.split())
+    if key in seen:
+        seen.discard(key)
+        return None
+    seen.add(key)
     shown = [os.path.relpath(p, base) for p in lost[:8]]
     return {"ok": False, "error": "would_discard_own_edits", "files": shown,
             "hint": ("This command would throw away your own edits from this turn "
                      f"to: {', '.join(shown)}. Do not start over — if an edit broke "
                      "a file, fix it with file_patch, or use editor undo_edit for the "
                      "last edit. Only if you really mean to discard that work, send "
-                     "the same command again with \"discard\": true.")}
+                     "the same command again (once more is taken as meant).")}
 
 
 __all__ = ["hits", "refusal"]
