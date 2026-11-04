@@ -116,3 +116,34 @@ def test_the_check_can_be_turned_off(tmp_path, monkeypatch):
     G.snapshot(st, "file_patch", {"path": "core.py"}, str(tmp_path))
     f.write_text(SWALLOWED)
     assert list(G.check(st, "file_patch", [("core.py", str(f))], {})) == []
+
+
+def test_a_helper_lifted_to_module_level_on_purpose_is_not_reported():
+    after = ("def _process(v):\n    return v\n\n\nclass Multi:\n    def parse(self):\n"
+             "        return 1\n\n    def invoke(self, ctx):\n        return _process(ctx)\n")
+    assert G.lost_names(BEFORE, after, "        def _process(v):\n            return v\n") == []
+
+
+def test_a_rename_that_patches_only_the_name_is_not_a_loss():
+    after = BEFORE.replace("def parse(self)", "def parse_args(self)")
+    assert G.lost_names(BEFORE, after, "parse(self):") == []
+
+
+def test_an_editor_undo_by_sub_command_is_not_checked(tmp_path):
+    (tmp_path / "core.py").write_text(BEFORE)
+    st = SimpleNamespace(convo=[])
+    G.snapshot(st, "editor", {"sub_command": "undo_edit", "path": "core.py"}, str(tmp_path))
+    assert st.pre_edit == {}
+
+
+def test_one_file_named_twice_is_reported_once(tmp_path):
+    f = tmp_path / "core.py"
+    f.write_text(BEFORE)
+    st = SimpleNamespace(convo=[])
+    args = {"edits": [{"path": "core.py", "old_str": "return 1", "new_str": "return 2"},
+                      {"path": "./core.py", "old_str": "x", "new_str": "y"}]}
+    G.snapshot(st, "multi_edit", args, str(tmp_path))
+    f.write_text(SWALLOWED)
+    ev = list(G.check(st, "multi_edit", [("core.py", str(f)), ("./core.py", str(f))],
+                      args, str(tmp_path)))
+    assert len(ev) == 1

@@ -23,7 +23,7 @@ import ast
 import os
 import re
 
-from aiforge_core.runtime.tools.mutating import writes_files
+from aiforge_core.runtime.tools.mutating import editor_command, writes_files
 
 from ._progress import _full, _named_paths
 
@@ -53,7 +53,7 @@ def snapshot(st, name, args, cwd) -> None:
     st.pre_edit = {}
     args = args if isinstance(args, dict) else {}
     if (not _on() or name in _SKIP or not writes_files(name, args)
-            or (name == "editor" and args.get("command") in ("create", "undo_edit"))):
+            or (name == "editor" and editor_command(args) in ("create", "undo_edit"))):
         return
     try:
         for p in dict.fromkeys(_named_paths(args, None) or ()):
@@ -100,16 +100,23 @@ def _old_texts(args, full: str, cwd: str) -> str:
     return "\n".join(p for p in parts if isinstance(p, str))
 
 
-def _defines(text: str, leaf: str) -> bool:
-    return re.search(rf"\b(?:def|class)\s+{re.escape(leaf)}\b", text) is not None
+def _names_word(text: str, leaf: str) -> bool:
+    return re.search(rf"\b{re.escape(leaf)}\b", text) is not None
 
 
 def lost_names(before: str, after: str, old_text: str) -> list:
-    """``[(name, (where it is now, line) or None)]`` the edit moved or removed."""
+    """``[(name, (where it is now, line) or None)]`` the edit moved or removed.
+
+    A move DEEPER (``Multi.invoke`` → ``Multi.shell_complete.invoke``) is the
+    swallowed-code shape and is reported even when the old text names it; a
+    move up or sideways that the old text names is a refactor. A name gone
+    entirely is excused when the old text names it at all (a rename may patch
+    only ``parse(self`` → ``parse_args(self``)."""
     b, a = _defs(before), _defs(after)
     if b is None or a is None:
         return []
     out = []
+    used: set = set()
     for q in b:
         if q in a:
             continue
@@ -117,11 +124,21 @@ def lost_names(before: str, after: str, old_text: str) -> list:
         parent = q.rsplit(".", 1)[0] if "." in q else ""
         if parent and parent not in a:
             continue                 # its class or function went: said for that one
-        now = next((n for n in a if n.rsplit(".", 1)[-1] == leaf
-                    and n not in b), None)
-        if now is None and _defines(old_text, leaf):
-            continue                 # the edit named it: removed on purpose
-        out.append((q, (now, a[now]) if now else None))
+        named = _names_word(old_text, leaf)
+        cands = [n for n in a if n.rsplit(".", 1)[-1] == leaf and n not in b
+                 and n not in used]
+        cands.sort(key=lambda n: (not n.startswith(parent + ".") if parent else False,
+                                  a[n]))
+        now = cands[0] if cands else None
+        if now is None:
+            if named:
+                continue             # removed or renamed on purpose
+            out.append((q, None))
+            continue
+        if named and now.count(".") <= q.count("."):
+            continue                 # moved up or sideways on purpose
+        used.add(now)
+        out.append((q, (now, a[now])))
     return out
 
 
@@ -133,7 +150,7 @@ def check(st, name, files, args, cwd=""):
     if not pre or not _on():
         return
     for shown, full in files:
-        before = pre.get(full)
+        before = pre.pop(full, None)       # one file named two ways: checked once
         if before is None:
             continue
         after = _read(full)
