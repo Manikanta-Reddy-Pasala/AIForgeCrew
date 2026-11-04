@@ -82,12 +82,15 @@ def _post_edit_syntax_error(_name: str, args: dict, cwd: str) -> "str | None":
 
 
 _LINT_MARK = "=== python lint (undefined/redef)"
+#: what ``_static_check_gate`` appends (tsc, go vet, clippy, ...)
+_STATIC_MARK = "=== static checks — fix these ==="
 
 
 def lint_only(output: str) -> bool:
-    """The tests passed and only the lint leg failed — the runner appends
-    the lint block only to a green run."""
-    return _LINT_MARK in (output or "")
+    """The tests passed and only a lint/static-check leg failed — the runner
+    appends those blocks only to a green run."""
+    out = output or ""
+    return _LINT_MARK in out or _STATIC_MARK in out
 
 
 def _verify_fix_message(output: str) -> str:

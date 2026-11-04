@@ -327,7 +327,12 @@ def _project_verify(st, cwd):
         from aiforge_core.runtime.parallel_subtasks import _fail_count
         if ok is not False or lint_only(out) or _fail_count(out) != 999:
             return ok, out
-        from ._done_watch import own_test_verdict
+        from aiforge_core.runtime.shell_writes import command_of
+        from ._done_watch import _interpreter, own_test_verdict
+        last = getattr(st, "last_full_test", None)
+        cmd = command_of(last[1]) if last else ""
+        if not _whole_suite(cmd or ""):
+            return ok, out            # a narrower run cannot stand for the tree
         own = own_test_verdict(st)
     except Exception:  # noqa: BLE001 — the runner's verdict stands
         return ok, out
@@ -336,8 +341,55 @@ def _project_verify(st, cwd):
     green, own_out = own
     if not green:
         return False, own_out
+    try:
+        from aiforge_core.runtime.integration_report import _static_lint_python
+        py = _interpreter(cmd)
+        if py:
+            lint_ok, lint = _static_lint_python(cwd, py, None)
+            if not lint_ok:
+                return False, own_out + lint
+    except Exception:  # noqa: BLE001 — the lint leg is best effort
+        pass
     from aiforge_core.runtime.parallel_subtasks._reconcile._testrun import _static_check_gate
     return _static_check_gate(cwd, True, own_out)
+
+
+_TOP_TESTS = frozenset({"tests", "test", "testing", "."})
+#: pytest options that take a value as the next word.
+_VALUE_OPTS = frozenset({"-p", "-c", "-o", "--rootdir", "--confcutdir", "--basetemp",
+                         "-W", "--junitxml", "--log-level", "--tb", "-r", "--durations",
+                         "--ignore", "--deselect"})
+
+
+def _whole_suite(cmd: str) -> bool:
+    """A pytest run over the whole suite: no paths after ``pytest``, or only
+    the top-level test folder (``tests``). ``pytest tests/unit`` is not: a
+    conftest it broke elsewhere would not show."""
+    import shlex
+    try:
+        words = shlex.split(cmd)
+    except ValueError:
+        return False
+    at = next((i for i, w in enumerate(words) if w.endswith("pytest")), None)
+    if at is None or any(w in ("&&", ";", "|", "||") for w in words[at:]):
+        return False
+    skip = False
+    for w in words[at + 1:]:
+        if skip:
+            skip = False
+            continue
+        if w in _VALUE_OPTS:
+            if w in ("--ignore", "--deselect"):
+                return False
+            skip = True
+            continue
+        if w.startswith(("--ignore", "--deselect")):
+            return False
+        if w.startswith("-"):
+            continue
+        if w.rstrip("/") not in _TOP_TESTS:
+            return False
+    return True
 
 
 def _verify_known_ok(st, ok, out):

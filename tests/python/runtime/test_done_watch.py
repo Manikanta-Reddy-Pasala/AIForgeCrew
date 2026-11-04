@@ -258,3 +258,21 @@ def test_a_red_exit_with_no_listed_failure_is_not_judged(tmp_path, monkeypatch):
         1, "120 passed in 3s\nFAIL Required test coverage of 90% not reached."))
     st = SimpleNamespace(cwd=str(tmp_path), goal="x")
     assert W.own_test_verdict(st, "pytest --cov=p --cov-fail-under=90") is None
+
+
+@pytest.mark.parametrize("cmd,whole", [
+    ("cd /r && PYTHONPATH=src /v/bin/python -m pytest tests -q", True),
+    ("python -m pytest -q -p no:cacheprovider", True),
+    ("pytest tests/ -q --tb short", True),
+    ("pytest tests/unit -q", False),
+    ("pytest -q --ignore=tests/integration", False),
+    ("pytest tests/test_a.py", False),
+    ("make test", False),
+])
+def test_only_a_whole_suite_run_stands_in_for_the_runner(cmd, whole):
+    assert _outcomes._whole_suite(cmd) is whole
+
+
+def test_a_static_check_failure_is_a_lint_failure_not_failing_tests():
+    from aiforge_core.runtime.chat_agent._context._verify import lint_only
+    assert lint_only("12 passed\n\n=== static checks — fix these ===\n=== go vet ===\nx")
