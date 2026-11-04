@@ -106,21 +106,42 @@ def test_the_refusal_names_the_files_and_takes_the_override(repo, monkeypatch):
                          str(root)) is None
 
 
-def test_removing_a_new_unnamed_probe_file_by_name_is_cleanup(repo):
+def test_removing_a_new_unnamed_probe_test_by_name_is_cleanup(repo):
     root, edited = repo
     (root / "test_completion_item.py").write_text("def test_x(): pass\n")
     edited = edited + [str(root / "test_completion_item.py")]
     assert G.hits("rm -f test_completion_item.py", str(root), edited, goal="build it") == []
-    # a new file the request names stays protected, so do tracked files and globs
-    assert G.hits("rm src/new_mod.py", str(root), edited, goal="add `src/new_mod.py`")
+    # a probe the request names, new modules (src/), tracked files and globs stay protected
+    assert G.hits("rm -f test_completion_item.py", str(root), edited,
+                  goal="add tests in test_completion_item")
+    assert G.hits("rm src/new_mod.py", str(root), edited, goal="")
     assert G.hits("rm src/core.py", str(root), edited, goal="")
     assert G.hits("rm -f *.py src/*.py", str(root), edited, goal="")
 
 
-def test_the_same_refused_command_sent_again_goes_through(repo, monkeypatch):
+def test_a_refused_untracked_file_sent_again_at_once_goes_through(repo, monkeypatch):
     root, edited = repo
     from aiforge_core.runtime import git_target
     monkeypatch.setattr(git_target, "command_base", lambda cwd: str(root))
     st = SimpleNamespace(file_hashes=dict.fromkeys(edited, "h"), goal="")
-    assert G.refusal(st, "run_command", {"cmd": "rm src/core.py"}, str(root))
-    assert G.refusal(st, "run_command", {"cmd": "rm  src/core.py"}, str(root)) is None
+    assert G.refusal(st, "run_command", {"cmd": "rm src/new_mod.py"}, str(root))
+    assert G.refusal(st, "run_command", {"cmd": "rm src/new_mod.py"}, str(root)) is None
+
+
+def test_tracked_work_is_never_let_through_by_a_repeat(repo, monkeypatch):
+    root, edited = repo
+    from aiforge_core.runtime import git_target
+    monkeypatch.setattr(git_target, "command_base", lambda cwd: str(root))
+    st = SimpleNamespace(file_hashes=dict.fromkeys(edited, "h"), goal="")
+    for _ in range(4):
+        assert G.refusal(st, "run_command", {"cmd": "rm src/core.py"}, str(root))
+
+
+def test_a_late_repeat_is_refused_again(repo, monkeypatch):
+    root, edited = repo
+    from aiforge_core.runtime import git_target
+    monkeypatch.setattr(git_target, "command_base", lambda cwd: str(root))
+    st = SimpleNamespace(file_hashes=dict.fromkeys(edited, "h"), goal="")
+    assert G.refusal(st, "run_command", {"cmd": "rm src/new_mod.py"}, str(root))
+    G.refusal(st, "run_command", {"cmd": "ls"}, str(root))           # another command between
+    assert G.refusal(st, "run_command", {"cmd": "rm src/new_mod.py"}, str(root))

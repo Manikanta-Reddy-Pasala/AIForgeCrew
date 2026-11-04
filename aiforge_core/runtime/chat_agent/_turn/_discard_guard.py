@@ -172,6 +172,26 @@ def _is_scratch(path: str) -> bool:
     return bool(_SCRATCH_NAME.match(os.path.basename(path)))
 
 
+_PROBE_TEST = re.compile(r"^(?:test_[\w-]+|[\w-]+_test)\.py$")
+_TEST_DIRS = frozenset({"tests", "test"})
+
+
+def _probe_file(path: str, git: "_Git", goal: str) -> bool:
+    """A probe test the run wrote for itself: untracked, a test file's name,
+    at the repo root or in a tests folder, and not a name the request uses
+    (as a word, with or without ``.py``). New modules under a package or
+    src/ are real work and stay protected."""
+    name = os.path.basename(path)
+    if not _PROBE_TEST.match(name) or git.tracked(path):
+        return False
+    parent = os.path.dirname(os.path.realpath(path))
+    top = git.top(parent)
+    if not (parent == top or os.path.basename(parent) in _TEST_DIRS):
+        return False
+    stem = name[:-3]
+    return not re.search(rf"(?<![\w]){re.escape(stem)}(?![\w])", goal or "")
+
+
 def hits(cmd: str, cwd: str, edited, git: "_Git | None" = None, goal: str = "") -> list:
     """The edited files ``cmd`` would remove or overwrite (paths as given in
     ``edited``). ``goal``: the request — a new file it does not name, removed
@@ -221,8 +241,7 @@ def hits(cmd: str, cwd: str, edited, git: "_Git | None" = None, goal: str = "") 
                 # cleanup: click af11 was refused 61 times deleting its own
                 # untracked test_completion_item.py
                 found += [p for p in got if not (one_by_one and (
-                    _is_scratch(p) or (not git.tracked(p)
-                                       and os.path.basename(p) not in goal)))]
+                    _is_scratch(p) or _probe_file(p, git, goal)))]
             elif head in sw._DEST_LAST or head == "truncate":
                 found += cover(_paths(sw._destination(args) if head != "truncate"
                                       else _operands(args, ("-s", "--size")), here))
@@ -241,6 +260,7 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
         from aiforge_core.runtime.shell_writes import SHELL_TOOLS, command_of
         if name not in SHELL_TOOLS:
             return None
+        st.discard_calls = getattr(st, "discard_calls", 0) + 1
         # where run_command really runs (a workspace root, not the file cwd)
         base = git_target.command_base(cwd) or str(cwd or ".")
         cmd = command_of(args) or ""
@@ -250,21 +270,23 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
         return None
     if not lost:
         return None
-    # The same command sent again after a refusal: the model means it (it
-    # was told the files; looping on refusals cost 61 calls in one run).
-    seen = st.__dict__.setdefault("discard_refused", set()) if hasattr(st, "__dict__") else set()
-    key = " ".join(cmd.split())
-    if key in seen:
-        seen.discard(key)
+    # The same untracked files refused, sent again as the very next shell
+    # command: the model means it (looping on refusals cost 61 calls in one
+    # run). Tracked work is never let through this way — it needs the flag.
+    n = getattr(st, "discard_calls", 0)
+    key = (base, tuple(sorted(lost)))
+    last = getattr(st, "discard_last", None)
+    st.discard_last = (key, n)
+    if last and last[0] == key and last[1] == n - 1 and all(not _Git().tracked(p) for p in lost):
+        st.discard_last = None
         return None
-    seen.add(key)
     shown = [os.path.relpath(p, base) for p in lost[:8]]
     return {"ok": False, "error": "would_discard_own_edits", "files": shown,
             "hint": ("This command would throw away your own edits from this turn "
                      f"to: {', '.join(shown)}. Do not start over — if an edit broke "
                      "a file, fix it with file_patch, or use editor undo_edit for the "
                      "last edit. Only if you really mean to discard that work, send "
-                     "the same command again (once more is taken as meant).")}
+                     "the same command again with \"discard\": true.")}
 
 
 __all__ = ["hits", "refusal"]
