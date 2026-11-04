@@ -212,6 +212,10 @@ def _step_prologue(st, n, _cwd, role, complete_fn, session_id, builder):
         return None, "return"
     yield from at_item_step_start(st)
     yield from _drain_steering(st, session_id)
+    from ._turn._done_watch import watch as _done_watch
+    _sig = yield from _done_watch(st, n)
+    if _sig == "return":
+        return None, "return"
     if getattr(st, "goal_question", None):
         # A message that could not be placed against the chat's goals: the
         # harness asks and the turn waits for the answer (the model would be

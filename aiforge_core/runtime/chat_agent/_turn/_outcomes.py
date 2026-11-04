@@ -106,16 +106,39 @@ def _note_green_tests(st, name, args, result, cwd) -> None:
     name, args, result = run
     if not isinstance(result, dict) or not _is_test_run(name, args):
         return
-    _gaming.note_test_result(st, result.get("ok"))
-    if result.get("ok") is not True:
+    known = _only_known_failures(st, result)
+    _gaming.note_test_result(st, True if known else result.get("ok"))
+    if result.get("ok") is not True and not known:
         st.last_green_fp = None
         return
-    if not (_full_and_honest(name, args) and runner_green(result_text(result))):
+    if not (_full_and_honest(name, args) and (known or runner_green(result_text(result)))):
         return                        # proves nothing about the whole suite
     try:
         st.last_green_fp = content_fingerprint(cwd)
+        st.green_at_edits = getattr(st, "edits_made", 0)
     except Exception:  # noqa: BLE001
         st.last_green_fp = None
+
+
+_FAILED_ID = re.compile(r"^(?:FAILED|ERROR)\s+(\S+::\S+)", re.M)
+
+
+def _only_known_failures(st, result) -> bool:
+    """Every failing test is one the request itself says already fails
+    ("`test_lazy_load` already fails in this environment; ignore it"): the
+    suite is as green as it can be. Needs the failing ids printed."""
+    try:
+        text = result_text(result)
+        ids = _FAILED_ID.findall(text)
+        goal = str(getattr(st, "goal", "") or "")
+        if not ids or not goal or not re.search(r"\b\d+ failed\b", text):
+            return False
+        n_failed = int(re.findall(r"\b(\d+) failed\b", text)[-1])
+        if n_failed != len(set(ids)):
+            return False
+        return all(i.rsplit("::", 1)[-1] in goal for i in ids)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # ── the same failure, fix after fix ──────────────────────────────────────
