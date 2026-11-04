@@ -257,7 +257,7 @@ def _verify_fix(st, step, cwd, plan_mode, builder):
         if getattr(st, "verify_capped_at", None) == here:
             return None
         st.verify_capped_at = here
-        _vok, _vout = _verify_known_ok(st, *_run_project_verify(cwd))
+        _vok, _vout = _verify_known_ok(st, *_project_verify(st, cwd))
         _gaming.note_test_result(st, _vok)
         if _vok is False:
             try:
@@ -272,7 +272,7 @@ def _verify_fix(st, step, cwd, plan_mode, builder):
         return None
     yield {"type": "thought", "role": "system",
            "text": "⧗ running the project's checks before finishing…"}
-    _vok, _vout = _verify_known_ok(st, *_run_project_verify(cwd))
+    _vok, _vout = _verify_known_ok(st, *_project_verify(st, cwd))
     _gaming.note_test_result(st, _vok)
     if _vok is not False:
         return None
@@ -313,6 +313,35 @@ def _verify_fix(st, step, cwd, plan_mode, builder):
     # 1 passed". The harness ran the checks itself, so it says what it saw.
     step["text"] = still_failing_note(_fails, _vout) + (step.get("text") or "")
     return None
+
+
+def _project_verify(st, cwd):
+    """``(ok, output)`` of the finish check. The turn's own full test command
+    when it has one that runs tests (``own_test_verdict``), plus the lint leg
+    on what the turn changed; otherwise the harness's own project runner. That
+    runner guesses the command and can fail to collect a suite the model runs
+    green (click: wrong PYTHONPATH, "(999) failing", two false fix rounds)."""
+    try:
+        from ._done_watch import _interpreter, own_test_verdict
+        own = own_test_verdict(st)
+    except Exception:  # noqa: BLE001 — fall back to the project runner
+        own = None
+    if own is None:
+        return _run_project_verify(cwd)
+    green, out = own
+    if not green:
+        return False, out
+    try:
+        from aiforge_core.runtime.integration_report import _static_lint_python
+        from aiforge_core.runtime.shell_writes import command_of
+        py = _interpreter(command_of(st.last_full_test[1]) or "")
+        if py:
+            ok, lint = _static_lint_python(cwd, py, None)
+            if not ok:
+                return False, out + lint
+    except Exception:  # noqa: BLE001 — the lint leg is best effort
+        pass
+    return True, out
 
 
 def _verify_known_ok(st, ok, out):

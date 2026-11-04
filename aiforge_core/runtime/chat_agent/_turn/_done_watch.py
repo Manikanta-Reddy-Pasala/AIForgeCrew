@@ -270,23 +270,45 @@ def _probe_tests(st):
     yield {"type": "thought", "role": "system",
            "text": "⧗ no edits for a while and every new named part is in — re-running "
                    "the turn's full test command to see whether the work is done"}
-    from aiforge_core.runtime import git_target
+    verdict = own_test_verdict(st, cmd)
+    if verdict is None:
+        return
+    st.tests_green = verdict[0]
+    if verdict[0]:
+        from ._outcomes import content_fingerprint
+        st.last_green_fp = content_fingerprint(getattr(st, "cwd", None))
+        st.green_at_edits = edits
 
-    from ._outcomes import _only_known_failures, content_fingerprint
+
+def own_test_verdict(st, cmd: "str | None" = None) -> "tuple[bool, str] | None":
+    """The turn's own last full test command (``st.last_full_test``) run now:
+    ``(green, output)``, or None when there is none, it is not a bare test
+    command, or it ran no tests or failed tests it did not name. Green when
+    it passed, or every failure is one the request calls known or one the
+    original code has too. The command the model found to work: the
+    harness's own guess at the project's tests can fail to even collect
+    (click: "(999) failing" on a green suite, two false fix rounds)."""
+    if cmd is None:
+        last = getattr(st, "last_full_test", None)
+        if not last:
+            return None
+        from aiforge_core.runtime.shell_writes import command_of
+        cmd = _probe_command(command_of(last[1]) or "")
+        if not cmd:
+            return None
+    from aiforge_core.runtime import git_target
+    from ._outcomes import _only_known_failures
     cwd = git_target.command_base(getattr(st, "cwd", None)) or str(getattr(st, "cwd", "."))
     code, out = _run(cmd, cwd)
     if not _RAN.search(out):
-        return
+        return None
     n_failed = re.findall(r"\b(\d+) failed\b", out)
     listed = len(set(_FAIL_ONLY.findall(out)))
     if n_failed and int(n_failed[-1]) != listed:
-        return                        # failures it did not name: cannot judge them
+        return None                   # failures it did not name: cannot judge them
     green = code == 0 or _only_known_failures(st, {"ok": False, "stdout": out}) \
         or pre_existing(cwd, cmd, out, getattr(st, "dw_base_rev", None))
-    st.tests_green = green
-    if green:
-        st.last_green_fp = content_fingerprint(getattr(st, "cwd", None))
-        st.green_at_edits = edits
+    return bool(green), out
 
 
 def _acts(step: dict) -> bool:

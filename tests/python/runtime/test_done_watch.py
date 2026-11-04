@@ -225,3 +225,22 @@ def test_the_base_run_imports_the_original_code_not_the_edited_one(tmp_path):
     code, out = W._run(cmd, str(tmp_path))
     assert code != 0                                   # the edit broke test_f
     assert not W.pre_existing(str(tmp_path), cmd, out)  # it passes on the original
+
+
+def test_the_finish_check_runs_the_turns_own_test_command(tmp_path, monkeypatch):
+    """The harness's guessed runner failed to collect click's suite ("999
+    failing") while the model's own command ran it green: two false rounds."""
+    import sys
+    _git_repo(tmp_path, {"test_a.py": "def test_ok():\n    assert True\n"})
+    monkeypatch.setattr(_outcomes, "_run_project_verify",
+                        lambda cwd: (False, "ImportError while loading conftest"))
+    st = SimpleNamespace(cwd=str(tmp_path), goal="x", last_full_test=(
+        "run_command", {"cmd": f"cd {tmp_path} && {sys.executable} -m pytest -q -p no:cacheprovider"}))
+    ok, out = _outcomes._project_verify(st, str(tmp_path))
+    assert ok is True and "1 passed" in out
+    (tmp_path / "test_a.py").write_text("def test_ok():\n    assert False\n\n"
+                                        "def test_b():\n    assert True\n")
+    ok, out = _outcomes._project_verify(st, str(tmp_path))
+    assert ok is False and "FAILED" in out                # broken by the turn
+    st.last_full_test = None                              # no own command: the runner
+    assert _outcomes._project_verify(st, str(tmp_path))[0] is False
