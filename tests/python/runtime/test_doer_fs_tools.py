@@ -447,3 +447,22 @@ def test_reading_a_missing_file(repo):
 def test_reading_a_directory_is_an_error(repo):
     (repo / "d").mkdir()
     assert _fs.read_lines("d")["ok"] is False
+
+
+def test_an_existing_large_file_gets_no_split_warning(tmp_path, monkeypatch):
+    """click's core.py (~3000 lines): every patch said 'split it', and the model
+    split the module the request named."""
+    import subprocess
+    from aiforge_core.runtime import syntax_guard
+    monkeypatch.setenv("AIFORGE_MAX_FILE_LINES", "50")
+    big = "x = 1\n" * 80
+    f = tmp_path / "core.py"
+    f.write_text(big)
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@t", "PATH": __import__("os").environ["PATH"]}
+    for cmd in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "s"]):
+        subprocess.run(["git", "-C", str(tmp_path), *cmd], check=True, capture_output=True, env=env)
+    assert syntax_guard.oversize_warning(str(f), big + "y = 2\n") == ""
+    new = tmp_path / "new_mod.py"
+    w = syntax_guard.oversize_warning(str(new), big)
+    assert "over the 50-line cap" in w and "unless the request names" in w

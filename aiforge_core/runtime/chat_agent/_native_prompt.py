@@ -42,8 +42,9 @@ delete it.
 
 Write clean code: DRY, KISS, one concern per function or module. Keep each \
 file under ~500 lines; if a write tool returns a 'warning' that the file is \
-over the cap, split it into concern-grouped modules instead of appending. \
-Same rule as the team pipeline Doer.
+over the cap, split it into concern-grouped modules instead of appending — \
+but never a file or module the request names (its names stay where the \
+request puts them). Same rule as the team pipeline Doer.
 
 How to work (fast and exact): read code with the read tools (file_read, \
 read_lines, read_files) and search with the grep and find tools — not \

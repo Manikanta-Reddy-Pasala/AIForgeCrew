@@ -166,6 +166,18 @@ def _line_cap() -> int:
         return 500
 
 
+def _committed_lines(path: str) -> int:
+    """Lines of ``path`` as last committed (0 when untracked / no git)."""
+    try:
+        import subprocess
+        d = os.path.dirname(os.path.abspath(path)) or "."
+        p = subprocess.run(["git", "-C", d, "show", f"HEAD:./{os.path.basename(path)}"],
+                           capture_output=True, timeout=10)
+        return p.stdout.count(b"\n") + 1 if p.returncode == 0 else 0
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def oversize_warning(path: str, content: str) -> str:
     """A soft, NON-BLOCKING nudge when a written CODE file exceeds the line cap —
     the standing DRY / KISS / separation-of-concerns rule: split a growing file
@@ -180,8 +192,14 @@ def oversize_warning(path: str, content: str) -> str:
         n = (content or "").count("\n") + 1
         if n <= cap:
             return ""
+        if _committed_lines(path) > cap:
+            # click's core.py is ~3000 lines: every patch to it said "split",
+            # and the model split the module the request named. A file that
+            # was already this big is not this run's to split.
+            return ""
         return (f"file is {n} lines (over the {cap}-line cap) — split into "
-                f"concern-grouped modules (DRY / KISS / separation of concerns)")
+                f"concern-grouped modules (DRY / KISS / separation of concerns), "
+                f"unless the request names this file or module: then keep it whole")
     except Exception:  # noqa: BLE001
         return ""
 
