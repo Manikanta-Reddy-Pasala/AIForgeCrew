@@ -331,7 +331,9 @@ def _project_verify(st, cwd):
         from ._done_watch import _interpreter, own_test_verdict
         last = getattr(st, "last_full_test", None)
         cmd = command_of(last[1]) if last else ""
-        if not _whole_suite(cmd or "", cwd):
+        from aiforge_core.runtime import git_target
+        base = git_target.command_base(getattr(st, "cwd", None) or cwd) or cwd
+        if not _whole_suite(cmd or "", base):
             return ok, out            # a narrower run cannot stand for the tree
         own = own_test_verdict(st)
     except Exception:  # noqa: BLE001 — the runner's verdict stands
@@ -365,21 +367,26 @@ _NOT_WHOLE = ("--ignore", "--deselect", "--noconftest", "--sw", "--stepwise",
               "--ff", "--pyargs")
 
 
-def _whole_suite(cmd: str, cwd: str = "") -> bool:
+def _whole_suite(cmd: str, base: str = "") -> bool:
     """A pytest run over the whole suite: no paths after ``pytest``, or only
-    the top-level test folder (``tests``), from the repo root (a leading
-    ``cd`` must point at ``cwd``), with nothing that narrows collection
-    (--ignore, --noconftest, -o testpaths=, stepwise...). ``pytest tests/unit``
-    or ``cd backend && pytest`` is not: a conftest broken elsewhere would not
-    show."""
+    the top-level test folder (``tests``), from the folder the shell starts
+    in (``base``) or a repo root (a leading ``cd``, resolved against
+    ``base``), with nothing that narrows collection (--ignore, --noconftest,
+    -o testpaths=, stepwise...). ``pytest tests/unit`` or ``cd backend &&
+    pytest`` inside a repo is not: a conftest broken elsewhere would not show."""
     import os
     import re
     import shlex
     m = re.match(r"\s*cd\s+(\S+)\s*&&\s*", cmd or "")
     if m:
-        if not cwd or os.path.realpath(os.path.join(cwd, m.group(1))) \
-                != os.path.realpath(cwd):
+        if not base:
             return False
+        target = os.path.realpath(os.path.join(base, os.path.expanduser(m.group(1))))
+        if target != os.path.realpath(base):
+            from aiforge_core.runtime.repo_ident import git_toplevel
+            top = git_toplevel(target)
+            if not top or os.path.realpath(top) != target:
+                return False      # a folder inside a repo, not its root
         cmd = cmd[m.end():]
     if re.search(r"&&|\|\||[;|`]|\$\(", cmd or ""):
         return False

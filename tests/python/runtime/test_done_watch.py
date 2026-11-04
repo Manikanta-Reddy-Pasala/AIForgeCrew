@@ -284,3 +284,13 @@ def test_only_a_whole_suite_run_stands_in_for_the_runner(cmd, whole):
 def test_a_static_check_failure_is_a_lint_failure_not_failing_tests():
     from aiforge_core.runtime.chat_agent._context._verify import lint_only
     assert lint_only("12 passed\n\n=== static checks — fix these ===\n=== go vet ===\nx")
+
+
+def test_a_cd_into_a_repo_root_from_its_parent_is_still_the_whole_suite(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_repo(repo, {"a.py": "x = 1\n"})
+    (repo / "backend").mkdir()
+    assert _outcomes._whole_suite(f"cd {repo} && python -m pytest -q", str(tmp_path))
+    assert _outcomes._whole_suite("cd repo && pytest", str(tmp_path))     # relative to base
+    assert not _outcomes._whole_suite(f"cd {repo}/backend && pytest", str(tmp_path))
