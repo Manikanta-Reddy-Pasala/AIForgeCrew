@@ -379,3 +379,59 @@ def test_a_name_described_as_current_then_marked_for_removal_is_not_claimed(tmp_
            "wired through `click.core._bashcomplete()`. Replace it with a new one.\n"
            "Files: `src/click/_bashcomplete.py` (remove or\nreplace).")
     assert S.claims(req) == []
+
+
+# review of the dotted-call change
+
+def test_a_lowercase_call_on_a_library_object_is_no_gap(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "__init__.py").write_text("")
+    assert S.missing("Load it with `app.config.from_object(Config)`.", str(tmp_path)) == []
+
+
+def test_a_name_defined_in_a_try_block_is_exported(tmp_path):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "compat.py").write_text(
+        "try:\n    from ._speedups import fast_parse\nexcept ImportError:\n"
+        "    def fast_parse(text):\n        return text\n")
+    assert S.missing("Use `pkg.compat.fast_parse(text)`.", str(tmp_path)) == []
+
+
+def test_a_missing_file_is_reported_when_the_request_names_only_files(tmp_path):
+    (tmp_path / "shopkit").mkdir()
+    (tmp_path / "shopkit" / "core.py").write_text("x = 1\n")
+    assert S.missing("Create `shopkit/invoices.py` with the invoice logic.",
+                     str(tmp_path)) == ["shopkit/invoices.py does not exist"]
+
+
+def test_extending_an_existing_class_still_claims_the_new_signature():
+    cs = S.claims("Extend the existing `Inventory` class with "
+                  "`Inventory.receive(sku, qty, *, expiry=None)`.")
+    assert any(c.get("name") == "receive" for c in cs)
+
+
+def test_a_heading_ends_the_current_state_sentence():
+    cs = S.claims("## Currently it is in `parse.py`\n\n## Required\n- `pkg.cli.Main(args)`")
+    assert any(c.get("name") == "Main" for c in cs)
+
+
+def test_the_target_of_a_rename_move_or_replace_is_still_claimed():
+    texts = {c["text"] for c in S.claims(
+        "Rename `load(path)` to `load_config(path, *, strict=True)`. "
+        "Move the helpers into `pkg/helpers.py`. "
+        "Add `src/click/shell_completion.py`, which replaces `src/click/_bashcomplete.py`.")}
+    assert "load_config(path, *, strict=True)" in texts
+    assert "pkg/helpers.py" in texts and "src/click/shell_completion.py" in texts
+    assert "src/click/_bashcomplete.py" not in texts and "load(path)" not in texts
+
+
+def test_an_example_mention_does_not_hide_a_later_requirement():
+    cs = S.claims("For example, `cache.get(key, default=None)` returns it.\n\n"
+                  "Required: `Cache.get(key, default=None)`.")
+    assert any(c.get("cls") == "Cache" for c in cs)
+
+
+def test_an_input_output_arrow_pair_is_not_claimed():
+    assert S.claims("upper-cased as today\n(`log_changes()` -> `LOG_CHANGES()`).") == []

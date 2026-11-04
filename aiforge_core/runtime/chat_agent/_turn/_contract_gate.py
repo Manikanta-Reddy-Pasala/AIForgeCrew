@@ -28,7 +28,8 @@ def _gaps(st) -> list:
     if not goal or not cwd:
         return []
     try:
-        gaps = spec_contract.missing(goal, str(cwd), key=(id(st), len(getattr(st, "convo", None) or [])))
+        gaps = spec_contract.missing(goal, str(cwd), key=(
+            id(st), len(getattr(st, "convo", None) or []), getattr(st, "edits_made", 0)))
     except Exception:  # noqa: BLE001 — the check never blocks an answer
         return []
     # What the user said mid-run wins over the first message: a gap whose

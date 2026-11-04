@@ -519,7 +519,10 @@ def _after_condense(st, unread, before):
             from ._contract_gate import progress_note
             note = progress_note(st)
             if note:
-                st.convo.append({"role": "user", "content": note})
+                # merged into a trailing user turn: two user turns in a row
+                # break some providers (claude_local)
+                from ._convo import _append_directive
+                _append_directive(st, note)
         except Exception:  # noqa: BLE001 — advisory only
             pass
 

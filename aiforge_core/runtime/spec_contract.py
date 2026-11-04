@@ -74,7 +74,16 @@ _STDLIB = set(getattr(sys, "stdlib_module_names", ()))
 
 #: A sentence about the code as it is now ("its current support lives in
 #: `a.py` and is wired through `b()`"): its names are not claims.
-_CURRENT = re.compile(r"\b(?:current(?:ly)?|existing|today|right now|at the moment)\b", re.I)
+_CURRENT = re.compile(r"\bcurrent(?:ly)?\b[^.`\n]{0,60}\b(?:lives?|is|are|uses?|wired|"
+                      r"implemented|exists?|sits?|handled)\b", re.I)
+#: A gone-verb whose OBJECT follows: "remove `X`", but not "rename `a` to `X`",
+#: "move them into `X`", "replace it with `X`" (there `X` is the new thing).
+_GONE_BEFORE_TARGET = re.compile(r"\b(?:to|into|with|by|as|onto)\b", re.I)
+#: Right after a name: "`a.py` (remove or replace)", "`x` is no longer needed".
+#: "`new.py`, which replaces `old.py`" is the subject, not gone.
+_GONE_AFTER = re.compile(r"^[\s`'\",)]*(?:\(\s*)?(?:(?:is|are|will be|should be|can be|gets?)\s+)?"
+                         r"(?:remove|delet|drop|deprecat|no longer|retire|go(?:es)? away|replace)",
+                         re.I)
 #: "Examples (with `_get_words(cli, args)` …", "e.g. `helper(x)`": a name used
 #: to show behaviour, not one the code must define.
 _EXAMPLE = re.compile(r"\b(?:examples?|e\.g\.|for instance)\b", re.I)
@@ -117,13 +126,17 @@ def claims(request: str) -> list:
     """What the request says the code has, one dict per backticked name."""
     out, seen = [], set()
     request = request or ""
-    # A name any mention says goes ("`a.py` (remove or replace)") is not
-    # claimed, even when an earlier mention only described it.
+    # A name a mention says goes ("remove `X`", "`a.py` (remove or replace)")
+    # is not claimed anywhere; the target of a rename/move/split is not gone.
     gone = set()
     for m in _SPAN.finditer(request):
         before = (request[max(0, m.start() - _GONE_WINDOW):m.start()]).split("\n")[-1]
-        after = re.split(r"[.;\n]", request[m.end():m.end() + _GONE_WINDOW], maxsplit=1)[0]
-        if _GONE.search(before) or _GONE.search(after):
+        verb = None
+        for verb in _GONE.finditer(before):
+            pass
+        if verb is not None and not _GONE_BEFORE_TARGET.search(before[verb.end():]):
+            gone.add(m.group(1).strip())
+        elif _GONE_AFTER.search(request[m.end():m.end() + _GONE_WINDOW]):
             gone.add(m.group(1).strip())
     for m in _SPAN.finditer(request):
         s = m.group(1).strip()
@@ -131,9 +144,12 @@ def claims(request: str) -> list:
             continue          # "remove `X.y`", "`a.py` is no longer needed": not a claim
         seen.add(s)
         before = (request[max(0, m.start() - _GONE_WINDOW):m.start()]).split("\n")[-1]
-        if _EXAMPLE.search(before):
-            continue          # "Examples (with `_get_words(cli)` returning …": a test helper
-        sentence = re.split(r"[.!?]\s", request[max(0, m.start() - 200):m.start()])[-1]
+        if _EXAMPLE.search(before) or re.search(r"(?:->|→|=>)\s*$", before) \
+                or re.match(r"\s*(?:->|→|=>)", request[m.end():]):
+            seen.discard(s)   # an input -> output pair ("`log_changes()` -> `LOG_CHANGES()`")   # "Examples (with `_get_words(cli)` returning …": a test
+            continue          # helper — a later mention may still claim it
+        sentence = re.split(r"[.!?]\s|\n\s*\n|\n\s*(?:[-*#]|\d+\.)\s",
+                            request[max(0, m.start() - 200):m.start()])[-1]
         if _CURRENT.search(sentence):
             seen.discard(s)   # "its current support lives in `x.py`": what IS, not
             continue          # a claim — a later mention may still claim it
@@ -154,8 +170,11 @@ def claims(request: str) -> list:
                 # `click.shell_completion.ShellComplete(cli, prog_name)`: the
                 # module must export it (a class split into _shell_base.py
                 # that shell_completion never imports fails every import).
+                # A lowercase name may be a call on a library object
+                # (`app.config.from_object(c)`): checked only when the module
+                # resolves to a file of the tree.
                 out.append({"kind": "export", "module": parts[:-1], "name": parts[-1],
-                            "text": name})
+                            "text": name, "soft": not parts[-1][:1].isupper()})
             continue
         if not _DOTTED.match(s):
             continue
@@ -211,7 +230,7 @@ class _Index:
             return
         rel = os.path.relpath(path, self.root).replace(os.sep, "/")
         top = self.modules.setdefault(rel, set())
-        for node in tree.body:
+        for node in _top_level(tree.body):
             for name in _defined(node):
                 top.add(name)
             if isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names):
@@ -269,6 +288,20 @@ class _Index:
                 return True, params
             unknown = unknown or not known
         return (False, None) if unknown else (True, "MISSING")
+
+
+def _top_level(body) -> list:
+    """Module-level statements, the bodies of top-level ``if``/``try``/``with``
+    blocks included (``try: from ._speedups import f`` / ``except: def f``)."""
+    out = []
+    for node in body:
+        out.append(node)
+        if isinstance(node, (ast.If, ast.Try, ast.With)):
+            for part in ("body", "orelse", "finalbody"):
+                out += _top_level(getattr(node, part, None) or [])
+            for h in getattr(node, "handlers", None) or []:
+                out += _top_level(h.body)
+    return out
 
 
 def _defined(node) -> list:
@@ -330,14 +363,29 @@ def _module_names(module: list, ix: "_Index"):
     return None, None
 
 
+def _file_under(root: str, path: str) -> bool:
+    """``path`` exists under ``root`` — as written, or under a src/-style
+    prefix (`click/types.py` is src/click/types.py). Bounded walk."""
+    rel = path[2:] if path.startswith("./") else path
+    if os.path.isfile(os.path.join(root, rel)):
+        return True
+    want = "/" + rel.replace(os.sep, "/")
+    walked = 0
+    for d, dirs, files in os.walk(root):
+        dirs[:] = [x for x in dirs if x not in _SKIP_DIRS and not x.startswith(".")]
+        for f in files:
+            walked += 1
+            if walked > MAX_WALK:
+                return True          # too big to tell: never a false gap
+            if os.path.join(d, f).replace(os.sep, "/").endswith(want):
+                return True
+    return False
+
+
 def _check(c: dict, ix: _Index, declared: set) -> "str | None":
     k = c["kind"]
     if k == "file":
-        rel = c["path"].lstrip("./")
-        if os.path.isfile(os.path.join(ix.root, rel)) or any(
-                p.endswith("/" + rel) for p in ix.modules):   # `click/types.py` in src/
-            return None
-        return f"{c['path']} does not exist"
+        return None if _file_under(ix.root, c["path"]) else f"{c['path']} does not exist"
     if k in ("method", "member"):
         if c["cls"] not in ix.classes:
             if c["cls"] in ix.imported or c["cls"] not in declared:
@@ -369,6 +417,8 @@ def _check(c: dict, ix: _Index, declared: set) -> "str | None":
         if not _local_package(c["module"], ix):
             return None                      # a library path: django.db.models.Model
         path, names = _module_names(c["module"], ix)
+        if names is None and c.get("soft"):
+            return None
         if names is None:
             return f"module {'.'.join(c['module'])} does not exist (for {c['text']})"
         if path in ix.open_modules:
