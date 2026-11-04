@@ -95,6 +95,7 @@ def test_multiask_tracked_as_subtasks(tmp_path, monkeypatch):
     out any stragglers."""
     from aiforge_core.runtime.chat_agent._turn import _done_check
     monkeypatch.setattr(_done_check, "judged_done", lambda st: True)
+    monkeypatch.setattr(_done_check, "parts_may_close", lambda st: True)
     fn = _scripted([
         'ACTION: plan_progress\nARGS_JSON: {"slug": "part-1", "status": "done"}',
         "FINAL: 1) bug fixed 2) meter explained 3) retry added",
@@ -130,9 +131,12 @@ def test_multiask_tracked_as_subtasks(tmp_path, monkeypatch):
     assert "Not done from the task list" not in final
 
 
-def test_multiask_parts_no_check_judged_done_stay_open_and_are_named(tmp_path):
-    """Without a done judgement the close-out does not claim the parts: they
-    stay open on the board and in the dock, and the answer names them."""
+def test_multiask_parts_stay_open_when_the_check_ran_without_saying_done(tmp_path,
+                                                                         monkeypatch):
+    """The done check ran and gave no clear word (timeout): the close-out does
+    not claim the parts; they stay open and the answer names them."""
+    from aiforge_core.runtime.chat_agent._turn import _done_check
+    monkeypatch.setattr(_done_check, "parts_may_close", lambda st: False)
     fn = _scripted([
         'ACTION: plan_progress\nARGS_JSON: {"slug": "part-1", "status": "done"}',
         "FINAL: 1) bug fixed 2) meter explained 3) retry added",

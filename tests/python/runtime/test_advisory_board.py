@@ -78,3 +78,15 @@ def test_an_earlier_done_verdict_is_cleared_when_the_check_does_not_run_again():
     except StopIteration:
         pass
     assert st.done_check_said is None      # a later finish never reuses it
+
+
+def test_parts_close_unless_the_check_ran_without_saying_done():
+    from aiforge_core.runtime.chat_agent._turn import _done_check
+    st = SimpleNamespace()                                   # check never ran
+    assert _done_check.parts_may_close(st)
+    st.done_check_ran, st.done_check_said = True, ""          # timed out
+    assert not _done_check.parts_may_close(st)
+    st.done_check_said = "done"
+    assert _done_check.parts_may_close(st)
+    st2 = SimpleNamespace(contract_checked=9, contract_gaps=[])   # counts are no check
+    assert not _done_check.judged_done(st2)

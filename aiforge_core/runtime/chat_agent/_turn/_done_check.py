@@ -135,11 +135,16 @@ def _applies(st, builder, strict_finish) -> bool:
 
 
 def judged_done(st) -> bool:
-    """A check of this finish found the request done: the done check said so,
-    or it was skipped because the spec check found every named thing."""
-    return (getattr(st, "done_check_said", None) == "done"
-            or (getattr(st, "contract_checked", 0) >= _SPEC_ENOUGH
-                and not getattr(st, "contract_gaps", None)))
+    """The done check read this finish and said the request is done."""
+    return getattr(st, "done_check_said", None) == "done"
+
+
+def parts_may_close(st) -> bool:
+    """The request's parts may be closed out on this finish: the done check
+    said done, or it did not run (off, read-only, plan mode, skipped) and so
+    has no word against the model's answer. A check that ran and gave no
+    clear word (timeout, failure, Stop) leaves them open."""
+    return judged_done(st) or not getattr(st, "done_check_ran", False)
 
 
 def _to_the_harness(text: str) -> bool:
@@ -339,10 +344,12 @@ def gate(st, step, builder=None, strict_finish=False):
     # What an earlier verdict said was about an earlier reply.
     st.done_check_unfinished = False
     st.done_check_said = None
+    st.done_check_ran = False
     if not text or not goal or not _applies(st, builder, strict_finish):
         return None
     from ._finish import _budget_left
     st.done_check_calls = getattr(st, "done_check_calls", 0) + 1
+    st.done_check_ran = True
     yield {"type": "thought", "role": "system",
            "text": "⧗ checking the reply against the request…"}
     later = "\n".join(f"- {str(s).strip()}" for s in (getattr(st, "steers", None) or [])[-5:])

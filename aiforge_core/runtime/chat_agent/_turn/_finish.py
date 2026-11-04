@@ -143,7 +143,7 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
     _left = open_for_final(st)
     from ._done_check import judged_done
     if judged_done(st):
-        # a check judged this very reply done: the request's parts are
+        # the done check judged this very reply done: the request's parts are
         # its call (the close-out flips them); only the model's own items hold
         from ._tasks import open_planned
         _left = open_planned(st.board)
@@ -416,10 +416,10 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
     # to flip.
     from . import _done_check
     _unfinished = _done_check.unfinished_note(st)
-    # Only when a check judged the work done (the done check, or the spec
-    # check finding every named thing): otherwise the parts stay open and the
-    # answer says which are not done, rather than a dock that claims they are.
-    if _asks and not _unfinished and _done_check.judged_done(st):
+    # Not when the done check ran and gave no "done" (unfinished, timeout,
+    # failure): the parts stay open and the answer says which are not done,
+    # rather than a dock and board that claim they are.
+    if _asks and not _unfinished and _done_check.parts_may_close(st):
         _closing = []
         for _i in range(len(_asks)):
             _slug = f"part-{_i + 1}"
