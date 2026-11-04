@@ -268,9 +268,17 @@ def test_a_red_exit_with_no_listed_failure_is_not_judged(tmp_path, monkeypatch):
     ("pytest -q --ignore=tests/integration", False),
     ("pytest tests/test_a.py", False),
     ("make test", False),
+    ("cd /r/backend && python -m pytest", False),
+    ("cd sub&&pytest", False),
+    ("pytest --noconftest", False),
+    ("pytest -o testpaths=tests/unit", False),
+    ("pytest --override-ini=testpaths=tests/unit", False),
+    ("pytest --sw", False),
+    ("pytest --confcutdir=tests/unit", False),
+    ("pytest -c other.ini", False),
 ])
 def test_only_a_whole_suite_run_stands_in_for_the_runner(cmd, whole):
-    assert _outcomes._whole_suite(cmd) is whole
+    assert _outcomes._whole_suite(cmd, "/r") is whole
 
 
 def test_a_static_check_failure_is_a_lint_failure_not_failing_tests():

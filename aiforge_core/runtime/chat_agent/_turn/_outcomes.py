@@ -331,7 +331,7 @@ def _project_verify(st, cwd):
         from ._done_watch import _interpreter, own_test_verdict
         last = getattr(st, "last_full_test", None)
         cmd = command_of(last[1]) if last else ""
-        if not _whole_suite(cmd or ""):
+        if not _whole_suite(cmd or "", cwd):
             return ok, out            # a narrower run cannot stand for the tree
         own = own_test_verdict(st)
     except Exception:  # noqa: BLE001 — the runner's verdict stands
@@ -350,41 +350,58 @@ def _project_verify(st, cwd):
                 return False, own_out + lint
     except Exception:  # noqa: BLE001 — the lint leg is best effort
         pass
-    from aiforge_core.runtime.parallel_subtasks._reconcile._testrun import _static_check_gate
-    return _static_check_gate(cwd, True, own_out)
+    # (the python runner it stands in for runs this lint leg only, no
+    # tsc / go vet gate)
+    return True, own_out
 
 
 _TOP_TESTS = frozenset({"tests", "test", "testing", "."})
 #: pytest options that take a value as the next word.
-_VALUE_OPTS = frozenset({"-p", "-c", "-o", "--rootdir", "--confcutdir", "--basetemp",
-                         "-W", "--junitxml", "--log-level", "--tb", "-r", "--durations",
-                         "--ignore", "--deselect"})
+_VALUE_OPTS = frozenset({"-p", "--rootdir", "--basetemp", "-W", "--junitxml",
+                         "--log-level", "--tb", "-r", "--durations"})
+#: options that narrow what is collected or skip conftests / passed tests
+_NOT_WHOLE = ("--ignore", "--deselect", "--noconftest", "--sw", "--stepwise",
+              "--confcutdir", "-c", "--config-file", "--lf", "--last-failed",
+              "--ff", "--pyargs")
 
 
-def _whole_suite(cmd: str) -> bool:
+def _whole_suite(cmd: str, cwd: str = "") -> bool:
     """A pytest run over the whole suite: no paths after ``pytest``, or only
-    the top-level test folder (``tests``). ``pytest tests/unit`` is not: a
-    conftest it broke elsewhere would not show."""
+    the top-level test folder (``tests``), from the repo root (a leading
+    ``cd`` must point at ``cwd``), with nothing that narrows collection
+    (--ignore, --noconftest, -o testpaths=, stepwise...). ``pytest tests/unit``
+    or ``cd backend && pytest`` is not: a conftest broken elsewhere would not
+    show."""
+    import os
+    import re
     import shlex
+    m = re.match(r"\s*cd\s+(\S+)\s*&&\s*", cmd or "")
+    if m:
+        if not cwd or os.path.realpath(os.path.join(cwd, m.group(1))) \
+                != os.path.realpath(cwd):
+            return False
+        cmd = cmd[m.end():]
+    if re.search(r"&&|\|\||[;|`]|\$\(", cmd or ""):
+        return False
     try:
         words = shlex.split(cmd)
     except ValueError:
         return False
-    at = next((i for i, w in enumerate(words) if w.endswith("pytest")), None)
-    if at is None or any(w in ("&&", ";", "|", "||") for w in words[at:]):
+    at = next((i for i, w in enumerate(words) if w == "pytest" or w.endswith("/pytest")), None)
+    if at is None:
         return False
     skip = False
     for w in words[at + 1:]:
         if skip:
             skip = False
             continue
+        if w.startswith(_NOT_WHOLE) and w.split("=")[0] in _NOT_WHOLE:
+            return False
+        if w in ("-o", "--override-ini") or w.startswith(("-o", "--override-ini=")):
+            return False          # can reset testpaths / python_files
         if w in _VALUE_OPTS:
-            if w in ("--ignore", "--deselect"):
-                return False
             skip = True
             continue
-        if w.startswith(("--ignore", "--deselect")):
-            return False
         if w.startswith("-"):
             continue
         if w.rstrip("/") not in _TOP_TESTS:

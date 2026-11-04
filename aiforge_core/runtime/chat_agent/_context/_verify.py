@@ -89,8 +89,9 @@ _STATIC_MARK = "=== static checks — fix these ==="
 def lint_only(output: str) -> bool:
     """The tests passed and only a lint/static-check leg failed — the runner
     appends those blocks only to a green run."""
-    out = output or ""
-    return _LINT_MARK in out or _STATIC_MARK in out
+    import re
+    return bool(re.search(r"(?m)^(?:" + re.escape(_LINT_MARK) + "|"
+                          + re.escape(_STATIC_MARK) + ")", output or ""))
 
 
 def _verify_fix_message(output: str) -> str:
