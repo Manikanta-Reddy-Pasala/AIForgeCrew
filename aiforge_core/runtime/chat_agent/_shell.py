@@ -202,6 +202,11 @@ def _t_file_read(args: dict, cwd: str) -> dict:
                         "call file_read on a specific file to read contents"}
     if not p.is_file():
         return {"ok": False, "error": f"no such file or directory: {args['path']}"}
+    if any(args.get(k) not in (None, "") for k in ("offset", "limit", "start", "end")):
+        # a ranged read (OpenCode's read takes offset/limit): only that range,
+        # not the whole file or its outline from line 1
+        from ._tools._code import _t_read_lines
+        return _t_read_lines({**args, "path": str(p)}, cwd)
     text = p.read_text(encoding="utf-8", errors="replace")
     shaped = _outline_read(str(p), text, args)
     return shaped if shaped is not None else {"ok": True, "content": text}

@@ -312,3 +312,12 @@ def test_a_small_range_of_a_small_file_comes_back_whole(src, monkeypatch):
     monkeypatch.setenv("AIFORGE_CHAT_READ_MIN_LINES", "200")
     res = T._t_read_lines({"path": "app.py", "start": 2, "end": 4}, str(src))
     assert (res["start"], res["end"]) == (1, 10) and "note" in res
+
+
+def test_a_ranged_file_read_returns_only_that_range(src, monkeypatch):
+    from aiforge_core.runtime.chat_agent import _shell
+    monkeypatch.setenv("AIFORGE_CHAT_READ_WHOLE_LINES", "0")
+    monkeypatch.setenv("AIFORGE_CHAT_READ_MIN_LINES", "0")
+    res = _shell._t_file_read({"path": "app.py", "offset": 3, "limit": 2}, str(src))
+    assert res["text"] == "line 3\nline 4\n"
+    assert "content" in _shell._t_file_read({"path": "app.py"}, str(src))

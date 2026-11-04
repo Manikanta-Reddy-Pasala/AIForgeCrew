@@ -88,5 +88,7 @@ def test_parts_close_unless_the_check_ran_without_saying_done():
     assert not _done_check.parts_may_close(st)
     st.done_check_said = "done"
     assert _done_check.parts_may_close(st)
+    st3 = SimpleNamespace(board_touched=True)                 # skipped, board worked
+    assert not _done_check.parts_may_close(st3)
     st2 = SimpleNamespace(contract_checked=9, contract_gaps=[])   # counts are no check
     assert not _done_check.judged_done(st2)
