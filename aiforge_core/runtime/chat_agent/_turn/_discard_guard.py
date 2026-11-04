@@ -173,21 +173,19 @@ def _is_scratch(path: str) -> bool:
 
 
 _PROBE_TEST = re.compile(r"^(?:test_[\w-]+|[\w-]+_test)\.py$")
-_TEST_DIRS = frozenset({"tests", "test"})
 
 
 def _probe_file(path: str, git: "_Git", goal: str) -> bool:
     """A probe test the run wrote for itself: untracked, a test file's name,
-    at the repo root or in a tests folder, and not a name the request uses
+    at the repo root (not in tests/), and not a name the request uses
     (as a word, with or without ``.py``). New modules under a package or
     src/ are real work and stay protected."""
     name = os.path.basename(path)
     if not _PROBE_TEST.match(name) or git.tracked(path):
         return False
     parent = os.path.dirname(os.path.realpath(path))
-    top = git.top(parent)
-    if not (parent == top or os.path.basename(parent) in _TEST_DIRS):
-        return False
+    if parent != git.top(parent):
+        return False          # tests/ holds the tests the request asked for
     stem = name[:-3]
     return not re.search(rf"(?<![\w]){re.escape(stem)}(?![\w])", goal or "")
 

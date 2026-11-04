@@ -145,3 +145,11 @@ def test_a_late_repeat_is_refused_again(repo, monkeypatch):
     assert G.refusal(st, "run_command", {"cmd": "rm src/new_mod.py"}, str(root))
     G.refusal(st, "run_command", {"cmd": "ls"}, str(root))           # another command between
     assert G.refusal(st, "run_command", {"cmd": "rm src/new_mod.py"}, str(root))
+
+
+def test_a_new_test_in_the_tests_folder_stays_protected(repo):
+    root, edited = repo
+    (root / "tests").mkdir()
+    (root / "tests" / "test_shell_completion.py").write_text("def test_x(): pass\n")
+    edited = edited + [str(root / "tests" / "test_shell_completion.py")]
+    assert G.hits("rm tests/test_shell_completion.py", str(root), edited, goal="add tests")
