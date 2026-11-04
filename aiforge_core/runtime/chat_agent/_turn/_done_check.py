@@ -142,14 +142,16 @@ def judged_done(st) -> bool:
 def parts_may_close(st) -> bool:
     """The request's parts may be closed out on this finish: the done check
     said done, or it did not run (off, read-only, plan mode, skipped) on a
-    turn whose model never worked the task board, so nothing says a part is
+    turn whose model never moved a request part, so nothing says one is
     open. A check that ran without a clear "done" (timeout, failure, Stop),
-    or a skipped one after the board gate reminded about open parts, leaves
-    them open: the same call the board gate makes."""
+    or a skipped one after the model worked the parts, leaves them open:
+    the call ``open_for_final`` makes, so the board gate has reminded about
+    them and the closing note names them. (``board_used`` alone is not it:
+    the harness sets it for a carried target or a mid-run revision.)"""
     if judged_done(st):
         return True
-    worked = bool(getattr(st, "board_used", False) or getattr(st, "board_touched", False))
-    return not getattr(st, "done_check_ran", False) and not worked
+    return not getattr(st, "done_check_ran", False) \
+        and not getattr(st, "board_touched", False)
 
 
 def _to_the_harness(text: str) -> bool:
