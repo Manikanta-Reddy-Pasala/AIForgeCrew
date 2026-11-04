@@ -29,6 +29,13 @@ _AGEABLE = frozenset({"file_read", "read_files", "read_lines", "grep", "find",
 _AGEABLE_CMD = frozenset({"run_command", "run_tests", "run_shell", "typecheck",
                           "format", "command_output"})
 _MARK = "[aged:"
+#: Calls whose arguments are spent once they ran or applied: a script that
+#: ran, a file that was written, an edit that landed. Their long string
+#: arguments are what the model wrote, not what it needs to read again.
+_SPENT_ARGS = frozenset({"run_command", "run_shell", "run_tests", "file_write",
+                         "file_create", "file_patch", "multi_edit", "editor"})
+_ARG_KEEP = 200
+_ARG_MIN = 600
 _HEAD, _TAIL = 700, 400
 _CMD_HEAD, _CMD_TAIL, _CMD_ERR_LINES = 300, 900, 15
 _ERR = __import__("re").compile(
@@ -111,6 +118,8 @@ def age_observations(convo: list, protect_from: "int | None" = None,
     stop = max(1, len(convo) - keep)
     if protect_from is not None:
         stop = min(stop, max(1, protect_from))
+    if force:
+        aged += _age_spent_args(convo, stop, dry)
     for i in range(1, stop):
         m = convo[i]
         text = m.get("content") if isinstance(m, dict) else None
@@ -145,6 +154,69 @@ def age_observations(convo: list, protect_from: "int | None" = None,
             if sig:
                 forget.discard(sig)
     return aged
+
+
+def _cut_strings(value):
+    """``value`` with every long string cut to a head and a note; returns
+    ``(new_value, chars_saved)``."""
+    if isinstance(value, str):
+        if len(value) < _ARG_MIN:
+            return value, 0
+        note = f"…[{len(value)} chars — already ran/applied]"
+        return value[:_ARG_KEEP] + note, len(value) - _ARG_KEEP - len(note)
+    if isinstance(value, list):
+        out, saved = [], 0
+        for v in value:
+            nv, n = _cut_strings(v)
+            out.append(nv)
+            saved += n
+        return out, saved
+    if isinstance(value, dict):
+        out, saved = {}, 0
+        for k, v in value.items():
+            nv, n = _cut_strings(v)
+            out[k] = nv
+            saved += n
+        return out, saved
+    return value, 0
+
+
+def _age_spent_args(convo: list, stop: int, dry: bool) -> int:
+    """At the condense point: the long arguments of old calls that already
+    ran or applied (scripts, written files, edit text) are cut to a head.
+
+    In a late click-completion prompt (341K chars) the model's own past
+    messages were 38% of it -- 134 calls, mostly python probe scripts and
+    edit text -- while ageing only ever shrank outputs. Cutting them here, on
+    the same step as the output prune (one prompt re-read for both), frees
+    far more per prune. Returns chars freed (``dry``) or calls cut."""
+    import json as _json
+    done = 0
+    for i in range(1, stop):
+        m = convo[i]
+        text = m.get("content") if isinstance(m, dict) else None
+        if m.get("role") != "assistant" or not isinstance(text, str) or len(text) < _ARG_MIN:
+            continue
+        mt = _ACTION_RE.search(text)
+        if not mt or mt.group(1).lower() not in _SPENT_ARGS:
+            continue
+        ma = _ARGS_RE.search(text)
+        if not ma:
+            continue
+        try:
+            args = _json.loads(ma.group(1))
+        except ValueError:
+            continue
+        new_args, saved = _cut_strings(args)
+        if saved <= 0:
+            continue
+        if dry:
+            done += saved
+            continue
+        new_text = text[:ma.start(1)] + _json.dumps(new_args, ensure_ascii=False) + text[ma.end(1):]
+        convo[i] = {**m, "content": new_text}
+        done += 1
+    return done
 
 
 def _shrink_command(body: str) -> str:

@@ -622,6 +622,12 @@ def render(data: dict) -> str:
     done = [g for g in data["goals"] if g.get("status") == DONE][-_SHOWN_DONE:]
     if not opened and not done and not _just_dropped(data):
         return ""
+    if (len(data["goals"]) == 1 and opened and not opened[0].get("updates")
+            and not data.get("asked") and len(str(opened[0].get("text") or "")) > 1000):
+        # One long goal, never changed, nothing asked: it IS the user's spec,
+        # which the model has right there — the block only repeated its start
+        # (3.6K chars of a big spec in the prompt). A condense pins the task.
+        return ""
     now = set(data.get("now") or [])
     lines = [f"{MARK} — every goal the user set, kept across messages. Work "
              "toward GOAL NOW; never drop or contradict another open goal "

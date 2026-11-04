@@ -286,3 +286,23 @@ def test_probe_guard_counts_python_probes_across_edits():
     assert [i for i, s in enumerate(said) if s] == [7, 15]
     assert "grep tool" in said[7]
     assert not P.note(st, "run_command", {"cmd": "python3 -m pytest -q"})   # tests are not probes
+
+
+def test_a_prune_also_cuts_the_spent_args_of_old_calls():
+    """Old scripts that ran and edit text that landed are cut to a head at
+    the condense point; recent calls and reads stay whole; JSON stays valid."""
+    import json as _json
+    from aiforge_core.runtime.chat_agent._context import _aging
+    script = "python3 - <<'EOF'\n" + "print('x')\n" * 400 + "EOF"
+    old = {"role": "assistant", "content": "ACTION: run_command\nARGS_JSON: " + _json.dumps({"cmd": script})}
+    convo = [{"role": "system", "content": "s"}, old,
+             {"role": "user", "content": "OBSERVATION: exit 0"}]
+    convo += [{"role": "user", "content": "y" * 100}] * 12
+    recent = {"role": "assistant", "content": "ACTION: run_command\nARGS_JSON: " + _json.dumps({"cmd": script})}
+    convo.append(recent)
+    freed = _aging.age_observations(convo, force=True, keep_chars=100, keep_msgs=1, dry=True)
+    assert freed > 3000 and convo[1] is old                       # dry changed nothing
+    _aging.age_observations(convo, force=True, keep_chars=100, keep_msgs=1)
+    a = _json.loads(convo[1]["content"].split("ARGS_JSON: ", 1)[1])
+    assert len(a["cmd"]) < 300 and "already ran/applied" in a["cmd"]
+    assert convo[-1] is recent                                     # newest untouched
