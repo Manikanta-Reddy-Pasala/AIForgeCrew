@@ -26,6 +26,8 @@ import glob
 import os
 import re
 
+#: Refusals of the same single file before the next attempt is let through.
+_ONE_FILE_TRIES = 2
 _STASH_KEEPS = {"list", "show", "pop", "apply", "drop", "clear", "branch", "create",
                 "store"}
 _GLOB = re.compile(r"[*?\[]")
@@ -278,6 +280,15 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     if last and last[0] == key and last[1] == n - 1 and all(not _Git().tracked(p) for p in lost):
         st.discard_last = None
         return None
+    # One file the model has been refused for twice already: it insists on
+    # starting that file over (shopkit fin1: 47 refusals, features 3-5 never
+    # reached). Let that ONE file go; a wipe of several files never passes.
+    if len(lost) == 1:
+        tried = st.__dict__.setdefault("discard_one_file", {}) if hasattr(st, "__dict__") else {}
+        tried[lost[0]] = tried.get(lost[0], 0) + 1
+        if tried[lost[0]] > _ONE_FILE_TRIES:
+            tried[lost[0]] = 0
+            return None
     shown = [os.path.relpath(p, base) for p in lost[:8]]
     return {"ok": False, "error": "would_discard_own_edits", "files": shown,
             "hint": ("This command would throw away your own edits from this turn "

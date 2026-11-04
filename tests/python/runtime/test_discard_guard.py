@@ -128,12 +128,12 @@ def test_a_refused_untracked_file_sent_again_at_once_goes_through(repo, monkeypa
     assert G.refusal(st, "run_command", {"cmd": "rm src/new_mod.py"}, str(root)) is None
 
 
-def test_tracked_work_is_never_let_through_by_a_repeat(repo, monkeypatch):
+def test_tracked_work_is_not_let_through_by_a_quick_repeat(repo, monkeypatch):
     root, edited = repo
     from aiforge_core.runtime import git_target
     monkeypatch.setattr(git_target, "command_base", lambda cwd: str(root))
     st = SimpleNamespace(file_hashes=dict.fromkeys(edited, "h"), goal="")
-    for _ in range(4):
+    for _ in range(G._ONE_FILE_TRIES):      # refused; only insisting further lets one file go
         assert G.refusal(st, "run_command", {"cmd": "rm src/core.py"}, str(root))
 
 
@@ -153,3 +153,18 @@ def test_a_new_test_in_the_tests_folder_stays_protected(repo):
     (root / "tests" / "test_shell_completion.py").write_text("def test_x(): pass\n")
     edited = edited + [str(root / "tests" / "test_shell_completion.py")]
     assert G.hits("rm tests/test_shell_completion.py", str(root), edited, goal="add tests")
+
+
+def test_one_file_is_let_go_after_two_refusals_but_a_wipe_never(repo, monkeypatch):
+    root, edited = repo
+    from aiforge_core.runtime import git_target
+    monkeypatch.setattr(git_target, "command_base", lambda cwd: str(root))
+    st = SimpleNamespace(file_hashes=dict.fromkeys(edited, "h"), goal="")
+    for _ in range(2):
+        assert G.refusal(st, "run_command", {"cmd": "git checkout -- src/core.py"}, str(root))
+        G.refusal(st, "run_command", {"cmd": "ls"}, str(root))
+    assert G.refusal(st, "run_command", {"cmd": "git checkout -- src/core.py"}, str(root)) is None
+    many = "rm -f src/core.py src/new_mod.py"
+    for _ in range(6):
+        assert G.refusal(st, "run_command", {"cmd": many}, str(root))
+        G.refusal(st, "run_command", {"cmd": "ls"}, str(root))
