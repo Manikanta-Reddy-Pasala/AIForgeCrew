@@ -382,6 +382,8 @@ def _gated_action(st, step, name, args, sig, n, cwd, session_id):
     if _halt is not None:
         result, _note = _halt, ""
     else:
+        from ._turn import _structure_guard
+        _structure_guard.snapshot(st, name, args, cwd)
         result = yield from _dispatch_tool(name, args, cwd, n, _hb,
                                            _take_early_read(st, sig),
                                            task=running_task(st))

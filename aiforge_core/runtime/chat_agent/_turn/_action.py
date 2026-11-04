@@ -697,6 +697,8 @@ def _record_edit(st, name, args, result, cwd):
                     f"wrote has a syntax error; fix it before continuing:\n{_pe[:600]}"})
             else:
                 yield from post_edit_diagnostics(st, files, cwd)
+                from . import _structure_guard
+                yield from _structure_guard.check(st, name, files, args)
 
 def _git_target_after(st, name, args, result, cwd) -> str:
     from aiforge_core.runtime import git_target
