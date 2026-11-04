@@ -72,6 +72,14 @@ _FUNC_PY_SHARE = 0.8
 _STDLIB = set(getattr(sys, "stdlib_module_names", ()))
 
 
+#: A sentence about the code as it is now ("its current support lives in
+#: `a.py` and is wired through `b()`"): its names are not claims.
+_CURRENT = re.compile(r"\b(?:current(?:ly)?|existing|today|right now|at the moment)\b", re.I)
+#: "Examples (with `_get_words(cli, args)` …", "e.g. `helper(x)`": a name used
+#: to show behaviour, not one the code must define.
+_EXAMPLE = re.compile(r"\b(?:examples?|e\.g\.|for instance)\b", re.I)
+
+
 def enabled() -> bool:
     return os.environ.get("AIFORGE_CHAT_SPEC_CONTRACT", "1").strip().lower() \
         not in ("0", "false", "no", "off")
@@ -108,15 +116,27 @@ def _is_signature(params_text: str) -> bool:
 def claims(request: str) -> list:
     """What the request says the code has, one dict per backticked name."""
     out, seen = [], set()
-    for m in _SPAN.finditer(request or ""):
-        s = m.group(1).strip()
-        if s in seen:
-            continue
-        seen.add(s)
+    request = request or ""
+    # A name any mention says goes ("`a.py` (remove or replace)") is not
+    # claimed, even when an earlier mention only described it.
+    gone = set()
+    for m in _SPAN.finditer(request):
         before = (request[max(0, m.start() - _GONE_WINDOW):m.start()]).split("\n")[-1]
         after = re.split(r"[.;\n]", request[m.end():m.end() + _GONE_WINDOW], maxsplit=1)[0]
         if _GONE.search(before) or _GONE.search(after):
+            gone.add(m.group(1).strip())
+    for m in _SPAN.finditer(request):
+        s = m.group(1).strip()
+        if s in seen or s in gone:
             continue          # "remove `X.y`", "`a.py` is no longer needed": not a claim
+        seen.add(s)
+        before = (request[max(0, m.start() - _GONE_WINDOW):m.start()]).split("\n")[-1]
+        if _EXAMPLE.search(before):
+            continue          # "Examples (with `_get_words(cli)` returning …": a test helper
+        sentence = re.split(r"[.!?]\s", request[max(0, m.start() - 200):m.start()])[-1]
+        if _CURRENT.search(sentence):
+            seen.discard(s)   # "its current support lives in `x.py`": what IS, not
+            continue          # a claim — a later mention may still claim it
         if _PYFILE.match(s) and "/" in s:
             out.append({"kind": "file", "path": s, "text": s})
             continue
@@ -130,6 +150,12 @@ def claims(request: str) -> list:
             elif parts[-2][:1].isupper():
                 out.append({"kind": "method", "cls": parts[-2], "name": parts[-1],
                             "params": params, "text": s})
+            elif len(parts) >= 3 and all(p[:1].islower() for p in parts[:-1]):
+                # `click.shell_completion.ShellComplete(cli, prog_name)`: the
+                # module must export it (a class split into _shell_base.py
+                # that shell_completion never imports fails every import).
+                out.append({"kind": "export", "module": parts[:-1], "name": parts[-1],
+                            "text": name})
             continue
         if not _DOTTED.match(s):
             continue
@@ -307,8 +333,11 @@ def _module_names(module: list, ix: "_Index"):
 def _check(c: dict, ix: _Index, declared: set) -> "str | None":
     k = c["kind"]
     if k == "file":
-        return None if os.path.isfile(os.path.join(ix.root, c["path"])) \
-            else f"{c['path']} does not exist"
+        rel = c["path"].lstrip("./")
+        if os.path.isfile(os.path.join(ix.root, rel)) or any(
+                p.endswith("/" + rel) for p in ix.modules):   # `click/types.py` in src/
+            return None
+        return f"{c['path']} does not exist"
     if k in ("method", "member"):
         if c["cls"] not in ix.classes:
             if c["cls"] in ix.imported or c["cls"] not in declared:

@@ -515,6 +515,13 @@ def _after_condense(st, unread, before):
             action_log.ensure_pinned(st)
         except Exception:  # noqa: BLE001 — the note never blocks a step
             pass
+        try:
+            from ._contract_gate import progress_note
+            note = progress_note(st)
+            if note:
+                st.convo.append({"role": "user", "content": note})
+        except Exception:  # noqa: BLE001 — advisory only
+            pass
 
 
 def _repin_turn_note(st) -> None:

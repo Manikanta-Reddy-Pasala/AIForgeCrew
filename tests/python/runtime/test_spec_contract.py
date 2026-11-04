@@ -327,3 +327,55 @@ def test_a_deep_prune_is_considered_below_the_condense_line(monkeypatch):
     for m in st2.convo:
         if m["content"].startswith("OBSERVATION: [aged"): m["content"] = big
     assert _limits._prune_at_condense_point(st2, "chat") == 0              # only at the line
+
+
+# click af5: ShellComplete lived in _shell_base.py, shell_completion never
+# imported it, every hidden test failed to import (0/37). The request wrote it
+# as a dotted CALL, which the parser dropped.
+
+def test_a_dotted_call_is_an_export_of_that_module(tmp_path):
+    pkg = tmp_path / "src" / "click"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "_shell_base.py").write_text("class ShellComplete:\n    pass\n")
+    (pkg / "shell_completion.py").write_text("def shell_complete():\n    pass\n")
+    req = "`click.shell_completion.ShellComplete(cli, prog_name, complete_var)` is the base"
+    gaps = S.missing(req, str(tmp_path))
+    assert any("ShellComplete" in g and "not defined" in g for g in gaps)
+    (pkg / "shell_completion.py").write_text("from ._shell_base import ShellComplete\n")
+    assert S.missing(req, str(tmp_path)) == []
+
+
+def test_a_library_dotted_call_is_not_a_claim(tmp_path):
+    (tmp_path / "a.py").write_text("x = 1\n")
+    assert S.missing("`os.path.join(a, b)` and `json.dumps(x)`", str(tmp_path)) == []
+
+
+def test_the_progress_note_after_a_condense_says_each_gap_list_once(tmp_path):
+    (tmp_path / "m.py").write_text("x = 1\n")
+    st = SimpleNamespace(goal="Add `Inventory.receive(sku, qty)` to `m.py`.",
+                         cwd=str(tmp_path), convo=[], edits_made=1, steers=[])
+    (tmp_path / "m.py").write_text("class Inventory:\n    pass\n")
+    note = G.progress_note(st)
+    assert note and "Inventory.receive" in note
+    assert G.progress_note(st) is None             # same list: said once
+    st.edits_made = 0
+    st.contract_progress_said = None
+    assert G.progress_note(st) is None             # nothing built yet
+
+
+def test_a_src_layout_file_and_an_example_helper_are_not_gaps(tmp_path):
+    pkg = tmp_path / "src" / "click"
+    pkg.mkdir(parents=True)
+    (pkg / "types.py").write_text("x = 1\n")
+    req = ("Add it to `ParamType` (in\n   `click/types.py`): returns `[]`.\n"
+           "Examples (with `_get_words(cli, args, incomplete)` returning values):")
+    assert S.missing(req, str(tmp_path)) == []
+
+
+def test_a_name_described_as_current_then_marked_for_removal_is_not_claimed(tmp_path):
+    (tmp_path / "a.py").write_text("x = 1\n")
+    req = ("Its current support lives in `src/click/_bashcomplete.py` and is\n"
+           "wired through `click.core._bashcomplete()`. Replace it with a new one.\n"
+           "Files: `src/click/_bashcomplete.py` (remove or\nreplace).")
+    assert S.claims(req) == []

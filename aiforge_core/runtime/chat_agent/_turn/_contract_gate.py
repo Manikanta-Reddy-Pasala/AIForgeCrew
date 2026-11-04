@@ -87,3 +87,27 @@ def gate(st, step, builder=None, strict_finish=False):
 
 
 __all__ = ["gate", "message"]
+
+
+def progress_note(st) -> "str | None":
+    """After a condense, mid-run: what the request names that the code still
+    lacks, said once per change of that list. The finish gate only ran when
+    the model tried to finish; a run that never did (click af5, 51 minutes,
+    ShellComplete defined where the request's module never exported it, 0/37)
+    heard nothing. Advisory: it never ends or blocks a step."""
+    if getattr(st, "readonly_mode", False) or getattr(st, "plan_mode", False) \
+            or not getattr(st, "edits_made", 0):
+        return None
+    gaps = _gaps(st)
+    key = tuple(gaps)
+    if not gaps or getattr(st, "contract_progress_said", None) == key:
+        return None
+    st.contract_progress_said = key
+    more = f"\n- … and {len(gaps) - _SHOWN} more" if len(gaps) > _SHOWN else ""
+    return ("[automated spec check — not the user] Progress check: the request "
+            "names these and the code does not have them yet:\n"
+            + "\n".join(f"- {g}" for g in gaps[:_SHOWN]) + more + "\n"
+            "Keep going with the plan; make sure each one ends up exactly where "
+            "and as the request writes it (the module path it gives is the one "
+            "that must export the name).")
+
