@@ -353,12 +353,14 @@ _TIGHT_NOTE = ("\n\n[harness: the context keeps filling up and being shrunk. "
 
 def _prune_line() -> float:
     """Share of the condense budget from which a deep prune is considered
-    (``AIFORGE_CTX_PRUNE_AT``, default 0.7 — about 60% of the window at the
-    85% condense point)."""
+    (``AIFORGE_CTX_PRUNE_AT``, default 1.0: at the condense point only). 0.7
+    was tried: every prune is a full prompt re-read on a one-slot server, and
+    click runs went from 32 cache busts (682 s) to 50-55 (1,250-1,480 s,
+    41% of the run) for a smaller context."""
     try:
-        return min(1.0, max(0.3, float(os.environ.get("AIFORGE_CTX_PRUNE_AT", "0.7"))))
+        return min(1.0, max(0.3, float(os.environ.get("AIFORGE_CTX_PRUNE_AT", "1.0"))))
     except ValueError:
-        return 0.7
+        return 1.0
 
 
 def _prune_at_condense_point(st, role) -> int:
