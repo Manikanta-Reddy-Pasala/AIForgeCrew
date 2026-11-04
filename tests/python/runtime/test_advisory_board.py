@@ -45,16 +45,16 @@ def test_the_advisory_item_close_is_accepted_with_a_warning(monkeypatch, tmp_pat
     assert "accepted as done" in res.get("warning", "")
 
 
-def test_an_item_whose_last_test_run_is_red_is_marked_failed_without_a_round_trip(monkeypatch, tmp_path):
+def test_an_item_whose_last_test_run_is_red_is_accepted_unverified_and_named(monkeypatch, tmp_path):
     from aiforge_core.runtime.chat_agent._turn import _items
     monkeypatch.delenv("AIFORGE_CHAT_BOARD_STRICT", raising=False)
     board = {s: {"title": s, "status": "running"} for s in ("a", "b", "c")}
     board["a"]["status"] = "done"
     st = SimpleNamespace(board=board, cwd=str(tmp_path), readonly_mode=False, builder=None,
-                         item_log=[("test", "red", "1 failed")], item_seen={}, item_start=0,
-                         item_prev_start=None, item_rejects={}, item_reset_pending=False,
-                         item_resets=0, item_last_closed=None, item_fresh_close=False,
-                         file_hashes={}, tree_hashes={}, tree_pending=False)
+                         item_log=[("test", "red", "1 failed; failing: t.py::x")], item_seen={},
+                         item_start=0, item_prev_start=None, item_rejects={},
+                         item_reset_pending=False, item_resets=0, item_last_closed=None,
+                         item_fresh_close=False, file_hashes={}, tree_hashes={}, tree_pending=False)
     res, ev = _items.review_progress(st, {"ok": True, "slug": "a", "status": "done"}, [])
-    assert res["ok"] is True and board["a"]["status"] == "failed"
-    assert ev and ev[0]["status"] == "failed"
+    assert res["ok"] is True and board["a"]["status"] == "done"
+    assert "FAILED" in res["warning"] and "UNVERIFIED" in board["a"]["note"]

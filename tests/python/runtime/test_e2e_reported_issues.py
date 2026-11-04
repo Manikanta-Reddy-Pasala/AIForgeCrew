@@ -477,9 +477,10 @@ def test_4_big_request_is_decomposed_gated_reset_and_finalised_last(tmp_path, mo
     assert not m.capped
 
 
-def test_4_an_item_closed_without_evidence_is_rejected_by_the_gate(tmp_path):
+def test_4_an_item_closed_without_evidence_is_rejected_by_the_gate(monkeypatch, tmp_path):
     """The model claims every item done without doing anything: nothing is
     silently 'done'."""
+    monkeypatch.setenv("AIFORGE_CHAT_BOARD_STRICT", "1")   # the refusing gate (advisory is the default)
     names = ["alpha.txt", "beta.txt", "gamma.txt", "delta.txt"]
     state = {"i": 0}
     rejected = []

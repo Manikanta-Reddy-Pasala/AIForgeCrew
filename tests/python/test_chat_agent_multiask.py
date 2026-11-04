@@ -95,6 +95,11 @@ def test_multiask_tracked_as_subtasks(tmp_path):
     fn = _scripted([
         'ACTION: plan_progress\nARGS_JSON: {"slug": "part-1", "status": "done"}',
         "FINAL: 1) bug fixed 2) meter explained 3) retry added",
+        # the board reminds (twice, the long-run bound) about parts 2 and 3:
+        # the close of part-1 is accepted now, so the board counts as worked;
+        # then the answer stands and the close-out flips the rest
+        "FINAL: All three are handled: the bug is fixed, the meter is explained, retry added.",
+        "FINAL: Done — 1) login bug fixed 2) meter reset explained 3) sync retry added.",
     ])
     evs = _collect(ca.run_chat_agent(
         [{"role": "user", "content":

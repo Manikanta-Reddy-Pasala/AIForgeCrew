@@ -303,20 +303,14 @@ def review_progress(st, result: dict, events: list):
             if not ok:
                 from ._section_check import strict
                 tries = st.item_rejects.get(slug, 0)
-                red = bool(facts["test"] and facts["test"][1] == "red")
-                if not strict() and red:
-                    # Advisory, no round trip — but a red last run is a
-                    # failed item, not a done one (the board and the final
-                    # note keep saying so).
-                    item["status"] = status = "failed"
-                    suffix = f" — {why}"
-                    result = {**result, "status": "failed", "note": "marked failed: " + why,
-                              "warning": (f"{why}: this item is marked failed. Fix the "
-                                          "code and mark it done once its tests pass.")}
-                    events = [{"type": "subtask_update", "slug": slug, "status": "failed"}]
-                elif not strict():
-                    # Advisory: accepted, with what the evidence shows — the
-                    # refusal sent the model round re-testing item by item.
+                if not strict():
+                    # Advisory: the close stands, with what the evidence shows
+                    # (board note, evidence card, a warning to the model) — the
+                    # refusal sent the model round re-testing item by item. A
+                    # red last run is named; the finish verify runs the whole
+                    # suite and does not let a red finish pass unnoted. (Not
+                    # marked failed: "build, then verify" closes parts after a
+                    # red run it has since fixed.)
                     suffix = f" — UNVERIFIED: {why}"
                     result = {**result, "warning": (
                         f"accepted as done, but {why}. Make sure the full test run "
