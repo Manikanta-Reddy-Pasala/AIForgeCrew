@@ -74,6 +74,7 @@ from ._verify import (
     _run_project_verify,
     _post_edit_syntax_error,
     _verify_fix_message,
+    lint_only,
 )
 from .._guards.file_edit import (
     _claims_file_edits,

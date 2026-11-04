@@ -151,17 +151,95 @@ def _absent(err: str) -> bool:
     return any(m in low for m in _TOOLCHAIN_ABSENT)
 
 
+_LINT_CODES = "F821,F822,F811"
+
+
+def _git_lines(cwd: str, *args: str) -> "list[str] | None":
+    import subprocess
+    p = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True,
+                       timeout=30)
+    if p.returncode != 0:
+        return None
+    return [ln for ln in (p.stdout or "").splitlines() if ln.strip()]
+
+
+def _changed_python(cwd: str) -> "tuple[list[str], set[str]] | None":
+    """``(changed .py files, the tracked ones among them)`` relative to
+    ``cwd``, or None when ``cwd`` is not a git tree with a commit (then the
+    whole tree is linted)."""
+    try:
+        tracked = _git_lines(cwd, "diff", "--name-only", "--relative", "HEAD")
+        if tracked is None:
+            return None
+        new = _git_lines(cwd, "ls-files", "--others", "--exclude-standard") or []
+    except Exception:  # noqa: BLE001
+        return None
+    keep = [p for p in dict.fromkeys(tracked + new)
+            if p.endswith(".py") and os.path.isfile(os.path.join(cwd, p))]
+    return keep, set(tracked)
+
+
+def _ruff_findings(py, cwd, env, args, stdin=None) -> list:
+    import subprocess
+    lp = subprocess.run(
+        [py, "-m", "ruff", "check", "--select", _LINT_CODES, "--no-cache",
+         "--output-format", "concise", "-q", *args], cwd=cwd, env=env,
+        input=stdin, capture_output=True, text=True, timeout=90)
+    return [ln for ln in (lp.stdout or "").splitlines() if ln.strip()]
+
+
+def _finding_key(line: str) -> str:
+    """``path:row:col: F821 msg`` → ``F821 msg`` (the row moves with any edit
+    above it, so the code + message is what says "the same finding")."""
+    parts = line.split(": ", 1)
+    return parts[1] if len(parts) == 2 else line
+
+
+def _new_findings(py, cwd, env, files, tracked) -> list:
+    """Findings in ``files`` that their HEAD version did not already have —
+    a finding the file came with is not this run's to fix."""
+    import collections
+    out = []
+    for f in files:
+        now = _ruff_findings(py, cwd, env, [f])
+        if not now:
+            continue
+        before: collections.Counter = collections.Counter()
+        if f in tracked:
+            import subprocess
+            old = subprocess.run(["git", "-C", cwd, "show", f"HEAD:./{f}"],
+                                 capture_output=True, text=True, timeout=30)
+            if old.returncode == 0:
+                before.update(_finding_key(x) for x in _ruff_findings(
+                    py, cwd, env, ["--stdin-filename", f, "-"], stdin=old.stdout))
+        for line in now:
+            k = _finding_key(line)
+            if before[k] > 0:
+                before[k] -= 1
+            else:
+                out.append(line)
+    return out
+
+
 # Native static checker per language — the "easy way": reuse each toolchain's own
 # linter/typechecker (no heavy universal dep). Real-bug level only, never style.
 def _static_lint_python(cwd, py, env):
+    """``(ok, output)``. In a git tree only the run's NEW findings count — in
+    the .py files it changed, minus what their HEAD version already had. A
+    repo that came with old F821s (sqlglot's benchmarks/) otherwise failed
+    every finish: "tests do NOT pass" while every test passed, three verify
+    rounds of the whole suite, then a false "checks still FAIL" on the answer."""
     try:
-        import subprocess
-        lp = subprocess.run(
-            [py, "-m", "ruff", "check", "--select", "F821,F822,F811",
-             "--no-cache", "-q", "."], cwd=cwd, env=env,
-            capture_output=True, text=True, timeout=90)
-        if lp.returncode != 0 and (lp.stdout or lp.stderr).strip():
-            return False, "\n\n=== python lint (undefined/redef) — fix ===\n" + lp.stdout + lp.stderr
+        changed = _changed_python(cwd)
+        if changed is None:
+            lines = _ruff_findings(py, cwd, env, ["."])
+        elif not changed[0]:
+            return True, ""
+        else:
+            lines = _new_findings(py, cwd, env, *changed)
+        if lines:
+            return False, ("\n\n=== python lint (undefined/redef) — fix ===\n"
+                           + "\n".join(lines[:40]) + "\n")
     except Exception:  # noqa: BLE001
         pass
     return True, ""

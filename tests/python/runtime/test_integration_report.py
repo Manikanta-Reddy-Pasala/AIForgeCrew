@@ -382,6 +382,64 @@ def test_a_missing_linter_never_fails_the_run(monkeypatch, tmp_path):
     assert ir._static_lint_python(str(tmp_path), "/py", {}) == (True, "")
 
 
+# A repo that came with old findings (sqlglot ships 5 F821s in benchmarks/)
+# failed EVERY finish: "tests do NOT pass" while all passed. Only what the run
+# itself added counts.
+
+def _ruff_py():
+    import sys
+    if subprocess.run([sys.executable, "-m", "ruff", "--version"],
+                      capture_output=True).returncode != 0:
+        pytest.skip("ruff not installed")
+    return sys.executable
+
+
+def _git_repo(tmp_path, files):
+    for name, body in files.items():
+        (tmp_path / name).write_text(body)
+    for cmd in (["init", "-q"], ["add", "-A"],
+                ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "seed"]):
+        subprocess.run(["git", "-C", str(tmp_path), *cmd], check=True,
+                       capture_output=True)
+    return str(tmp_path)
+
+
+def test_old_findings_the_repo_came_with_do_not_fail_the_run(tmp_path):
+    py = _ruff_py()
+    cwd = _git_repo(tmp_path, {"bench.py": "def f():\n    return sqlfluff\n"})
+    (tmp_path / "new.py").write_text("def g():\n    return 1\n")
+    assert ir._static_lint_python(cwd, py, dict(os.environ)) == (True, "")
+
+
+def test_a_file_edited_keeps_its_old_finding_but_a_new_one_fails(tmp_path):
+    py = _ruff_py()
+    cwd = _git_repo(tmp_path, {"m.py": "def f():\n    return old_name\n"})
+    (tmp_path / "m.py").write_text(
+        "def f():\n    return old_name\n\n\ndef g():\n    return new_name\n")
+    ok, out = ir._static_lint_python(cwd, py, dict(os.environ))
+    assert ok is False
+    assert "new_name" in out and "old_name" not in out
+
+
+def test_an_untouched_git_tree_is_not_linted(tmp_path, monkeypatch):
+    cwd = _git_repo(tmp_path, {"m.py": "x = undefined\n"})
+    real = subprocess.run
+
+    def _run(cmd, *a, **k):
+        assert "ruff" not in cmd, "linted a tree with no changes"
+        return real(cmd, *a, **k)
+    monkeypatch.setattr(subprocess, "run", _run)
+    assert ir._static_lint_python(cwd, "/py", {}) == (True, "")
+
+
+def test_a_new_untracked_file_is_linted_whole(tmp_path):
+    py = _ruff_py()
+    cwd = _git_repo(tmp_path, {"m.py": "x = 1\n"})
+    (tmp_path / "n.py").write_text("y = missing\n")
+    ok, out = ir._static_lint_python(cwd, py, dict(os.environ))
+    assert ok is False and "missing" in out
+
+
 # ─── language-native static checks ─────────────────────────────────────
 
 
@@ -552,3 +610,14 @@ def test_a_missing_project_runner_still_returns_manual_steps(tmp_path, monkeypat
     rep = ir.build_and_test_report(str(tmp_path))
     assert rep["ok"] is None
     assert "Integration check" in rep["md"]
+
+
+def test_a_lint_only_failure_is_not_told_the_tests_fail():
+    from aiforge_core.runtime.chat_agent._context import _verify_fix_message, lint_only
+    out = ("5 passed in 0.1s\n\n=== python lint (undefined/redef) — fix ===\n"
+           "n.py:1:5: F821 Undefined name `missing`\n")
+    assert lint_only(out)
+    msg = _verify_fix_message(out)
+    assert "The tests pass" in msg and "do NOT pass" not in msg
+    assert not lint_only("1 failed, 4 passed")
+    assert "do NOT pass" in _verify_fix_message("1 failed, 4 passed")

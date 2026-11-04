@@ -29,6 +29,7 @@ from .._context import (
     _verify_fix_message,
     _verify_max_rounds,
     _verify_on_final_enabled,
+    lint_only,
 )
 from . import _gaming
 from ._progress import _SHELL_TOOLS, _digest, _refresh_tree
@@ -203,8 +204,10 @@ def _verify_fix(st, step, cwd, plan_mode, builder):
         st.verify_rounds += 1
         if step.get("text"):        # the streamed answer, set aside
             yield {"type": "thought", "text": step["text"]}
+        what = ("tests pass, lint found new undefined names" if lint_only(_vout)
+                else f"tests failing ({_fails})")
         yield {"type": "thought", "role": "system",
-               "text": f"✗ tests failing ({_fails}) — fixing "
+               "text": f"✗ {what} — fixing "
                        f"(verify round {st.verify_rounds}/"
                        f"{_verify_max_rounds()})…"}
         msg = _verify_fix_message(_vout)

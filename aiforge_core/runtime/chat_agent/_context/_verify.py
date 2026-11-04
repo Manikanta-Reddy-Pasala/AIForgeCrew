@@ -78,6 +78,15 @@ def _post_edit_syntax_error(_name: str, args: dict, cwd: str) -> "str | None":
         return None
 
 
+_LINT_MARK = "=== python lint (undefined/redef)"
+
+
+def lint_only(output: str) -> bool:
+    """The tests passed and only the lint leg failed — the runner appends
+    the lint block only to a green run."""
+    return _LINT_MARK in (output or "")
+
+
 def _verify_fix_message(output: str) -> str:
     """A directed 'tests are failing, fix them' turn — reuses the reconcile's
     root-cause hint engine so the local model gets concrete guidance, not just
@@ -88,6 +97,14 @@ def _verify_fix_message(output: str) -> str:
     except Exception:  # noqa: BLE001
         hints = []
     hint_block = ("\n\nDIRECTED FIXES:\n" + "\n".join(f"- {h}" for h in hints)) if hints else ""
+    if lint_only(output):
+        # Saying "the tests do NOT pass" here sent a model whose tests all
+        # passed hunting for a failure that was not there.
+        return (
+            "[automated verification — not the user] The tests pass, but the "
+            "static check found undefined or redefined names in code you "
+            "changed. Fix those lines, then reply FINAL.\n\n"
+            "CHECK OUTPUT:\n```\n" + (output or "")[-3000:] + "\n```")
     return (
         "[automated verification — not the user] You said you were done, but the "
         "project's tests do NOT pass. Do NOT reply FINAL until they do. Read the "
