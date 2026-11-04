@@ -693,3 +693,23 @@ def test_a_long_lint_block_keeps_its_header_inside_the_kept_tail(tmp_path, monke
                                     for i in range(60)])
     ok, out = ir._static_lint_python(str(tmp_path), "/py", {})
     assert ok is False and len(out) < 4000 and "=== python lint" in out
+
+
+def test_the_gate_writes_nothing_into_the_repos_object_store(tmp_path):
+    py = _ruff_py()
+    cwd = _git_repo(tmp_path, {"m.py": "x = 1\n"})
+    (tmp_path / "n.py").write_text("y = 2\n")
+    count = lambda: subprocess.run(["git", "-C", cwd, "count-objects"],
+                                   capture_output=True, text=True).stdout
+    before = count()
+    ir._static_lint_python(cwd, py, dict(os.environ))
+    assert count() == before
+
+
+def test_an_unignored_venv_is_not_linted(tmp_path):
+    py = _ruff_py()
+    cwd = _git_repo(tmp_path, {"m.py": "x = 1\n"})
+    site = tmp_path / ".aiforge-venv" / "lib" / "site-packages"
+    site.mkdir(parents=True)
+    (site / "dep.py").write_text("y = missing\n")
+    assert ir._static_lint_python(cwd, py, dict(os.environ)) == (True, "")

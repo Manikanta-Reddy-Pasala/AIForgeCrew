@@ -193,49 +193,66 @@ def _lint_base(cwd: str) -> str:
     return "HEAD"
 
 
-def _diff_with_new_files(cwd: str, base: str) -> "str | None":
-    """``--name-status`` of the tree against ``base`` with untracked files
-    included — staged into a throwaway copy of the index, so a plain ``mv``
-    (delete + untracked file) still pairs up as a rename. The real index is
-    never touched."""
-    import shutil
-    import tempfile
-    idx = (_git_out(cwd, "rev-parse", "--path-format=absolute", "--git-path", "index")
-           or "").strip()
-    with tempfile.TemporaryDirectory() as tmp:
-        env = dict(os.environ, GIT_INDEX_FILE=os.path.join(tmp, "index"))
-        if idx and os.path.isfile(idx):
-            shutil.copyfile(idx, env["GIT_INDEX_FILE"])
-        elif _git_out(cwd, "read-tree", "HEAD", env=env) is None:
-            return None
-        if _git_out(cwd, "add", "-A", "--", ".", env=env) is None:
-            return None
-        return _git_out(cwd, "diff", "--cached", "--name-status", "-M",
-                        "--relative", base, env=env)
+def _moved_from(cwd: str, base: str, new: str, gone: list) -> "str | None":
+    """The deleted file ``new`` was moved from (a plain ``mv`` shows as a
+    delete plus an untracked file): the most alike one, at least half alike."""
+    import difflib
+    try:
+        with open(os.path.join(cwd, new), encoding="utf-8", errors="replace") as fh:
+            body = fh.read()
+    except OSError:
+        return None
+    best, score = None, 0.5
+    for old in gone[:20]:
+        was = _git_out(cwd, "show", f"{base}:./{old}")
+        if was is None:
+            continue
+        r = difflib.SequenceMatcher(None, was, body).quick_ratio()
+        if r >= score and difflib.SequenceMatcher(None, was, body).ratio() >= score:
+            best, score = old, r
+    return best
+
+
+def _skipped_dir(path: str) -> bool:
+    return any(part in _LINT_SKIP or part == "site-packages"
+               for part in path.split("/")[:-1])
 
 
 def _changed_python(cwd: str) -> "tuple[list[str], dict, str] | None":
     """``(changed .py files, {file: its path at base}, base)`` relative to
     ``cwd``, or None when ``cwd`` is not a git tree with a commit (then the
-    whole tree is linted). A renamed file maps to its old path."""
+    whole tree is linted). A renamed or moved file maps to its old path.
+    Read-only git only: nothing is hashed into the repo's object store."""
     try:
         if _git_out(cwd, "rev-parse", "--verify", "-q", "HEAD") is None:
             return None
         base = _lint_base(cwd)
-        diff = _diff_with_new_files(cwd, base)
+        diff = _git_out(cwd, "diff", "--name-status", "-M", "--relative", base)
         if diff is None:
             return None
+        new = _git_out(cwd, "ls-files", "--others", "--exclude-standard") or ""
     except Exception:  # noqa: BLE001
         return None
     was: dict = {}
     files: list = []
+    gone: list = []
     for row in diff.splitlines():
         cols = row.split("\t")
-        if len(cols) < 2 or cols[0].startswith("D"):
+        if len(cols) < 2:
+            continue
+        if cols[0].startswith("D"):
+            if cols[1].endswith(".py"):
+                gone.append(cols[1])
             continue
         files.append(cols[-1])
         if not cols[0].startswith("A"):
             was[cols[-1]] = cols[1]      # R100 old new → old; M f → f
+    for f in new.splitlines():
+        if f.endswith(".py") and not _skipped_dir(f):
+            files.append(f)
+            old = _moved_from(cwd, base, f, gone) if gone else None
+            if old:
+                was[f] = old
     keep = [p for p in dict.fromkeys(files)
             if p.endswith(".py") and os.path.isfile(os.path.join(cwd, p))]
     return keep, was, base
