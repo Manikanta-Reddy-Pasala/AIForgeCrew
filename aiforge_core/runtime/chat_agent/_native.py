@@ -588,6 +588,8 @@ def make_native_complete_fn(mode: str = "act", builder: str = "",
             if _native_error_transient(exc):
                 if choice == "required":
                     _FORCE_WRITE.add(session_id)    # the retry is still the forced step
+                elif choice == "none":
+                    _FORCE_FINAL.add(session_id)
                 raise
             msg = _complete_repaired(client, role, msgs, tools, exc)
             if msg is None:

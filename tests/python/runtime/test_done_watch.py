@@ -154,16 +154,17 @@ def _git_repo(tmp_path, files):
                        env=env)
 
 
-def test_a_failure_that_also_fails_on_the_original_code_is_pre_existing(tmp_path):
+def test_failures_the_original_code_has_too_are_pre_existing(tmp_path):
     import sys
     _git_repo(tmp_path, {"test_a.py": "def test_old():\n    assert False\n\n"
                                       "def test_ddl():\n    assert True\n"})
+    cmd = f"cd {tmp_path} && {sys.executable} -m pytest -q -p no:cacheprovider"
+    code, out = W._run(cmd, str(tmp_path))
+    assert W.pre_existing(str(tmp_path), cmd, out)        # test_old fails on HEAD too
     (tmp_path / "test_a.py").write_text("def test_old():\n    assert False\n\n"
                                         "def test_ddl():\n    assert False\n")
-    cmd = f"{sys.executable} -m pytest -q"
-    assert W.pre_existing(str(tmp_path), cmd, ["test_a.py::test_old"])
-    assert not W.pre_existing(str(tmp_path), cmd, ["test_a.py::test_ddl"])   # the run broke it
-    assert not W.pre_existing(str(tmp_path), "make test", ["test_a.py::test_old"])
+    code, out = W._run(cmd, str(tmp_path))
+    assert not W.pre_existing(str(tmp_path), cmd, out)    # the run broke test_ddl
 
 
 def test_a_failure_counts_as_known_only_when_the_request_says_so():
@@ -188,3 +189,39 @@ def test_a_failure_counts_as_known_only_when_the_request_says_so():
 ])
 def test_what_counts_as_only_looking(step, acts):
     assert W._acts(step) is acts
+
+
+# third review
+
+def test_the_probe_reruns_only_a_bare_test_command():
+    assert W._probe_command("cd /r && PYTHONPATH=src py -m pytest -q tests")
+    for cmd in ("py -m pytest -q && git commit -am wip", "pytest -q; make deploy",
+                "pytest -q > out.txt", "pytest -q | tail -5"):
+        assert W._probe_command(cmd) is None, cmd
+
+
+def test_an_exitfirst_run_is_not_the_whole_suite():
+    assert not _outcomes._full_and_honest("run_command", {"cmd": "python -m pytest -x -q"})
+    assert not _outcomes._full_and_honest("run_command", {"cmd": "pytest --maxfail=1"})
+    assert _outcomes._full_and_honest("run_command", {"cmd": "python -m pytest -q tests"})
+
+
+def test_a_negated_or_fix_sentence_is_not_a_known_failure():
+    for goal in ("`test_parse` is not flaky — it's a real regression, investigate.",
+                 "Remove the xfail on `test_parse`."):
+        st = SimpleNamespace(goal=goal)
+        out = {"ok": False, "stdout": "FAILED t.py::test_parse - x\n1 failed, 3 passed\n"}
+        assert not _outcomes._only_known_failures(st, out), goal
+
+
+def test_the_base_run_imports_the_original_code_not_the_edited_one(tmp_path):
+    import sys
+    (tmp_path / "src" / "pkg").mkdir(parents=True)
+    (tmp_path / "src" / "pkg" / "__init__.py").write_text("def f():\n    return 1\n")
+    (tmp_path / "test_f.py").write_text("from pkg import f\n\ndef test_f():\n    assert f() == 1\n")
+    _git_repo(tmp_path, {})
+    (tmp_path / "src" / "pkg" / "__init__.py").write_text("def f():\n    return 2\n")
+    cmd = f"cd {tmp_path} && PYTHONPATH={tmp_path}/src {sys.executable} -m pytest -q -p no:cacheprovider"
+    code, out = W._run(cmd, str(tmp_path))
+    assert code != 0                                   # the edit broke test_f
+    assert not W.pre_existing(str(tmp_path), cmd, out)  # it passes on the original

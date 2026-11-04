@@ -41,6 +41,7 @@ _TEST_CMD = re.compile(
 #: A narrowed run proves only the part it ran.
 _NARROW = re.compile(
     r"\s-k\b|\s-m\s+(?!pytest\b|unittest\b|tox\b)|--lf\b|--last-failed\b|--deselect\b|\s-t\b|"
+    r"\s-x\b|--exitfirst\b|--maxfail\b|"
     r"--testNamePattern\b|--tests\b|\s-run\b|-Dtest=|-Dit\.test=|::|"
     r"\s[\w./-]+\.(?:py|js|jsx|ts|tsx|java|kt|go|rs)\b")
 _FULL_MODES = ("all", "full")
@@ -115,6 +116,8 @@ def _note_green_tests(st, name, args, result, cwd) -> None:
     name, args, result = run
     if not isinstance(result, dict) or not _is_test_run(name, args):
         return
+    if stale:
+        return                        # tested the code as it was before the edits
     known = _only_known_failures(st, result)
     _gaming.note_test_result(st, True if known else result.get("ok"))
     if result.get("ok") is not True and not known:
@@ -126,10 +129,8 @@ def _note_green_tests(st, name, args, result, cwd) -> None:
         return                        # proves nothing about the whole suite
     st.last_full_test = (name, dict(args or {}))
     text = result_text(result)
-    if stale or not (known or (runner_green(text) and _RAN.search(text))):
-        # a job checked on after edits landed tested older code; a build
-        # with no test count ran no tests
-        return
+    if not (known or (runner_green(text) and _RAN.search(text))):
+        return                        # a build with no test count ran no tests
     try:
         st.last_green_fp = content_fingerprint(cwd)
         st.green_at_edits = getattr(st, "edits_made", 0)
@@ -147,7 +148,8 @@ _KNOWN_WORDS = re.compile(r"already fail|known (?:failure|to fail|issue)|ignore 
                           r"flaky|pre-?existing|expected to fail|xfail", re.I)
 #: The sentence asks for the test to be fixed: it is not one to ignore.
 _FIX_WORDS = re.compile(r"\b(?:fix|repair|make (?:it|them|\S+) pass|should pass|must pass|"
-                        r"don'?t ignore|do not ignore)\b", re.I)
+                        r"don'?t ignore|do not ignore|not (?:a )?(?:flaky|known)|isn'?t flaky|"
+                        r"regression|investigate|remove the xfail|un-?xfail)\b", re.I)
 
 
 def _said_known(goal: str, name: str) -> bool:

@@ -11,10 +11,10 @@ The work counts as done, on the code as it is now, when:
   were MISSING when the turn started (``spec_contract``, a confident index)
   and every one is in the code now. A request that only changes what exists
   never triggers it;
-* the full suite is green: a whole-suite run with ``N passed``, where a
-  failure only counts against it if it does NOT also fail on the original
-  code (re-run on a ``git worktree`` of HEAD) and the request does not call
-  it already failing;
+* the full suite is green: a whole-suite run with ``N passed``, where
+  failures and errors count against it only if the original code does not
+  have them too (the same command on a ``git worktree`` of HEAD) and the
+  request does not call them already failing;
 * the last test result of the turn is not red, and no target item is open.
 
 Then the model is told the work checks out and to give its final answer.
@@ -78,7 +78,8 @@ def _raw_gaps(st) -> "list | None":
     cwd = getattr(st, "cwd", None)
     if not goal or not cwd:
         return None
-    key = ("done_watch", id(st), getattr(st, "edits_made", 0))
+    key = ("done_watch", id(st), getattr(st, "edits_made", 0),
+           len(getattr(st, "convo", None) or []))
     hit = getattr(st, "dw_gap_cache", None)
     if hit and hit[0] == key:
         return hit[1]
@@ -95,6 +96,13 @@ def _initial_gaps(st) -> int:
     """How many named things were missing when the turn started (read once,
     before the first edit lands)."""
     if getattr(st, "dw_initial", None) is None and getattr(st, "edits_made", 0) == 0:
+        try:
+            from aiforge_core.runtime import git_target
+            where = git_target.command_base(getattr(st, "cwd", None)) or str(st.cwd)
+            code, rev = _run("git rev-parse --verify -q HEAD", where, 30)
+            st.dw_base_rev = rev.strip() if code == 0 and rev.strip() else None
+        except Exception:  # noqa: BLE001
+            st.dw_base_rev = None
         try:
             gaps = _raw_gaps(st)
             st.dw_initial = len(gaps) if gaps else 0
@@ -144,11 +152,25 @@ def done_now(st) -> bool:
         return False
 
 
-def _run(cmd: str, cwd: str, timeout: int = _PROBE_TIMEOUT_S) -> "tuple[int, str]":
+def _run(cmd: str, cwd: str, timeout: int = _PROBE_TIMEOUT_S, env=None) -> "tuple[int, str]":
+    """Run ``cmd`` the way run_command does (``bash -c``, not a login shell),
+    in its own process group: on timeout the whole group is killed, not just
+    bash."""
+    import signal
     import subprocess
-    p = subprocess.run(["bash", "-lc", cmd], cwd=cwd, capture_output=True, text=True,
-                       errors="replace", timeout=timeout)
-    return p.returncode, (p.stdout or "") + (p.stderr or "")
+    p = subprocess.Popen(["bash", "-c", cmd], cwd=cwd, stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, text=True, errors="replace",
+                         start_new_session=True, env=env)
+    try:
+        out, _ = p.communicate(timeout=timeout)
+        return p.returncode, out or ""
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        p.communicate()
+        return -9, ""
 
 
 def _interpreter(cmd: str) -> "str | None":
@@ -161,35 +183,72 @@ def _interpreter(cmd: str) -> "str | None":
     return None
 
 
-def pre_existing(cwd: str, cmd: str, ids: list) -> bool:
-    """Every one of ``ids`` fails on the original code too: run them on a
-    git worktree of HEAD with the turn's own interpreter."""
+_ERRORS = re.compile(r"\b(\d+) errors?\b")
+
+
+def _errors(out: str) -> int:
+    hits = _ERRORS.findall(out or "")
+    return int(hits[-1]) if hits else 0
+
+
+_FAIL_ONLY = re.compile(r"^FAILED\s+(\S+::\S+)", re.M)
+_ERROR_ONLY = re.compile(r"^ERROR\s+(\S+::\S+)", re.M)
+
+
+def pre_existing(cwd: str, cmd: str, out: str, base_rev: "str | None" = None) -> bool:
+    """Every failure and error of ``out`` (the turn's own full test command
+    run now) is there on the original code too: the same command, run on a
+    git worktree of ``base_rev`` (the turn's starting commit; HEAD when
+    unknown), the repo's path in the command pointed at the copy and the
+    copy first on PYTHONPATH (so an editable install or an absolute path
+    cannot import the edited code). FAILED ids must be a subset of the
+    original's FAILED, ERROR ids of its ERROR, and the error count no higher."""
     import shutil
     import tempfile
-    py = _interpreter(cmd)
-    if not py or not ids:
-        return False
+    fails, errs = set(_FAIL_ONLY.findall(out or "")), set(_ERROR_ONLY.findall(out or ""))
+    if not fails and not errs and not _errors(out):
+        return True
     tmp = tempfile.mkdtemp(prefix="aiforge-base-")
     base = os.path.join(tmp, "base")
+    top = ""
     try:
-        code, _ = _run(f"git worktree add --detach {base} HEAD", cwd, 60)
-        if code != 0:
+        top = _run("git rev-parse --show-toplevel", cwd, 30)[1].strip()
+        rev = base_rev or "HEAD"
+        if not top or _run(f"git worktree add --detach {base} {rev}", cwd, 60)[0] != 0:
             return False
-        sub = os.path.relpath(cwd, _run("git rev-parse --show-toplevel", cwd, 30)[1].strip())
-        here = os.path.join(base, sub) if sub != "." else base
-        import shlex
-        # the command's own VAR=value prefix (`PYTHONPATH=src …`)
-        env = [w for w in cmd.split()[:cmd.split().index(py)] if re.fullmatch(r"\w+=\S*", w)] \
-            if py in cmd.split() else []
-        code, out = _run(" ".join(env) + f" {shlex.quote(py)} -m pytest -q -p no:cacheprovider "
-                         + " ".join(shlex.quote(i) for i in ids), here)
-        failed = set(_FAILED_ID.findall(out))
-        return code != 0 and all(i in failed for i in ids)
+        sub = os.path.relpath(os.path.realpath(cwd), os.path.realpath(top))
+        here = base if sub == "." else os.path.join(base, sub)
+        paths = [here] + ([os.path.join(here, "src")] if os.path.isdir(os.path.join(here, "src"))
+                          else [])
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join(paths + ([env["PYTHONPATH"]]
+                                                      if env.get("PYTHONPATH") else []))
+        env.pop("PYTHONSAFEPATH", None)
+        line = cmd.replace(top, base)
+        line = re.sub(r"(^|\s)PYTHONPATH=\S*", r"\1", line)     # ours wins
+        code, base_out = _run(line, here, env=env)
+        if not _RAN.search(base_out):
+            return False
+        return (fails <= set(_FAIL_ONLY.findall(base_out))
+                and errs <= set(_ERROR_ONLY.findall(base_out))
+                and _errors(out) <= _errors(base_out))
     except Exception:  # noqa: BLE001
         return False
     finally:
-        _run(f"git worktree remove --force {base}", cwd, 60)
+        if top:
+            _run(f"git worktree remove --force {base}", cwd, 60)
+            _run("git worktree prune", cwd, 30)
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+#: A command the probe may run again: the test command alone (after `cd x &&`
+#: and VAR= prefixes) — never one that chains a commit, a deploy or a write.
+_CHAINED = re.compile(r"&&|\|\||;|\||>|<|`|\$\(")
+
+
+def _probe_command(cmd: str) -> "str | None":
+    rest = re.sub(r"^\s*cd\s+\S+\s*&&\s*", "", cmd or "")
+    return None if _CHAINED.search(rest) else cmd
 
 
 def _probe_tests(st):
@@ -204,7 +263,7 @@ def _probe_tests(st):
     if not last or getattr(st, "dw_probed_at", None) == edits or not _spec_complete(st):
         return
     from aiforge_core.runtime.shell_writes import command_of
-    cmd = command_of(last[1]) or ""
+    cmd = _probe_command(command_of(last[1]) or "")
     if not cmd:
         return
     st.dw_probed_at = edits
@@ -218,10 +277,12 @@ def _probe_tests(st):
     code, out = _run(cmd, cwd)
     if not _RAN.search(out):
         return
-    ids = list(dict.fromkeys(_FAILED_ID.findall(out)))
-    green = code == 0 or _only_known_failures(st, {"ok": False, "stdout": out}) or (
-        bool(ids) and len(ids) <= 20 and not re.search(r"\b\d+ errors?\b", out)
-        and pre_existing(cwd, cmd, ids))
+    n_failed = re.findall(r"\b(\d+) failed\b", out)
+    listed = len(set(_FAIL_ONLY.findall(out)))
+    if n_failed and int(n_failed[-1]) != listed:
+        return                        # failures it did not name: cannot judge them
+    green = code == 0 or _only_known_failures(st, {"ok": False, "stdout": out}) \
+        or pre_existing(cwd, cmd, out, getattr(st, "dw_base_rev", None))
     st.tests_green = green
     if green:
         st.last_green_fp = content_fingerprint(getattr(st, "cwd", None))
