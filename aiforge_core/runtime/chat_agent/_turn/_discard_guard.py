@@ -26,8 +26,20 @@ import glob
 import os
 import re
 
-#: Refusals of the same single file before the next attempt is let through.
+#: Refusals of the same single file (named in the command, unchanged since)
+#: before the next attempt is let through; at most this many files a turn.
 _ONE_FILE_TRIES = 2
+_MAX_RELEASED = 1
+#: Commands that act on the whole repo: never released one file at a time.
+_REPO_WIDE = re.compile(r"\bgit\b[^|;&\n]*\b(?:stash|reset\s+[^|;&\n]*--hard|clean\b|"
+                        r"switch\b|checkout\s+(?:-f|--force)\b|checkout\s+(?:--\s+)?\.(?:\s|$)|"
+                        r"restore\s+(?:--\s+)?\.(?:\s|$))")
+
+
+def _names_file(cmd: str, path: str, base: str) -> bool:
+    """The command spells out ``path`` (relative to ``base``, or its name)."""
+    rel = os.path.relpath(path, base)
+    return any(w and w in cmd for w in (rel, path, os.path.basename(path)))
 _STASH_KEEPS = {"list", "show", "pop", "apply", "drop", "clear", "branch", "create",
                 "store"}
 _GLOB = re.compile(r"[*?\[]")
@@ -283,11 +295,18 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     # One file the model has been refused for twice already: it insists on
     # starting that file over (shopkit fin1: 47 refusals, features 3-5 never
     # reached). Let that ONE file go; a wipe of several files never passes.
-    if len(lost) == 1:
+    if len(lost) == 1 and not _REPO_WIDE.search(cmd) and _names_file(cmd, lost[0], base):
         tried = st.__dict__.setdefault("discard_one_file", {}) if hasattr(st, "__dict__") else {}
-        tried[lost[0]] = tried.get(lost[0], 0) + 1
-        if tried[lost[0]] > _ONE_FILE_TRIES:
-            tried[lost[0]] = 0
+        released = st.__dict__.setdefault("discard_released", set()) if hasattr(st, "__dict__") else set()
+        digest = (getattr(st, "file_hashes", None) or {}).get(lost[0])
+        count, seen_digest = tried.get(lost[0], (0, digest))
+        if seen_digest != digest:
+            count = 0                     # edited since: the old refusals are stale
+        count += 1
+        tried[lost[0]] = (count, digest)
+        if count > _ONE_FILE_TRIES and len(released) < _MAX_RELEASED:
+            released.add(lost[0])
+            tried.pop(lost[0], None)
             return None
     shown = [os.path.relpath(p, base) for p in lost[:8]]
     return {"ok": False, "error": "would_discard_own_edits", "files": shown,

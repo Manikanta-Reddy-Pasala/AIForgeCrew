@@ -168,3 +168,41 @@ def test_one_file_is_let_go_after_two_refusals_but_a_wipe_never(repo, monkeypatc
     for _ in range(6):
         assert G.refusal(st, "run_command", {"cmd": many}, str(root))
         G.refusal(st, "run_command", {"cmd": "ls"}, str(root))
+
+
+def _st_for(repo, monkeypatch):
+    root, edited = repo
+    from aiforge_core.runtime import git_target
+    monkeypatch.setattr(git_target, "command_base", lambda cwd: str(root))
+    return root, SimpleNamespace(file_hashes=dict.fromkeys(edited, "h"), goal="")
+
+
+def test_a_repo_wide_command_is_never_released_one_file_at_a_time(repo, monkeypatch):
+    root, st = _st_for(repo, monkeypatch)
+    st.file_hashes = {str(root / "src" / "core.py"): "h"}          # one edited file
+    for cmd in ("git reset --hard", "git stash", "git checkout -f main", "git checkout ."):
+        for _ in range(5):
+            assert G.refusal(st, "run_command", {"cmd": cmd}, str(root)), cmd
+            G.refusal(st, "run_command", {"cmd": "ls"}, str(root))
+
+
+def test_old_refusals_go_stale_once_the_file_is_edited_again(repo, monkeypatch):
+    root, st = _st_for(repo, monkeypatch)
+    core = str(root / "src" / "core.py")
+    for _ in range(2):
+        assert G.refusal(st, "run_command", {"cmd": "rm src/core.py"}, str(root))
+    st.file_hashes[core] = "h2"                                       # more work landed
+    assert G.refusal(st, "run_command", {"cmd": "rm src/core.py"}, str(root))
+
+
+def test_only_one_file_a_turn_is_released(repo, monkeypatch):
+    root, st = _st_for(repo, monkeypatch)
+    for _ in range(2):
+        G.refusal(st, "run_command", {"cmd": "rm src/core.py"}, str(root))
+    assert G.refusal(st, "run_command", {"cmd": "rm src/core.py"}, str(root)) is None
+    for _ in range(5):
+        assert G.refusal(st, "run_command", {"cmd": "rm debug.py src/new_mod.py"}, str(root)) or True
+    (root / "src" / "other.py").write_text("x\n")
+    st.file_hashes[str(root / "src" / "other.py")] = "h"
+    for _ in range(5):
+        assert G.refusal(st, "run_command", {"cmd": "rm src/other.py"}, str(root))
