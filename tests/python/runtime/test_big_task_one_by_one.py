@@ -480,3 +480,15 @@ def test_shape_adds_an_acceptance_check_and_flags_big_subtasks():
 def test_the_doer_seed_asks_for_decomposition():
     from aiforge_core.runtime.text_doer_seed import _SEED_HEADER
     assert "SMALL TASKS, ONE BY ONE" in _SEED_HEADER
+
+
+def test_a_red_run_names_its_failing_tests():
+    """sqlglot af9 broke test_ddl and called it 'an existing bug': the refusal
+    said only '1 failed'."""
+    from aiforge_core.runtime.chat_agent._turn import _items
+    out = {"ok": False, "stdout": "....F\nFAILED tests/dialects/test_postgres.py::TestPostgres::"
+                                  "test_ddl - AssertionError: x\n1 failed, 4 passed in 0.10s\n"}
+    s = _items._test_summary(out)
+    assert "1 failed, 4 passed" in s
+    assert "failing: tests/dialects/test_postgres.py::TestPostgres::test_ddl" in s
+    assert "git worktree add" in _items._GENERIC_HINTS[0]

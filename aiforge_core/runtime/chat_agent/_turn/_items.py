@@ -36,7 +36,10 @@ _NOTE_MAX = 320
 _PATHS_SHOWN = 8
 _GENERIC_HINTS = (
     "Run the project's tests or build for this item, fix what fails, and mark "
-    "it done only after they pass.",
+    "it done only after they pass. If you believe a failing test already failed "
+    "before your changes, check it on the original code instead of assuming: "
+    "`git worktree add /tmp/orig HEAD`, run that one test there, then "
+    "`git worktree remove /tmp/orig`. If it passes there, your edits broke it.",
     "Take a DIFFERENT approach this time: re-read the code this item touches, "
     "make the smallest change that satisfies the item, then run the check "
     "again. If the item cannot be done, mark it failed with plan_progress "
@@ -127,12 +130,20 @@ def _sync_edits(st) -> None:
         st.item_log.append(("edit", changed))
 
 
+_FAILED_ID = re.compile(r"^(?:FAILED|ERROR)\s+(\S+::\S+)", re.M)
+
+
 def _test_summary(result) -> str:
+    """The run's count line, and for a red run the failing test ids: a
+    refusal that only said "1 failed" let a run call its own regression
+    ("CREATE TABLE t (x INTERVAL DAY ))") an existing bug and chase it for
+    20 minutes."""
     from aiforge_core.runtime.failure_signature import result_text
     text = result_text(result)
     hits = _TEST_LINE.findall(text)
-    line = hits[-1] if hits else ""
-    return " ".join(line.split())[:120]
+    line = " ".join((hits[-1] if hits else "").split())[:120]
+    ids = list(dict.fromkeys(_FAILED_ID.findall(text)))[:3]
+    return line + (f"; failing: {', '.join(ids)}" if ids else "")
 
 
 def _acted(name, args, result) -> str:
