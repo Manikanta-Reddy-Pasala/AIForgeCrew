@@ -45,6 +45,25 @@ def _gaps(st, cached: bool = True) -> list:
     return gaps
 
 
+_WAIVE = re.compile(r"not required:\s*`?([A-Za-z_][\w./]*)", re.I)
+
+
+def _note_waivers(st, text: str) -> None:
+    """``not required: Cart.legacy_tax`` in an answer: the model says the
+    request means that name must not exist. The check is a text heuristic —
+    a wrong gap costs one line, not six send-backs."""
+    names = {m.group(1).rstrip(".") for m in _WAIVE.finditer(text or "")}
+    if names:
+        st.contract_waived = set(getattr(st, "contract_waived", None) or ()) | names
+
+
+def _waived(st, gaps: list) -> list:
+    w = getattr(st, "contract_waived", None) or ()
+    if not w:
+        return gaps
+    return [g for g in gaps if not any(n in g for n in w)]
+
+
 def _checked(st) -> int:
     """How many names, signatures and files the request spells out (what
     the check looked for in the code)."""
@@ -62,7 +81,10 @@ def message(gaps: list) -> str:
             + "\n".join(f"- {g}" for g in gaps[:_SHOWN]) + more + "\n"
             "The request is not done. Implement each one exactly as the request "
             "writes it (same names, same parameters), then run the tests. Your "
-            "own tests passing does not count when the API differs from the request.")
+            "own tests passing does not count when the API differs from the request.\n"
+            "Only if the request means one of these must NOT exist (it is removed, "
+            "renamed away, or only shown as an example), put a line "
+            "`not required: <name>` for it in your answer instead.")
 
 
 def gate(st, step, builder=None, strict_finish=False):
@@ -74,7 +96,8 @@ def gate(st, step, builder=None, strict_finish=False):
         return None
     if not getattr(st, "edits_made", 0):
         return None          # a question, a review: nothing was built
-    gaps = _gaps(st)
+    _note_waivers(st, step.get("text") or "")
+    gaps = _waived(st, _gaps(st))
     st.contract_gaps = gaps
     st.contract_checked = _checked(st)
     if not gaps:
@@ -102,7 +125,7 @@ def progress_note(st) -> "str | None":
     if getattr(st, "readonly_mode", False) or getattr(st, "plan_mode", False) \
             or not getattr(st, "edits_made", 0):
         return None
-    gaps = _gaps(st, cached=False)
+    gaps = _waived(st, _gaps(st, cached=False))
     key = tuple(gaps)
     if not gaps or getattr(st, "contract_progress_said", None) == key:
         return None

@@ -445,7 +445,7 @@ def _texts(req):
 
 def test_removal_chains_and_noun_phrases_stay_gone():
     t = _texts("Remove `Cart.old_total()` along with `Cart.legacy_tax()`. "
-               "Remove calls to `Loader.load_legacy()`. Drop compatibility with `Cls.py2_shim()`.")
+               "Remove calls to `Loader.load_legacy()`.")
     assert t == set()
 
 
@@ -492,3 +492,74 @@ def test_a_same_named_file_deep_in_fixtures_does_not_count(tmp_path):
     (tmp_path / "core.py").write_text("x = 1\n")
     assert S.missing("Create `shopkit/invoices.py`.", str(tmp_path)) == [
         "shopkit/invoices.py does not exist"]
+
+
+
+# third review: conservative gone rules + the waiver
+
+def test_three_names_before_are_removed_are_all_gone():
+    assert _texts("`old_a()`, `old_b()` and `old_c()` are removed.") == set()
+
+
+def test_a_colon_list_and_ie_after_a_removal_verb_are_gone():
+    assert _texts("Remove the old helpers: `old_a()`, `old_b()`.") == set()
+    assert _texts("Remove the v1 client methods, i.e. `Client.get_v1()` and "
+                  "`Client.post_v1()`.") == set()
+
+
+def test_rename_pairs_drop_every_source():
+    assert _texts("Rename `get()` to `fetch(key, *, ttl=None)` and `put()` to "
+                  "`store(key, value, *, ttl=None)`.") == {
+        "fetch(key, *, ttl=None)", "store(key, value, *, ttl=None)"}
+
+
+def test_a_new_api_after_a_removal_is_claimed():
+    t = _texts("Remove the global cache and route lookups through "
+               "`Registry.lookup(name, *, default=None)`. Do not remove "
+               "`Cache.get(key, default=None)`. Add a delete endpoint "
+               "`Api.delete_item(id, *, soft=False)`. `new_api(x, y=1)`, renamed from `old_api`.")
+    assert {"Registry.lookup(name, *, default=None)", "Cache.get(key, default=None)",
+            "Api.delete_item(id, *, soft=False)", "new_api(x, y=1)"} <= t
+
+
+def test_a_current_state_list_after_a_colon_is_not_claimed():
+    assert _texts("Its current implementation lives in two files: `cli/old.py` and "
+                  "`cli/compat.py`. Merge them into `cli/main.py`.") == {"cli/main.py"}
+
+
+def test_a_package_relative_file_is_found_deep_in_src(tmp_path):
+    d = tmp_path / "src" / "mytool" / "commands"
+    d.mkdir(parents=True)
+    (d / "export.py").write_text("")
+    assert S.missing("Add `commands/export.py`.", str(tmp_path)) == []
+
+
+def test_the_else_of_a_type_checking_guard_is_exported(tmp_path):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "mod.py").write_text("from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n"
+                                "    from ._t import Row\nelse:\n    Row = dict\n")
+    assert S.missing("Use `pkg.mod.Row`.", str(tmp_path)) == []
+
+
+def test_an_example_call_with_literal_args_is_not_claimed():
+    assert _texts("`parse('a=1')` -> `{'a': 1}`") == set()
+
+
+def _drain(g):
+    try:
+        while True:
+            next(g)
+    except StopIteration as e:
+        return e.value
+
+
+def test_the_model_can_waive_a_wrong_gap(tmp_path):
+    (tmp_path / "m.py").write_text("class Cart:\n    pass\n")
+    st = SimpleNamespace(goal="Add `Cart.total(self, *, tax=0)`.", cwd=str(tmp_path),
+                         convo=[], edits_made=1, steers=[])
+    assert _drain(G.gate(st, {"text": "done"})) == "continue"
+    assert "Cart.total" in st.contract_gaps[0]
+    _drain(G.gate(st, {"text": "Done.\nnot required: Cart.total"}))
+    assert st.contract_gaps == []
