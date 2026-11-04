@@ -158,22 +158,60 @@ _LINT_CODES = "F821,F822,F811"
 _LINT_DEADLINE_S = 120
 
 
-def _git_out(cwd: str, *args: str) -> "str | None":
+def _git_out(cwd: str, *args: str, env=None) -> "str | None":
     import subprocess
     p = subprocess.run(["git", "-c", "core.quotePath=false", "-C", cwd, *args],
-                       capture_output=True, timeout=30)
+                       capture_output=True, timeout=30, env=env)
     if p.returncode != 0:
         return None
     return p.stdout.decode("utf-8", "replace")
 
 
 def _lint_base(cwd: str) -> str:
-    """The commit the run started from: the pipeline's "pre-turn baseline"
-    when there is one (its subtasks COMMIT their work, so a diff against HEAD
-    would be empty and check nothing), else HEAD."""
-    base = (_git_out(cwd, "rev-list", "--max-count=1", "--grep=^pre-turn baseline",
-                     "HEAD") or "").strip()
-    return base or "HEAD"
+    """The commit the run started from. A team run's recorded start; in an
+    AIForge-owned workspace the latest "pre-turn baseline" (the pipeline's
+    subtasks COMMIT their work, so a diff against HEAD would check nothing);
+    else HEAD. A baseline found in a user repo's history is some old merged
+    branch's, not this run's, so it is not trusted there."""
+    try:
+        from aiforge_core.runtime import team_workspace
+        ws = team_workspace.for_cwd(cwd)
+        if ws is not None and ws.start_sha:
+            return ws.start_sha
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from aiforge_core.runtime.parallel_subtasks._planning import _is_managed_workspace
+        managed = _is_managed_workspace(cwd)
+    except Exception:  # noqa: BLE001
+        managed = False
+    if managed:
+        base = (_git_out(cwd, "rev-list", "--max-count=1",
+                         "--grep=^pre-turn baseline", "HEAD") or "").strip()
+        if base:
+            return base
+    return "HEAD"
+
+
+def _diff_with_new_files(cwd: str, base: str) -> "str | None":
+    """``--name-status`` of the tree against ``base`` with untracked files
+    included — staged into a throwaway copy of the index, so a plain ``mv``
+    (delete + untracked file) still pairs up as a rename. The real index is
+    never touched."""
+    import shutil
+    import tempfile
+    idx = (_git_out(cwd, "rev-parse", "--path-format=absolute", "--git-path", "index")
+           or "").strip()
+    with tempfile.TemporaryDirectory() as tmp:
+        env = dict(os.environ, GIT_INDEX_FILE=os.path.join(tmp, "index"))
+        if idx and os.path.isfile(idx):
+            shutil.copyfile(idx, env["GIT_INDEX_FILE"])
+        elif _git_out(cwd, "read-tree", "HEAD", env=env) is None:
+            return None
+        if _git_out(cwd, "add", "-A", "--", ".", env=env) is None:
+            return None
+        return _git_out(cwd, "diff", "--cached", "--name-status", "-M",
+                        "--relative", base, env=env)
 
 
 def _changed_python(cwd: str) -> "tuple[list[str], dict, str] | None":
@@ -181,11 +219,12 @@ def _changed_python(cwd: str) -> "tuple[list[str], dict, str] | None":
     ``cwd``, or None when ``cwd`` is not a git tree with a commit (then the
     whole tree is linted). A renamed file maps to its old path."""
     try:
+        if _git_out(cwd, "rev-parse", "--verify", "-q", "HEAD") is None:
+            return None
         base = _lint_base(cwd)
-        diff = _git_out(cwd, "diff", "--name-status", "-M", "--relative", base)
+        diff = _diff_with_new_files(cwd, base)
         if diff is None:
             return None
-        new = _git_out(cwd, "ls-files", "--others", "--exclude-standard") or ""
     except Exception:  # noqa: BLE001
         return None
     was: dict = {}
@@ -195,8 +234,8 @@ def _changed_python(cwd: str) -> "tuple[list[str], dict, str] | None":
         if len(cols) < 2 or cols[0].startswith("D"):
             continue
         files.append(cols[-1])
-        was[cols[-1]] = cols[1]          # R100 old new → old; M f → f
-    files += [ln for ln in new.splitlines() if ln.strip()]
+        if not cols[0].startswith("A"):
+            was[cols[-1]] = cols[1]      # R100 old new → old; M f → f
     keep = [p for p in dict.fromkeys(files)
             if p.endswith(".py") and os.path.isfile(os.path.join(cwd, p))]
     return keep, was, base
@@ -236,7 +275,8 @@ def _new_findings(py, cwd, env, files, was, base) -> list:
     import collections
     import subprocess
     import time
-    now = _ruff_findings(py, cwd, env, list(files))
+    now = [ln for i in range(0, len(files), 200)       # argv stays small
+           for ln in _ruff_findings(py, cwd, env, list(files[i:i + 200]))]
     by_file: dict = collections.defaultdict(list)
     for line in now:
         by_file[_finding_file(line, files)].append(line)
@@ -281,8 +321,11 @@ def _static_lint_python(cwd, py, env):
         else:
             lines = _new_findings(py, cwd, env, *changed)
         if lines:
+            # the runner keeps the output's last 4000 chars: the block stays
+            # well under that so its header (what lint_only reads) survives
+            body = "\n".join(ln[:200] for ln in lines[:15])
             return False, ("\n\n=== python lint (undefined/redef) — fix ===\n"
-                           + "\n".join(lines[:40]) + "\n")
+                           + body + "\n")
     except Exception:  # noqa: BLE001
         pass
     return True, ""

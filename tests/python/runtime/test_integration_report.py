@@ -631,9 +631,11 @@ def _git(cwd, *args):
 def test_work_committed_after_the_pre_turn_baseline_is_still_linted(tmp_path):
     # the team pipeline commits each subtask: a diff against HEAD is empty
     py = _ruff_py()
-    cwd = _git_repo(tmp_path, {"m.py": "x = 1\n"})
+    ws = tmp_path / "chat-workspaces" / "session-1"
+    ws.mkdir(parents=True)
+    cwd = _git_repo(ws, {"m.py": "x = 1\n"})
     _git(cwd, "commit", "--allow-empty", "-qm", "pre-turn baseline")
-    (tmp_path / "m.py").write_text("x = 1\ny = missing\n")
+    (ws / "m.py").write_text("x = 1\ny = missing\n")
     _git(cwd, "commit", "-qam", "subtask: a")
     ok, out = ir._static_lint_python(cwd, py, dict(os.environ))
     assert ok is False and "missing" in out
@@ -659,3 +661,35 @@ def test_a_non_ascii_file_name_is_linted(tmp_path):
     (tmp_path / "módulo.py").write_text("y = missing\n")
     ok, out = ir._static_lint_python(cwd, py, dict(os.environ))
     assert ok is False and "missing" in out
+
+
+def test_a_baseline_in_a_user_repos_history_is_not_the_base(tmp_path):
+    # some merged branch's old baseline: the user's later code is not this run's
+    py = _ruff_py()
+    cwd = _git_repo(tmp_path, {"m.py": "x = 1\n"})
+    _git(cwd, "commit", "--allow-empty", "-qm", "pre-turn baseline")
+    (tmp_path / "legacy.py").write_text("y = missing\n")
+    _git(cwd, "add", "-A")
+    _git(cwd, "commit", "-qm", "user work")
+    (tmp_path / "README.md").write_text("docs\n")
+    assert ir._static_lint_python(cwd, py, dict(os.environ)) == (True, "")
+
+
+def test_a_plain_mv_keeps_the_findings_the_file_came_with(tmp_path):
+    py = _ruff_py()
+    cwd = _git_repo(tmp_path, {"bench.py": "def f():\n    return sqlfluff\n"})
+    os.rename(tmp_path / "bench.py", tmp_path / "benchmarks.py")
+    assert ir._static_lint_python(cwd, py, dict(os.environ)) == (True, "")
+    # and the real index was left alone
+    st = subprocess.run(["git", "-C", cwd, "status", "--porcelain"],
+                        capture_output=True, text=True).stdout
+    assert "?? benchmarks.py" in st
+
+
+def test_a_long_lint_block_keeps_its_header_inside_the_kept_tail(tmp_path, monkeypatch):
+    monkeypatch.setattr(ir, "_changed_python", lambda cwd: (["a.py"], {}, "HEAD"))
+    monkeypatch.setattr(ir, "_new_findings",
+                        lambda *a: [f"{'d/' * 60}a.py:{i}:1: F821 Undefined name `x{i}`"
+                                    for i in range(60)])
+    ok, out = ir._static_lint_python(str(tmp_path), "/py", {})
+    assert ok is False and len(out) < 4000 and "=== python lint" in out
