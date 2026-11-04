@@ -330,7 +330,10 @@ _PRUNE_KEEP_TOKENS = 25_000
 #: ... and once the context has been shrinking over and over (tight mode).
 _PRUNE_KEEP_TIGHT = 10_000
 #: A prune at the condense point must free at least this share of the budget.
-_PRUNE_MIN_SHARE = 0.15
+#: Every prune is a full prompt re-read on a local server: few and deep, not
+#: many and shallow (click-completion rerun: 13 prunes in 41 min, each
+#: freeing 15-30%, ~520 s of re-reads). It keeps the newest ~20% whole.
+_PRUNE_MIN_SHARE = 0.35
 #: The thrash guard: this many shrinks within the last N steps.
 _TIGHT_AFTER, _TIGHT_WINDOW = 3, 8
 _STOP_AFTER, _STOP_WINDOW = 5, 10
@@ -359,7 +362,7 @@ def _prune_at_condense_point(st, role) -> int:
         tight = getattr(st, "ctx_tight", False)
         keep_chars = min(int((_PRUNE_KEEP_TIGHT if tight else _PRUNE_KEEP_TOKENS)
                              * _chars_per_token(role)),
-                         int(budget * (0.2 if tight else 0.4)))
+                         int(budget * (0.15 if tight else 0.2)))
         protect = st.batch_mark if st.batch_unread else None
         # Every aged message is an edit in the middle of the history: the
         # model server re-reads everything after it (a live run paid 41 s to
