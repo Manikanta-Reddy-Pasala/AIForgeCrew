@@ -435,3 +435,60 @@ def test_an_example_mention_does_not_hide_a_later_requirement():
 
 def test_an_input_output_arrow_pair_is_not_claimed():
     assert S.claims("upper-cased as today\n(`log_changes()` -> `LOG_CHANGES()`).") == []
+
+
+# second review: gone rules read the text between spans
+
+def _texts(req):
+    return {c["text"] for c in S.claims(req)}
+
+
+def test_removal_chains_and_noun_phrases_stay_gone():
+    t = _texts("Remove `Cart.old_total()` along with `Cart.legacy_tax()`. "
+               "Remove calls to `Loader.load_legacy()`. Drop compatibility with `Cls.py2_shim()`.")
+    assert t == set()
+
+
+def test_passive_and_bullet_forms_after_a_name_are_gone():
+    t = _texts("`old_a()` and `old_b()` are removed.\n- `old_c()`: remove\n"
+               "`Cls.x` was renamed to `Cls.y(a, *, b=1)`. `Mod.Z` needs to be deleted.")
+    assert t == {"Cls.y(a, *, b=1)"}
+
+
+def test_names_that_contain_or_describe_a_verb_are_claimed():
+    t = _texts("Add `Inventory.remove(sku)` and `Inventory.restock(sku, qty=1)`. "
+               "`prune(days=30)` deletes old rows; `new.py` replaces the old file.")
+    assert {"Inventory.remove(sku)", "Inventory.restock(sku, qty=1)", "prune(days=30)"} <= t
+
+
+def test_the_new_name_beside_a_removed_one_is_claimed():
+    t = _texts("Instead of `old_fn(x)`, use `new_fn(x, *, y=1)`. "
+               "Remove `old_api()` and add `new_api(x, y=1)`.")
+    assert t == {"new_fn(x, *, y=1)", "new_api(x, y=1)"}
+
+
+def test_a_current_state_clause_followed_by_an_ask_is_claimed():
+    t = _texts("Currently there is no export; add `export_csv(path, *, sep=',')`. "
+               "Since `Cache.get` currently is unbounded, add `Cache.evict(n=10)`.")
+    assert {"export_csv(path, *, sep=',')", "Cache.evict(n=10)"} <= t
+
+
+def test_a_signature_arrow_return_is_a_claim():
+    assert "parse(text: str)" in _texts("`parse(text: str)` -> `Tree`")
+
+
+def test_a_type_checking_import_is_not_an_export(tmp_path):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "mod.py").write_text("from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n"
+                                "    from .other import Name\n")
+    assert S.missing("Use `pkg.mod.Name`.", str(tmp_path)) == ["pkg.mod.Name is not defined"]
+
+
+def test_a_same_named_file_deep_in_fixtures_does_not_count(tmp_path):
+    (tmp_path / "tests" / "fixtures" / "shopkit").mkdir(parents=True)
+    (tmp_path / "tests" / "fixtures" / "shopkit" / "invoices.py").write_text("")
+    (tmp_path / "core.py").write_text("x = 1\n")
+    assert S.missing("Create `shopkit/invoices.py`.", str(tmp_path)) == [
+        "shopkit/invoices.py does not exist"]

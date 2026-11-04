@@ -76,14 +76,65 @@ _STDLIB = set(getattr(sys, "stdlib_module_names", ()))
 #: `a.py` and is wired through `b()`"): its names are not claims.
 _CURRENT = re.compile(r"\bcurrent(?:ly)?\b[^.`\n]{0,60}\b(?:lives?|is|are|uses?|wired|"
                       r"implemented|exists?|sits?|handled)\b", re.I)
-#: A gone-verb whose OBJECT follows: "remove `X`", but not "rename `a` to `X`",
-#: "move them into `X`", "replace it with `X`" (there `X` is the new thing).
-_GONE_BEFORE_TARGET = re.compile(r"\b(?:to|into|with|by|as|onto)\b", re.I)
-#: Right after a name: "`a.py` (remove or replace)", "`x` is no longer needed".
-#: "`new.py`, which replaces `old.py`" is the subject, not gone.
-_GONE_AFTER = re.compile(r"^[\s`'\",)]*(?:\(\s*)?(?:(?:is|are|will be|should be|can be|gets?)\s+)?"
-                         r"(?:remove|delet|drop|deprecat|no longer|retire|go(?:es)? away|replace)",
-                         re.I)
+#: After a current-state phrase, these say the sentence asks for something.
+_ASKS = re.compile(r"\b(?:add|implement|create|must|should|make|use|return|raise|"
+                   r"support|define|write|expose|accept|take)\b", re.I)
+#: Gone rules, read from the text BETWEEN backticked spans (a span's own
+#: text never counts: `Inventory.remove(sku)` is a name, not a verb).
+#: Removal verbs: the names after them go ("remove calls to `X`" too).
+_REMOVE_VERB = re.compile(r"\b(?:remove[sd]?|delete[sd]?|drop(?:s|ped)?|deprecate[sd]?|"
+                          r"get rid of|retire[sd]?|instead of|no longer (?:use|need|support))\b",
+                          re.I)
+#: Transform verbs: the SOURCE goes, the target after to/into/with stays.
+_TRANSFORM_VERB = re.compile(r"\b(?:rename[sd]?|move[sd]?|replace[sd]?|splits?|merge[sd]?|"
+                             r"convert(?:s|ed)?)\b", re.I)
+_TARGET_PREP = re.compile(r"\b(?:to|into|with|onto)\b", re.I)
+#: A gap that only joins list items: the next name shares the verb.
+_JOINER = re.compile(r"^[\s,;()]*(?:(?:and|or|as well as|along with|together with|plus)\b)?"
+                     r"[\s,()]*$", re.I)
+#: Right after a name, passive only: "`x` is removed", "`a.py` (remove or
+#: replace)", "`f()` was renamed", "`X`. Remove it." An active verb describes
+#: behaviour ("`prune()` deletes old rows", "`new.py` replaces `old.py`").
+_GONE_AFTER = re.compile(
+    r"^[\s`'\",)]*(?:"
+    r"\(\s*(?:remove|delete|drop|deprecate)"
+    r"|[:—–-]\s*(?:remove|delete|drop)\b"
+    r"|[.;]\s*(?:remove|delete|drop)\s+(?:it|this|them)\b"
+    r"|(?:(?:is|are|was|were|has been|have been|gets?|must be|needs? to be|is to be|"
+    r"should be|will be|can be)\s+)?(?:removed|deleted|dropped|deprecated|retired|renamed|"
+    r"moved|replaced)\b"
+    r"|(?:is|are)\s+no longer\b|moves\s+(?:to|into)\b|goes away\b)", re.I)
+
+
+def _gone_names(request: str) -> set:
+    """Backticked names the request says go (never claims)."""
+    spans = list(_SPAN.finditer(request))
+    gone_at = [False] * len(spans)
+    prev_end = 0
+    for i, m in enumerate(spans):
+        gap = request[prev_end:m.start()]
+        line_gap = re.split(r"\n|[.;:]\s", gap)[-1]     # this clause only
+        rm = list(_REMOVE_VERB.finditer(line_gap))
+        tf = list(_TRANSFORM_VERB.finditer(line_gap))
+        if i and gone_at[i - 1] and _JOINER.match(gap):
+            gone_at[i] = True                  # "remove `a` along with `b`"
+        elif rm and not tf[-1:] or (rm and tf and rm[-1].start() > tf[-1].start()):
+            gone_at[i] = True                  # "remove `X`", "drop support for `X`"
+        elif tf and not _TARGET_PREP.search(line_gap[tf[-1].end():]):
+            gone_at[i] = True                  # "rename `X` …" — but not "… to `Y`"
+        prev_end = m.end()
+    for i in range(len(spans) - 1, -1, -1):
+        m = spans[i]
+        nxt = spans[i + 1].start() if i + 1 < len(spans) else len(request)
+        tail = request[m.end():min(nxt, m.end() + 80)]
+        if _GONE_AFTER.match(tail):
+            gone_at[i] = True
+        elif i + 1 < len(spans) and gone_at[i + 1] and _JOINER.match(tail) \
+                and _GONE_AFTER.match(request[spans[i + 1].end():spans[i + 1].end() + 80]):
+            gone_at[i] = True                  # "`a()` and `b()` are removed"
+    return {m.group(1).strip() for m, g in zip(spans, gone_at) if g}
+
+
 #: "Examples (with `_get_words(cli, args)` …", "e.g. `helper(x)`": a name used
 #: to show behaviour, not one the code must define.
 _EXAMPLE = re.compile(r"\b(?:examples?|e\.g\.|for instance)\b", re.I)
@@ -122,35 +173,35 @@ def _is_signature(params_text: str) -> bool:
     return bool(re.search(r"[=:*]", params_text))
 
 
+def _arrow_pair(request: str, m, s: str) -> bool:
+    """`a()` -> `A()`: an input/output pair of examples — both sides spans and
+    this side no signature (`parse(text: str)` -> `Tree` is a claim)."""
+    c = _CALL.match(s)
+    if c and _is_signature(c.group(2)):
+        return False
+    after = request[m.end():m.end() + 6]
+    before = request[max(0, m.start() - 6):m.start()]
+    return bool(re.match(r"\s*(?:->|→|=>)\s*`", after) or re.search(r"`\s*(?:->|→|=>)\s*$", before))
+
+
 def claims(request: str) -> list:
     """What the request says the code has, one dict per backticked name."""
     out, seen = [], set()
     request = request or ""
-    # A name a mention says goes ("remove `X`", "`a.py` (remove or replace)")
-    # is not claimed anywhere; the target of a rename/move/split is not gone.
-    gone = set()
-    for m in _SPAN.finditer(request):
-        before = (request[max(0, m.start() - _GONE_WINDOW):m.start()]).split("\n")[-1]
-        verb = None
-        for verb in _GONE.finditer(before):
-            pass
-        if verb is not None and not _GONE_BEFORE_TARGET.search(before[verb.end():]):
-            gone.add(m.group(1).strip())
-        elif _GONE_AFTER.search(request[m.end():m.end() + _GONE_WINDOW]):
-            gone.add(m.group(1).strip())
+    gone = _gone_names(request)
     for m in _SPAN.finditer(request):
         s = m.group(1).strip()
         if s in seen or s in gone:
             continue          # "remove `X.y`", "`a.py` is no longer needed": not a claim
         seen.add(s)
         before = (request[max(0, m.start() - _GONE_WINDOW):m.start()]).split("\n")[-1]
-        if _EXAMPLE.search(before) or re.search(r"(?:->|→|=>)\s*$", before) \
-                or re.match(r"\s*(?:->|→|=>)", request[m.end():]):
-            seen.discard(s)   # an input -> output pair ("`log_changes()` -> `LOG_CHANGES()`")   # "Examples (with `_get_words(cli)` returning …": a test
-            continue          # helper — a later mention may still claim it
-        sentence = re.split(r"[.!?]\s|\n\s*\n|\n\s*(?:[-*#]|\d+\.)\s",
+        if _EXAMPLE.search(before) or _arrow_pair(request, m, s):
+            seen.discard(s)   # "Examples (with `_get_words(cli)` …", "`a()` -> `A()`":
+            continue          # shown behaviour — a later mention may still claim it
+        sentence = re.split(r"[.!?;:]\s|\n\s*\n|\n\s*(?:[-*#]|\d+\.)\s",
                             request[max(0, m.start() - 200):m.start()])[-1]
-        if _CURRENT.search(sentence):
+        cur = _CURRENT.search(sentence)
+        if cur and not _ASKS.search(sentence[cur.end():]):
             seen.discard(s)   # "its current support lives in `x.py`": what IS, not
             continue          # a claim — a later mention may still claim it
         if _PYFILE.match(s) and "/" in s:
@@ -296,6 +347,9 @@ def _top_level(body) -> list:
     out = []
     for node in body:
         out.append(node)
+        if isinstance(node, ast.If) and re.search(r"TYPE_CHECKING|__name__",
+                                                  ast.dump(node.test)):
+            continue          # typing-only names, script code: not exports
         if isinstance(node, (ast.If, ast.Try, ast.With)):
             for part in ("body", "orelse", "finalbody"):
                 out += _top_level(getattr(node, part, None) or [])
@@ -364,22 +418,19 @@ def _module_names(module: list, ix: "_Index"):
 
 
 def _file_under(root: str, path: str) -> bool:
-    """``path`` exists under ``root`` — as written, or under a src/-style
-    prefix (`click/types.py` is src/click/types.py). Bounded walk."""
+    """``path`` exists under ``root`` as written, or one directory down
+    (`click/types.py` is src/click/types.py) — never a same-named file deep in
+    tests/fixtures."""
     rel = path[2:] if path.startswith("./") else path
     if os.path.isfile(os.path.join(root, rel)):
         return True
-    want = "/" + rel.replace(os.sep, "/")
-    walked = 0
-    for d, dirs, files in os.walk(root):
-        dirs[:] = [x for x in dirs if x not in _SKIP_DIRS and not x.startswith(".")]
-        for f in files:
-            walked += 1
-            if walked > MAX_WALK:
-                return True          # too big to tell: never a false gap
-            if os.path.join(d, f).replace(os.sep, "/").endswith(want):
-                return True
-    return False
+    try:
+        tops = [d for d in os.listdir(root)
+                if d not in _SKIP_DIRS and not d.startswith(".")
+                and os.path.isdir(os.path.join(root, d))]
+    except OSError:
+        return True
+    return any(os.path.isfile(os.path.join(root, d, rel)) for d in tops)
 
 
 def _check(c: dict, ix: _Index, declared: set) -> "str | None":

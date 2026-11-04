@@ -21,15 +21,18 @@ _SEND_BACKS_TOTAL = 6
 _SHOWN = 25
 
 
-def _gaps(st) -> list:
+def _gaps(st, cached: bool = True) -> list:
     from aiforge_core.runtime import spec_contract
     goal = str(getattr(st, "goal", "") or "")
     cwd = getattr(st, "cwd", None)
     if not goal or not cwd:
         return []
     try:
-        gaps = spec_contract.missing(goal, str(cwd), key=(
-            id(st), len(getattr(st, "convo", None) or []), getattr(st, "edits_made", 0)))
+        # A shell write (sed -i, git mv) changes files without an edit count:
+        # the mid-run note reads the tree fresh.
+        key = (id(st), len(getattr(st, "convo", None) or []),
+               getattr(st, "edits_made", 0)) if cached else None
+        gaps = spec_contract.missing(goal, str(cwd), key=key)
     except Exception:  # noqa: BLE001 — the check never blocks an answer
         return []
     # What the user said mid-run wins over the first message: a gap whose
@@ -99,7 +102,7 @@ def progress_note(st) -> "str | None":
     if getattr(st, "readonly_mode", False) or getattr(st, "plan_mode", False) \
             or not getattr(st, "edits_made", 0):
         return None
-    gaps = _gaps(st)
+    gaps = _gaps(st, cached=False)
     key = tuple(gaps)
     if not gaps or getattr(st, "contract_progress_said", None) == key:
         return None
