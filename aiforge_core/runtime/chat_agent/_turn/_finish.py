@@ -142,7 +142,8 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
     # that cannot finish still exits.
     _left = open_for_final(st)
     if ((st.board_used or getattr(st, "board_touched", False)) and _left
-            and not builder and not st.readonly_mode and board_nudge_allowed(st)):
+            and not builder and not st.readonly_mode and board_nudge_allowed(st)
+            and finish_budget_left(st)):
         if step.get("text"):
             yield {"type": "thought", "text": step["text"]}
         yield {"type": "thought", "role": "system",
@@ -658,6 +659,44 @@ def _acted_mark(st):
         return None
 
 
+#: Content gates (did the work get done?) share one budget per finish
+#: attempt: each gate had its own cap and they added up — a model sent back
+#: by the spec gate, then the done check, then the board, then the verify
+#: loop spent rounds no other harness asks for (OpenCode, Codex, OpenHands
+#: end on the first text reply; SWE-agent reviews a submit once). Safety
+#: gates (rule breaks, false claims, running jobs, builder, a reply that only
+#: announces its next step) keep their own.
+_SHARED_GATES = frozenset({"contract_nudges", "done_check_nudges", "board_nudges",
+                           "verify_rounds"})
+# (not "do what you said": a reply that only announces the next step is not
+# an answer at all, whatever the budget)
+#: Edits that make a later finish a new attempt (the budget refills).
+_REFILL_EDITS = 3
+
+
+def _finish_cap() -> int:
+    try:
+        return max(0, int(os.environ.get("AIFORGE_CHAT_FINISH_SENDBACKS", "2")))
+    except ValueError:
+        return 2
+
+
+def finish_budget_left(st, take: bool = True) -> bool:
+    """One of the turn's shared content send-backs (``_finish_cap()``), or
+    False when spent. Real work since the last one (``_REFILL_EDITS`` edits)
+    refills it: a long multi-part turn is checked at each finish it makes."""
+    edits = getattr(st, "edits_made", 0)
+    if edits - getattr(st, "finish_sb_edits", edits) >= _REFILL_EDITS:
+        st.finish_sb = 0
+    used = getattr(st, "finish_sb", 0)
+    if used >= _finish_cap():
+        return False
+    if take:
+        st.finish_sb = used + 1
+        st.finish_sb_edits = edits
+    return True
+
+
 def _budget_left(st, name: str, limit: int, take: bool = True,
                  per_turn: int = _SEND_BACKS_PER_TURN) -> bool:
     """Take one of ``limit`` send-backs counted in ``st.<name>`` (``take=False``
@@ -672,6 +711,8 @@ def _budget_left(st, name: str, limit: int, take: bool = True,
         used = 0
     # (the total bounds a model that alternates the slip with a trivial action)
     if used >= limit or total >= per_turn:
+        return False
+    if name in _SHARED_GATES and not finish_budget_left(st, take=take):
         return False
     if not take:
         return True

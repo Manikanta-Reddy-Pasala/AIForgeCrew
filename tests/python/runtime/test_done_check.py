@@ -85,6 +85,7 @@ def test_it_does_not_ask_where_it_does_not_apply(monkeypatch):
 
 
 def test_send_backs_and_calls_are_bounded(monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_FINISH_SENDBACKS", "99")   # this gate's own bound
     from aiforge_core.runtime.chat_agent._turn import _finish
     seen = []
     _model(monkeypatch, "UNFINISHED", seen)
@@ -169,6 +170,7 @@ def test_a_bare_continue_is_judged_against_the_request_before_it(monkeypatch):
 
 
 def test_an_answer_the_check_could_not_send_back_again_says_so(monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_FINISH_SENDBACKS", "99")   # this gate's own bound
     _model(monkeypatch, "UNFINISHED")
     st = _st()
     for _ in range(_done_check._SEND_BACKS):

@@ -21,6 +21,14 @@ from aiforge_core.runtime.parallel_subtasks import _items as sub_items
 
 
 @pytest.fixture(autouse=True)
+def _strict_board(monkeypatch):
+    """These tests pin the refusing gates (AIFORGE_CHAT_BOARD_STRICT=1); the
+    advisory default is tested in test_advisory_board.py."""
+    monkeypatch.setenv("AIFORGE_CHAT_BOARD_STRICT", "1")
+    monkeypatch.setenv("AIFORGE_CHAT_FINISH_SENDBACKS", "99")
+
+
+@pytest.fixture(autouse=True)
 def _item_reset_on(monkeypatch):
     """The per-item context reset is opt-in now (one context runs the whole
     task); these cases are about the reset, so they switch it on."""

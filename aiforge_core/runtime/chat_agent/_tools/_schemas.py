@@ -515,15 +515,18 @@ NATIVE_TOOL_NAMES = frozenset(s["function"]["name"] for s in NATIVE_TOOL_SCHEMAS
 # native list only when the message names that system. watch_until and
 # schedule_task are NOT core: they are the "watch" / "schedule" families
 # (_families.py), added by cue, by name or by tool_help.
+#: 18, not 24: editor and file_create duplicated file_patch/file_write,
+#: git_status/git_diff/repo_map the shell and the read tools, session_actions
+#: the action log — near-duplicate choices for a small model (OpenCode offers
+#: 10). They stay callable (text ACTION, tool_help); jobs, spawn_task and
+#: memory stay core.
 _CORE_ACT = frozenset({
     "plan_progress", "tool_help",
     "file_read", "read_files", "read_lines", "list_dir", "find", "grep",
-    "file_patch", "multi_edit", "file_write", "file_create", "editor",
+    "file_patch", "multi_edit", "file_write",
     "run_command", "run_tests", "spawn_task",
     "command_wait", "command_output", "command_kill",
     "memory_lookup", "memory_write",
-    "git_status", "git_diff", "repo_map",
-    "session_actions",
 })
 _CORE_READ = frozenset({
     "plan_progress", "tool_help",

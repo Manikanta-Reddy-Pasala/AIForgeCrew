@@ -374,7 +374,8 @@ def test_section_texts_run_to_the_next_section():
     assert "1.1 details stay inside part 1" in secs[0][1] and "Coupon" not in secs[0][1]
 
 
-def test_a_section_is_checked_against_its_text_once_before_it_closes():
+def test_a_section_is_checked_against_its_text_once_before_it_closes(monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_BOARD_STRICT", "1")
     from types import SimpleNamespace
     from aiforge_core.runtime.chat_agent._turn import _section_check as C, _tasks
     board = _tasks.seed_board(_plan_llm.sections(SPEC))

@@ -301,8 +301,17 @@ def review_progress(st, result: dict, events: list):
         if status == "done" and verify_enabled():
             ok, why = _verdict(facts)
             if not ok:
+                from ._section_check import strict
                 tries = st.item_rejects.get(slug, 0)
-                if tries < max_retries():
+                if not strict():
+                    # Advisory: accepted, with what the evidence shows — the
+                    # refusal sent the model round re-testing item by item.
+                    suffix = f" — UNVERIFIED: {why}"
+                    result = {**result, "warning": (
+                        f"accepted as done, but {why}. Make sure the full test run "
+                        "before you finish is green; fix the code if this item "
+                        "broke something.")}
+                elif tries < max_retries():
                     st.item_rejects[slug] = tries + 1
                     item["status"] = "running"
                     hint = _GENERIC_HINTS[min(tries, len(_GENERIC_HINTS) - 1)]
@@ -312,7 +321,7 @@ def review_progress(st, result: dict, events: list):
                               "open_count": len(open_items(st.board))}
                     return result, [{"type": "subtask_update", "slug": slug,
                                      "status": "running"}]
-                if facts["test"] and facts["test"][1] == "red":
+                elif facts["test"] and facts["test"][1] == "red":
                     item["status"] = status = "failed"
                     suffix = f" — verification failed after retries: {why}"
                     result = {**result, "status": "failed",

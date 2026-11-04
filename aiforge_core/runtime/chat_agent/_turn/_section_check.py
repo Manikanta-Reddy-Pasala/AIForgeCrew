@@ -23,6 +23,13 @@ def _on() -> bool:
         not in ("0", "false", "no", "off")
 
 
+def strict() -> bool:
+    """Refusing board gates (``AIFORGE_CHAT_BOARD_STRICT=1``); off by default:
+    the section text and the evidence warning ride on an accepted close."""
+    return os.environ.get("AIFORGE_CHAT_BOARD_STRICT", "0").strip().lower() \
+        in ("1", "true", "yes", "on")
+
+
 def _body_for(goal: str, slug: str, title: str) -> str:
     from ._plan_llm import section_texts
     secs = section_texts(goal)
@@ -52,8 +59,19 @@ def check_back(st, result: dict, events: list, before: dict):
         if not body:
             return result, events
         item["section_checked"] = True
-        item["status"] = before.get(slug) if before.get(slug) not in (None, "done") else "running"
         cut = body[:_SECTION_CHARS] + ("\n…" if len(body) > _SECTION_CHARS else "")
+        if not strict():
+            # Advisory: the close stands and the section comes with it — the
+            # refusal cost a round trip per section and set off a re-test of
+            # each one (no other harness gates its todo list).
+            res = {**result,
+                   "check": ("Marked done. The request's own text for this section is "
+                             "below: if a requirement in it (a name, parameter, error or "
+                             "edge case) is not implemented or not tested, fix that before "
+                             "you finish."),
+                   "section": cut}
+            return res, events
+        item["status"] = before.get(slug) if before.get(slug) not in (None, "done") else "running"
         res = {"ok": False, "slug": slug, "status": item["status"],
                "error": "not closed yet: check it against the request first",
                "check": ("Before this section is done, go through the request's own text "

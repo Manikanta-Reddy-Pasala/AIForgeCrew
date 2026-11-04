@@ -53,7 +53,10 @@ edits: file_write for a new module, multi_edit for several changes. Check \
 your work with the repo's own tests: write a test for every requirement, \
 error case and edge case the request states (more tests than it lists are \
 expected), run the suite, and fix until it is green; if the repo has no \
-tests, run the code once the normal way. Do not write throwaway scripts to try the code. When the \
+tests, run the code once the normal way. Build first, then verify: implement \
+every part of the request (a new module in one file_write), then run the \
+whole suite once; run a single test only to debug a failure, not after each \
+part. Do not write throwaway scripts to try the code. When the \
 request spells out names and signatures, use them exactly. When everything \
 the request asks for is done and its tests pass, stop: reply with a short \
 summary and no tool call (a test the request itself says already fails is \

@@ -287,7 +287,9 @@ def _verify_fix(st, step, cwd, plan_mode, builder):
         st.verify_stalls = 0
     st.verify_prev_fails = _fails
     seen = _judge(st, failure_of(_vout))
-    if st.verify_stalls < 2 and not (seen and seen[0] == same_failure.STOP):
+    from ._finish import finish_budget_left
+    if st.verify_stalls < 2 and not (seen and seen[0] == same_failure.STOP) \
+            and finish_budget_left(st):
         st.verify_rounds += 1
         if step.get("text"):        # the streamed answer, set aside
             yield {"type": "thought", "text": step["text"]}
