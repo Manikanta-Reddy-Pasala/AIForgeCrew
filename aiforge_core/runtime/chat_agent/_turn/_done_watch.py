@@ -306,6 +306,8 @@ def own_test_verdict(st, cmd: "str | None" = None) -> "tuple[bool, str] | None":
     listed = len(set(_FAIL_ONLY.findall(out)))
     if n_failed and int(n_failed[-1]) != listed:
         return None                   # failures it did not name: cannot judge them
+    if code != 0 and not listed and not _ERROR_ONLY.search(out):
+        return None                   # red for no listed test (coverage floor, tox step)
     green = code == 0 or _only_known_failures(st, {"ok": False, "stdout": out}) \
         or pre_existing(cwd, cmd, out, getattr(st, "dw_base_rev", None))
     return bool(green), out

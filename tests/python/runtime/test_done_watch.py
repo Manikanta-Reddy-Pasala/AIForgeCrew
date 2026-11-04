@@ -227,9 +227,11 @@ def test_the_base_run_imports_the_original_code_not_the_edited_one(tmp_path):
     assert not W.pre_existing(str(tmp_path), cmd, out)  # it passes on the original
 
 
-def test_the_finish_check_runs_the_turns_own_test_command(tmp_path, monkeypatch):
+def test_the_finish_check_falls_back_to_the_turns_own_command_when_the_runner_cannot_run(
+        tmp_path, monkeypatch):
     """The harness's guessed runner failed to collect click's suite ("999
-    failing") while the model's own command ran it green: two false rounds."""
+    failing") while the model's own command ran it green: two false rounds.
+    Its verdict stands whenever it did run tests."""
     import sys
     _git_repo(tmp_path, {"test_a.py": "def test_ok():\n    assert True\n"})
     monkeypatch.setattr(_outcomes, "_run_project_verify",
@@ -244,3 +246,15 @@ def test_the_finish_check_runs_the_turns_own_test_command(tmp_path, monkeypatch)
     assert ok is False and "FAILED" in out                # broken by the turn
     st.last_full_test = None                              # no own command: the runner
     assert _outcomes._project_verify(st, str(tmp_path))[0] is False
+    monkeypatch.setattr(_outcomes, "_run_project_verify",   # the runner ran tests: it stands
+                        lambda cwd: (False, "FAILED t.py::x\n1 failed, 9 passed"))
+    st.last_full_test = ("run_command", {"cmd": f"cd {tmp_path} && true"})
+    assert _outcomes._project_verify(st, str(tmp_path)) == (False, "FAILED t.py::x\n1 failed, 9 passed")
+
+
+def test_a_red_exit_with_no_listed_failure_is_not_judged(tmp_path, monkeypatch):
+    """pytest --cov-fail-under: 120 passed, then exit 1 for the coverage floor."""
+    monkeypatch.setattr(W, "_run", lambda cmd, cwd, timeout=0: (
+        1, "120 passed in 3s\nFAIL Required test coverage of 90% not reached."))
+    st = SimpleNamespace(cwd=str(tmp_path), goal="x")
+    assert W.own_test_verdict(st, "pytest --cov=p --cov-fail-under=90") is None

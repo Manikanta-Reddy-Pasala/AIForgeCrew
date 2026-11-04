@@ -316,32 +316,28 @@ def _verify_fix(st, step, cwd, plan_mode, builder):
 
 
 def _project_verify(st, cwd):
-    """``(ok, output)`` of the finish check. The turn's own full test command
-    when it has one that runs tests (``own_test_verdict``), plus the lint leg
-    on what the turn changed; otherwise the harness's own project runner. That
-    runner guesses the command and can fail to collect a suite the model runs
-    green (click: wrong PYTHONPATH, "(999) failing", two false fix rounds)."""
+    """``(ok, output)`` of the finish check: the harness's own project runner,
+    unless it could not run the tests at all (no counts, a collection error)
+    while the turn has a full test command that does (``own_test_verdict``).
+    click: the runner's guessed command failed to collect a suite the model
+    ran green ("(999) failing", two false fix rounds). The runner's verdict
+    stands whenever it ran tests: it covers the whole tree and the lint legs."""
+    ok, out = _run_project_verify(cwd)
     try:
-        from ._done_watch import _interpreter, own_test_verdict
+        from aiforge_core.runtime.parallel_subtasks import _fail_count
+        if ok is not False or lint_only(out) or _fail_count(out) != 999:
+            return ok, out
+        from ._done_watch import own_test_verdict
         own = own_test_verdict(st)
-    except Exception:  # noqa: BLE001 — fall back to the project runner
-        own = None
+    except Exception:  # noqa: BLE001 — the runner's verdict stands
+        return ok, out
     if own is None:
-        return _run_project_verify(cwd)
-    green, out = own
+        return ok, out
+    green, own_out = own
     if not green:
-        return False, out
-    try:
-        from aiforge_core.runtime.integration_report import _static_lint_python
-        from aiforge_core.runtime.shell_writes import command_of
-        py = _interpreter(command_of(st.last_full_test[1]) or "")
-        if py:
-            ok, lint = _static_lint_python(cwd, py, None)
-            if not ok:
-                return False, out + lint
-    except Exception:  # noqa: BLE001 — the lint leg is best effort
-        pass
-    return True, out
+        return False, own_out
+    from aiforge_core.runtime.parallel_subtasks._reconcile._testrun import _static_check_gate
+    return _static_check_gate(cwd, True, own_out)
 
 
 def _verify_known_ok(st, ok, out):
