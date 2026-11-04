@@ -613,3 +613,42 @@ def test_the_team_prompt_carries_the_log(repo, monkeypatch):
     assert "✓ run_command(make build) — exit 0" in prompt
     assert prompt.index("CONVERSATION SO FAR") < prompt.index(A.MARK_OPEN) \
         < prompt.index("CURRENT REQUEST:")
+
+
+# ── every file the chat changed stays listed ─────────────────────────────
+# 190 shell commands pushed a run's own early edits out of the 25-action
+# window; after a condense it searched for trigger code it had written.
+
+def test_every_changed_file_stays_listed_with_the_names_it_defines():
+    steps = [
+        _tool("file_patch", {"path": "sqlglot/parser.py", "old_text": "a",
+                             "new_text": "    def _parse_trigger(self):\n        pass\n"}, ok=True),
+        _tool("multi_edit", {"path": "sqlglot/expressions.py", "edits": [
+            {"old_text": "x", "new_text": "class Trigger(Expression):\n    pass\n"},
+            {"path": "sqlglot/tokens.py", "old_text": "y", "new_text": "TRIGGER = auto()"}]},
+              ok=True),
+        _tool("file_patch", {"path": "sqlglot/parser.py", "old_text": "b",
+                             "new_text": "async def _parse_when(self): ..."}, ok=True),
+        _tool("file_patch", {"path": "gone.py", "old_text": "c", "new_text": "def f(): ..."},
+              ok=False, error="old_text_not_found"),
+    ] + [_cmd(f"python -c 'print({i})'") for i in range(60)]
+    block = A.render(A.entries(steps), [])
+    assert "FILES YOU CHANGED IN THIS CHAT" in block
+    assert "- sqlglot/parser.py ×2: _parse_trigger, _parse_when" in block
+    assert "- sqlglot/expressions.py ×1: Trigger" in block
+    assert "- sqlglot/tokens.py ×1" in block
+    assert "- gone.py" not in block           # a failed edit changed nothing
+    # the edits themselves fell out of the action window
+    assert "✓ file_patch(sqlglot/parser.py)" not in block
+
+
+def test_no_changed_files_section_without_edits():
+    assert "FILES YOU CHANGED" not in A.render(A.entries([_cmd("ls")]), [])
+
+
+def test_a_long_list_of_changed_files_keeps_the_newest():
+    steps = [_tool("file_write", {"path": f"f{i}.py", "content": ""}, ok=True)
+             for i in range(20)]
+    lines = A._changed_lines(A.entries(steps))
+    assert lines[0] == "(5 earlier file(s) not shown)"
+    assert lines[-1].startswith("- f19.py ×1")

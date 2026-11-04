@@ -310,6 +310,29 @@ def _outcome(name: str, args, res: dict, ok) -> tuple:
     return "", ""
 
 
+#: A name a block of new code defines (Python, JS/TS, Go, Rust, Kotlin).
+_DEF_RE = re.compile(r"^[ \t]*(?:export[ \t]+)?(?:async[ \t]+)?(?:pub[ \t]+)?"
+                     r"(?:def|class|function|func|fn|fun|interface|struct|enum)"
+                     r"[ \t]+([A-Za-z_]\w*)", re.M)
+_NEW_TEXT_KEYS = ("content", "new_text", "new_str", "file_text")
+
+
+def _written(name: str, args: dict) -> list:
+    """``[(path, new text)]`` an edit call wrote."""
+    out = []
+    top = args.get("path") or args.get("file") or ""
+    edits = args.get("edits")
+    if isinstance(edits, list):
+        for ed in edits:
+            if isinstance(ed, dict):
+                txt = next((ed[k] for k in _NEW_TEXT_KEYS if isinstance(ed.get(k), str)), "")
+                out.append((str(ed.get("path") or top), txt))
+    else:
+        txt = next((args[k] for k in _NEW_TEXT_KEYS if isinstance(args.get(k), str)), "")
+        out.append((str(top), txt))
+    return [(p, t) for p, t in out if p]
+
+
 def entries(steps: list) -> list:
     """The steps as log entries, oldest first: one per action, reads folded,
     a check-in on a running command folded into the command it reports on."""
@@ -346,6 +369,8 @@ def entries(steps: list) -> list:
             headline, job = _outcome(name, args, res, ok)
             e = {"ok": ok, "tool": name, "arg": _arg(args), "outcome": headline,
                  "read": _is_read(name, args, reads), "sig": f"{name}|{args!r}"}
+            if ok is True and writes_files(name, args):
+                e["writes"] = [(p, _DEF_RE.findall(t)) for p, t in _written(name, args)]
             if job:
                 e["job"] = job
                 e["running"] = True
@@ -433,6 +458,30 @@ def window(items: list, n: "int | None" = None, keep_failed: "int | None" = None
     return shown, len(items) - len(shown)
 
 
+def changed_files(items: list) -> list:
+    """``[(path, edit count, names its new code defined)]`` for every file an
+    edit in ``items`` wrote, first edited first."""
+    files: dict = {}
+    for e in items:
+        for path, names in e.get("writes") or ():
+            row = files.setdefault(path, [0, {}])
+            row[0] += 1
+            for nm in names:
+                row[1].setdefault(nm, None)
+    return [(p, n, list(names)) for p, (n, names) in files.items()]
+
+
+def _changed_lines(items: list, limit: int = 15, per_file: int = 8) -> list:
+    rows = changed_files(items)
+    out = []
+    for path, n, names in rows[-limit:]:
+        shown = ", ".join(names[:per_file]) + (", …" if len(names) > per_file else "")
+        out.append(_clip(f"- {path} ×{n}" + (f": {shown}" if shown else ""), 220))
+    if len(rows) > limit:
+        out.insert(0, f"({len(rows) - limit} earlier file(s) not shown)")
+    return out
+
+
 # ── the block ───────────────────────────────────────────────────────────────
 
 def snapshot(session_id, cwd: "str | None" = None, *, persist: bool = True) -> dict:
@@ -458,6 +507,15 @@ def render(items: list, cleanup: list) -> str:
             lines.append(f"({hidden} earlier action{'s' if hidden != 1 else ''} not "
                          'shown; session_actions {"limit": 100} lists them, '
                          '{"failed_only": true} only the failures)')
+        changed = _changed_lines(items)
+        if changed:
+            # The 25-action window let 190 shell commands push a run's own
+            # early edits out: after a condense it went looking for code it
+            # had written itself. Files stay listed however old the edit.
+            lines.append("FILES YOU CHANGED IN THIS CHAT (every one; × = edits, "
+                         "then names your new code defines — it is in the file "
+                         "now, so read it there instead of writing it again):")
+            lines += changed
     if cleanup and cleanup_cap() > 0:
         lines.append("TO CLEAN UP WHEN THE WORK IS DONE (this chat created or "
                      "started these; what → how to undo):")
