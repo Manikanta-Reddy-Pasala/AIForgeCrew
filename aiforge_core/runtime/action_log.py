@@ -43,7 +43,7 @@ import threading
 
 from aiforge_core.runtime import cleanup_inventory
 from aiforge_core.runtime.cleanup_detect import CMD_TOOLS, JOB_TOOLS, redact
-from aiforge_core.runtime.tools.mutating import PATCH_STYLE_TOOLS, writes_files
+from aiforge_core.runtime.tools.mutating import PATCH_STYLE_TOOLS, editor_command, writes_files
 
 log = logging.getLogger("aiforge.action_log")
 
@@ -311,22 +311,28 @@ def _outcome(name: str, args, res: dict, ok) -> tuple:
 
 
 #: A name a block of new code defines (Python, JS/TS, Go incl. methods, Rust,
-#: Kotlin/Java with their modifiers).
+#: Kotlin; Java/Kotlin types with their modifiers). The name must be followed
+#: by what a definition has next — ``(``, ``:``, ``{``, ``<``, ``=``, a line end
+#: or ``extends``/``implements`` — so prose ("a class of problems") gives none.
 _DEF_RE = re.compile(
-    r"^[ \t]*(?:(?:export|default|pub(?:\([^)]*\))?|public|private|protected|internal|"
+    r"^[ \t]*(?:(?:export|default|pub(?:\([^)\n]*\))?|public|private|protected|internal|"
     r"static|abstract|final|open|data|sealed|async|unsafe)[ \t]+)*"
     r"(?:def|class|function|func|fn|fun|interface|struct|enum|trait)[ \t]+"
-    r"(?:\([^)]*\)[ \t]*)?([A-Za-z_]\w*)", re.M)
+    r"(?:\([^)\n]*\)[ \t]*)?([A-Za-z_]\w*)"
+    r"(?=[ \t]*(?:[(:<{=]|$)|[ \t]+(?:extends|implements)\b)", re.M)
 _NEW_TEXT_KEYS = ("content", "new_text", "new_str", "file_text")
 #: Text, not code: no names are read from these.
 _PROSE_EXTS = (".md", ".txt", ".rst", ".json", ".yaml", ".yml", ".toml", ".csv", ".html")
+#: Whole-tree tools: they name a directory, not the files they changed.
+_TREE_TOOLS = frozenset({"rename_symbol", "format"})
 
 
 def _written(name: str, args: dict) -> list:
-    """``[(path, new text)]`` an edit call wrote to FILES (a directory-wide
-    format or rename names no file, and an editor call with no command is
-    a view)."""
-    if name == "editor" and not str(args.get("command") or "").strip():
+    """``[(path, new text)]`` an edit call wrote to files (an editor call
+    with no command is a view)."""
+    if name in _TREE_TOOLS:
+        return []
+    if name == "editor" and not editor_command(args):
         return []
     out = []
     top = args.get("path") or args.get("file_path") or args.get("file") or ""
@@ -339,7 +345,7 @@ def _written(name: str, args: dict) -> list:
     else:
         txt = next((args[k] for k in _NEW_TEXT_KEYS if isinstance(args.get(k), str)), "")
         out.append((str(top), txt))
-    return [(p, t) for p, t in out if p and os.path.splitext(p)[1]]
+    return [(p, t) for p, t in out if p and not p.endswith(("/", "\\")) and p != "."]
 
 
 def _names(path: str, text: str) -> list:
@@ -383,9 +389,11 @@ def entries(steps: list) -> list:
             e = {"ok": ok, "tool": name, "arg": _arg(args), "outcome": headline,
                  "read": _is_read(name, args, reads), "sig": f"{name}|{args!r}"}
             if ok is True and writes_files(name, args):
-                gone = (res.get("deleted") is True
-                        or (name == "editor" and args.get("command") == "undo_edit"))
-                e["writes"] = [(p, None if gone else _names(p, t))
+                # an undo that reverted a create deletes the file; any other
+                # undo leaves earlier edits in it
+                gone = res.get("deleted") is True
+                undo = name == "editor" and editor_command(args) == "undo_edit"
+                e["writes"] = [(p, None if gone else ([] if undo else _names(p, t)))
                                for p, t in _written(name, args)]
             if job:
                 e["job"] = job
@@ -481,30 +489,31 @@ def _norm(path: str) -> str:
     return p
 
 
+def _canonical(keys) -> dict:
+    """An absolute spelling → the LONGEST relative key it ends with (so
+    ``/repo/src/a.py`` is ``src/a.py``, not ``a.py``); others map to themselves."""
+    rel = sorted((k for k in keys if not k.startswith("/")), key=len, reverse=True)
+    return {k: (next((r for r in rel if k.endswith("/" + r)), k)
+                if k.startswith("/") else k) for k in keys}
+
+
 def changed_files(items: list) -> list:
     """``[(path, edit count, names its new code defined)]`` for every file an
     edit in ``items`` wrote, most recently edited last. One file named two
     ways (``a.py``, ``./a.py``, ``/repo/a.py``) is one row; a file an undo
     deleted is dropped."""
+    writes = [(_norm(p), names) for e in items for p, names in (e.get("writes") or ())]
+    canon = _canonical({p for p, _ in writes})
     files: dict = {}
-    for e in items:
-        for path, names in e.get("writes") or ():
-            key = _norm(path)
-            if names is None:                   # undone / deleted
-                files.pop(key, None)
-                continue
-            n, seen = files.pop(key, (0, {}))
-            for nm in names:
-                seen.setdefault(nm, None)
-            files[key] = (n + 1, seen)          # re-inserted: last edit last
-    rel = [k for k in files if not k.startswith("/")]
-    for k in [k for k in files if k.startswith("/")]:
-        short = next((r for r in rel if k.endswith("/" + r)), None)
-        if short:
-            n, seen = files.pop(k)
-            n0, seen0 = files[short]
-            seen0.update(seen)
-            files[short] = (n0 + n, seen0)
+    for path, names in writes:
+        key = canon[path]
+        if names is None:                       # deleted
+            files.pop(key, None)
+            continue
+        n, seen = files.pop(key, (0, {}))
+        for nm in names:
+            seen.setdefault(nm, None)
+        files[key] = (n + 1, seen)              # re-inserted: last edit last
     return [(p, n, list(names)) for p, (n, names) in files.items()]
 
 
@@ -545,7 +554,11 @@ def render(items: list, cleanup: list) -> str:
         return ""
     lines = [MARK_OPEN]
     if items:
-        shown, hidden = window(items)
+        # the changed-files section takes up to half the cap; the actions
+        # get what is left, so the whole block stays within char_cap()
+        changed = _changed_lines(items, cap=max(200, char_cap() // 2))
+        used = sum(len(t) + 1 for t in changed) + (250 if changed else 0)
+        shown, hidden = window(items, cap=max(200, char_cap() - used))
         lines.append("LATEST ACTIONS (oldest first; ✓ worked, ✗ failed, "
                      "… still running):")
         lines += [text_of(e) for e in shown]
@@ -553,7 +566,6 @@ def render(items: list, cleanup: list) -> str:
             lines.append(f"({hidden} earlier action{'s' if hidden != 1 else ''} not "
                          'shown; session_actions {"limit": 100} lists them, '
                          '{"failed_only": true} only the failures)')
-        changed = _changed_lines(items, cap=max(200, char_cap() // 2))
         if changed:
             # The 25-action window let 190 shell commands push a run's own
             # early edits out: after a condense it went looking for code it

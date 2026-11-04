@@ -688,3 +688,33 @@ def test_names_from_other_languages():
             "export default function App() {}\ndata class Point(val x: Int)\n"
             "public class Svc {}\n")
     assert A._names("x.go", text) == ["Save", "load", "App", "Point", "Svc"]
+
+
+def test_an_absolute_path_merges_into_the_longest_matching_file_and_moves_last():
+    steps = [_tool("file_patch", {"path": p, "new_text": "x"}, ok=True)
+             for p in ("src/a.py", "a.py", "b.py", "/repo/src/a.py")]
+    assert [r[:2] for r in A.changed_files(A.entries(steps))] == [
+        ("a.py", 1), ("b.py", 1), ("src/a.py", 2)]
+
+
+def test_an_undo_that_restores_keeps_the_file_and_files_without_extension_count():
+    steps = [_tool("file_patch", {"path": "a.py", "new_text": "def a(): ..."}, ok=True),
+             _tool("editor", {"command": "str_replace", "path": "a.py", "new_str": "x"}, ok=True),
+             _tool("editor", {"command": "undo_edit", "path": "a.py"}, ok=True,
+                   restored_from="snap"),
+             _tool("file_write", {"path": "Dockerfile", "content": "FROM x"}, ok=True)]
+    assert A.changed_files(A.entries(steps)) == [("a.py", 3, ["a"]), ("Dockerfile", 1, [])]
+
+
+def test_prose_and_keyword_lookalikes_give_no_names():
+    assert A._names("m.py", "    class of problems here\n    function names are\n") == []
+    assert A._names("x.ts", "export default class extends Base {}\n") == []
+
+
+def test_the_block_stays_within_the_char_cap(monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_ACTION_LOG_CHARS", "1200")
+    steps = ([_tool("file_write", {"path": f"pkg/module_{i}.py",
+                                   "content": "def f(): ...\n" * 3}, ok=True) for i in range(30)]
+             + [_cmd(f"python -c 'print({i})' --some-long-flag-value") for i in range(40)])
+    block = A.render(A.entries(steps), [])
+    assert len(block) <= 1200 + 400        # headers and markers ride on top
