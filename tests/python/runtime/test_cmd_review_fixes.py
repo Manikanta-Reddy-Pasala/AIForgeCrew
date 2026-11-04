@@ -426,3 +426,13 @@ def test_act_mode_ask_reads_reach_the_answer():
     inject(nxt, take(79), plan_mode=True)
     assert "OBSERVATION: x" not in nxt[0]["content"]
     reset()
+
+
+def test_a_green_job_that_ran_while_edits_landed_is_not_proof(repo):
+    st = SimpleNamespace(last_green_fp=None, edits_made=1)
+    res = _run("./pytest -q", repo)
+    _outcomes._note_green_tests(st, "run_command", {"cmd": "./pytest -q"}, res, str(repo))
+    st.edits_made = 2                              # an edit while it ran
+    done = _finish(res, repo)
+    _outcomes._note_green_tests(st, "command_wait", {"id": done["id"]}, done, str(repo))
+    assert st.last_green_fp is None

@@ -1,5 +1,6 @@
 """The harness sees the work is done instead of waiting for the model: big
-benchmark runs never replied without a tool call and used all 50 minutes."""
+benchmark runs never replied without a tool call and used all 50 minutes.
+It is strict: ending a turn that was not done would lose the user's work."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -8,6 +9,9 @@ import pytest
 
 from aiforge_core.runtime.chat_agent._turn import _done_watch as W
 from aiforge_core.runtime.chat_agent._turn import _outcomes
+
+FULL = ("class Cart:\n    def __init__(self):\n        self.items = []\n\n"
+        "    def total(self, *, tax=0):\n        return 1\n")
 
 
 def _drain(g):
@@ -21,84 +25,166 @@ def _drain(g):
 
 @pytest.fixture
 def st(tmp_path, monkeypatch):
+    """A turn that started without Cart.total / Cart.items and has added them."""
     (tmp_path / "shop").mkdir()
-    (tmp_path / "shop" / "m.py").write_text(
-        "class Cart:\n    def __init__(self):\n        self.items = []\n\n"
-        "    def total(self, *, tax=0):\n        return 1\n")
+    (tmp_path / "shop" / "m.py").write_text("class Cart:\n    pass\n")
     monkeypatch.setattr(_outcomes, "content_fingerprint", lambda cwd: "fp1")
-    return SimpleNamespace(
+    monkeypatch.setattr(W, "_jobs_running", lambda st: False)
+    s = SimpleNamespace(
         goal="Add `Cart.total(self, *, tax=0)` and `Cart.items` in `shop/m.py`.",
-        cwd=str(tmp_path), convo=[{"role": "system", "content": "s"}], edits_made=3,
-        green_at_edits=3, last_green_fp="fp1", steers=[], session_id=None,
+        cwd=str(tmp_path), convo=[{"role": "system", "content": "s"}], edits_made=0,
+        steers=[], session_id=None,
         board={"part-1": {"title": "totals", "status": "running"}})
+    _drain(W.watch(s, 1))                       # turn start: 2 names missing
+    assert s.dw_initial == 2
+    (tmp_path / "shop" / "m.py").write_text(FULL)
+    s.edits_made, s.green_at_edits, s.last_green_fp = 3, 3, "fp1"
+    return s
 
 
-def test_done_work_gets_one_note_then_the_turn_ends(st):
+def test_done_work_gets_a_note_then_a_forced_answer_never_an_end(st, monkeypatch):
+    from aiforge_core.runtime.chat_agent import _native
+    monkeypatch.setattr(W, "_replies_only_looked", lambda st: True)
+    st.session_id = 41
     evs, sig = _drain(W.watch(st, 10))
-    assert sig is None and st.board["part-1"]["status"] == "done"
-    assert "Done check" in st.convo[-1]["content"]
+    assert sig is None and "Done check" in st.convo[-1]["content"]
+    assert st.board["part-1"]["status"] == "running"     # the board is the model's
     for n in range(11, 10 + W.grace()):
         assert _drain(W.watch(st, n))[1] is None
+    assert 41 not in _native._FORCE_FINAL
     evs, sig = _drain(W.watch(st, 10 + W.grace()))
-    assert sig == "return"
-    assert any(e.get("type") == "message" and "full test suite passes" in e["text"]
-               for e in evs)
+    assert sig is None and 41 in _native._FORCE_FINAL     # next call: no tool
+    _native._FORCE_FINAL.discard(41)
+    for _ in range(W.MAX_FORCED * W.grace() * 2):
+        _drain(W.watch(st, 99))
+    assert st.dw_forced == W.MAX_FORCED                  # bounded
+    _native._FORCE_FINAL.discard(41)
 
 
-def test_an_edit_after_the_note_means_not_done(st):
+def test_a_command_that_acts_resets_the_quiet_count(st, monkeypatch):
+    from aiforge_core.runtime.chat_agent import _native
+    st.session_id = 42
+    looked = iter([True, True, False] + [True] * 20)
+    monkeypatch.setattr(W, "_replies_only_looked", lambda st: next(looked))
     _drain(W.watch(st, 10))
-    st.edits_made = 4                      # edited: suite not green on this code
-    assert _drain(W.watch(st, 20))[1] is None and st.done_noted_at is None
+    for n in range(11, 11 + W.grace()):
+        _drain(W.watch(st, n))
+    assert 42 not in _native._FORCE_FINAL                # pushed back by the push
+    _native._FORCE_FINAL.discard(42)
 
 
-def test_not_done_without_a_green_suite_or_with_gaps(st, tmp_path):
+def test_never_forces_when_it_cannot_tell_what_the_replies_did(st):
+    from aiforge_core.runtime.chat_agent import _native
+    _drain(W.watch(st, 10))                    # session_id None: no step log
+    for n in range(11, 30):
+        _drain(W.watch(st, n))
+    assert not getattr(st, "dw_forced", 0)
+
+
+def test_a_request_that_only_changes_existing_names_never_triggers(tmp_path, monkeypatch):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "shop" / "m.py").write_text(FULL)       # every name there from step 0
+    monkeypatch.setattr(_outcomes, "content_fingerprint", lambda cwd: "fp1")
+    st = SimpleNamespace(goal="Make `Cart.total(self, *, tax=0)` and `Cart.items` in "
+                              "`shop/m.py` accept YAML.", cwd=str(tmp_path), convo=[],
+                         edits_made=0, steers=[], session_id=None, board={})
+    _drain(W.watch(st, 1))
+    st.edits_made, st.green_at_edits, st.last_green_fp = 1, 1, "fp1"
+    assert not W.done_now(st)
+
+
+def test_not_done_without_a_green_suite_with_gaps_or_an_open_target(st, tmp_path):
+    assert W.done_now(st)
     st.last_green_fp = None
     assert not W.done_now(st)
     st.last_green_fp = "fp1"
+    st.board["t"] = {"title": "match out.json", "status": "running", "enforced": True}
+    assert not W.done_now(st)
+    del st.board["t"]
+    st.tests_green = False                     # the turn's last test result is red
+    assert not W.done_now(st)
+    st.tests_green = None
     (tmp_path / "shop" / "m.py").write_text("class Cart:\n    pass\n")
-    assert not W.done_now(st)              # Cart.total missing
-
-
-def test_few_names_need_no_untouched_item(st):
-    st.goal = "make it faster"
-    assert W.done_now(st)                       # running item: may be finished
-    st.board["part-2"] = {"title": "docs", "status": "pending"}
-    assert not W.done_now(st)                   # never started
-
-
-def test_read_only_and_off_switch(st, monkeypatch):
-    st.readonly_mode = True
-    assert not W.done_now(st)
-    st.readonly_mode = False
-    monkeypatch.setenv("AIFORGE_CHAT_DONE_WATCH", "0")
+    st.edits_made = st.green_at_edits = 4
     assert not W.done_now(st)
 
 
-def test_a_user_message_resets_the_watch(st):
+def test_a_user_message_blocks_the_watch_until_the_next_edit(st, monkeypatch):
+    monkeypatch.setattr(W, "_replies_only_looked", lambda st: True)
+    st.session_id = 43
     _drain(W.watch(st, 10))
-    st.steers.append("also add coupons")
-    _drain(W.watch(st, 10 + W.grace()))
-    assert st.done_noted_at == 10 + W.grace()   # noted afresh, not ended
+    st.steers.append("also commit and push")
+    for n in range(11, 30):
+        _drain(W.watch(st, n))
+    assert not W.done_now(st) and not getattr(st, "dw_forced", 0)
 
 
-def test_a_failure_the_request_names_counts_as_green():
-    st = SimpleNamespace(goal="(`tests/x.py::T::test_lazy_load` already fails; ignore it)")
-    out = {"ok": False, "stdout": "FAILED tests/x.py::T::test_lazy_load - x\n1 failed, 9 passed\n"}
-    assert _outcomes._only_known_failures(st, out)
-    out2 = {"ok": False, "stdout": "FAILED tests/x.py::T::test_ddl - x\n1 failed, 9 passed\n"}
-    assert not _outcomes._only_known_failures(st, out2)
-
-
-def test_the_harness_runs_the_tests_after_idle_steps(st, monkeypatch):
-    from aiforge_core.runtime.chat_agent import _context
+def test_the_harness_reruns_the_turns_own_test_command_after_idle_replies(st, monkeypatch):
     st.last_green_fp = None
+    st.last_full_test = ("run_command", {"cmd": "/venv/bin/python -m pytest -q tests"})
     calls = []
-    monkeypatch.setattr(_context, "_run_project_verify",
-                        lambda cwd: calls.append(cwd) or (True, "5 passed"))
-    for n in range(1, W.IDLE + 2):
+    monkeypatch.setattr(W, "_run", lambda cmd, cwd, timeout=0: calls.append(cmd) or (0, "5 passed in 1s"))
+    for n in range(2, W.IDLE + 4):
         _drain(W.watch(st, n))
-    assert len(calls) == 1 and st.last_green_fp == "fp1"
-    assert st.done_noted_at is not None          # and the note went out
-    for n in range(W.IDLE + 2, W.IDLE + 5):
+    assert calls == ["/venv/bin/python -m pytest -q tests"] and st.last_green_fp == "fp1"
+
+
+def test_a_run_with_no_tests_or_no_command_is_not_green(st, monkeypatch):
+    st.last_green_fp = None
+    monkeypatch.setattr(W, "_run", lambda cmd, cwd, timeout=0: (0, "BUILD SUCCESS"))
+    for n in range(2, W.IDLE + 4):
         _drain(W.watch(st, n))
-    assert len(calls) == 1                        # once per code state
+    assert not st.last_green_fp                 # no last_full_test: nothing run
+    st.last_full_test = ("run_command", {"cmd": "mvn verify -DskipTests"})
+    st.dw_probed_at = None
+    for n in range(20, 20 + W.IDLE + 2):
+        _drain(W.watch(st, n))
+    assert not st.last_green_fp                 # ran, but no "N passed"
+
+
+def _git_repo(tmp_path, files):
+    import os
+    import subprocess
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@t", "PATH": os.environ["PATH"]}
+    for name, body in files.items():
+        (tmp_path / name).write_text(body)
+    for c in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "s"]):
+        subprocess.run(["git", "-C", str(tmp_path), *c], check=True, capture_output=True,
+                       env=env)
+
+
+def test_a_failure_that_also_fails_on_the_original_code_is_pre_existing(tmp_path):
+    import sys
+    _git_repo(tmp_path, {"test_a.py": "def test_old():\n    assert False\n\n"
+                                      "def test_ddl():\n    assert True\n"})
+    (tmp_path / "test_a.py").write_text("def test_old():\n    assert False\n\n"
+                                        "def test_ddl():\n    assert False\n")
+    cmd = f"{sys.executable} -m pytest -q"
+    assert W.pre_existing(str(tmp_path), cmd, ["test_a.py::test_old"])
+    assert not W.pre_existing(str(tmp_path), cmd, ["test_a.py::test_ddl"])   # the run broke it
+    assert not W.pre_existing(str(tmp_path), "make test", ["test_a.py::test_old"])
+
+
+def test_a_failure_counts_as_known_only_when_the_request_says_so():
+    st = SimpleNamespace(goal="(`tests/x.py::T::test_lazy_load` already fails in this "
+                              "environment; ignore it). Fix it so `test_parse` passes.")
+    out = lambda i: {"ok": False, "stdout": f"FAILED tests/x.py::T::{i} - x\n1 failed, 9 passed\n"}
+    assert _outcomes._only_known_failures(st, out("test_lazy_load"))
+    assert not _outcomes._only_known_failures(st, out("test_parse"))   # asked to fix it
+    assert not _outcomes._only_known_failures(st, out("test_lazy"))    # not a whole word
+    st2 = SimpleNamespace(goal="Fix the flaky test `test_retry`.")
+    assert not _outcomes._only_known_failures(st2, out("test_retry"))  # asked to fix
+
+
+@pytest.mark.parametrize("step,acts", [
+    ({"name": "read_lines", "args": {}}, False),
+    ({"name": "run_command", "args": {"cmd": "cd /r && python -m pytest -q tests"}}, False),
+    ({"name": "run_command", "args": {"cmd": "git status && git diff"}}, False),
+    ({"name": "run_command", "args": {"cmd": "git commit -am x && git push"}}, True),
+    ({"name": "run_command", "args": {"cmd": "kubectl apply -f k.yaml"}}, True),
+    ({"name": "run_command", "args": {"cmd": "pip install requests"}}, True),
+    ({"name": "jira_create", "args": {}}, True),
+])
+def test_what_counts_as_only_looking(step, acts):
+    assert W._acts(step) is acts

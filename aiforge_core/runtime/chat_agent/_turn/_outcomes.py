@@ -100,6 +100,15 @@ def _note_green_tests(st, name, args, result, cwd) -> None:
     """Remember a passing FULL test run and the content it ran against. A
     command checked on until it finished counts as its original command; one
     still running proves nothing yet."""
+    from aiforge_core.runtime.cleanup_detect import JOB_TOOLS
+    starts = st.__dict__.setdefault("job_start_edits", {}) if hasattr(st, "__dict__") else {}
+    if name not in JOB_TOOLS and isinstance(result, dict) and result.get("id") \
+            and (result.get("running") or result.get("background")):
+        starts[str(result["id"])] = getattr(st, "edits_made", 0)   # handed off
+    job = str((args or {}).get("id") or "") if name in JOB_TOOLS else ""
+    # a job checked on after edits landed tested the code as it was then
+    stale = bool(job) and starts.get(job, getattr(st, "edits_made", 0)) \
+        != getattr(st, "edits_made", 0)
     run = cmd_finished.as_run(name, args, result)
     if run is None:
         return
@@ -110,9 +119,17 @@ def _note_green_tests(st, name, args, result, cwd) -> None:
     _gaming.note_test_result(st, True if known else result.get("ok"))
     if result.get("ok") is not True and not known:
         st.last_green_fp = None
+        if _full_and_honest(name, args):
+            st.last_full_test = (name, dict(args or {}))
         return
-    if not (_full_and_honest(name, args) and (known or runner_green(result_text(result)))):
+    if not _full_and_honest(name, args):
         return                        # proves nothing about the whole suite
+    st.last_full_test = (name, dict(args or {}))
+    text = result_text(result)
+    if stale or not (known or (runner_green(text) and _RAN.search(text))):
+        # a job checked on after edits landed tested older code; a build
+        # with no test count ran no tests
+        return
     try:
         st.last_green_fp = content_fingerprint(cwd)
         st.green_at_edits = getattr(st, "edits_made", 0)
@@ -120,7 +137,30 @@ def _note_green_tests(st, name, args, result, cwd) -> None:
         st.last_green_fp = None
 
 
+_RAN = re.compile(r"\b[1-9]\d* passed\b")
+
+
 _FAILED_ID = re.compile(r"^(?:FAILED|ERROR)\s+(\S+::\S+)", re.M)
+
+
+_KNOWN_WORDS = re.compile(r"already fail|known (?:failure|to fail|issue)|ignore it|"
+                          r"flaky|pre-?existing|expected to fail|xfail", re.I)
+#: The sentence asks for the test to be fixed: it is not one to ignore.
+_FIX_WORDS = re.compile(r"\b(?:fix|repair|make (?:it|them|\S+) pass|should pass|must pass|"
+                        r"don'?t ignore|do not ignore)\b", re.I)
+
+
+def _said_known(goal: str, name: str) -> bool:
+    """The request names ``name`` (as a whole word) as already failing — not
+    "fix it so `test_x` passes"."""
+    for m in re.finditer(rf"(?<![\w]){re.escape(name)}(?![\w])", goal):
+        # the sentence that names it, not the one before or after
+        start = max(goal.rfind(". ", 0, m.start()), goal.rfind("\n\n", 0, m.start()))
+        ends = [i for i in (goal.find(". ", m.end()), goal.find("\n\n", m.end())) if i >= 0]
+        near = goal[start + 1 if start >= 0 else 0:min(ends) if ends else len(goal)]
+        if _KNOWN_WORDS.search(near) and not _FIX_WORDS.search(near):
+            return True
+    return False
 
 
 def _only_known_failures(st, result) -> bool:
@@ -131,12 +171,13 @@ def _only_known_failures(st, result) -> bool:
         text = result_text(result)
         ids = _FAILED_ID.findall(text)
         goal = str(getattr(st, "goal", "") or "")
-        if not ids or not goal or not re.search(r"\b\d+ failed\b", text):
+        if not ids or not goal or not re.search(r"\b\d+ failed\b", text) \
+                or re.search(r"\b\d+ errors?\b", text):
             return False
         n_failed = int(re.findall(r"\b(\d+) failed\b", text)[-1])
         if n_failed != len(set(ids)):
             return False
-        return all(i.rsplit("::", 1)[-1] in goal for i in ids)
+        return all(_said_known(goal, i.rsplit("::", 1)[-1]) for i in ids)
     except Exception:  # noqa: BLE001
         return False
 

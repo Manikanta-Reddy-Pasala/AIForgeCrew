@@ -233,3 +233,20 @@ def test_a_forced_write_step_offers_only_edit_tools_once(monkeypatch):
     (first, c1), (second, c2) = seen
     assert c1 == "required" and first and first <= _native.WRITE_TOOLS
     assert c2 == "auto" and "run_command" in second
+
+
+def test_a_forced_final_step_allows_no_tool_once(monkeypatch):
+    _native.reset_native_cache()
+    monkeypatch.setattr(_native, "_model_for", lambda role: "m-ff")
+    from aiforge_core.llm import client
+    seen = []
+
+    def raw(role, msgs, tools=None, tool_choice=None):
+        seen.append(tool_choice)
+        return {"role": "assistant", "content": "Done."}
+    monkeypatch.setattr(client, "complete_raw", raw)
+    fn = _native.make_native_complete_fn(session_id=88)
+    _native.force_final_next(88)
+    fn("chat", [{"role": "user", "content": "x"}])
+    fn("chat", [{"role": "user", "content": "x"}])
+    assert seen == ["none", "auto"]

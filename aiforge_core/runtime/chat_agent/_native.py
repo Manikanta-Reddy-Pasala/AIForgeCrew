@@ -52,8 +52,22 @@ def force_write_next(session_id) -> None:
 
 
 def clear_force_write(session_id) -> None:
-    """Drop a forced write step not yet used (a new turn, a steer)."""
+    """Drop a forced write or final step not yet used (a new turn, a steer)."""
     _FORCE_WRITE.discard(session_id)
+    _FORCE_FINAL.discard(session_id)
+
+
+#: Chats whose NEXT native call may not call a tool (see force_final_next).
+_FORCE_FINAL: set = set()
+
+
+def force_final_next(session_id) -> None:
+    """The next native call of this chat gets tool_choice="none": the model
+    must write its answer, which then goes through every finish check like
+    any other answer (the done watch saw the work check out and the model
+    kept only looking)."""
+    if session_id is not None:
+        _FORCE_FINAL.add(session_id)
 
 
 def _protocol_setting() -> str:
@@ -532,6 +546,7 @@ def make_native_complete_fn(mode: str = "act", builder: str = "",
         model = _model_for(role)
         if _NATIVE_CACHE.get(model) is False:
             _FORCE_WRITE.discard(session_id)     # text protocol: nothing to force
+            _FORCE_FINAL.discard(session_id)
             return client.complete(role, convo)
         if not gated:
             try:
@@ -550,7 +565,12 @@ def make_native_complete_fn(mode: str = "act", builder: str = "",
         remember_session_tools(convo, session_id)
         msgs = to_native_messages(convo)
         send, choice = tools, "auto"
-        if session_id in _FORCE_WRITE:
+        if session_id in _FORCE_FINAL:
+            _FORCE_FINAL.discard(session_id)
+            _FORCE_WRITE.discard(session_id)
+            choice = "none"
+            log.info("forced final step: no tool call")
+        elif session_id in _FORCE_WRITE:
             _FORCE_WRITE.discard(session_id)
             only = [t for t in tools if (t.get("function") or {}).get("name") in WRITE_TOOLS]
             if only:
