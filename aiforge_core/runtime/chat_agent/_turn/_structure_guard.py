@@ -9,17 +9,19 @@ passed; the tests failed far away, and the model spent 25 minutes diagnosing
 
 Before an edit the target ``.py`` files are read (:func:`snapshot`); after it
 (:func:`check`) the dotted names they define (``MultiCommand.invoke``) are
-compared. A name the file had before and has no more is reported — "now
-nested inside X" when the same leaf name is still defined elsewhere — unless
-the edit's own old text names it (``def invoke`` in ``old_text`` means the
-edit meant to touch it). A whole-file write only reports moves, never
-removals: rewriting a file may drop anything on purpose. Off switch:
+compared. A name now nested somewhere else is always reported (an insert
+anchored on ``def invoke`` re-emits that line at the wrong indent: the old
+text names it, the move is still the bug). A name gone entirely is reported
+unless that file's old text defines it (``def invoke`` there means the edit
+meant to remove it). Whole-file writes, undo, rename and format calls are
+not checked: they change structure on purpose. Off switch:
 ``AIFORGE_CHAT_STRUCTURE_CHECK=0``. Soft-fail throughout.
 """
 from __future__ import annotations
 
 import ast
 import os
+import re
 
 from aiforge_core.runtime.tools.mutating import writes_files
 
@@ -27,7 +29,8 @@ from ._progress import _full, _named_paths
 
 _MAX_BYTES = 2_000_000
 _MAX_SHOWN = 5
-_WHOLE_FILE = frozenset({"file_write", "file_create", "write"})
+#: Calls that restructure on purpose: never checked.
+_SKIP = frozenset({"file_write", "file_create", "write", "rename_symbol", "format"})
 
 
 def _on() -> bool:
@@ -48,7 +51,9 @@ def _read(path: str) -> "str | None":
 def snapshot(st, name, args, cwd) -> None:
     """Keep the ``.py`` files this call is about to write, as they are now."""
     st.pre_edit = {}
-    if not _on() or not writes_files(name, args if isinstance(args, dict) else {}):
+    args = args if isinstance(args, dict) else {}
+    if (not _on() or name in _SKIP or not writes_files(name, args)
+            or (name == "editor" and args.get("command") in ("create", "undo_edit"))):
         return
     try:
         for p in dict.fromkeys(_named_paths(args, None) or ()):
@@ -81,18 +86,26 @@ def _defs(src: str) -> "dict | None":
     return out
 
 
-def _old_texts(args) -> str:
+def _old_texts(args, full: str, cwd: str) -> str:
+    """The old text of the edits to the file ``full`` only."""
     if not isinstance(args, dict):
         return ""
-    parts = [args.get(k) for k in ("old_text", "old_str", "old")]
-    for ed in args.get("edits") or ():
-        if isinstance(ed, dict):
-            parts += [ed.get(k) for k in ("old_text", "old_str", "old")]
+    top = args.get("path") or args.get("file_path") or args.get("file") or ""
+    parts = []
+    for ed in ([args] + [e for e in (args.get("edits") or ()) if isinstance(e, dict)]):
+        where = ed.get("path") or ed.get("file_path") or top
+        if where and _full(str(where), cwd) != full:
+            continue
+        parts += [ed.get(k) for k in ("old_text", "old_str", "old")]
     return "\n".join(p for p in parts if isinstance(p, str))
 
 
-def lost_names(before: str, after: str, old_text: str, whole_file: bool) -> list:
-    """``[(name, where it is now or None)]`` the edit moved or removed."""
+def _defines(text: str, leaf: str) -> bool:
+    return re.search(rf"\b(?:def|class)\s+{re.escape(leaf)}\b", text) is not None
+
+
+def lost_names(before: str, after: str, old_text: str) -> list:
+    """``[(name, (where it is now, line) or None)]`` the edit moved or removed."""
     b, a = _defs(before), _defs(after)
     if b is None or a is None:
         return []
@@ -101,20 +114,18 @@ def lost_names(before: str, after: str, old_text: str, whole_file: bool) -> list
         if q in a:
             continue
         leaf = q.rsplit(".", 1)[-1]
-        if f"def {leaf}" in old_text or f"class {leaf}" in old_text:
-            continue
         parent = q.rsplit(".", 1)[0] if "." in q else ""
         if parent and parent not in a:
             continue                 # its class or function went: said for that one
         now = next((n for n in a if n.rsplit(".", 1)[-1] == leaf
                     and n not in b), None)
-        if now is None and whole_file:
-            continue
+        if now is None and _defines(old_text, leaf):
+            continue                 # the edit named it: removed on purpose
         out.append((q, (now, a[now]) if now else None))
     return out
 
 
-def check(st, name, files, args):
+def check(st, name, files, args, cwd=""):
     """Events + a note for the model when the edit just landed moved or
     removed a definition it never named."""
     pre = getattr(st, "pre_edit", None) or {}
@@ -129,7 +140,7 @@ def check(st, name, files, args):
         if after is None or after == before:
             continue
         try:
-            lost = lost_names(before, after, _old_texts(args), name in _WHOLE_FILE)
+            lost = lost_names(before, after, _old_texts(args, full, cwd))
         except Exception:  # noqa: BLE001
             continue
         if not lost:
