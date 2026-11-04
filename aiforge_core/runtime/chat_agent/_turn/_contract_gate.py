@@ -16,8 +16,8 @@ _GAP_WORDS = {"does", "take", "missing", "class", "found", "function", "module",
               "exist", "defined"}
 
 #: Send-backs in a row (reset once the model acts), and per turn.
-_SEND_BACKS = 3
-_SEND_BACKS_TOTAL = 6
+_SEND_BACKS = 2
+_SEND_BACKS_TOTAL = 3
 _SHOWN = 25
 
 

@@ -35,10 +35,13 @@ def _verify_on_final_enabled() -> bool:
 
 
 def _verify_max_rounds() -> int:
+    """Fix rounds the finish verify may ask for (3: no other harness sends a
+    model back more than once or twice — OpenCode, Codex and OpenHands end on
+    the first text reply, SWE-agent reviews a submit once)."""
     try:
-        return max(0, min(12, int(os.environ.get("AIFORGE_CHAT_VERIFY_ROUNDS", "6"))))
+        return max(0, min(12, int(os.environ.get("AIFORGE_CHAT_VERIFY_ROUNDS", "3"))))
     except ValueError:
-        return 6
+        return 3
 
 
 def _run_project_verify(cwd: str):

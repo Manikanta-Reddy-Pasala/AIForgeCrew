@@ -82,7 +82,7 @@ def test_gate_sends_back_then_lets_go(tmp_path):
                 next(gen)
         except StopIteration as stop:
             outs.append(stop.value)
-    assert outs[:3] == ["continue"] * 3 and outs[3] is None      # bounded
+    assert outs[:2] == ["continue"] * 2 and outs[2] is None      # bounded (2 in a row)
     assert "Inventory.receive is missing" in st.convo[0]["content"]
     st2 = SimpleNamespace(goal=REQ, cwd=root, edits_made=0, convo=[])
     assert list(G.gate(st2, {"text": "x"})) == []                  # nothing built: no check

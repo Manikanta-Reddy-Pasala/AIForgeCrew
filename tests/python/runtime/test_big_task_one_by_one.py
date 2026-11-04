@@ -123,18 +123,30 @@ def test_an_item_with_no_evidence_is_sent_back_then_accepted_unverified(tmp_path
     fn, calls = _scripted([
         _plan("a", title="first"), _plan("b", title="second"),
         _plan("c", title="third"),
-        _plan("a", status="done", note="1"),  # nothing happened: rejected
-        _plan("a", status="done", note="2"),  # rejected again (different hint)
-        _plan("a", status="done", note="3"),  # out of retries: unverified
+        _plan("a", status="done", note="1"),  # nothing happened: rejected once
+        _plan("a", status="done", note="2"),  # out of retries: unverified
         _plan("b", status="skipped"),
         _plan("c", status="skipped"),
         "FINAL: stop"])
     _run(tmp_path, fn)
     first = str(calls[4][-1]["content"])
     assert "not accepted as done" in first and "nothing shows" in first
-    second = str(calls[5][-1]["content"])
-    assert "DIFFERENT approach" in second
-    assert "UNVERIFIED" in calls[6][0]["content"]       # note on the board, after the reset
+    assert "UNVERIFIED" in calls[5][0]["content"]       # note on the board, after the reset
+
+
+def test_two_retries_when_asked(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_ITEM_RETRIES", "2")
+    fn, calls = _scripted([
+        _plan("a", title="first"), _plan("b", title="second"),
+        _plan("c", title="third"),
+        _plan("a", status="done", note="1"),
+        _plan("a", status="done", note="2"),  # rejected again (different hint)
+        _plan("a", status="done", note="3"),
+        _plan("b", status="skipped"),
+        _plan("c", status="skipped"),
+        "FINAL: stop"])
+    _run(tmp_path, fn)
+    assert "DIFFERENT approach" in str(calls[5][-1]["content"])
 
 
 def test_a_small_run_is_untouched(tmp_path):
@@ -492,3 +504,15 @@ def test_a_red_run_names_its_failing_tests():
     assert "1 failed, 4 passed" in s
     assert "failing: tests/dialects/test_postgres.py::TestPostgres::test_ddl" in s
     assert "git worktree add" in _items._GENERIC_HINTS[0]
+
+
+def test_a_red_run_whose_failures_the_request_calls_known_counts_green():
+    from types import SimpleNamespace
+
+    from aiforge_core.runtime.chat_agent._turn import _items
+    st = SimpleNamespace(item_log=[], goal="(`t.py::T::test_lazy_load` already fails; ignore it)",
+                         cwd="/r", edits_made=0, file_hashes={}, tree_hashes={})
+    res = {"ok": False, "code": 1, "stdout": "FAILED t.py::T::test_lazy_load - x\n"
+                                             "1 failed, 40 passed in 1s\n"}
+    _items.note_evidence(st, "run_command", {"cmd": "python -m pytest -q"}, res)
+    assert st.item_log and st.item_log[-1][1] == "green"
