@@ -89,9 +89,12 @@ def test_multiask_does_not_set_the_answer_aside_to_recheck(tmp_path):
     assert any(k[0] == "message" and "retry added" in k[2] for k in kinds)
 
 
-def test_multiask_tracked_as_subtasks(tmp_path):
+def test_multiask_tracked_as_subtasks(tmp_path, monkeypatch):
     """Multi-part turn: checklist surfaces in the UI subtasks dock, the agent
-    flips items via plan_progress, and FINAL closes out any stragglers."""
+    flips items via plan_progress, and a FINAL the check judges done closes
+    out any stragglers."""
+    from aiforge_core.runtime.chat_agent._turn import _done_check
+    monkeypatch.setattr(_done_check, "judged_done", lambda st: True)
     fn = _scripted([
         'ACTION: plan_progress\nARGS_JSON: {"slug": "part-1", "status": "done"}',
         "FINAL: 1) bug fixed 2) meter explained 3) retry added",
@@ -125,6 +128,27 @@ def test_multiask_tracked_as_subtasks(tmp_path):
     # and the answer does not say they are not done (the board agrees)
     final = [e for e in evs if e["type"] == "message"][-1]["text"]
     assert "Not done from the task list" not in final
+
+
+def test_multiask_parts_no_check_judged_done_stay_open_and_are_named(tmp_path):
+    """Without a done judgement the close-out does not claim the parts: they
+    stay open on the board and in the dock, and the answer names them."""
+    fn = _scripted([
+        'ACTION: plan_progress\nARGS_JSON: {"slug": "part-1", "status": "done"}',
+        "FINAL: 1) bug fixed 2) meter explained 3) retry added",
+        "FINAL: All three are handled: the bug is fixed, the meter is explained, retry added.",
+        "FINAL: Done — 1) login bug fixed 2) meter reset explained 3) sync retry added.",
+    ])
+    evs = _collect(ca.run_chat_agent(
+        [{"role": "user", "content":
+          "fix the login bug. also why does the meter reset? and add a retry "
+          "to the sync client"}],
+        cwd=str(tmp_path), complete_fn=fn))
+    ups = [(e["slug"], e["status"]) for e in evs if e["type"] == "subtask_update"]
+    assert ("part-1", "done") in ups
+    assert ("part-2", "done") not in ups and ("part-3", "done") not in ups
+    final = [e for e in evs if e["type"] == "message"][-1]["text"]
+    assert "Not done from the task list" in final
 
 
 def test_multiask_single_question_untouched(tmp_path):

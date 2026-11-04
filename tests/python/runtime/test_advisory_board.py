@@ -66,3 +66,15 @@ def test_a_done_verdict_this_finish_skips_reminders_for_the_request_parts():
              "part-2": {"title": "b", "status": "pending", "from_request": True},
              "mine": {"title": "c", "status": "pending"}}
     assert _tasks.open_planned(board) == ["mine"]
+
+
+def test_an_earlier_done_verdict_is_cleared_when_the_check_does_not_run_again():
+    from aiforge_core.runtime.chat_agent._turn import _done_check
+    st = SimpleNamespace(goal="Do it.", done_check_said="done", done_check_unfinished=False)
+    g = _done_check.gate(st, {"text": ""})
+    try:
+        while True:
+            next(g)
+    except StopIteration:
+        pass
+    assert st.done_check_said is None      # a later finish never reuses it

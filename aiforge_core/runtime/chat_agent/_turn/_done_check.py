@@ -134,6 +134,14 @@ def _applies(st, builder, strict_finish) -> bool:
                 and getattr(st, "done_check_calls", 0) < _CALLS_PER_TURN)
 
 
+def judged_done(st) -> bool:
+    """A check of this finish found the request done: the done check said so,
+    or it was skipped because the spec check found every named thing."""
+    return (getattr(st, "done_check_said", None) == "done"
+            or (getattr(st, "contract_checked", 0) >= _SPEC_ENOUGH
+                and not getattr(st, "contract_gaps", None)))
+
+
 def _to_the_harness(text: str) -> bool:
     """A reply to one of the harness's own checks ("SAME"), not an answer."""
     try:
@@ -330,6 +338,7 @@ def gate(st, step, builder=None, strict_finish=False):
         return None
     # What an earlier verdict said was about an earlier reply.
     st.done_check_unfinished = False
+    st.done_check_said = None
     if not text or not goal or not _applies(st, builder, strict_finish):
         return None
     from ._finish import _budget_left

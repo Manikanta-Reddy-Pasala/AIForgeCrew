@@ -335,7 +335,8 @@ def review_progress(st, result: dict, events: list):
                     events = [{"type": "subtask_update", "slug": slug,
                                "status": "failed"}]
                 else:
-                    suffix = " — UNVERIFIED (accepted after retries)"
+                    status_head = "UNVERIFIED"   # first: never cut by the note cap
+                    suffix = " (accepted after retries)"
         item["note"] = _note(facts, status_head or status, suffix)
         item["files"] = list(facts.get("edited") or [])
         if not carried:
