@@ -167,12 +167,32 @@ def _line_cap() -> int:
 
 
 def _committed_lines(path: str) -> int:
-    """Lines of ``path`` as last committed (0 when untracked / no git)."""
+    """Lines of ``path`` where this work started: the branch's upstream, else
+    its fork point from main/master, else HEAD (0 when untracked / no git).
+    Not plain HEAD: a chat seals each turn as a commit, and a file AIForge
+    itself grew past the cap must not be exempt from the next turn on. A
+    relative path is the tools' own: under the sandbox root."""
     try:
         import subprocess
-        d = os.path.dirname(os.path.abspath(path)) or "."
-        p = subprocess.run(["git", "-C", d, "show", f"HEAD:./{os.path.basename(path)}"],
-                           capture_output=True, timeout=10)
+        if not os.path.isabs(path):
+            from aiforge_core.runtime import sandbox
+            path = str(sandbox.resolve_inside_root(path))
+        d = os.path.dirname(path) or "."
+
+        def git(*args):
+            return subprocess.run(["git", "-C", d, *args], capture_output=True, timeout=10)
+
+        base = "HEAD"
+        up = git("rev-parse", "--verify", "-q", "@{upstream}")
+        if up.returncode == 0 and up.stdout.strip():
+            base = up.stdout.decode().strip()
+        else:
+            for ref in ("main", "master", "origin/main", "origin/master"):
+                mb = git("merge-base", "HEAD", ref)
+                if mb.returncode == 0 and mb.stdout.strip():
+                    base = mb.stdout.decode().strip()
+                    break
+        p = git("show", f"{base}:./{os.path.basename(path)}")
         return p.stdout.count(b"\n") + 1 if p.returncode == 0 else 0
     except Exception:  # noqa: BLE001
         return 0

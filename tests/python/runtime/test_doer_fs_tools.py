@@ -466,3 +466,27 @@ def test_an_existing_large_file_gets_no_split_warning(tmp_path, monkeypatch):
     new = tmp_path / "new_mod.py"
     w = syntax_guard.oversize_warning(str(new), big)
     assert "over the 50-line cap" in w and "unless the request names" in w
+
+
+def test_a_file_this_session_grew_past_the_cap_still_warns(tmp_path, monkeypatch):
+    """A chat seals each turn as a commit: HEAD alone would exempt it."""
+    import os
+    import subprocess
+    from aiforge_core.runtime import sandbox, syntax_guard
+    monkeypatch.setenv("AIFORGE_MAX_FILE_LINES", "50")
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@t", "PATH": os.environ["PATH"]}
+
+    def git(*a):
+        subprocess.run(["git", "-C", str(tmp_path), *a], check=True, capture_output=True, env=env)
+    (tmp_path / "service.py").write_text("x = 1\n")
+    git("init", "-q", "-b", "main")
+    git("add", "-A")
+    git("commit", "-qm", "seed")
+    git("checkout", "-qb", "aiforge/chat-1")
+    big = "x = 1\n" * 80
+    (tmp_path / "service.py").write_text(big)
+    git("commit", "-qam", "turn 1 sealed")
+    monkeypatch.setattr(sandbox, "resolve_inside_root", lambda rel: tmp_path / rel)
+    # relative path, as editor / multi_edit / the Doer pass it
+    assert "over the 50-line cap" in syntax_guard.oversize_warning("service.py", big + "y\n")
