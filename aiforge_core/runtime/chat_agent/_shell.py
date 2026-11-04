@@ -345,6 +345,29 @@ def _syntax_check(path: str, content: str, args: dict) -> str | None:
         return None
 
 
+_SYNTAX_HINT = ("If this is one step of a change made in several edits, make the "
+                "whole change in ONE multi_edit (all its edits apply together, and "
+                "only the result is checked), or pass force:true and fix it with "
+                "the next edit. Do not rewrite the file through the shell.")
+
+
+def syntax_refusal(path: str, content: str, bad: str, **extra) -> dict:
+    """The refusal of an edit that would leave a code file unparsable: the
+    error, the lines around it, and how to go on. A bare "fix it or pass
+    force:true" sent a run on a big file (attrs _make.py) to writing it
+    through python scripts and `git checkout`, which wiped its own work."""
+    import re as _re
+    out = {"ok": False, "error": "syntax_invalid", "detail": bad, **extra,
+           "hint": _SYNTAX_HINT}
+    m = _re.search(r"line (\d+)", str(bad or ""))
+    if m:
+        lines = content.split("\n")
+        at = int(m.group(1))
+        lo, hi = max(1, at - 3), min(len(lines), at + 3)
+        out["around"] = [f"{k}|{lines[k - 1]}" for k in range(lo, hi + 1)]
+    return out
+
+
 def _t_file_write(args: dict, cwd: str) -> dict:
     from aiforge_core.runtime.syntax_guard import attach_oversize
     p = _resolve(cwd, args["path"])
@@ -401,15 +424,18 @@ def _t_file_patch(args: dict, cwd: str) -> dict:
         return {"ok": False, "error": "not_found"}
     body = p.read_text(encoding="utf-8")
     from aiforge_core.runtime.edit_match import replace_once
-    hit = replace_once(body, args["old_text"], args["new_text"],
-                       _truthy(args.get("replace_all")))
+    old = args.get("old_text", args.get("old_str"))
+    new = args.get("new_text", args.get("new_str"))
+    if old is None or new is None:
+        return {"ok": False, "error": "file_patch needs old_text and new_text "
+                "(old_str / new_str are accepted too)"}
+    hit = replace_once(body, old, new, _truthy(args.get("replace_all")))
     if not hit["ok"]:
         return hit
     new_body = hit["body"]
     bad = _syntax_check(str(p), new_body, args)
     if bad:
-        return {"ok": False, "error": "syntax_invalid", "detail": bad,
-                "hint": "the edit would break the file; fix it or pass force:true"}
+        return syntax_refusal(str(p), new_body, bad)
     p.write_text(new_body, encoding="utf-8")
     out = {"ok": True, "path": str(p)}
     if hit["how"] != "exact":

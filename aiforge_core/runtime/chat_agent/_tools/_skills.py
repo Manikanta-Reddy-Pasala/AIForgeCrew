@@ -211,9 +211,8 @@ def _t_multi_edit(args: dict, cwd: str) -> dict:
     for ap, content in batch.pending.items():
         bad = _syntax_check(ap, content, args)
         if bad:
-            return {"ok": False, "error": "syntax_invalid",
-                    "file": batch.rel_of.get(ap, ap), "detail": bad,
-                    "hint": "fix the edit or pass force:true"}
+            from .._shell import syntax_refusal
+            return syntax_refusal(ap, content, bad, file=batch.rel_of.get(ap, ap))
     written, err = _write_batch(batch)
     if err:
         return {"ok": False, "error": err}

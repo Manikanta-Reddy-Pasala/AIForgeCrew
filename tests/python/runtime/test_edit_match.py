@@ -167,3 +167,17 @@ def test_a_long_test_run_is_compacted_to_its_failures():
     assert "FAILED tests/test_a.py::test_bad" in c and "1 failed, 2000 passed" in c
     assert c.count("PASSED") < 200
     assert _shell.compact_test_output("short", 8000) == "short"
+
+
+def test_file_patch_takes_old_str_and_a_syntax_refusal_says_where_and_how(tmp_path):
+    from aiforge_core.runtime.chat_agent import _shell
+    f = tmp_path / "m.py"
+    f.write_text("def f():\n    return 1\n\n\ndef g():\n    return 2\n")
+    r = _shell._t_file_patch({"path": "m.py", "old_str": "return 1", "new_str": "return 10"}, str(tmp_path))
+    assert r["ok"] and "return 10" in f.read_text()
+    r = _shell._t_file_patch({"path": "m.py", "old_text": "def g():", "new_text": "def g(:"}, str(tmp_path))
+    assert not r["ok"] and r["error"] == "syntax_invalid"
+    assert "ONE multi_edit" in r["hint"] and any("def g(:" in ln for ln in r.get("around", []))
+    assert "def g():" in f.read_text()                       # nothing written
+    r = _shell._t_file_patch({"path": "m.py"}, str(tmp_path))
+    assert not r["ok"] and "old_str" in r["error"]
