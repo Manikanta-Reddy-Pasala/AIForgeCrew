@@ -2,6 +2,8 @@
 builder nudge, steering, condensing, and the stuck-output guard."""
 from __future__ import annotations
 
+import os
+
 import re
 import time
 
@@ -344,6 +346,16 @@ _TIGHT_NOTE = ("\n\n[harness: the context keeps filling up and being shrunk. "
                "pipe them through tail or grep.]")
 
 
+def _prune_line() -> float:
+    """Share of the condense budget from which a deep prune is considered
+    (``AIFORGE_CTX_PRUNE_AT``, default 0.7 — about 60% of the window at the
+    85% condense point)."""
+    try:
+        return min(1.0, max(0.3, float(os.environ.get("AIFORGE_CTX_PRUNE_AT", "0.7"))))
+    except ValueError:
+        return 0.7
+
+
 def _prune_at_condense_point(st, role) -> int:
     """The cheap first stage at the condense point: old reads and command
     output become a head, a tail and an id (``_aging``), the newest ~25K tokens
@@ -353,7 +365,11 @@ def _prune_at_condense_point(st, role) -> int:
     from .._context._window import _chars_per_token, _ctx_budget_chars
     try:
         budget = _ctx_budget_chars(role, sys_chars=_system_chars(st.convo))
-        if budget <= 0 or _hist_chars(st.convo[1:]) <= budget:
+        # Considered from a soft line below the condense point, so a run does
+        # not sit at the 85% line for most of its life (a big-repo run's median
+        # prompt was ~110K tokens against OpenCode's ~71K): the same rule then
+        # applies — only a deep prune (>= _PRUNE_MIN_SHARE of the budget) runs.
+        if budget <= 0 or _hist_chars(st.convo[1:]) <= budget * _prune_line():
             return 0
         from .._context._aging import age_observations
         # Keep the newest ~25K tokens whole (10K when tight), but never more

@@ -306,3 +306,24 @@ def test_a_prune_also_cuts_the_spent_args_of_old_calls():
     a = _json.loads(convo[1]["content"].split("ARGS_JSON: ", 1)[1])
     assert len(a["cmd"]) < 300 and "already ran/applied" in a["cmd"]
     assert convo[-1] is recent                                     # newest untouched
+
+
+def test_a_deep_prune_is_considered_below_the_condense_line(monkeypatch):
+    from aiforge_core.runtime.chat_agent._turn import _limits
+    from aiforge_core.runtime.chat_agent._context import _aging
+    big = "OBSERVATION: " + "x" * 6000
+    convo = [{"role": "system", "content": "s"}]
+    for i in range(4):
+        convo += [{"role": "assistant", "content": 'ACTION: file_read\nARGS_JSON: {"path": "a%d"}' % i},
+                  {"role": "user", "content": big}]
+    convo += [{"role": "user", "content": "y" * 100}] * 12
+    st = SimpleNamespace(convo=convo, batch_unread=False, batch_mark=None)
+    hist = sum(len(m["content"]) for m in convo[1:])
+    monkeypatch.setattr("aiforge_core.runtime.chat_agent._context._window._ctx_budget_chars",
+                        lambda *a, **k: int(hist / 0.8))                  # 80% full: under the line
+    assert _limits._prune_at_condense_point(st, "chat") > 0                 # above the 70% soft line
+    monkeypatch.setenv("AIFORGE_CTX_PRUNE_AT", "1.0")
+    st2 = SimpleNamespace(convo=[dict(m) for m in convo], batch_unread=False, batch_mark=None)
+    for m in st2.convo:
+        if m["content"].startswith("OBSERVATION: [aged"): m["content"] = big
+    assert _limits._prune_at_condense_point(st2, "chat") == 0              # only at the line
