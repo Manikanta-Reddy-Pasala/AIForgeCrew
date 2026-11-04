@@ -195,6 +195,8 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     _unlimited = not _capped and _turn_budget_s <= 0
     from ._approval import new_turn as _approvals_new_turn
     _approvals_new_turn(session_id)
+    from .._native import clear_force_write
+    clear_force_write(session_id)        # never carried into a new turn
     convo, _bundle, _asks, _dropped_playbooks = _build_convo(
         messages, cwd, role, readonly_mode=readonly_mode,
         plan_mode=plan_mode, analyze_mode=analyze_mode, builder=builder,

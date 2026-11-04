@@ -896,5 +896,14 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
         yield {"type": "thought", "role": "system",
                "text": "↺ many shell commands and no edit — asking the agent to write the change"}
         _tail += "\n" + _probe
+        if getattr(st, "want_force_write", False):
+            # armed only with its explanation in the observation
+            from .._native import force_write_next
+            force_write_next(getattr(st, "session_id", None))
+    elif getattr(st, "want_force_write", False):
+        # the note gave way to a stuck notice: force at the very next command
+        from ._probe_guard import FORCE_AT
+        st.shell_streak = FORCE_AT - 1
+    st.want_force_write = False
     st.convo.append({"role": "user", "content": f"OBSERVATION: {obs}{_tail}"})
     return None

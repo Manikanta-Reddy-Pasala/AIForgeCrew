@@ -37,8 +37,8 @@ log = logging.getLogger("aiforge.chat.native")
 _NATIVE_CACHE: dict[str, bool] = {}
 #: Chats whose NEXT model call may only edit files (see force_write_next).
 _FORCE_WRITE: set = set()
-#: The tools a forced write step offers.
-WRITE_TOOLS = frozenset({"file_patch", "multi_edit", "file_write", "file_create", "editor"})
+#: The tools a forced write step offers: the one shared list of writing tools.
+from aiforge_core.runtime.tools.mutating import FILE_WRITE_TOOLS as WRITE_TOOLS  # noqa: E402
 
 
 def force_write_next(session_id) -> None:
@@ -49,6 +49,11 @@ def force_write_next(session_id) -> None:
     20+ minutes."""
     if session_id is not None:
         _FORCE_WRITE.add(session_id)
+
+
+def clear_force_write(session_id) -> None:
+    """Drop a forced write step not yet used (a new turn, a steer)."""
+    _FORCE_WRITE.discard(session_id)
 
 
 def _protocol_setting() -> str:
@@ -154,7 +159,7 @@ def _probe_native(role: str) -> bool:
             return False
         # A rejection that names ONLY tool_choice (the probe forces
         # tool_choice="required"; some servers do tools with "auto" but reject
-        # the forced mode the RUNTIME never uses) is NOT a tools-capability
+        # a forced mode the runtime uses only for a forced write step) is NOT a tools-capability
         # rejection — the model can do native FC. Stay optimistic, don't cache.
         # Also inconclusive (busy / timeout / reloading).
         log.info("native probe inconclusive (%s) — staying optimistic", exc)
@@ -526,6 +531,7 @@ def make_native_complete_fn(mode: str = "act", builder: str = "",
         # native, and it's per-model + self-discovered, never transient.
         model = _model_for(role)
         if _NATIVE_CACHE.get(model) is False:
+            _FORCE_WRITE.discard(session_id)     # text protocol: nothing to force
             return client.complete(role, convo)
         if not gated:
             try:
@@ -560,6 +566,8 @@ def make_native_complete_fn(mode: str = "act", builder: str = "",
                 degraded[0] = True
                 return client.complete(role, convo)
             if _native_error_transient(exc):
+                if choice == "required":
+                    _FORCE_WRITE.add(session_id)    # the retry is still the forced step
                 raise
             msg = _complete_repaired(client, role, msgs, tools, exc)
             if msg is None:

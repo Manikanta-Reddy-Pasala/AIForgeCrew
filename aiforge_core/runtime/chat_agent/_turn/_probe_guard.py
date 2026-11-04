@@ -81,14 +81,12 @@ def note(st, name: str, args) -> str:
     st.shell_streak = getattr(st, "shell_streak", 0) + 1
     if st.shell_streak % EVERY:
         return ""
-    if st.shell_streak >= FORCE_AT and edits and _force_on():
+    if st.shell_streak >= FORCE_AT and edits and _force_on() \
+            and getattr(st, "native_on", False):
         # Two notes ignored, in a run that writes code: the next call can only
-        # edit (click af6 ran 135 shell commands, 25 minutes, no edit).
-        try:
-            from .._native import force_write_next
-            force_write_next(getattr(st, "session_id", None))
-        except Exception:  # noqa: BLE001
-            return ""
+        # edit (click af6 ran 135 shell commands, 25 minutes, no edit). The
+        # call site arms it once this note is really in the observation.
+        st.want_force_write = True
         st.shell_streak = 0
         return (f"[harness — not the user] {FORCE_AT}+ shell commands and no change "
                 "to the files after two notes. Your next step can only edit files: "

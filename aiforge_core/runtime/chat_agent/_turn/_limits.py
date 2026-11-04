@@ -172,6 +172,11 @@ def _drain_steering(st, session_id):
             from aiforge_core.runtime import chat_steer
             _steers = [t for k, t in _items if k != "reject"]
             st.steers.extend(_steers)
+            if _items:
+                # the user spoke: their words decide the next step, not a
+                # forced edit armed before they did
+                from .._native import clear_force_write
+                clear_force_write(getattr(st, "session_id", None))
             from . import _steer_reply
             _steer_reply.on_drain(st, _steers)
             _rejects = [t for k, t in _items if k == "reject"]

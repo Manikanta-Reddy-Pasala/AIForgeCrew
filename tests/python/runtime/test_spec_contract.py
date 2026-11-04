@@ -610,12 +610,25 @@ def test_not_type_checking_body_is_exported_and_its_else_is_not(tmp_path):
 def test_probe_guard_forces_a_write_step_after_two_ignored_notes(monkeypatch):
     from aiforge_core.runtime.chat_agent._turn import _probe_guard as P
     from aiforge_core.runtime.chat_agent import _native
-    st = SimpleNamespace(edits_made=1, probe_edits_seen=1, cwd="/srv/work", session_id=5)
+    st = SimpleNamespace(edits_made=1, probe_edits_seen=1, cwd="/srv/work", session_id=5,
+                         native_on=True)
     said = [P.note(st, "run_command", {"cmd": "ls -la shopkit"}) for _ in range(20)]
-    assert "can only edit files" in said[19] and 5 in _native._FORCE_WRITE
-    _native._FORCE_WRITE.discard(5)
+    # the guard only asks; the observation's call site arms it with the note
+    assert "can only edit files" in said[19] and st.want_force_write
+    assert 5 not in _native._FORCE_WRITE
     assert st.shell_streak == 0
+    txt = SimpleNamespace(edits_made=1, probe_edits_seen=1, cwd="/srv/work", session_id=7,
+                          native_on=False)
+    said = [P.note(txt, "run_command", {"cmd": "ls"}) for _ in range(20)]
+    assert not getattr(txt, "want_force_write", False)   # text protocol: never
     # no edit yet this turn (an ops run): notes only, never forced
     st2 = SimpleNamespace(edits_made=0, cwd="/srv/work", session_id=6)
     said = [P.note(st2, "run_command", {"cmd": "ls"}) for _ in range(20)]
-    assert 6 not in _native._FORCE_WRITE and "can only edit" not in said[19]
+    assert not getattr(st2, "want_force_write", False) and "can only edit" not in said[19]
+
+
+def test_a_forced_write_never_reaches_the_next_turn_or_a_steer():
+    from aiforge_core.runtime.chat_agent import _native
+    _native.force_write_next(9)
+    _native.clear_force_write(9)
+    assert 9 not in _native._FORCE_WRITE
