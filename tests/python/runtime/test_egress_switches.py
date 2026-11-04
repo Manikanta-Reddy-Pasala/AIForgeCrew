@@ -311,3 +311,10 @@ def test_the_catalog_gate_fails_open_but_says_so(monkeypatch):
 
     monkeypatch.setattr(_e, "fetch_allowed", _boom)
     assert _catalog_gate._web_fetch_on() is True
+
+
+def test_a_todo_tool_from_another_agent_points_at_plan_progress():
+    from aiforge_core.runtime.chat_agent._turn._tool_dispatch import _unknown_tool_result
+    r = _unknown_tool_result("todo_write")
+    assert r["ok"] is False and "plan_progress" in r["hint"]
+    assert "hint" not in _unknown_tool_result("frobnicate")

@@ -71,6 +71,13 @@ _REMOVED_SEARCH_TOOLS = frozenset({
 })
 
 
+# Task-list tools other agents have (the model reaches for them by habit).
+_OTHER_AGENTS_TODO_TOOLS = frozenset({
+    "todo_write", "todowrite", "todo_read", "todoread", "update_todos",
+    "write_todos", "todo", "todos", "task_list", "update_plan",
+})
+
+
 def _unknown_tool_result(name) -> dict:
     if str(name).strip().lower().replace("-", "_") in _REMOVED_SEARCH_TOOLS:
         return {"ok": False, "error": "web_search_removed",
@@ -79,6 +86,13 @@ def _unknown_tool_result(name) -> dict:
                          "name for it, and do not fetch a search engine's URL "
                          "either. Use what you can read here, or ask the user "
                          "for a direct URL / the content itself.")}
+    if str(name).strip().lower().replace("-", "_") in _OTHER_AGENTS_TODO_TOOLS:
+        # click af8: 11 todo_write calls failed with a bare "unknown tool"
+        return {"ok": False, "error": f"unknown tool: {name}",
+                "hint": ("there is no todo list tool here: your task board is "
+                         "plan_progress, one item per call — {\"slug\": \"tests\", "
+                         "\"title\": \"Write the tests\", \"status\": \"running\"}. "
+                         "Do not call todo_write again.")}
     return {"ok": False, "error": f"unknown tool: {name}"}
 
 
