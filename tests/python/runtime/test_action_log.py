@@ -652,3 +652,39 @@ def test_a_long_list_of_changed_files_keeps_the_newest():
     lines = A._changed_lines(A.entries(steps))
     assert lines[0] == "(5 earlier file(s) not shown)"
     assert lines[-1].startswith("- f19.py ×1")
+
+
+def test_a_file_edited_again_moves_to_the_end_and_is_never_cut():
+    steps = ([_tool("file_patch", {"path": "parser.py", "new_text": "def a(): ..."}, ok=True)]
+             + [_tool("file_write", {"path": f"t{i}.py", "content": ""}, ok=True)
+                for i in range(20)]
+             + [_tool("file_patch", {"path": "parser.py", "new_text": "def b(): ..."}, ok=True)])
+    lines = A._changed_lines(A.entries(steps))
+    assert lines[-1] == "- parser.py ×2: a, b"
+
+
+def test_one_file_named_three_ways_is_one_row():
+    steps = [_tool("file_patch", {"path": p, "new_text": "x"}, ok=True)
+             for p in ("src/a.py", "./src/a.py", "/repo/src/a.py")]
+    assert [r[:2] for r in A.changed_files(A.entries(steps))] == [("src/a.py", 3)]
+
+
+def test_an_undone_file_and_directory_wide_tools_are_not_listed():
+    steps = [
+        _tool("editor", {"command": "create", "path": "foo.py", "file_text": "class Foo: ..."},
+              ok=True),
+        _tool("editor", {"command": "undo_edit", "path": "foo.py"}, ok=True, deleted=True),
+        _tool("format", {"path": "."}, ok=True),
+        _tool("editor", {"path": "b.py"}, ok=True),
+        _tool("multi_edit", {"file_path": "c.py", "edits": [{"old_str": "a", "new_str": "def c(): ..."}]},
+              ok=True),
+        _tool("file_write", {"path": "README.md", "content": "a class of problems"}, ok=True),
+    ]
+    assert A.changed_files(A.entries(steps)) == [("c.py", 1, ["c"]), ("README.md", 1, [])]
+
+
+def test_names_from_other_languages():
+    text = ("func (r *Repo) Save() {}\npub async fn load() {}\n"
+            "export default function App() {}\ndata class Point(val x: Int)\n"
+            "public class Svc {}\n")
+    assert A._names("x.go", text) == ["Save", "load", "App", "Point", "Svc"]

@@ -310,27 +310,40 @@ def _outcome(name: str, args, res: dict, ok) -> tuple:
     return "", ""
 
 
-#: A name a block of new code defines (Python, JS/TS, Go, Rust, Kotlin).
-_DEF_RE = re.compile(r"^[ \t]*(?:export[ \t]+)?(?:async[ \t]+)?(?:pub[ \t]+)?"
-                     r"(?:def|class|function|func|fn|fun|interface|struct|enum)"
-                     r"[ \t]+([A-Za-z_]\w*)", re.M)
+#: A name a block of new code defines (Python, JS/TS, Go incl. methods, Rust,
+#: Kotlin/Java with their modifiers).
+_DEF_RE = re.compile(
+    r"^[ \t]*(?:(?:export|default|pub(?:\([^)]*\))?|public|private|protected|internal|"
+    r"static|abstract|final|open|data|sealed|async|unsafe)[ \t]+)*"
+    r"(?:def|class|function|func|fn|fun|interface|struct|enum|trait)[ \t]+"
+    r"(?:\([^)]*\)[ \t]*)?([A-Za-z_]\w*)", re.M)
 _NEW_TEXT_KEYS = ("content", "new_text", "new_str", "file_text")
+#: Text, not code: no names are read from these.
+_PROSE_EXTS = (".md", ".txt", ".rst", ".json", ".yaml", ".yml", ".toml", ".csv", ".html")
 
 
 def _written(name: str, args: dict) -> list:
-    """``[(path, new text)]`` an edit call wrote."""
+    """``[(path, new text)]`` an edit call wrote to FILES (a directory-wide
+    format or rename names no file, and an editor call with no command is
+    a view)."""
+    if name == "editor" and not str(args.get("command") or "").strip():
+        return []
     out = []
-    top = args.get("path") or args.get("file") or ""
+    top = args.get("path") or args.get("file_path") or args.get("file") or ""
     edits = args.get("edits")
     if isinstance(edits, list):
         for ed in edits:
             if isinstance(ed, dict):
                 txt = next((ed[k] for k in _NEW_TEXT_KEYS if isinstance(ed.get(k), str)), "")
-                out.append((str(ed.get("path") or top), txt))
+                out.append((str(ed.get("path") or ed.get("file_path") or top), txt))
     else:
         txt = next((args[k] for k in _NEW_TEXT_KEYS if isinstance(args.get(k), str)), "")
         out.append((str(top), txt))
-    return [(p, t) for p, t in out if p]
+    return [(p, t) for p, t in out if p and os.path.splitext(p)[1]]
+
+
+def _names(path: str, text: str) -> list:
+    return [] if path.lower().endswith(_PROSE_EXTS) else _DEF_RE.findall(text)
 
 
 def entries(steps: list) -> list:
@@ -370,7 +383,10 @@ def entries(steps: list) -> list:
             e = {"ok": ok, "tool": name, "arg": _arg(args), "outcome": headline,
                  "read": _is_read(name, args, reads), "sig": f"{name}|{args!r}"}
             if ok is True and writes_files(name, args):
-                e["writes"] = [(p, _DEF_RE.findall(t)) for p, t in _written(name, args)]
+                gone = (res.get("deleted") is True
+                        or (name == "editor" and args.get("command") == "undo_edit"))
+                e["writes"] = [(p, None if gone else _names(p, t))
+                               for p, t in _written(name, args)]
             if job:
                 e["job"] = job
                 e["running"] = True
@@ -458,27 +474,57 @@ def window(items: list, n: "int | None" = None, keep_failed: "int | None" = None
     return shown, len(items) - len(shown)
 
 
+def _norm(path: str) -> str:
+    p = path.replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    return p
+
+
 def changed_files(items: list) -> list:
     """``[(path, edit count, names its new code defined)]`` for every file an
-    edit in ``items`` wrote, first edited first."""
+    edit in ``items`` wrote, most recently edited last. One file named two
+    ways (``a.py``, ``./a.py``, ``/repo/a.py``) is one row; a file an undo
+    deleted is dropped."""
     files: dict = {}
     for e in items:
         for path, names in e.get("writes") or ():
-            row = files.setdefault(path, [0, {}])
-            row[0] += 1
+            key = _norm(path)
+            if names is None:                   # undone / deleted
+                files.pop(key, None)
+                continue
+            n, seen = files.pop(key, (0, {}))
             for nm in names:
-                row[1].setdefault(nm, None)
+                seen.setdefault(nm, None)
+            files[key] = (n + 1, seen)          # re-inserted: last edit last
+    rel = [k for k in files if not k.startswith("/")]
+    for k in [k for k in files if k.startswith("/")]:
+        short = next((r for r in rel if k.endswith("/" + r)), None)
+        if short:
+            n, seen = files.pop(k)
+            n0, seen0 = files[short]
+            seen0.update(seen)
+            files[short] = (n0 + n, seen0)
     return [(p, n, list(names)) for p, (n, names) in files.items()]
 
 
-def _changed_lines(items: list, limit: int = 15, per_file: int = 8) -> list:
+def _changed_lines(items: list, limit: int = 15, per_file: int = 8,
+                   cap: int = 1600) -> list:
     rows = changed_files(items)
-    out = []
-    for path, n, names in rows[-limit:]:
+    out: list = []
+    used = 0
+    for path, n, names in reversed(rows):
+        if len(out) >= limit:
+            break
         shown = ", ".join(names[:per_file]) + (", …" if len(names) > per_file else "")
-        out.append(_clip(f"- {path} ×{n}" + (f": {shown}" if shown else ""), 220))
-    if len(rows) > limit:
-        out.insert(0, f"({len(rows) - limit} earlier file(s) not shown)")
+        line = _clip(f"- {path} ×{n}" + (f": {shown}" if shown else ""), 220)
+        if used + len(line) > cap and out:
+            break
+        out.append(line)
+        used += len(line) + 1
+    out.reverse()
+    if len(rows) > len(out):
+        out.insert(0, f"({len(rows) - len(out)} earlier file(s) not shown)")
     return out
 
 
@@ -507,14 +553,14 @@ def render(items: list, cleanup: list) -> str:
             lines.append(f"({hidden} earlier action{'s' if hidden != 1 else ''} not "
                          'shown; session_actions {"limit": 100} lists them, '
                          '{"failed_only": true} only the failures)')
-        changed = _changed_lines(items)
+        changed = _changed_lines(items, cap=max(200, char_cap() // 2))
         if changed:
             # The 25-action window let 190 shell commands push a run's own
             # early edits out: after a condense it went looking for code it
             # had written itself. Files stay listed however old the edit.
-            lines.append("FILES YOU CHANGED IN THIS CHAT (every one; × = edits, "
-                         "then names your new code defines — it is in the file "
-                         "now, so read it there instead of writing it again):")
+            lines.append("FILES YOU CHANGED IN THIS CHAT (latest edited last; × = "
+                         "edits, then names your edits defined — read the file "
+                         "for what is there now before writing any of it again):")
             lines += changed
     if cleanup and cleanup_cap() > 0:
         lines.append("TO CLEAN UP WHEN THE WORK IS DONE (this chat created or "
