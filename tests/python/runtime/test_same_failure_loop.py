@@ -453,3 +453,22 @@ def test_reconcile_signature_reads_a_java_build():
     assert _failure_signature(a) and _failure_signature(a) == _failure_signature(b)
     assert _failure_signature("FAILED tests/t.py::a - x") == failure_of(
         "FAILED tests/t.py::a - y").signature
+
+
+def test_out_of_fix_rounds_the_answer_still_says_the_checks_fail(monkeypatch, tmp_path):
+    """9 → 5 → 2 used every round; the 4th 'all tests pass' went out unchecked."""
+    from types import SimpleNamespace
+
+    from aiforge_core.runtime.chat_agent._turn import _outcomes
+    monkeypatch.setattr(_outcomes, "_run_project_verify",
+                        lambda cwd: (False, "FAILED t.py::a\nFAILED t.py::b\n2 failed, 9 passed"))
+    st = SimpleNamespace(last_green_fp=None, edits_made=3, verify_rounds=3,
+                         verify_prev_fails=2, verify_stalls=0)
+    step = {"text": "Done, all tests pass."}
+    g = _outcomes._verify_fix(st, step, str(tmp_path), False, None)
+    try:
+        while True:
+            next(g)
+    except StopIteration as e:
+        assert e.value is None
+    assert "still FAIL" in step["text"] and step["text"].endswith("all tests pass.")

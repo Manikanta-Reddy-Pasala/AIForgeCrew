@@ -245,9 +245,27 @@ def _verify_fix(st, step, cwd, plan_mode, builder):
     if (getattr(st, "last_green_fp", None)
             and content_fingerprint(cwd) == st.last_green_fp):
         return None
-    if (plan_mode or builder or st.edits_made <= 0
-            or st.verify_rounds >= _verify_max_rounds()
-            or not _verify_on_final_enabled()):
+    if plan_mode or builder or st.edits_made <= 0 or not _verify_on_final_enabled():
+        return None
+    if st.verify_rounds >= _verify_max_rounds():
+        # Out of fix rounds: no more send-backs, but the answer still says
+        # what the checks show (a run improving 9 → 5 → 2 used all three and
+        # then answered "all tests pass" with 2 red).
+        if getattr(st, "verify_capped_checked", False):
+            return None
+        st.verify_capped_checked = True
+        _vok, _vout = _run_project_verify(cwd)
+        _gaming.note_test_result(st, _vok)
+        if _vok is False:
+            try:
+                from aiforge_core.runtime.parallel_subtasks import _fail_count
+                _fails = _fail_count(_vout)
+            except Exception:  # noqa: BLE001
+                _fails = 1
+            yield {"type": "thought", "role": "system",
+                   "text": f"⚠ tests still failing ({_fails}) after "
+                           f"{st.verify_rounds} fix rounds — stopping with the honest state."}
+            step["text"] = still_failing_note(_fails, _vout) + (step.get("text") or "")
         return None
     yield {"type": "thought", "role": "system",
            "text": "⧗ running the project's checks before finishing…"}

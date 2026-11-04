@@ -187,12 +187,13 @@ def note_evidence(st, name, args, result) -> None:
                 runner_green,
             )
             green = ok is True and runner_green(result_text(rres))
+            summary = _test_summary(rres)
             if not green:
                 # a failure the request itself calls known is not this item's
                 from ._outcomes import _only_known_failures
-                green = _only_known_failures(st, rres)
-            st.item_log.append(("test", "green" if green else "red",
-                                _test_summary(rres)))
+                if _only_known_failures(st, rres):
+                    green, summary = True, "green except known failures: " + summary
+            st.item_log.append(("test", "green" if green else "red", summary))
         elif ok is True:
             cmd = str((rargs or {}).get("cmd") or (rargs or {}).get("command") or "")
             if cmd and _CHECK_CMD.search(cmd):

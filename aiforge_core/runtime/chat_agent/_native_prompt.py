@@ -56,8 +56,8 @@ expected), run the suite, and fix until it is green; if the repo has no \
 tests, run the code once the normal way. Do not write throwaway scripts to try the code. When the \
 request spells out names and signatures, use them exactly. When everything \
 the request asks for is done and its tests pass, stop: reply with a short \
-summary and no tool call (a test that already failed before your change is \
-not yours to fix unless the request asks).
+summary and no tool call (a test the request itself says already fails is \
+not yours to fix; a test that shows the bug you were asked to fix is).
 
 Run commands without piping them into tail, head or grep: run_command \
 already keeps the end of the output, and a pipe hides errors until the \

@@ -516,3 +516,4 @@ def test_a_red_run_whose_failures_the_request_calls_known_counts_green():
                                              "1 failed, 40 passed in 1s\n"}
     _items.note_evidence(st, "run_command", {"cmd": "python -m pytest -q"}, res)
     assert st.item_log and st.item_log[-1][1] == "green"
+    assert st.item_log[-1][2].startswith("green except known failures")
