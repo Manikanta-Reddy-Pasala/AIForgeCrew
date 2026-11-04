@@ -472,3 +472,31 @@ def test_out_of_fix_rounds_the_answer_still_says_the_checks_fail(monkeypatch, tm
     except StopIteration as e:
         assert e.value is None
     assert "still FAIL" in step["text"] and step["text"].endswith("all tests pass.")
+
+
+def test_a_capped_check_runs_again_after_new_edits_and_known_failures_pass(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from aiforge_core.runtime.chat_agent._turn import _outcomes
+    calls = []
+    out = {"v": (False, "FAILED t.py::T::test_lazy_load - x\n1 failed, 9 passed")}
+    monkeypatch.setattr(_outcomes, "_run_project_verify",
+                        lambda cwd: calls.append(1) or out["v"])
+    fp = {"v": "a"}
+    monkeypatch.setattr(_outcomes, "content_fingerprint", lambda cwd: fp["v"])
+    st = SimpleNamespace(last_green_fp=None, edits_made=3, verify_rounds=3, verify_prev_fails=1,
+                         verify_stalls=0, goal="(`t.py::T::test_lazy_load` already fails; ignore it)")
+
+    def run(text):
+        step = {"text": text}
+        g = _outcomes._verify_fix(st, step, str(tmp_path), False, None)
+        try:
+            while True:
+                next(g)
+        except StopIteration:
+            return step["text"]
+    assert run("Done.") == "Done."                 # only the known failure: no banner
+    assert run("Done.") == "Done." and len(calls) == 1   # same tree: not re-run
+    fp["v"] = "b"                                   # more edits after a send-back
+    out["v"] = (False, "FAILED t.py::a\n1 failed, 9 passed")
+    assert "still FAIL" in run("Fixed.") and len(calls) == 2

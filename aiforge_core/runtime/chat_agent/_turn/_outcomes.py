@@ -251,10 +251,13 @@ def _verify_fix(st, step, cwd, plan_mode, builder):
         # Out of fix rounds: no more send-backs, but the answer still says
         # what the checks show (a run improving 9 → 5 → 2 used all three and
         # then answered "all tests pass" with 2 red).
-        if getattr(st, "verify_capped_checked", False):
+        # once per code state: a later answer after more edits (a gaming
+        # send-back, say) is checked again; the same tree never twice
+        here = content_fingerprint(cwd) or f"edits:{st.edits_made}"
+        if getattr(st, "verify_capped_at", None) == here:
             return None
-        st.verify_capped_checked = True
-        _vok, _vout = _run_project_verify(cwd)
+        st.verify_capped_at = here
+        _vok, _vout = _verify_known_ok(st, *_run_project_verify(cwd))
         _gaming.note_test_result(st, _vok)
         if _vok is False:
             try:
@@ -269,7 +272,7 @@ def _verify_fix(st, step, cwd, plan_mode, builder):
         return None
     yield {"type": "thought", "role": "system",
            "text": "⧗ running the project's checks before finishing…"}
-    _vok, _vout = _run_project_verify(cwd)
+    _vok, _vout = _verify_known_ok(st, *_run_project_verify(cwd))
     _gaming.note_test_result(st, _vok)
     if _vok is not False:
         return None
@@ -310,6 +313,15 @@ def _verify_fix(st, step, cwd, plan_mode, builder):
     # 1 passed". The harness ran the checks itself, so it says what it saw.
     step["text"] = still_failing_note(_fails, _vout) + (step.get("text") or "")
     return None
+
+
+def _verify_known_ok(st, ok, out):
+    """``(ok, out)`` with a run whose only failures the request itself calls
+    known (``_only_known_failures``) counted as passing — the same verdict
+    the green fingerprint, the done watch and the item log give it."""
+    if ok is False and _only_known_failures(st, {"ok": False, "stdout": out}):
+        return True, out
+    return ok, out
 
 
 def still_failing_note(fails, output: str) -> str:
