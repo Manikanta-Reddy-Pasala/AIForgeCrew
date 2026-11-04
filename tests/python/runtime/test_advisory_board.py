@@ -57,4 +57,12 @@ def test_an_item_whose_last_test_run_is_red_is_accepted_unverified_and_named(mon
                          item_fresh_close=False, file_hashes={}, tree_hashes={}, tree_pending=False)
     res, ev = _items.review_progress(st, {"ok": True, "slug": "a", "status": "done"}, [])
     assert res["ok"] is True and board["a"]["status"] == "done"
-    assert "FAILED" in res["warning"] and "UNVERIFIED" in board["a"]["note"]
+    assert "FAILED" in res["warning"] and board["a"]["note"].startswith("UNVERIFIED")
+
+
+def test_a_done_verdict_this_finish_skips_reminders_for_the_request_parts():
+    from aiforge_core.runtime.chat_agent._turn import _tasks
+    board = {"part-1": {"title": "a", "status": "done", "from_request": True},
+             "part-2": {"title": "b", "status": "pending", "from_request": True},
+             "mine": {"title": "c", "status": "pending"}}
+    assert _tasks.open_planned(board) == ["mine"]

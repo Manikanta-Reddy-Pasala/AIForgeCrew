@@ -341,6 +341,7 @@ def gate(st, step, builder=None, strict_finish=False):
                    later=later, session_id=getattr(st, "session_id", None),
                    earlier=_earlier_request(st, goal))
     st.done_check_unfinished = said == "unfinished"
+    st.done_check_said = said
     if said != "unfinished" or not _budget_left(st, "done_check_nudges", _SEND_BACKS,
                                                    per_turn=_SEND_BACKS_TOTAL):
         return None

@@ -298,6 +298,7 @@ def review_progress(st, result: dict, events: list):
         facts = _facts(st, evs)
         status = item["status"]
         suffix = ""
+        status_head = None
         if status == "done" and verify_enabled():
             ok, why = _verdict(facts)
             if not ok:
@@ -311,7 +312,8 @@ def review_progress(st, result: dict, events: list):
                     # suite and does not let a red finish pass unnoted. (Not
                     # marked failed: "build, then verify" closes parts after a
                     # red run it has since fixed.)
-                    suffix = f" — UNVERIFIED: {why}"
+                    suffix = ""
+                    status_head = "UNVERIFIED"   # first: never cut by the note cap
                     result = {**result, "warning": (
                         f"accepted as done, but {why}. Make sure the full test run "
                         "before you finish is green.")}
@@ -334,7 +336,7 @@ def review_progress(st, result: dict, events: list):
                                "status": "failed"}]
                 else:
                     suffix = " — UNVERIFIED (accepted after retries)"
-        item["note"] = _note(facts, status, suffix)
+        item["note"] = _note(facts, status_head or status, suffix)
         item["files"] = list(facts.get("edited") or [])
         if not carried:
             st.item_prev_start = st.item_start

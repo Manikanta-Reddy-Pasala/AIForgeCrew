@@ -141,6 +141,11 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
     # long run must not stop to report half the work; bounded so a model
     # that cannot finish still exits.
     _left = open_for_final(st)
+    if getattr(st, "done_check_said", None) == "done":
+        # the done check judged this very reply done: the request's parts are
+        # its call (the close-out flips them); only the model's own items hold
+        from ._tasks import open_planned
+        _left = open_planned(st.board)
     if ((st.board_used or getattr(st, "board_touched", False)) and _left
             and not builder and not st.readonly_mode and board_nudge_allowed(st)):
         if step.get("text"):
@@ -429,6 +434,10 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
         except Exception:  # noqa: BLE001 — evidence never blocks an answer
             pass
         for _slug in _closing:
+            if _slug in st.board:
+                # the board says so too: the closing note and the next turn
+                # read the board, not the dock
+                st.board[_slug]["status"] = "done"
             yield {"type": "subtask_update", "slug": _slug, "status": "done",
                    **({"evidence": _evs[_slug]} if _slug in _evs else {})}
     _fire_stop("final", cwd)

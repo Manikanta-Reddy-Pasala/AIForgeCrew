@@ -122,6 +122,9 @@ def test_multiask_tracked_as_subtasks(tmp_path):
     # FINAL closes out the rest so nothing lingers pending
     assert ("part-2", "done") in ups
     assert ("part-3", "done") in ups
+    # and the answer does not say they are not done (the board agrees)
+    final = [e for e in evs if e["type"] == "message"][-1]["text"]
+    assert "Not done from the task list" not in final
 
 
 def test_multiask_single_question_untouched(tmp_path):

@@ -90,7 +90,8 @@ export function EvidenceCard({ items }: {
   const closed = items.filter(s => s.evidence && (s.status === 'done' || s.status === 'failed'));
   const [open, setOpen] = useState<Record<string, boolean>>({});
   if (closed.length === 0) return null;
-  const weak = closed.filter(s => s.evidence!.note || s.status === 'failed').length;
+  const weak = closed.filter(s => s.evidence!.note || s.status === 'failed'
+                               || /^UNVERIFIED/.test(s.evidence!.verdict || '')).length;
   return (
     <div className="evidence-card" style={{ marginTop: 8, padding: '6px 10px', border: '1px solid var(--border-1)',
                                             borderRadius: 6, background: 'var(--bg-1)' }}>
