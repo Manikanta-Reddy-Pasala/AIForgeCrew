@@ -282,8 +282,8 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     return {"ok": False, "error": "would_discard_own_edits", "files": shown,
             "hint": ("This command would throw away your own edits from this turn "
                      f"to: {', '.join(shown)}. Do not start over — if an edit broke "
-                     "a file, fix it with file_patch, or use editor undo_edit for the "
-                     "last edit. Only if you really mean to discard that work, send "
+                     "a file, fix that part with file_patch or multi_edit. Only if "
+                     "you really mean to discard that work, send "
                      "the same command again with \"discard\": true.")}
 
 

@@ -564,8 +564,8 @@ def render(items: list, cleanup: list) -> str:
         lines += [text_of(e) for e in shown]
         if hidden:
             lines.append(f"({hidden} earlier action{'s' if hidden != 1 else ''} not "
-                         'shown; session_actions {"limit": 100} lists them, '
-                         '{"failed_only": true} only the failures)')
+                         'shown; tool_help {"name": "session_actions"} adds the '
+                         'tool that lists them)')
         if changed:
             # The 25-action window let 190 shell commands push a run's own
             # early edits out: after a condense it went looking for code it

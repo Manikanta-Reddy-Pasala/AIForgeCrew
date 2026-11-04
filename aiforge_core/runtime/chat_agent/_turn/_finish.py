@@ -142,8 +142,7 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
     # that cannot finish still exits.
     _left = open_for_final(st)
     if ((st.board_used or getattr(st, "board_touched", False)) and _left
-            and not builder and not st.readonly_mode and board_nudge_allowed(st)
-            and finish_budget_left(st)):
+            and not builder and not st.readonly_mode and board_nudge_allowed(st)):
         if step.get("text"):
             yield {"type": "thought", "text": step["text"]}
         yield {"type": "thought", "role": "system",
@@ -666,10 +665,11 @@ def _acted_mark(st):
 #: end on the first text reply; SWE-agent reviews a submit once). Safety
 #: gates (rule breaks, false claims, running jobs, builder, a reply that only
 #: announces its next step) keep their own.
-_SHARED_GATES = frozenset({"contract_nudges", "done_check_nudges", "board_nudges",
-                           "verify_rounds"})
-# (not "do what you said": a reply that only announces the next step is not
-# an answer at all, whatever the budget)
+_SHARED_GATES = frozenset({"contract_nudges", "done_check_nudges"})
+# Not shared: the verify fix loop (measured, its own rounds), the board gate
+# (its reminders come back as items close — a long workflow turn that edits
+# no file still needs them) and "do what you said" (a reply that only
+# announces the next step is not an answer at all).
 #: Edits that make a later finish a new attempt (the budget refills).
 _REFILL_EDITS = 3
 

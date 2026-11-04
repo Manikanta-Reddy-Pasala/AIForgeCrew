@@ -23,11 +23,11 @@ def test_the_finish_gates_share_two_send_backs_that_refill_after_real_work(monke
     st = SimpleNamespace(edits_made=1)
     assert _finish._budget_left(st, "contract_nudges", 9)
     assert _finish._budget_left(st, "done_check_nudges", 9)
-    assert not _finish._budget_left(st, "board_nudges", 9)       # shared: spent
-    assert _finish._budget_left(st, "toolless_retries", 9)       # not a content gate
-    assert _finish._budget_left(st, "intent_nudges", 9)          # an announcement is never an answer
+    assert not _finish._budget_left(st, "contract_nudges", 9)    # shared: spent
+    for own in ("board_nudges", "verify_rounds", "intent_nudges", "toolless_retries"):
+        assert _finish._budget_left(st, own, 9), own              # keep their own bounds
     st.edits_made = 1 + _finish._REFILL_EDITS                    # real work since
-    assert _finish._budget_left(st, "board_nudges", 9)
+    assert _finish._budget_left(st, "done_check_nudges", 9)
 
 
 def test_the_advisory_item_close_is_accepted_with_a_warning(monkeypatch, tmp_path):
@@ -43,3 +43,18 @@ def test_the_advisory_item_close_is_accepted_with_a_warning(monkeypatch, tmp_pat
     res, ev = _items.review_progress(st, {"ok": True, "slug": "a", "status": "done"}, [])
     assert res["ok"] is True and board["a"]["status"] == "done"
     assert "accepted as done" in res.get("warning", "")
+
+
+def test_an_item_whose_last_test_run_is_red_is_marked_failed_without_a_round_trip(monkeypatch, tmp_path):
+    from aiforge_core.runtime.chat_agent._turn import _items
+    monkeypatch.delenv("AIFORGE_CHAT_BOARD_STRICT", raising=False)
+    board = {s: {"title": s, "status": "running"} for s in ("a", "b", "c")}
+    board["a"]["status"] = "done"
+    st = SimpleNamespace(board=board, cwd=str(tmp_path), readonly_mode=False, builder=None,
+                         item_log=[("test", "red", "1 failed")], item_seen={}, item_start=0,
+                         item_prev_start=None, item_rejects={}, item_reset_pending=False,
+                         item_resets=0, item_last_closed=None, item_fresh_close=False,
+                         file_hashes={}, tree_hashes={}, tree_pending=False)
+    res, ev = _items.review_progress(st, {"ok": True, "slug": "a", "status": "done"}, [])
+    assert res["ok"] is True and board["a"]["status"] == "failed"
+    assert ev and ev[0]["status"] == "failed"
