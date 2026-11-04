@@ -907,3 +907,18 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     st.want_force_write = False
     st.convo.append({"role": "user", "content": f"OBSERVATION: {obs}{_tail}"})
     return None
+
+
+def _discard_gate(st, name, args, cwd):
+    """A shell command that would throw away this turn's own edits (an
+    `rm core.py` / `git checkout .` reset mid-run) is refused before any
+    approval is asked. Returns "continue" when refused."""
+    from ._discard_guard import refusal
+    gone = refusal(st, name, args, cwd)
+    if gone is None:
+        return None
+    yield {"type": "thought", "role": "system",
+           "text": "⛔ refused a command that would discard this turn's own edits"}
+    yield {"type": "tool", "name": name, "args": args, "result": gone}
+    st.convo.append({"role": "user", "content": f"OBSERVATION: {json.dumps(gone)}"})
+    return "continue"
