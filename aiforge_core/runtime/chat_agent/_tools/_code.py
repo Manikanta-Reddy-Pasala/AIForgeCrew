@@ -66,13 +66,14 @@ def _widen(s: int, e: int, n: int) -> "tuple[int, int, bool]":
 
     A benchmark run read files 40 lines at a time (median): models.py 15
     times, inventory.py 13 — a model call each. OpenCode reads a file whole
-    (up to 2,000 lines). OFF by default until measured: the one benchmark
-    run with it on (fid8) stalled in a debug loop where the same build
-    without it scored 52/60 — not yet told apart from run-to-run variance.
-    Env AIFORGE_CHAT_READ_WHOLE_LINES (e.g. 400) and
-    AIFORGE_CHAT_READ_MIN_LINES (e.g. 200) turn it on."""
+    (up to 2,000 lines). On big repos the gap was the read count: sqlglot,
+    AIForge 216 reads (median 40 lines) in 612 steps vs OpenCode 88 in 429,
+    same speed per step. So a range shorter than READ_MIN_LINES (200) is
+    widened by default. Whole small files (READ_WHOLE_LINES) stay off by
+    default: the one run with them on (fid8) stalled, not yet told apart
+    from variance. Env AIFORGE_CHAT_READ_MIN_LINES / _WHOLE_LINES; 0 = off."""
     whole, least = (_read_env("AIFORGE_CHAT_READ_WHOLE_LINES", 0),
-                    _read_env("AIFORGE_CHAT_READ_MIN_LINES", 0))
+                    _read_env("AIFORGE_CHAT_READ_MIN_LINES", 200))
     if whole and n <= whole:
         return 1, n, (s, e) != (1, n)
     if least and e - s + 1 < least:
