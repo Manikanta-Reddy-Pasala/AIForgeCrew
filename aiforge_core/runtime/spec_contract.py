@@ -93,10 +93,10 @@ _TRANSFORM_VERB = re.compile(r"\b(?:rename[sd]?|move[sd]?|replace[sd]?|merge[sd]
 _TARGET_PREP = re.compile(r"\b(?:to|into|with|onto|by)\b", re.I)
 #: Between a removal verb and its object only these may stand.
 _OBJ_FILLER = re.compile(
-    r"^(?:\s+|the|a|an|old|older|legacy|deprecated|unused|obsolete|existing|current|"
-    r"previous|v\d+|function|functions|method|methods|class|classes|module|modules|"
-    r"file|files|helper|helpers|alias|aliases|attribute|attributes|field|fields|"
-    r"calls?\s+to|uses?\s+of|support\s+for|any|all|both|[,:(])*$", re.I)
+    r"^(?:\s|[,:(]|\b(?:the|a|an|old|older|legacy|deprecated|unused|obsolete|existing|"
+    r"current|previous|v\d+|function|functions|method|methods|class|classes|module|"
+    r"modules|file|files|helper|helpers|alias|aliases|attribute|attributes|field|fields|"
+    r"calls?\s+to|uses?\s+of|support\s+for|any|all|both)\b)*$", re.I)
 #: "remove the v1 client methods, i.e. `a`", "remove the old helpers: `a`":
 #: a short noun phrase, then the list it names.
 _NAMED_LIST = re.compile(r"[\w\s-]{0,50}(?:,?\s*i\.e\x00|:)\s*", re.I)
@@ -148,7 +148,8 @@ def _gone_names(request: str) -> set:
             # "rename `a` to `b` and `c` to `d`" — `c` is a source again
             if mode[i - 1] == "rm":
                 mode[i], gone[i] = "rm", True
-            elif mode[i - 1] == "dst" and _TARGET_PREP.match(nxt_gap.strip()):
+            elif mode[i - 1] == "dst" and re.fullmatch(
+                    r"\s*(?:to|into|with|onto|by)\s*", nxt_gap, re.I):
                 mode[i], gone[i] = "src", True
             elif mode[i - 1] == "src":
                 mode[i], gone[i] = "src", True
@@ -391,10 +392,12 @@ def _guard_only(test) -> bool:
         return True
     if isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING":
         return True
-    return (isinstance(test, ast.Compare) and isinstance(test.left, ast.Name)
-            and test.left.id == "__name__" and len(test.comparators) == 1
-            and isinstance(test.comparators[0], ast.Constant)
-            and test.comparators[0].value == "__main__")
+    if not (isinstance(test, ast.Compare) and len(test.comparators) == 1
+            and isinstance(test.ops[0], ast.Eq)):
+        return False
+    sides = [test.left, test.comparators[0]]
+    return (any(isinstance(x, ast.Name) and x.id == "__name__" for x in sides)
+            and any(isinstance(x, ast.Constant) and x.value == "__main__" for x in sides))
 
 
 def _top_level(body) -> list:
@@ -405,6 +408,10 @@ def _top_level(body) -> list:
         out.append(node)
         if isinstance(node, ast.If) and _guard_only(node.test):
             out += _top_level(node.orelse)   # typing-only / script body: not exports
+            continue
+        if isinstance(node, ast.If) and isinstance(node.test, ast.UnaryOp) \
+                and isinstance(node.test.op, ast.Not) and _guard_only(node.test.operand):
+            out += _top_level(node.body)     # `if not TYPE_CHECKING:` runs; else is typing
             continue
         if isinstance(node, (ast.If, ast.Try, ast.With)):
             for part in ("body", "orelse", "finalbody"):
@@ -476,23 +483,44 @@ def _module_names(module: list, ix: "_Index"):
 _NOT_SOURCE_DIRS = {"tests", "test", "fixtures", "examples", "docs", "doc", "testdata"}
 
 
-def _file_under(root: str, path: str) -> bool:
-    """``path`` exists under ``root`` as written, or deeper as a package path
-    (`commands/export.py` is src/mytool/commands/export.py) — never a
-    same-named file in tests/fixtures/docs. Bounded walk."""
-    rel = path[2:] if path.startswith("./") else path
-    if os.path.isfile(os.path.join(root, rel)):
-        return True
-    want = "/" + rel.replace(os.sep, "/")
-    walked = 0
-    for d, dirs, files in os.walk(root):
-        dirs[:] = [x for x in dirs if x not in _SKIP_DIRS and not x.startswith(".")
-                   and x not in _NOT_SOURCE_DIRS]
+def _all_files(ix) -> "list | None":
+    """Every file path under the index root ("/"-joined, relative), walked once
+    per index; None when the tree is too big to list."""
+    got = getattr(ix, "_files", False)
+    if got is not False:
+        return got
+    out, walked = [], 0
+    for d, dirs, files in os.walk(ix.root):
+        dirs[:] = [x for x in dirs if x not in _SKIP_DIRS and not x.startswith(".")]
         for f in files:
             walked += 1
             if walked > MAX_WALK:
-                return True          # too big to tell: never a false gap
-            if os.path.join(d, f).replace(os.sep, "/").endswith(want):
+                ix._files = None
+                return None
+            out.append(os.path.relpath(os.path.join(d, f), ix.root).replace(os.sep, "/"))
+    ix._files = out
+    return out
+
+
+def _file_under(ix, path: str) -> bool:
+    """``path`` exists under the root as written, or deeper as a package path
+    (`commands/export.py` is src/mytool/commands/export.py) — never a
+    same-named file in a tests/fixtures/docs folder the path does not name."""
+    root = ix.root
+    rel = path[2:] if path.startswith("./") else path
+    if os.path.isfile(os.path.join(root, rel)):
+        return True
+    files = _all_files(ix)
+    if files is None:             # too big to list: as written or one level down
+        try:
+            return any(os.path.isfile(os.path.join(root, d, rel)) for d in os.listdir(root))
+        except OSError:
+            return True
+    own = set(rel.split("/")[:-1])
+    for f in files:
+        if f.endswith("/" + rel):
+            extra = f[:-len(rel) - 1].split("/")
+            if not (set(extra) & (_NOT_SOURCE_DIRS - own)):
                 return True
     return False
 
@@ -500,7 +528,7 @@ def _file_under(root: str, path: str) -> bool:
 def _check(c: dict, ix: _Index, declared: set) -> "str | None":
     k = c["kind"]
     if k == "file":
-        return None if _file_under(ix.root, c["path"]) else f"{c['path']} does not exist"
+        return None if _file_under(ix, c["path"]) else f"{c['path']} does not exist"
     if k in ("method", "member"):
         if c["cls"] not in ix.classes:
             if c["cls"] in ix.imported or c["cls"] not in declared:

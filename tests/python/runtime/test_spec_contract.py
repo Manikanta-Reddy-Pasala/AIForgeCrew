@@ -563,3 +563,45 @@ def test_the_model_can_waive_a_wrong_gap(tmp_path):
     assert "Cart.total" in st.contract_gaps[0]
     _drain(G.gate(st, {"text": "Done.\nnot required: Cart.total"}))
     assert st.contract_gaps == []
+
+
+# fourth review
+
+def test_a_padded_table_row_does_not_hang_the_gone_rules():
+    import time
+    t0 = time.monotonic()
+    S.claims("| `old_total()` | remove" + " " * 40 + "| `new_total()` |")
+    assert time.monotonic() - t0 < 1
+
+
+def test_a_purpose_to_after_a_new_name_keeps_it_claimed():
+    assert "new_b(y, *, z=1)" in _texts(
+        "Replace `old()` with `new_a(x, *, z=1)` and `new_b(y, *, z=1)` to support it.")
+
+
+def test_a_waiver_must_name_a_gap_exactly(tmp_path):
+    (tmp_path / "m.py").write_text("class Cache:\n    pass\n")
+    st = SimpleNamespace(goal="Add `Cache.get_all(self, *, n=1)`.", cwd=str(tmp_path),
+                         convo=[], edits_made=1, steers=[])
+    for prose in ("is it not required: no, it is", "not required: get", "not required: a"):
+        _drain(G.gate(st, {"text": prose}))
+        assert st.contract_gaps, prose
+    _drain(G.gate(st, {"text": "not required: Cache.get_all"}))
+    assert st.contract_gaps == [] and st.contract_checked == 0
+
+
+def test_a_tests_path_the_request_names_is_found_deeper(tmp_path):
+    d = tmp_path / "backend" / "tests"
+    d.mkdir(parents=True)
+    (d / "test_export.py").write_text("")
+    assert S.missing("Add `tests/test_export.py`.", str(tmp_path)) == []
+
+
+def test_not_type_checking_body_is_exported_and_its_else_is_not(tmp_path):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "mod.py").write_text("from typing import TYPE_CHECKING\nif not TYPE_CHECKING:\n"
+                                "    A = dict\nelse:\n    from ._t import B\n")
+    assert S.missing("Use `pkg.mod.A` and `pkg.mod.B`.", str(tmp_path)) == [
+        "pkg.mod.B is not defined"]

@@ -45,14 +45,33 @@ def _gaps(st, cached: bool = True) -> list:
     return gaps
 
 
-_WAIVE = re.compile(r"not required:\s*`?([A-Za-z_][\w./]*)", re.I)
+_WAIVE = re.compile(r"not required:\s*`?(\.?/?[A-Za-z_][\w./-]{2,})", re.I)
+_NAME = re.compile(r"[A-Za-z_][\w./-]*")
 
 
-def _note_waivers(st, text: str) -> None:
+def _gap_names(gap: str) -> set:
+    """The names a gap line is about: "Cart.total is missing" → {Cart.total,
+    total}; never its own words."""
+    out = set()
+    for t in _NAME.findall(gap):
+        t = t.rstrip(".")
+        if t.lower() in _GAP_WORDS or len(t) < 3:
+            continue
+        out.add(t)
+        if "." in t and not t.endswith(".py"):
+            out.add(t.rsplit(".", 1)[-1])
+    return out
+
+
+def _note_waivers(st, text: str, gaps: "list | None" = None) -> None:
     """``not required: Cart.legacy_tax`` in an answer: the model says the
-    request means that name must not exist. The check is a text heuristic —
-    a wrong gap costs one line, not six send-backs."""
-    names = {m.group(1).rstrip(".") for m in _WAIVE.finditer(text or "")}
+    request means that name must not exist. Only a name some current gap is
+    exactly about counts ("no", "a", "get" waive nothing they are not)."""
+    names = {m.group(1).rstrip(".").lstrip("./") or m.group(1) for m in _WAIVE.finditer(text or "")}
+    if not names:
+        return
+    known = set().union(*(_gap_names(g) for g in (gaps or []))) if gaps else set()
+    names &= known
     if names:
         st.contract_waived = set(getattr(st, "contract_waived", None) or ()) | names
 
@@ -61,7 +80,7 @@ def _waived(st, gaps: list) -> list:
     w = getattr(st, "contract_waived", None) or ()
     if not w:
         return gaps
-    return [g for g in gaps if not any(n in g for n in w)]
+    return [g for g in gaps if not (_gap_names(g) & set(w))]
 
 
 def _checked(st) -> int:
@@ -96,10 +115,13 @@ def gate(st, step, builder=None, strict_finish=False):
         return None
     if not getattr(st, "edits_made", 0):
         return None          # a question, a review: nothing was built
-    _note_waivers(st, step.get("text") or "")
-    gaps = _waived(st, _gaps(st))
+    found = _gaps(st)
+    _note_waivers(st, step.get("text") or "", found)
+    gaps = _waived(st, found)
     st.contract_gaps = gaps
-    st.contract_checked = _checked(st)
+    # A waived gap is the model's word, not a pass: the model done check
+    # (which skips a run whose names all checked out) still runs.
+    st.contract_checked = 0 if len(gaps) < len(found) else _checked(st)
     if not gaps:
         return None
     from ._finish import _budget_left
