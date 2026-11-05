@@ -614,18 +614,16 @@ def make_native_complete_fn(mode: str = "act", builder: str = "",
                 degraded[0] = True
                 return client.complete(role, convo)
         if _thought_out(msg):
-            # The whole reply length went on reasoning: no answer, no call
-            # (a reasoning model late in a long chat, little room left). Ask
-            # once more with reasoning off, so the room goes to the answer.
-            log.info("reply spent on reasoning (finish=length) → retry, reasoning off")
-            try:
-                from aiforge_core.llm import reasoning as _reasoning
-                with _reasoning.forced_off():
-                    again = client.complete_raw(role, msgs, tools=send, tool_choice=choice)
-                if not _thought_out(again):
-                    msg = again
-            except Exception as exc:  # noqa: BLE001 — keep the first reply
-                log.debug("answer-only retry failed: %s", exc)
+            # The window's free part went on reasoning: no answer, no call (a
+            # reasoning model late in a long chat). Condense this role earlier
+            # from now on; the empty step makes the loop shrink the history to
+            # the new line and ask again, with room to answer. A forced final
+            # stays forced for that retry.
+            log.info("reply spent on reasoning (finish=length) → condense earlier, ask again")
+            from ._context._window import note_reasoning_room
+            note_reasoning_room(role)
+            if choice == "none":
+                _FORCE_FINAL.add(session_id)
         _log_native_step(msg.get("tool_calls") or [])
         step = _synth_step(msg)
         if step == _NATIVE_ARGS_UNRECOVERABLE:
