@@ -1,20 +1,14 @@
-"""AIFORGE_CHAT_TEST_RULE=bounded swaps the 'fix until green' testing rule for
-one that reports a failure after two focused attempts (A/B switch)."""
+"""The native rules: OpenCode-style short testing rule (verify with the
+repo's tests, report a failure still there after two focused attempts) and
+tests of removed code may go — bench runs chased 'green' to the cap and kept
+tests the request let go alive (click 0/37)."""
 from aiforge_core.runtime.chat_agent import _native_prompt as P
 
 
-def test_the_default_rule_is_unchanged_and_the_variant_swaps_it(monkeypatch):
-    monkeypatch.delenv("AIFORGE_CHAT_TEST_RULE", raising=False)
-    full = P.native_rules("/r")
-    assert P._TESTS_FULL in full and P._TESTS_BOUNDED not in full
-    monkeypatch.setenv("AIFORGE_CHAT_TEST_RULE", "bounded")
-    bounded = P.native_rules("/r")
-    assert P._TESTS_BOUNDED in bounded and P._TESTS_FULL not in bounded
-
-
-def test_tests_the_request_lets_go_are_deleted_not_kept_alive():
-    """click: 'tests for the old _bashcomplete module, which you may delete'
-    — runs that kept them alive (deprecation filters, old API patched)
-    scored 0/37; runs that left them alone scored 16-20."""
+def test_the_rules_bound_test_chasing_and_let_removed_code_tests_go():
     rules = P.native_rules("/r")
-    assert "unless the request itself says those tests may go" in rules
+    assert "after two focused attempts is reported in the answer" in rules
+    assert "except tests of code the request removes or replaces" in rules
+    assert "Never weaken or delete a test" in rules and "correct that test" in rules
+    assert "use exactly those" in rules and "FINAL:" in rules and "ASK:" in rules
+    assert "fix until it is green" not in rules

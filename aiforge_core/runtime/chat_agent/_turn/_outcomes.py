@@ -236,9 +236,9 @@ def _verify_fix(st, step, cwd, plan_mode, builder):
     Returns continue or None."""
     # A + B: enforced verify→fix on FINAL (progress-gated). Only for an
     # act-mode run that actually EDITED files with a real test suite —
-    # a Q&A turn (0 edits) or read-only plan mode is untouched. Keep
-    # looping while the failure count DROPS; once it stalls (2 rounds no
-    # improvement) accept the HONEST still-failing final rather than
+    # a Q&A turn (0 edits) or read-only plan mode is untouched. Up to
+    # _verify_max_rounds() fix rounds (1 by default) while the failure count
+    # drops; then the HONEST still-failing final is accepted rather than
     # churn. Opt out: AIFORGE_CHAT_VERIFY_ON_FINAL=0.
     # The agent already ran the whole suite green and the tree's content
     # has not changed since: running it again is the triple test run.
@@ -249,8 +249,8 @@ def _verify_fix(st, step, cwd, plan_mode, builder):
         return None
     if st.verify_rounds >= _verify_max_rounds():
         # Out of fix rounds: no more send-backs, but the answer still says
-        # what the checks show (a run improving 9 → 5 → 2 used all three and
-        # then answered "all tests pass" with 2 red).
+        # what the checks show (a run improving 9 → 5 → 2 used all its rounds
+        # and then answered "all tests pass" with 2 red).
         # once per code state: a later answer after more edits (a gaming
         # send-back, say) is checked again; the same tree never twice
         here = content_fingerprint(cwd) or f"edits:{st.edits_made}"
