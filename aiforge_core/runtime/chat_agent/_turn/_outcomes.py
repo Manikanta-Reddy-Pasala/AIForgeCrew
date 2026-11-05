@@ -334,12 +334,14 @@ def _project_verify(st, cwd):
         from aiforge_core.runtime import git_target
         base = git_target.command_base(getattr(st, "cwd", None) or cwd) or cwd
         if not _whole_suite(cmd or "", base):
-            return ok, out            # a narrower run cannot stand for the tree
+            # a narrower run cannot stand for the tree; a runner that cannot
+            # run this suite on the original code either has no verdict
+            return (None, out) if _runner_broken_at_base(st, cwd) else (ok, out)
         own = own_test_verdict(st)
     except Exception:  # noqa: BLE001 — the runner's verdict stands
         return ok, out
     if own is None:
-        return ok, out
+        return (None, out) if _runner_broken_at_base(st, cwd) else (ok, out)
     green, own_out = own
     if not green:
         return False, own_out
@@ -355,6 +357,45 @@ def _project_verify(st, cwd):
     # (the python runner it stands in for runs this lint leg only, no
     # tsc / go vet gate)
     return True, own_out
+
+
+_BROKEN_AT_BASE: dict = {}
+
+
+def _runner_broken_at_base(st, cwd) -> bool:
+    """The harness's project runner cannot run this repo's tests on the
+    original code either (no counts, a collection error there too): its
+    'could not run' says nothing about the turn's edits, so the finish has no
+    verdict instead of a false "checks still FAIL" (sqlglot: a pytest
+    deprecation warning breaks the runner's collection; a 6/6 feature answer
+    went out with that note). Checked once per repo and base commit, on a
+    throwaway git worktree; a broken conftest the turn wrote still fails."""
+    import subprocess
+    import tempfile
+    from aiforge_core.runtime import repo_ident
+    top = repo_ident.git_toplevel(cwd)
+    if not top:
+        return False
+    rev = getattr(st, "dw_base_rev", None) or "HEAD"
+    key = (top, rev)
+    if key in _BROKEN_AT_BASE:
+        return _BROKEN_AT_BASE[key]
+    broken = False
+    tmp = tempfile.mkdtemp(prefix="af-runner-base-")
+    try:
+        r = subprocess.run(["git", "-C", top, "worktree", "add", "--detach", tmp, rev],
+                           capture_output=True, text=True, timeout=60)
+        if r.returncode == 0:
+            from aiforge_core.runtime.parallel_subtasks import _fail_count
+            ok, out = _run_project_verify(tmp)
+            broken = ok is False and _fail_count(out) == 999 and not lint_only(out)
+    except Exception:  # noqa: BLE001 — unknown: keep the runner's verdict
+        broken = False
+    finally:
+        subprocess.run(["git", "-C", top, "worktree", "remove", "--force", tmp],
+                       capture_output=True, text=True, timeout=60)
+    _BROKEN_AT_BASE[key] = broken
+    return broken
 
 
 _TOP_TESTS = frozenset({"tests", "test", "testing", "."})

@@ -23,6 +23,13 @@ def activity(monkeypatch):
     return state
 
 
+
+@pytest.fixture(autouse=True)
+def _boot_long_ago(monkeypatch):
+    """These tests are about runs and chat activity, not a fresh server."""
+    from aiforge_core.runtime import compact_idle
+    monkeypatch.setattr(compact_idle, "_BOOT", 0.0)
+
 def test_idle_means_no_run_no_recent_chat_no_ticket(monkeypatch):
     from aiforge_core.runtime import chat_runs
     assert ci.user_active() is False
@@ -136,3 +143,12 @@ def test_the_full_refold_resumes_steps_and_stops_between_them(monkeypatch):
     out = migrations.force_recompact_all(checkpoint=cp)
     assert out["stopped"] is True
     assert ran == ["compact-topic"]                    # done steps skipped, then paused
+
+
+
+def test_a_server_that_just_started_is_not_idle(monkeypatch):
+    """A bench turn shared the model with a 29-call memory re-fold fired at boot."""
+    import time
+    from aiforge_core.runtime import compact_idle
+    monkeypatch.setattr(compact_idle, "_BOOT", time.time())
+    assert compact_idle.user_active()

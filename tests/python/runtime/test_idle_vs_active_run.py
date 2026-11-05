@@ -11,6 +11,8 @@ Found live, not by reading: a team run for session 11 was calling tools at
 """
 from __future__ import annotations
 
+import pytest
+
 import time
 
 from aiforge_core.runtime import chat_runs
@@ -21,6 +23,13 @@ def _fresh_registry(monkeypatch):
     monkeypatch.setattr(chat_runs, "_RUNS", {})
     monkeypatch.setattr(chat_runs, "_LAST_ACTIVITY", [0.0])
 
+
+
+@pytest.fixture(autouse=True)
+def _boot_long_ago(monkeypatch):
+    """These tests are about runs and chat activity, not a fresh server."""
+    from aiforge_core.runtime import compact_idle
+    monkeypatch.setattr(compact_idle, "_BOOT", 0.0)
 
 def test_publishing_an_event_counts_as_activity(monkeypatch):
     _fresh_registry(monkeypatch)

@@ -58,9 +58,19 @@ def _tickets_in_progress() -> bool:
         return False
 
 
+#: When this process started: a server that just came up has seen no chat
+#: yet, which is not the same as idle — the user who restarted it is about
+#: to send one (a bench run's turn shared the model with a 29-call memory
+#: re-fold that fired at boot).
+_BOOT = time.time()
+
+
 def user_active() -> bool:
     """Someone is using AIForge: a chat run in flight, chat activity within the
-    idle window, or a ticket being worked."""
+    idle window, the server started within that window, or a ticket being
+    worked."""
+    if time.time() - _BOOT < idle_after_s():
+        return True
     try:
         from aiforge_core.runtime import chat_runs
         if chat_runs.any_active():

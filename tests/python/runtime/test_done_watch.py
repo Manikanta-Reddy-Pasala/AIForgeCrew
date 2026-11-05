@@ -244,8 +244,9 @@ def test_the_finish_check_falls_back_to_the_turns_own_command_when_the_runner_ca
                                         "def test_b():\n    assert True\n")
     ok, out = _outcomes._project_verify(st, str(tmp_path))
     assert ok is False and "FAILED" in out                # broken by the turn
-    st.last_full_test = None                              # no own command: the runner
-    assert _outcomes._project_verify(st, str(tmp_path))[0] is False
+    st.last_full_test = None             # no own command, runner broken at base too
+    monkeypatch.setattr(_outcomes, "_BROKEN_AT_BASE", {})
+    assert _outcomes._project_verify(st, str(tmp_path))[0] is None   # unknown, not FAIL
     monkeypatch.setattr(_outcomes, "_run_project_verify",   # the runner ran tests: it stands
                         lambda cwd: (False, "FAILED t.py::x\n1 failed, 9 passed"))
     st.last_full_test = ("run_command", {"cmd": f"cd {tmp_path} && true"})
@@ -334,3 +335,23 @@ def test_carried_targets_unverified_closes_and_a_red_full_run_do_not_end_the_tur
     assert not W.board_done(SimpleNamespace(**base, board=unv, board_touched=True))
     assert not W.board_done(SimpleNamespace(**base, board=two, board_touched=True,
                                             last_full_test=("run_command", {}), tests_green=None))
+
+
+def test_a_runner_that_cannot_run_the_original_suite_either_has_no_verdict(tmp_path, monkeypatch):
+    """sqlglot: the runner cannot collect the suite (a deprecation warning);
+    the model ran one test file; a 6/6 answer got 'checks still FAIL'."""
+    _git_repo(tmp_path, {"test_a.py": "def test_ok():\n    assert True\n"})
+    monkeypatch.setattr(_outcomes, "_BROKEN_AT_BASE", {})
+    monkeypatch.setattr(_outcomes, "_run_project_verify",
+                        lambda cwd: (False, "ImportError while loading conftest"))
+    st = SimpleNamespace(cwd=str(tmp_path), goal="x", last_full_test=(
+        "run_command", {"cmd": "pytest tests/test_a.py"}))       # narrower than the suite
+    ok, out = _outcomes._project_verify(st, str(tmp_path))
+    assert ok is None                                          # unknown, not FAIL
+    monkeypatch.setattr(_outcomes, "_BROKEN_AT_BASE", {})
+    calls = []
+    def runner(cwd):
+        calls.append(cwd)
+        return (True, "3 passed") if len(calls) == 2 else (False, "ImportError while loading conftest")
+    monkeypatch.setattr(_outcomes, "_run_project_verify", runner)
+    assert _outcomes._project_verify(st, str(tmp_path))[0] is False   # fine at base: the edit broke it
