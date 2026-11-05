@@ -10,8 +10,10 @@ in an earlier session"), and the run ended at 3/25. The discard guard covers
 Refused, when ``file_write`` / ``file_create`` replaces a file a tool of THIS
 turn already wrote (``st.file_hashes``) and the new content drops at least
 ``_MIN_LOST`` of the lines the file gained since its committed version.
-The model can make the change with file_patch / multi_edit, or send the same
-write again with ``"force": true`` when dropping them is what it means. Off
+A file new this turn (not in HEAD) is not guarded: rewriting one's own draft
+is normal. The model can make the change with file_patch / multi_edit, or send
+the same write again with ``"drop_edits": true`` when dropping them is what it
+means (its own key: file_write's ``force`` also skips the syntax check). Off
 switch: ``AIFORGE_CHAT_REWRITE_GUARD=0``.
 """
 from __future__ import annotations
@@ -62,12 +64,13 @@ def lost_lines(before: str, now: str, new: str) -> list:
 def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     if name not in _WRITE_TOOLS or not _on() or not isinstance(args, dict):
         return None
-    if args.get("force") is True or str(args.get("force")).lower() == "true":
+    if args.get("drop_edits") is True or str(args.get("drop_edits")).lower() == "true":
         return None
     path = str(args.get("path") or "")
     content = args.get("content")
     if not path or not isinstance(content, str):
         return None
+    path = os.path.expanduser(path)
     full = os.path.realpath(path if os.path.isabs(path) else os.path.join(cwd or ".", path))
     edited = {os.path.realpath(p) for p in (getattr(st, "file_hashes", None) or {})}
     if full not in edited or not os.path.isfile(full):
@@ -78,8 +81,8 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     except OSError:
         return None
     before = _committed(full)
-    if before is None:
-        return None
+    if not before:
+        return None                   # outside git, or new this turn: a draft
     lost = lost_lines(before, now, content)
     if len(lost) < _MIN_LOST:
         return None
@@ -90,4 +93,4 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
                      f"{path} earlier in this turn"
                      + (f" (including {', '.join(defs)})" if defs else "")
                      + ". Make the change with file_patch or multi_edit instead, or send "
-                     "the same write with \"force\": true if dropping them is intended.")}
+                     "the same write with \"drop_edits\": true if dropping them is intended.")}

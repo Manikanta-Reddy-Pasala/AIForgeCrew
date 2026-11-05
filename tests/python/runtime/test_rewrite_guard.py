@@ -28,7 +28,8 @@ def test_a_rewrite_from_the_original_is_refused_and_force_lets_it_through(tmp_pa
     args = {"path": "parser.py", "content": ORIG + "line_new = 1\n"}
     res = R.refusal(st, "file_write", args, str(tmp_path))
     assert res and res["error"] == "rewrite_drops_your_edits" and "parse_trigger_0" in res["hint"]
-    assert R.refusal(st, "file_write", {**args, "force": True}, str(tmp_path)) is None
+    assert R.refusal(st, "file_write", {**args, "drop_edits": True}, str(tmp_path)) is None
+    assert R.refusal(st, "file_write", {**args, "force": True}, str(tmp_path))  # not its key
 
 
 def test_a_rewrite_that_keeps_the_turns_lines_or_a_file_not_edited_passes(tmp_path):
@@ -37,4 +38,12 @@ def test_a_rewrite_that_keeps_the_turns_lines_or_a_file_not_edited_passes(tmp_pa
     assert R.refusal(st, "file_write", keep, str(tmp_path)) is None
     st.file_hashes = {}
     assert R.refusal(st, "file_write", {"path": "parser.py", "content": ORIG},
+                     str(tmp_path)) is None
+
+
+def test_a_file_new_this_turn_is_a_draft_and_may_be_rewritten(tmp_path):
+    st = _repo(tmp_path)
+    (tmp_path / "new_mod.py").write_text(ADDED)
+    st.file_hashes[str(tmp_path / "new_mod.py")] = "y"
+    assert R.refusal(st, "file_write", {"path": "new_mod.py", "content": "x = 1\n"},
                      str(tmp_path)) is None

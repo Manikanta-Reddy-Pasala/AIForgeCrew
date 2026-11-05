@@ -59,8 +59,10 @@ CATALOG: dict = {
                    "a time when you need several.", {"paths": "arrs"}, ("paths",)),
     "file_write": ("Create/overwrite a file (syntax-checked; force:true "
                    "overrides). A big source file you saw only as an outline "
-                   "needs overwrite:true.",
-                   {"path": "s", "content": "s", "force": "b", "overwrite": "b"},
+                   "needs overwrite:true; dropping lines you added this turn "
+                   "needs drop_edits:true.",
+                   {"path": "s", "content": "s", "force": "b", "overwrite": "b",
+                    "drop_edits": "b"},
                    ("path", "content")),
     "file_create": ("Create a new file.", {"path": "s", "content": "s"},
                     ("path", "content")),
