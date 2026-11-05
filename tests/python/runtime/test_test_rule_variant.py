@@ -21,4 +21,5 @@ def test_the_finish_messages_agree_with_the_rule():
     from aiforge_core.runtime.chat_agent._turn import _done_check
     msg = _verify_fix_message("FAILED t.py::x\n1 failed, 2 passed")
     assert "Do NOT reply FINAL until" not in msg and "two focused attempts" in msg
-    assert "names a failure still there after" in _done_check._SYSTEM
+    assert "names a side failure still there" in _done_check._SYSTEM
+    assert "NOT what the request asked to fix" in _done_check._SYSTEM
