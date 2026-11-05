@@ -233,6 +233,21 @@ def _resolve_call_args(raw):
     return None
 
 
+def _call_of(call) -> "tuple[str, object]":
+    """``(name, args)`` of one native tool call, another agent's tool name
+    (read_file, write, edit, bash...) already turned into the tool it means
+    (``_tools._aliases``), so batching, the step text and every gate see the
+    real call. ``args`` is None when they cannot be parsed."""
+    fn = (call or {}).get("function") or {}
+    name = fn.get("name") or ""
+    args = _resolve_call_args(fn.get("arguments"))
+    if name and isinstance(args, dict):
+        from ._registry import TOOLS
+        from ._tools._aliases import resolve
+        name, args = resolve(name, args, TOOLS)
+    return name, args
+
+
 def _action_text(name: str, args: dict) -> str:
     return f"ACTION: {name}\nARGS_JSON: {json.dumps(args, ensure_ascii=False)}"
 
@@ -255,11 +270,9 @@ def _synth_step(msg: dict) -> str:
                 and not strip_think((msg.get("content") or "").strip())):
             return ""
         return msg_text(msg)
-    fn = (calls[0] or {}).get("function") or {}
-    name = fn.get("name") or ""
+    name, args = _call_of(calls[0])
     if not name:
         return msg_text(msg)          # nameless call carries no action → content
-    args = _resolve_call_args(fn.get("arguments"))
     if not isinstance(args, dict):
         return _NATIVE_ARGS_UNRECOVERABLE
     from ._prompt import _COMPLETION_TOOL_NAMES
@@ -355,9 +368,7 @@ def _independent_writes(calls: list) -> "list[str] | None":
     steps: list[str] = []
     paths: set[str] = set()
     for c in calls:
-        fn = (c or {}).get("function") or {}
-        name = fn.get("name") or ""
-        args = _resolve_call_args(fn.get("arguments"))
+        name, args = _call_of(c)
         if name not in ORDERED_FILE_CALLS or not isinstance(args, dict):
             return None
         path = str(args.get("path") or args.get("file_path") or "")
@@ -441,9 +452,7 @@ def _queued_steps(msg: dict) -> "tuple[list[str], int]":
     held = 0
     wanted: list[str] = []
     for c in calls[1:]:
-        fn = (c or {}).get("function") or {}
-        name = fn.get("name") or ""
-        args = _resolve_call_args(fn.get("arguments"))
+        name, args = _call_of(c)
         if not isinstance(args, dict):
             broken += 1
             continue

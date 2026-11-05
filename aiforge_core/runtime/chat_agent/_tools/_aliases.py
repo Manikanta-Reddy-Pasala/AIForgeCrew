@@ -24,7 +24,8 @@ _ALIASES: dict = {
                             "newString": "new_str", "new_string": "new_str",
                             "replaceAll": "replace_all"}),
     "edit_file": ("file_patch", {**_PATH, "oldString": "old_str", "old_string": "old_str",
-                                 "newString": "new_str", "new_string": "new_str"}),
+                                 "newString": "new_str", "new_string": "new_str",
+                                 "replaceAll": "replace_all"}),
     "str_replace": ("file_patch", {**_PATH, "old_string": "old_str",
                                    "new_string": "new_str"}),
     "bash": ("run_command", {"command": "cmd"}),
@@ -52,4 +53,8 @@ def resolve(name, args, known) -> "tuple[str, dict]":
     for k, v in (args or {}).items():
         if k in rename and rename[k] in args:
             out[rename[k]] = args[rename[k]]   # the tool's own name wins
+    if tool == "run_command" and isinstance(out.get("timeout"), (int, float)) \
+            and out["timeout"] > 1000:
+        # Claude Code / OpenCode bash take milliseconds; run_command seconds
+        out["timeout"] = max(1, int(out["timeout"] / 1000))
     return tool, out

@@ -31,3 +31,18 @@ def test_a_read_file_call_reads_the_file(tmp_path):
     tool, args = resolve("read_file", {"file_path": "a.py", "offset": 2, "limit": 1}, TOOLS)
     res = TOOLS[tool](args, str(tmp_path))
     assert res["ok"] and res["text"].startswith("two")
+
+
+def test_every_aliased_call_of_one_native_reply_is_batched_under_its_real_name():
+    from aiforge_core.runtime.chat_agent import _native
+    msg = {"tool_calls": [
+        {"function": {"name": "read_file", "arguments": '{"file_path": "a.py"}'}},
+        {"function": {"name": "read_file", "arguments": '{"file_path": "b.py"}'}},
+        {"function": {"name": "read_file", "arguments": '{"file_path": "c.py"}'}}]}
+    assert _native._synth_step(msg).startswith("ACTION: file_read")
+    steps, skipped = _native._queued_steps(msg)
+    assert skipped == 0 and len(steps) == 2 and all("ACTION: file_read" in s for s in steps)
+
+
+def test_a_bash_timeout_in_milliseconds_becomes_seconds():
+    assert resolve("bash", {"command": "make", "timeout": 120000}, TOOLS)[1]["timeout"] == 120
