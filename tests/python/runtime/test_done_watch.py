@@ -244,9 +244,9 @@ def test_the_finish_check_falls_back_to_the_turns_own_command_when_the_runner_ca
                                         "def test_b():\n    assert True\n")
     ok, out = _outcomes._project_verify(st, str(tmp_path))
     assert ok is False and "FAILED" in out                # broken by the turn
-    st.last_full_test = None             # no own command, runner broken at base too
+    st.last_full_test = None             # no own command; no base recorded: the runner stands
     monkeypatch.setattr(_outcomes, "_BROKEN_AT_BASE", {})
-    assert _outcomes._project_verify(st, str(tmp_path))[0] is None   # unknown, not FAIL
+    assert _outcomes._project_verify(st, str(tmp_path))[0] is False
     monkeypatch.setattr(_outcomes, "_run_project_verify",   # the runner ran tests: it stands
                         lambda cwd: (False, "FAILED t.py::x\n1 failed, 9 passed"))
     st.last_full_test = ("run_command", {"cmd": f"cd {tmp_path} && true"})
@@ -341,10 +341,11 @@ def test_a_runner_that_cannot_run_the_original_suite_either_has_no_verdict(tmp_p
     """sqlglot: the runner cannot collect the suite (a deprecation warning);
     the model ran one test file; a 6/6 answer got 'checks still FAIL'."""
     _git_repo(tmp_path, {"test_a.py": "def test_ok():\n    assert True\n"})
+    (tmp_path / ".aiforge-venv").mkdir()                       # the runner's venv exists
     monkeypatch.setattr(_outcomes, "_BROKEN_AT_BASE", {})
     monkeypatch.setattr(_outcomes, "_run_project_verify",
                         lambda cwd: (False, "ImportError while loading conftest"))
-    st = SimpleNamespace(cwd=str(tmp_path), goal="x", last_full_test=(
+    st = SimpleNamespace(cwd=str(tmp_path), goal="x", dw_base_rev="HEAD", last_full_test=(
         "run_command", {"cmd": "pytest tests/test_a.py"}))       # narrower than the suite
     ok, out = _outcomes._project_verify(st, str(tmp_path))
     assert ok is None                                          # unknown, not FAIL
@@ -355,3 +356,10 @@ def test_a_runner_that_cannot_run_the_original_suite_either_has_no_verdict(tmp_p
         return (True, "3 passed") if len(calls) == 2 else (False, "ImportError while loading conftest")
     monkeypatch.setattr(_outcomes, "_run_project_verify", runner)
     assert _outcomes._project_verify(st, str(tmp_path))[0] is False   # fine at base: the edit broke it
+
+
+
+def test_no_base_check_without_a_recorded_base_or_a_runner_venv(tmp_path):
+    _git_repo(tmp_path, {"a.py": "x = 1\n"})
+    assert not _outcomes._runner_broken_at_base(SimpleNamespace(), str(tmp_path))
+    assert not _outcomes._runner_broken_at_base(SimpleNamespace(dw_base_rev="HEAD"), str(tmp_path))

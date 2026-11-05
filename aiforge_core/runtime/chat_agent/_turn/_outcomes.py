@@ -368,32 +368,52 @@ def _runner_broken_at_base(st, cwd) -> bool:
     'could not run' says nothing about the turn's edits, so the finish has no
     verdict instead of a false "checks still FAIL" (sqlglot: a pytest
     deprecation warning breaks the runner's collection; a 6/6 feature answer
-    went out with that note). Checked once per repo and base commit, on a
-    throwaway git worktree; a broken conftest the turn wrote still fails."""
+    went out with that note). Checked once per repo and base commit on a
+    throwaway git worktree that reuses the repo's runner venv (no install:
+    an install failure must not read as a broken base); a broken conftest the
+    turn wrote still fails. No check without the turn's recorded base commit
+    or an existing runner venv."""
+    import shutil
     import subprocess
     import tempfile
     from aiforge_core.runtime import repo_ident
+    from aiforge_core.runtime._report_pytest import _AIFORGE_VENV
     top = repo_ident.git_toplevel(cwd)
-    if not top:
+    base = getattr(st, "dw_base_rev", None)
+    venv = os.path.join(top, _AIFORGE_VENV) if top else ""
+    if not top or not base or not os.path.isdir(venv):
         return False
-    rev = getattr(st, "dw_base_rev", None) or "HEAD"
+    try:
+        rev = subprocess.run(["git", "-C", top, "rev-parse", "--verify", f"{base}^{{commit}}"],
+                             capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if not rev:
+        return False
     key = (top, rev)
     if key in _BROKEN_AT_BASE:
         return _BROKEN_AT_BASE[key]
     broken = False
     tmp = tempfile.mkdtemp(prefix="af-runner-base-")
+    added = False
     try:
         r = subprocess.run(["git", "-C", top, "worktree", "add", "--detach", tmp, rev],
                            capture_output=True, text=True, timeout=60)
-        if r.returncode == 0:
+        added = r.returncode == 0
+        if added:
+            os.symlink(venv, os.path.join(tmp, _AIFORGE_VENV))
             from aiforge_core.runtime.parallel_subtasks import _fail_count
             ok, out = _run_project_verify(tmp)
             broken = ok is False and _fail_count(out) == 999 and not lint_only(out)
     except Exception:  # noqa: BLE001 — unknown: keep the runner's verdict
         broken = False
     finally:
-        subprocess.run(["git", "-C", top, "worktree", "remove", "--force", tmp],
-                       capture_output=True, text=True, timeout=60)
+        if added:
+            subprocess.run(["git", "-C", top, "worktree", "remove", "--force", tmp],
+                           capture_output=True, text=True, timeout=60)
+        shutil.rmtree(tmp, ignore_errors=True)
+        subprocess.run(["git", "-C", top, "worktree", "prune"],
+                       capture_output=True, text=True, timeout=30)
     _BROKEN_AT_BASE[key] = broken
     return broken
 
