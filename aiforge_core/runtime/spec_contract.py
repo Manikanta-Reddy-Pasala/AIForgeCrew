@@ -352,9 +352,7 @@ class _Index:
                 b.attr if isinstance(b, ast.Attribute) else "?")
             # `class Session(requests.Session)`: the base is not this class.
             self.bases.setdefault(node.name, []).append("?" if base == node.name else base)
-        abstract_cls = any(
-            (b.id if isinstance(b, ast.Name) else getattr(b, "attr", "")) in _ABSTRACT_BASES
-            for b in node.bases) or any(
+        abstract_cls = any(_base_name(b) in _ABSTRACT_BASES for b in node.bases) or any(
             k.arg == "metaclass" for k in node.keywords)
         for item in node.body:
             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -424,6 +422,13 @@ _ABSTRACT_BASES = {"Protocol", "ABC", "ABCMeta"}
 _EMPTY_DECORATORS = {"abstractmethod", "abstractproperty", "overload"}
 
 
+def _base_name(b) -> str:
+    """``Protocol`` for ``Protocol``, ``typing.Protocol`` and ``Protocol[T]``."""
+    if isinstance(b, ast.Subscript):
+        b = b.value
+    return b.id if isinstance(b, ast.Name) else getattr(b, "attr", "")
+
+
 def _meant_empty(fn) -> bool:
     """``@abstractmethod`` / ``@overload``: a body of ``...`` is the point."""
     for d in fn.decorator_list:
@@ -435,9 +440,16 @@ def _meant_empty(fn) -> bool:
 
 
 #: Near a name, the request says it is meant to stay unimplemented here.
-_ABSTRACT = re.compile(r"\babstract\b|NotImplementedError|\bsubclass(?:es)?\s+"
-                       r"(?:must\s+|should\s+)?(?:implement|override)|\bno-?op\b|"
-                       r"\bdoes nothing\b|\bplaceholder\b", re.I)
+#: The design the request states for a bodiless name ("(abstract in the base
+#: class)", "subclasses implement it", "a no-op"). Words that describe the
+#: stub as it is now ("currently raises NotImplementedError", "the placeholder
+#: in f()") are not it: that line asks for the body.
+_ABSTRACT = re.compile(r"\(abstract\b|\b(?:is|are|stays?|remains?)\s+abstract\b|"
+                       r"\babstract\s+(?:in|on)\s+the\s+base\b|"
+                       r"\bsubclass(?:es)?\s+(?:must\s+|should\s+)?(?:implement|override)|"
+                       r"NotImplementedError\b[^.\n]{0,40}\bbase\b|"
+                       r"\bno-?op\b|\bdoes nothing\b", re.I)
+_NOW = re.compile(r"\b(?:currently|still|right now|today|at the moment)\b", re.I)
 
 
 def _meant_abstract(request: str, text: str) -> bool:
@@ -448,7 +460,8 @@ def _meant_abstract(request: str, text: str) -> bool:
     for m in re.finditer(re.escape(text), req):
         line = req[req.rfind("\n", 0, m.start()) + 1:]
         nl = line.find("\n")
-        if _ABSTRACT.search(line if nl < 0 else line[:nl]):
+        line = line if nl < 0 else line[:nl]
+        if _ABSTRACT.search(line) and not _NOW.search(line):
             return True
     return False
 

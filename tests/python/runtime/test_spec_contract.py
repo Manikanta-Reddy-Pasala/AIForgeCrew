@@ -672,3 +672,16 @@ def test_a_steer_or_waiver_word_does_not_drop_a_stub_gap():
     from aiforge_core.runtime.chat_agent._turn import _contract_gate as CG
     for w in ("only", "stub", "raise", "implement", "notimplementederror"):
         assert w in CG._GAP_WORDS
+
+
+def test_a_line_asking_to_fill_a_stub_is_no_waiver(tmp_path):
+    (tmp_path / "m.py").write_text(
+        "from typing import Protocol, TypeVar\nT = TypeVar('T')\n"
+        "class Store(Protocol[T]):\n    def get(self, k): ...\n"
+        "class SC:\n    def get_completions(self, args, incomplete):\n"
+        "        raise NotImplementedError\n")
+    req = ("`SC.get_completions(args, incomplete)` currently raises NotImplementedError; "
+           "implement it.\nAlso `Store.get(k)`.\n")
+    gaps = S.missing(req, str(tmp_path))
+    assert any("SC.get_completions is only a stub" in g for g in gaps)
+    assert not any("Store.get" in g for g in gaps)              # Protocol[T]
