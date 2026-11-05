@@ -8,8 +8,10 @@ in an earlier session"), and the run ended at 3/25. The discard guard covers
 ``rm`` and ``git checkout``; this is the same loss through a write tool.
 
 Refused, when ``file_write`` / ``file_create`` replaces a file a tool of THIS
-turn already wrote (``st.file_hashes``) and the new content drops at least
-``_MIN_LOST`` of the lines the file gained since its committed version.
+turn already wrote (``st.file_hashes``) and the new content no longer defines
+a function or class the file gained since its committed version. Reworded or
+restructured lines are not a loss: counting dropped lines refused a shopkit
+run's clean-ups five times and cost it the turn.
 A file new this turn (not in HEAD) is not guarded: rewriting one's own draft
 is normal. The model can make the change with file_patch / multi_edit, or send
 the same write again with ``"drop_edits": true`` when dropping them is what it
@@ -23,8 +25,6 @@ import re
 import subprocess
 from collections import Counter
 
-#: Lines the turn added that a write may drop before it is refused.
-_MIN_LOST = 8
 _WRITE_TOOLS = ("file_write", "file_create")
 _DEF = re.compile(r"^\s*(?:async\s+)?(?:def|class)\s+(\w+)")
 
@@ -61,6 +61,15 @@ def lost_lines(before: str, now: str, new: str) -> list:
     return list((gained - _lines(new)).elements())
 
 
+def _defs(text: str) -> set:
+    return {m.group(1) for m in map(_DEF.match, (text or "").splitlines()) if m}
+
+
+def lost_defs(before: str, now: str, new: str) -> list:
+    """Functions/classes ``now`` gained over ``before`` that ``new`` lacks."""
+    return sorted((_defs(now) - _defs(before)) - _defs(new))
+
+
 def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     if name not in _WRITE_TOOLS or not _on() or not isinstance(args, dict):
         return None
@@ -83,14 +92,12 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     before = _committed(full)
     if not before:
         return None                   # outside git, or new this turn: a draft
-    lost = lost_lines(before, now, content)
-    if len(lost) < _MIN_LOST:
+    gone = lost_defs(before, now, content)
+    if not gone:
         return None
-    defs = [m.group(1) for m in map(_DEF.match, lost) if m][:6]
     return {"ok": False, "error": "rewrite_drops_your_edits",
-            "lost_lines": len(lost),
-            "hint": (f"this whole-file write would drop {len(lost)} lines you added to "
-                     f"{path} earlier in this turn"
-                     + (f" (including {', '.join(defs)})" if defs else "")
-                     + ". Make the change with file_patch or multi_edit instead, or send "
+            "lost_defs": gone[:10],
+            "hint": (f"this whole-file write would drop {', '.join(gone[:6])} — "
+                     f"added to {path} earlier in this turn. Keep them in the new "
+                     "content, make the change with file_patch or multi_edit, or send "
                      "the same write with \"drop_edits\": true if dropping them is intended.")}

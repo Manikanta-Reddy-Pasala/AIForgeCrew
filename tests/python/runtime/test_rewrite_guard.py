@@ -28,6 +28,9 @@ def test_a_rewrite_from_the_original_is_refused_and_force_lets_it_through(tmp_pa
     args = {"path": "parser.py", "content": ORIG + "line_new = 1\n"}
     res = R.refusal(st, "file_write", args, str(tmp_path))
     assert res and res["error"] == "rewrite_drops_your_edits" and "parse_trigger_0" in res["hint"]
+    reworded = ADDED.replace("return", "return  ")                # same defs, other lines
+    assert R.refusal(st, "file_write", {"path": "parser.py", "content": ORIG + reworded},
+                     str(tmp_path)) is None
     assert R.refusal(st, "file_write", {**args, "drop_edits": True}, str(tmp_path)) is None
     assert R.refusal(st, "file_write", {**args, "force": True}, str(tmp_path))  # not its key
 

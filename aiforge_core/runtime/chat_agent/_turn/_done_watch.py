@@ -165,6 +165,11 @@ def board_done(st) -> bool:
     items = [it for it in board.values() if isinstance(it, dict)]
     if len(items) != len(board):
         return False
+    try:
+        if _raw_gaps(st):
+            return False            # the spec check still finds a named part missing
+    except Exception:  # noqa: BLE001
+        pass
     # done or skipped, not merely closed: a failed item is work not done, and
     # an item accepted UNVERIFIED (advisory board) still needs the check
     return all(it.get("status") in ("done", "skipped")

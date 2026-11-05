@@ -363,3 +363,15 @@ def test_no_base_check_without_a_recorded_base_or_a_runner_venv(tmp_path):
     _git_repo(tmp_path, {"a.py": "x = 1\n"})
     assert not _outcomes._runner_broken_at_base(SimpleNamespace(), str(tmp_path))
     assert not _outcomes._runner_broken_at_base(SimpleNamespace(dw_base_rev="HEAD"), str(tmp_path))
+
+
+def test_a_done_board_with_a_named_part_still_missing_is_not_done(tmp_path, monkeypatch):
+    """shopkit: 'every task-board item is done' then the spec check sent the
+    answer back for a missing name — twice."""
+    two = {"a": {"title": "a", "status": "done"}, "b": {"title": "b", "status": "done"}}
+    st = SimpleNamespace(goal="x", cwd=str(tmp_path), edits_made=1, steers=[],
+                         board_touched=True, board=two)
+    monkeypatch.setattr(W, "_raw_gaps", lambda st: ["Cart.total is missing"])
+    assert not W.board_done(st)
+    monkeypatch.setattr(W, "_raw_gaps", lambda st: [])
+    assert W.board_done(st)
