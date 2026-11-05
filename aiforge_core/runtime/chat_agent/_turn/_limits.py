@@ -119,11 +119,64 @@ def _step_cap_guard(st, n):
     return None
 
 
+#: Share of the turn's time budget left when the model is told to wrap up
+#: (at least _WRAP_MIN_S), once no extension can follow.
+_WRAP_SHARE, _WRAP_MIN_S = 0.15, 120
+
+
+def _ride(st, note: str) -> None:
+    """Put a harness note on the last user turn (two user turns in a row break
+    some providers), else append it."""
+    last = st.convo[-1] if st.convo else None
+    if isinstance(last, dict) and last.get("role") == "user" \
+            and isinstance(last.get("content"), str):
+        st.convo[-1] = {**last, "content": last["content"] + "\n\n" + note}
+    else:
+        st.convo.append({"role": "user", "content": note})
+
+
+def _time_wrap(st, now: float):
+    """Last time slice: tell the model once to land what it is on and answer,
+    so a turn that runs out of time ends with intact code and a summary
+    instead of being cut mid-edit."""
+    if st.turn_deadline is None or getattr(st, "time_warned", False) \
+            or st.extensions_used < st.ext_budget:
+        return
+    left = st.turn_deadline - now
+    if not 0 < left <= max(_WRAP_MIN_S, _WRAP_SHARE * st.turn_budget_s):
+        return
+    st.time_warned = True
+    _ride(st, f"[harness — not the user] About {int(left // 60) or 1} min of this "
+              "turn's time budget is left. Finish the change you are on (no new "
+              "parts), run the tests once, then reply FINAL: what is done, what "
+              "is not, and what still fails.")
+    yield {"type": "thought", "role": "system",
+           "text": "⏳ time budget nearly used — asking the agent to wrap up"}
+
+
 def _deadline_guard(st, n):
     """Wall-clock turn-deadline check: a turn still landing new work buys another
-    time slice (after a forced condense); otherwise stop. Returns "return" to end
-    the turn, or None to continue."""
-    if st.turn_deadline is not None and time.monotonic() > st.turn_deadline:
+    time slice (after a forced condense); otherwise the model gets one forced
+    final answer (no tools), then the turn stops. Returns "return" to end the
+    turn, or None to continue."""
+    if st.turn_deadline is None:
+        return None
+    now = time.monotonic()          # read once: one clock per check
+    yield from _time_wrap(st, now)
+    if getattr(st, "time_warned", False) and getattr(st, "deadline_final", None) is None \
+            and st.extensions_used >= st.ext_budget and now > st.turn_deadline:
+        # Out of time, no slice to buy, and the model was told to wrap up:
+        # one more step, a final answer with no tools, so the turn ends with
+        # a summary instead of being cut mid-edit. The next check stops it.
+        st.deadline_final = n
+        _ride(st, "[harness — not the user] The turn's time budget is used up. "
+                  "Reply FINAL now: what is done, what is not, and what still fails.")
+        from .._native import force_final_next
+        force_final_next(getattr(st, "session_id", None))
+        yield {"type": "thought", "role": "system",
+               "text": "⏳ time budget used — asking for the final answer"}
+        return None
+    if now > st.turn_deadline:
         # Same deal as the step cap: a turn still landing new work buys
         # another slice of wall clock instead of losing everything.
         if _may_extend(st, n):
