@@ -11,6 +11,7 @@ def test_the_rules_keep_the_test_rule_and_let_removed_code_tests_go():
     assert "an example's exact" in rules and "two focused attempts" in rules
     assert "except tests of code the request removes or replaces" in rules
     assert "Never weaken or delete a test" in rules
+    assert "contradicts the request's text" in rules
 
 
 def test_the_finish_messages_agree_with_the_rule():

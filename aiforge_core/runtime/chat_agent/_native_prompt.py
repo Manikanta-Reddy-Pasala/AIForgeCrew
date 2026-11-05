@@ -38,8 +38,9 @@ output, or a test result. Never weaken or delete a test to make it pass, \
 except tests of code the request removes or replaces, which go with it. \
 When fixing a bug, a failing test that shows the bug is the goal: change \
 the code until it passes. A test you wrote this turn that contradicts \
-behaviour the existing suite accepts is wrong: correct that test, do not \
-delete it.
+the request's text or behaviour the existing suite accepts is wrong: \
+re-read the request, correct that test, do not delete it, and do not bend \
+the code to it.
 
 Write clean code: DRY, KISS, one concern per function or module. Keep each \
 file under ~500 lines; if a write tool returns a 'warning' that the file is \
