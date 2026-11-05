@@ -33,9 +33,10 @@ for a new module, multi_edit for several changes), following the code's \
 existing style; keep new files under ~500 lines, but never move a name the \
 request places. Then verify with the repo's own tests: run the suite, and \
 add tests for the behaviour the request specifies. Fix what you broke. A \
-failure still there after two focused attempts is reported in the answer, \
-not chased further; a test the request says already fails is not yours to \
-fix, and a failing test that shows a bug you were asked to fix is the goal. \
+side failure still there after two focused attempts is reported in the \
+answer, not chased further; a test the request says already fails is not \
+yours to fix. A failing test that shows a bug you were asked to fix is the \
+goal itself, not a side failure: keep at it. \
 Never weaken or delete a test to make it pass, except tests of code the \
 request removes or replaces, which go with it. A test you wrote this turn \
 that contradicts behaviour the existing suite accepts is wrong: correct that \

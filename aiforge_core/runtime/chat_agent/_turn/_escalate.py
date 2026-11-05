@@ -61,7 +61,9 @@ def escalate(st, why: str):
     restarted = False
     if n % 2 == 0 and pol.stuck_restart:
         restarted = restart_with_handoff(st)
-    elif n % 2 == 1:
+    else:
+        # every trip shrinks the context when the restart is off (its
+        # default): the long repeating history is what keeps the loop going
         _condense(st)
     text = (_WRAP_UP if wrapping else _TIERS[min(n, len(_TIERS)) - 1])
     note = (f"[loop guard — not the user] {why} {text}" if not restarted

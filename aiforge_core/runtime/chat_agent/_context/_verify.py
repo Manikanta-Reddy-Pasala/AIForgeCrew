@@ -116,7 +116,8 @@ def _verify_fix_message(output: str) -> str:
             "CHECK OUTPUT:\n```\n" + (output or "")[-3000:] + "\n```")
     return (
         "[automated verification — not the user] You said you were done, but the "
-        "project's tests do NOT pass. Do NOT reply FINAL until they do. Read the "
-        "failures below, fix the IMPLEMENTATION (not the tests, unless a test "
-        "clearly contradicts the request), then re-run the tests to confirm.\n\n"
+        "project's tests do NOT pass. Read the failures below, fix the "
+        "IMPLEMENTATION (not the tests, unless a test clearly contradicts the "
+        "request), then re-run the tests. If a failure is still there after two "
+        "focused attempts, reply FINAL and say exactly what still fails.\n\n"
         "TEST OUTPUT:\n```\n" + (output or "")[-3000:] + "\n```" + hint_block)
