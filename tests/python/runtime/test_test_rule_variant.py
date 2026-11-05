@@ -12,6 +12,7 @@ def test_the_rules_bound_test_chasing_and_let_removed_code_tests_go():
     assert "Never weaken or delete a test" in rules and "correct that test" in rules
     assert "use exactly those" in rules and "FINAL:" in rules and "ASK:" in rules
     assert "fix until it is green" not in rules
+    assert "write a test for every" in rules and "example's exact input and output" in rules
 
 
 def test_the_finish_messages_agree_with_the_rule():

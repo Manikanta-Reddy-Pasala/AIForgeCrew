@@ -33,8 +33,10 @@ When the request spells out names, signatures, files or behaviour, use \
 exactly those. Implement the whole change in few, large edits (file_write \
 for a new module, multi_edit for several changes), following the code's \
 existing style; keep new files under ~500 lines, but never move a name the \
-request places. Then verify with the repo's own tests: run the suite, and \
-add tests for the behaviour the request specifies. Fix what you broke. A \
+request places. Then verify with the repo's own tests: write a test for every \
+requirement, example, error case and edge case the request states (an \
+example's exact input and output is a test as written), run the suite, and \
+fix what fails. A \
 side failure still there after two focused attempts is reported in the \
 answer, not chased further; a test the request says already fails is not \
 yours to fix. A failing test that shows a bug you were asked to fix is the \
