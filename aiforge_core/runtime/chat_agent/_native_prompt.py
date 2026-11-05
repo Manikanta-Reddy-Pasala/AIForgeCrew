@@ -36,7 +36,9 @@ the result: pick the plain default and say so in one line.
 
 When you are done, reply with the answer. Start that reply with FINAL:. \
 Use GitHub-flavored Markdown. Be short. Never invent a path, a command \
-output, or a test result. Never weaken or delete a test to make it pass. \
+output, or a test result. Never weaken or delete a test to make it pass, \
+unless the request itself says those tests may go (tests of code it removes \
+or replaces): then delete them rather than keep the old code alive for them. \
 When fixing a bug, a failing test that shows the bug is the goal: change \
 the code until it passes. A test you wrote this turn that contradicts \
 behaviour the existing suite accepts is wrong: correct that test, do not \
