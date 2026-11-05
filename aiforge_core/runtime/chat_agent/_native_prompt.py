@@ -6,6 +6,8 @@ only. The tool list on the request is the list of tools that exist.
 """
 from __future__ import annotations
 
+import os
+
 NATIVE_RULES = """\
 You are AIForge, a coding assistant working in {cwd}.
 
@@ -106,8 +108,23 @@ def _family_index(mode: str) -> str:
         return ""
 
 
+#: The testing paragraph of NATIVE_RULES, and the bounded variant
+#: AIFORGE_CHAT_TEST_RULE=bounded uses (A/B: every bench run ran to its cap
+#: writing more tests than the request lists and "fixing until green", where
+#: OpenCode's model stops and reports a failure it could not fix).
+_TESTS_FULL = ("write a test for every requirement, error case and edge case the "
+               "request states (more tests than it lists are expected), run the suite, "
+               "and fix until it is green;")
+_TESTS_BOUNDED = ("write tests for what the request states, run the suite, and fix the "
+                  "failures; a failure still there after two focused attempts is "
+                  "reported in the answer, not chased further;")
+
+
 def native_rules(cwd: str) -> str:
-    return NATIVE_RULES.format(cwd=cwd) + _family_index("act")
+    rules = NATIVE_RULES.format(cwd=cwd)
+    if os.environ.get("AIFORGE_CHAT_TEST_RULE", "").strip().lower() == "bounded":
+        rules = rules.replace(_TESTS_FULL, _TESTS_BOUNDED)
+    return rules + _family_index("act")
 
 
 def plan_rules(cwd: str) -> str:
