@@ -562,7 +562,7 @@ def _after_thought_out(client, role, msgs, send, choice, msg, session_id):
             if not _thought_out(again):
                 return again
         except Exception as exc:  # noqa: BLE001 — keep the first reply
-            if type(exc).__name__ == "_LLMCancelled" or model_outage.stall_budget_spent(exc):
+            if model_outage._is_cancel(exc) or model_outage.stall_budget_spent(exc):
                 raise
             log.debug("reasoning-off re-post failed: %s", exc)
     else:

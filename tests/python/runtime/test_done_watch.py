@@ -303,7 +303,7 @@ def test_every_board_item_done_asks_for_the_summary_and_forces_it_soon(tmp_path,
     monkeypatch.setattr(W, "_jobs_running", lambda st: False)
     monkeypatch.setattr(W, "_replies_only_looked", lambda st: True)
     st = SimpleNamespace(goal="Do a and b.", cwd=str(tmp_path), convo=[{"role": "user", "content": "x"}],
-                         edits_made=2, steers=[], session_id=55, board_used=True,
+                         edits_made=2, steers=[], session_id=55, board_touched=True,
                          board={"a": {"title": "a", "status": "done"},
                                 "b": {"title": "b", "status": "done"}})
     monkeypatch.setattr(W, "done_now", lambda st: False)
@@ -316,10 +316,21 @@ def test_every_board_item_done_asks_for_the_summary_and_forces_it_soon(tmp_path,
 
 
 def test_a_board_with_a_failed_or_open_item_or_red_tests_is_not_done(tmp_path):
-    base = dict(goal="x", cwd=str(tmp_path), edits_made=1, steers=[], board_used=True)
+    base = dict(goal="x", cwd=str(tmp_path), edits_made=1, steers=[], board_touched=True)
     two = lambda s: {"a": {"title": "a", "status": "done"}, "b": {"title": "b", "status": s}}
     assert W.board_done(SimpleNamespace(**base, board=two("done")))
     assert not W.board_done(SimpleNamespace(**base, board=two("failed")))
     assert not W.board_done(SimpleNamespace(**base, board=two("running")))
     assert not W.board_done(SimpleNamespace(**base, board=two("done"), tests_green=False))
     assert not W.board_done(SimpleNamespace(**base, board={"a": {"title": "a", "status": "done"}}))
+
+
+def test_carried_targets_unverified_closes_and_a_red_full_run_do_not_end_the_turn(tmp_path):
+    two = {"a": {"title": "a", "status": "done"}, "b": {"title": "b", "status": "done"}}
+    base = dict(goal="x", cwd=str(tmp_path), edits_made=1, steers=[])
+    assert not W.board_done(SimpleNamespace(**base, board=two, board_used=True))   # not worked
+    unv = {"a": {"title": "a", "status": "done", "note": "UNVERIFIED: no test"},
+           "b": {"title": "b", "status": "done"}}
+    assert not W.board_done(SimpleNamespace(**base, board=unv, board_touched=True))
+    assert not W.board_done(SimpleNamespace(**base, board=two, board_touched=True,
+                                            last_full_test=("run_command", {}), tests_green=None))

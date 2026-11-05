@@ -140,8 +140,9 @@ def _green_now(st) -> bool:
 
 
 #: Replies that only re-check after every task-board item is closed, before
-#: the final answer is forced (the model itself said each part is done).
-BOARD_GRACE = 2
+#: the final answer is forced (the model itself said each part is done; a run
+#: in phases adds the next items within these).
+BOARD_GRACE = 4
 
 
 def board_done(st) -> bool:
@@ -157,11 +158,18 @@ def board_done(st) -> bool:
         return False
     if getattr(st, "dw_blocked_at", None) == getattr(st, "edits_made", 0):
         return False
-    if not getattr(st, "board_used", False) and not getattr(st, "board_touched", False):
-        return False                    # nobody worked this board in this turn
-    # done or skipped, not merely closed: a failed item is work not done
-    return all(isinstance(it, dict) and it.get("status") in ("done", "skipped")
-               for it in board.values())
+    if not getattr(st, "board_touched", False):
+        return False                    # the model did not work this board this turn
+    if getattr(st, "last_full_test", None) and getattr(st, "tests_green", None) is not True:
+        return False                    # a full test ran this turn: it must be green
+    items = [it for it in board.values() if isinstance(it, dict)]
+    if len(items) != len(board):
+        return False
+    # done or skipped, not merely closed: a failed item is work not done, and
+    # an item accepted UNVERIFIED (advisory board) still needs the check
+    return all(it.get("status") in ("done", "skipped")
+               and not str(it.get("note") or "").startswith("UNVERIFIED")
+               for it in items)
 
 
 def done_now(st) -> bool:
@@ -421,6 +429,12 @@ def watch(st, n):
     if not (spec or board):
         st.done_noted_at = None              # not (or no longer) done
         return None
+    trigger = "spec" if spec else "board"
+    if getattr(st, "dw_trigger", None) != trigger:
+        st.done_noted_at = None              # each trigger has its own note and count
+        st.dw_trigger = trigger
+    if board and getattr(st, "done_noted_at", None) is None and _jobs_running(st):
+        return None                          # a job still runs: not the time to stop
     if getattr(st, "done_noted_at", None) is None:
         st.done_noted_at = n
         st.dw_quiet = 0
