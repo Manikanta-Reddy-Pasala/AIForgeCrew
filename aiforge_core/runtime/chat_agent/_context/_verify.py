@@ -35,15 +35,15 @@ def _verify_on_final_enabled() -> bool:
 
 
 def _verify_max_rounds() -> int:
-    """Fix rounds the finish verify may ask for (1: OpenCode, Codex and
+    """Fix rounds the finish verify may ask for (2; was 1, then 3: OpenCode, Codex and
     OpenHands end on the first text reply, SWE-agent reviews a submit once;
     bench runs spent 15-20 min in later rounds with no score gain — a
     failure the model could not fix in its own run rarely falls in a forced
     one, and the answer still says what fails)."""
     try:
-        return max(0, min(12, int(os.environ.get("AIFORGE_CHAT_VERIFY_ROUNDS", "1"))))
+        return max(0, min(12, int(os.environ.get("AIFORGE_CHAT_VERIFY_ROUNDS", "2"))))
     except ValueError:
-        return 1
+        return 2
 
 
 def _run_project_verify(cwd: str):
