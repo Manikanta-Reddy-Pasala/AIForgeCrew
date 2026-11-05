@@ -588,7 +588,9 @@ def _workspace_jail(st, name, args, cwd):
     in a repo the user never brought into this chat. Interactive: ASK the user
     (one click grants the folder for the rest of this chat). Unattended: refuse
     without writing. Returns "continue"/"return" to skip the call, else None."""
-    interactive = getattr(st, "session_id", None) is not None
+    # A shell write is only parsed when there is someone to ask (best-effort
+    # parsing: a false positive is an Allow prompt, never a hard block).
+    interactive = getattr(st, "session_id", None) is not None and _approvals_on(st)
     blocked = yield from _team_repo_guard(st, name, args, cwd)
     if blocked is not None:
         return blocked
@@ -601,7 +603,7 @@ def _workspace_jail(st, name, args, cwd):
         _jailed, _roots = [], []
     if not _jailed:
         return None
-    if interactive and _approvals_on(st):
+    if interactive:
         return (yield from _ask_write_grant(st, name, args, cwd, _jailed))
     # Unattended, or approvals off for this chat: refuse at once. Asking here
     # waited out the 15-minute approval timeout with nobody to answer (a test
@@ -613,8 +615,9 @@ def _workspace_jail(st, name, args, cwd):
         "hint": ("Write refused: this run may only write in "
                  + ", ".join(map(str, _allowed)) + ". Do NOT write there "
                  "another way (a shell redirect, cp, mv); do the work "
-                 "inside those folders or report that it needs a folder "
-                 "outside them."),
+                 "inside those folders, or report that it needs a folder "
+                 "outside them: the user can allow one by naming it in their "
+                 "next message, or by turning approvals on for this chat."),
     }
     yield {"type": "tool", "name": name, "args": args, "result": result}
     st.convo.append({"role": "user",

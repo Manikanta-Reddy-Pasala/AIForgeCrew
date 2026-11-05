@@ -11,12 +11,22 @@ it unasked is the bug.
 """
 import os
 
+import pytest
+
 from aiforge_core.runtime import scope_guard
 
 
 def _args(path):
     return {"path": path, "content": "x"}
 
+
+
+@pytest.fixture(autouse=True)
+def _approvals_on_by_default(monkeypatch):
+    """The ask tests mean a chat with approvals on; the approvals-off tests
+    override it."""
+    from aiforge_core.runtime import chat_approve
+    monkeypatch.setattr(chat_approve, "approvals_required", lambda sid: True)
 
 def test_on_by_default(monkeypatch, tmp_path):
     monkeypatch.delenv("AIFORGE_CHAT_WORKSPACE_JAIL", raising=False)
@@ -369,3 +379,22 @@ def test_a_write_outside_the_folder_with_approvals_off_is_refused_at_once(monkey
     assert sig == "continue"
     assert not any(e.get("type") == "approval" for e in evs)
     assert "outside_workspace" in st.convo[-1]["content"]
+
+
+
+def test_a_shell_write_outside_the_folder_is_left_alone_with_approvals_off(monkeypatch, tmp_path):
+    """No one to ask: shell parsing is best-effort, so it must not hard-block
+    (the same command is allowed in an unattended run)."""
+    from types import SimpleNamespace
+    from aiforge_core.runtime import chat_approve
+    from aiforge_core.runtime.chat_agent._turn import _action
+    monkeypatch.setattr(chat_approve, "approvals_required", lambda sid: False)
+    monkeypatch.setattr(_action, "_team_repo_guard", lambda *a, **k: iter(()))
+    st = SimpleNamespace(session_id=7, convo=[], user_roots=[])
+    g = _action._workspace_jail(st, "run_command", {"cmd": "mkdir -p /srv/cache/x"},
+                                str(tmp_path))
+    try:
+        while True:
+            next(g)
+    except StopIteration as e:
+        assert e.value is None
