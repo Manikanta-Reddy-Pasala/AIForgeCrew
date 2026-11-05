@@ -53,8 +53,10 @@ def resolve(name, args, known) -> "tuple[str, dict]":
     for k, v in (args or {}).items():
         if k in rename and rename[k] in args:
             out[rename[k]] = args[rename[k]]   # the tool's own name wins
-    if tool == "run_command" and isinstance(out.get("timeout"), (int, float)) \
-            and out["timeout"] > 1000:
-        # Claude Code / OpenCode bash take milliseconds; run_command seconds
+    if tool == "run_command" and "command" in (args or {}) and "cmd" not in args \
+            and isinstance(out.get("timeout"), (int, float)) and out["timeout"] > 1000:
+        # The other agent's own shape (Claude Code / OpenCode bash: `command`,
+        # timeout in milliseconds); run_command takes seconds. A call written
+        # to run_command's schema (`cmd`) keeps its seconds.
         out["timeout"] = max(1, int(out["timeout"] / 1000))
     return tool, out

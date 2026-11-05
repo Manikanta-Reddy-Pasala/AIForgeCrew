@@ -46,3 +46,7 @@ def test_every_aliased_call_of_one_native_reply_is_batched_under_its_real_name()
 
 def test_a_bash_timeout_in_milliseconds_becomes_seconds():
     assert resolve("bash", {"command": "make", "timeout": 120000}, TOOLS)[1]["timeout"] == 120
+
+
+def test_a_bash_call_in_run_commands_own_shape_keeps_its_seconds():
+    assert resolve("bash", {"cmd": "make", "timeout": 1800}, TOOLS)[1]["timeout"] == 1800
