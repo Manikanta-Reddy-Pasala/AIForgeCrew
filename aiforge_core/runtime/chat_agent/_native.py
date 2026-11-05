@@ -63,9 +63,8 @@ _FORCE_FINAL: set = set()
 
 def force_final_next(session_id) -> None:
     """The next native call of this chat gets tool_choice="none": the model
-    must write its answer, which then goes through every finish check like
-    any other answer (the done watch saw the work check out and the model
-    kept only looking)."""
+    must write its answer. From the done watch it goes through every finish
+    check like any other answer; at the turn deadline it is accepted as is."""
     if session_id is not None:
         _FORCE_FINAL.add(session_id)
 
@@ -516,6 +515,16 @@ def _complete_repaired(client, role, msgs, tools, exc):
         return None
 
 
+def _thought_out(msg) -> bool:
+    """The reply stopped at its length limit with no answer and no tool call:
+    all of it was reasoning."""
+    if not isinstance(msg, dict) or msg.get("_finish_reason") != "length" \
+            or msg.get("tool_calls"):
+        return False
+    from aiforge_core.llm.client._text import strip_think
+    return not strip_think((msg.get("content") or "").strip())
+
+
 def make_native_complete_fn(mode: str = "act", builder: str = "",
                             session_id=None):
     """A drop-in ``complete_fn(role, convo) -> str`` that calls the model with
@@ -604,6 +613,19 @@ def make_native_complete_fn(mode: str = "act", builder: str = "",
             if msg is None:
                 degraded[0] = True
                 return client.complete(role, convo)
+        if _thought_out(msg):
+            # The whole reply length went on reasoning: no answer, no call
+            # (a reasoning model late in a long chat, little room left). Ask
+            # once more with reasoning off, so the room goes to the answer.
+            log.info("reply spent on reasoning (finish=length) → retry, reasoning off")
+            try:
+                from aiforge_core.llm import reasoning as _reasoning
+                with _reasoning.forced_off():
+                    again = client.complete_raw(role, msgs, tools=send, tool_choice=choice)
+                if not _thought_out(again):
+                    msg = again
+            except Exception as exc:  # noqa: BLE001 — keep the first reply
+                log.debug("answer-only retry failed: %s", exc)
         _log_native_step(msg.get("tool_calls") or [])
         step = _synth_step(msg)
         if step == _NATIVE_ARGS_UNRECOVERABLE:

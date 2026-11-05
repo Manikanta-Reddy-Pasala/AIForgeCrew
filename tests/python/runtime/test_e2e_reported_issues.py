@@ -163,7 +163,6 @@ def test_1_through_the_handoff_restart_and_reasoning_boost(tmp_path, monkeypatch
     """The restart (convo replaced) and the stuck reasoning boost both happen
     inside the run, and the counters neither re-trip at once nor never trip."""
     from aiforge_core.llm import reasoning
-    monkeypatch.setenv("AIFORGE_CHAT_STUCK_RESTART", "1")   # opt-in since the bench
     repo = git_repo(tmp_path / "w")
     victim = repo / "preprocessed.cfg"
     boosted_calls, restarts_seen = [], []

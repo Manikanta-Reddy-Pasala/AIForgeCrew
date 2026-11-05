@@ -75,14 +75,14 @@ def test_the_handoff_has_goal_done_files_failed_error_next():
     assert 'memory_lookup {"id": "off:abc123"}' in text
 
 
-def test_a_stuck_restart_is_off_by_default(monkeypatch):
+def test_a_stuck_restart_is_on_by_default(monkeypatch):
+    """Long jobs rely on it: off, multi-day runs stayed near a full window."""
     from aiforge_core.runtime.stuck_policy import Policy
     monkeypatch.delenv("AIFORGE_CHAT_STUCK_RESTART", raising=False)
-    assert Policy.load().stuck_restart is False
+    assert Policy.load().stuck_restart is True
 
 
 def test_the_second_stuck_trip_restarts_with_a_fresh_context(monkeypatch):
-    monkeypatch.setenv("AIFORGE_CHAT_STUCK_RESTART", "1")   # opt-in since the bench
     st = St()
     assert _escalate(st) == "continue"                   # trip 1: nudge, no restart
     assert len(st.convo) >= 6

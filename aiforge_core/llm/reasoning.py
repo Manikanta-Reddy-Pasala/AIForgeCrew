@@ -61,6 +61,22 @@ def boosted() -> bool:
     return _BOOST.get()
 
 
+_OFF: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
+    "aiforge_reasoning_forced_off", default=False)
+
+
+@contextlib.contextmanager
+def forced_off():
+    """The calls made inside this block do not reason, whatever the role, the
+    model setting or a stuck boost says: the answer-only retry after a reply
+    spent its whole length thinking."""
+    token = _OFF.set(True)
+    try:
+        yield
+    finally:
+        _OFF.reset(token)
+
+
 def boost_steps() -> int:
     """How many model calls a stall turns reasoning on for
     (``AIFORGE_STUCK_REASON_STEPS``, default 6; 0 never boosts)."""
@@ -77,6 +93,8 @@ def role_reasons(role: str = "") -> bool:
 
 def reasoning_off(model: str, base_url: str = "", role: str = "") -> bool:
     """True when requests to ``model`` (made for ``role``) must not reason."""
+    if _OFF.get():
+        return True
     env = os.environ.get("AIFORGE_NO_REASONING", "").strip().lower()
     if env in ("1", "true", "yes", "on"):
         return True

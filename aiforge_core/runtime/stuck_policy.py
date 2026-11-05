@@ -103,9 +103,10 @@ class Policy:
     pause_on_stuck: bool = False
     #: change-of-approach trips before the wrap-up (0 = never)
     stuck_escalations: int = 20
-    #: off: a restart drops the transcript and the model re-reads everything
-    #: it had (bench: 10-31 duplicate reads after one); condense stays
-    stuck_restart: bool = False
+    #: on: a long job that gets stuck restarts from a fresh context with a
+    #: handoff (turning it off kept multi-day runs near a full window and
+    #: re-boosting reasoning; AIFORGE_CHAT_STUCK_RESTART=0 turns it off)
+    stuck_restart: bool = True
     context_error_restart: bool = True
     goal_loop: bool = True
     #: steps in a row with no progress of any kind (at least 8)
@@ -136,7 +137,7 @@ class Policy:
             monologue_similarity=min(1.0, max(0.5, sim)),
             pause_on_stuck=_flag("pause_on_stuck", False),
             stuck_escalations=_int("stuck_escalations", 20, floor=0),
-            stuck_restart=_flag("stuck_restart", False),
+            stuck_restart=_flag("stuck_restart", True),
             context_error_restart=_flag("context_error_restart", True),
             goal_loop=_flag("goal_loop", True),
             no_progress_steps=_int("no_progress_steps", 25, floor=8),
