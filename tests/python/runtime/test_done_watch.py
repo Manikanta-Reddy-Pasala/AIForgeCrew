@@ -294,3 +294,32 @@ def test_a_cd_into_a_repo_root_from_its_parent_is_still_the_whole_suite(tmp_path
     assert _outcomes._whole_suite(f"cd {repo} && python -m pytest -q", str(tmp_path))
     assert _outcomes._whole_suite("cd repo && pytest", str(tmp_path))     # relative to base
     assert not _outcomes._whole_suite(f"cd {repo}/backend && pytest", str(tmp_path))
+
+
+def test_every_board_item_done_asks_for_the_summary_and_forces_it_soon(tmp_path, monkeypatch):
+    """A worked task list whose items are all done ends the turn: a note, then
+    the answer forced after BOARD_GRACE replies that only re-check."""
+    from aiforge_core.runtime.chat_agent import _native
+    monkeypatch.setattr(W, "_jobs_running", lambda st: False)
+    monkeypatch.setattr(W, "_replies_only_looked", lambda st: True)
+    st = SimpleNamespace(goal="Do a and b.", cwd=str(tmp_path), convo=[{"role": "user", "content": "x"}],
+                         edits_made=2, steers=[], session_id=55, board_used=True,
+                         board={"a": {"title": "a", "status": "done"},
+                                "b": {"title": "b", "status": "done"}})
+    monkeypatch.setattr(W, "done_now", lambda st: False)
+    _drain(W.watch(st, 10))
+    assert "Every item on the task board is done" in st.convo[-1]["content"]
+    for n in range(11, 11 + W.BOARD_GRACE):
+        _drain(W.watch(st, n))
+    assert 55 in _native._FORCE_FINAL
+    _native._FORCE_FINAL.discard(55)
+
+
+def test_a_board_with_a_failed_or_open_item_or_red_tests_is_not_done(tmp_path):
+    base = dict(goal="x", cwd=str(tmp_path), edits_made=1, steers=[], board_used=True)
+    two = lambda s: {"a": {"title": "a", "status": "done"}, "b": {"title": "b", "status": s}}
+    assert W.board_done(SimpleNamespace(**base, board=two("done")))
+    assert not W.board_done(SimpleNamespace(**base, board=two("failed")))
+    assert not W.board_done(SimpleNamespace(**base, board=two("running")))
+    assert not W.board_done(SimpleNamespace(**base, board=two("done"), tests_green=False))
+    assert not W.board_done(SimpleNamespace(**base, board={"a": {"title": "a", "status": "done"}}))

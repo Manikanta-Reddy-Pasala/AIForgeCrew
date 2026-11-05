@@ -525,6 +525,53 @@ def _thought_out(msg) -> bool:
     return not strip_think((msg.get("content") or "").strip())
 
 
+def _window_full(role: str, msg: dict) -> bool:
+    """The length stop came from the window (prompt + reply reached it), not
+    from a server's output cap. Unknown counts: assume the window."""
+    usage = msg.get("_usage") or {}
+    used = int(usage.get("prompt_tokens") or 0) + int(usage.get("completion_tokens") or 0)
+    if not used:
+        return True
+    try:
+        from ._context._window import _effective_window
+        win = _effective_window(role)
+    except Exception:  # noqa: BLE001
+        win = 0
+    return not win or used >= 0.9 * win
+
+
+def _after_thought_out(client, role, msgs, send, choice, msg, session_id):
+    """A reply that spent its whole length reasoning. A forced final, or a
+    server output cap, gets one re-post with reasoning off right away (no
+    later step is guaranteed: the deadline stops the turn next). A full
+    window marks this role+model to condense earlier, and the empty step
+    makes the loop shrink the history and ask again; a forced final stays
+    forced for that."""
+    full = _window_full(role, msg)
+    if full:
+        from ._context._window import note_reasoning_room
+        note_reasoning_room(role)
+    if choice == "none" or not full:
+        log.info("reply spent on reasoning (finish=length, window full=%s) → re-post, "
+                 "reasoning off", full)
+        from aiforge_core.llm import model_outage
+        from aiforge_core.llm import reasoning as _reasoning
+        try:
+            with _reasoning.forced_off():
+                again = client.complete_raw(role, msgs, tools=send, tool_choice=choice)
+            if not _thought_out(again):
+                return again
+        except Exception as exc:  # noqa: BLE001 — keep the first reply
+            if type(exc).__name__ == "_LLMCancelled" or model_outage.stall_budget_spent(exc):
+                raise
+            log.debug("reasoning-off re-post failed: %s", exc)
+    else:
+        log.info("reply spent on reasoning (window full) → condense earlier, ask again")
+    if choice == "none":
+        _FORCE_FINAL.add(session_id)
+    return msg
+
+
 def make_native_complete_fn(mode: str = "act", builder: str = "",
                             session_id=None):
     """A drop-in ``complete_fn(role, convo) -> str`` that calls the model with
@@ -614,16 +661,7 @@ def make_native_complete_fn(mode: str = "act", builder: str = "",
                 degraded[0] = True
                 return client.complete(role, convo)
         if _thought_out(msg):
-            # The window's free part went on reasoning: no answer, no call (a
-            # reasoning model late in a long chat). Condense this role earlier
-            # from now on; the empty step makes the loop shrink the history to
-            # the new line and ask again, with room to answer. A forced final
-            # stays forced for that retry.
-            log.info("reply spent on reasoning (finish=length) → condense earlier, ask again")
-            from ._context._window import note_reasoning_room
-            note_reasoning_room(role)
-            if choice == "none":
-                _FORCE_FINAL.add(session_id)
+            msg = _after_thought_out(client, role, msgs, send, choice, msg, session_id)
         _log_native_step(msg.get("tool_calls") or [])
         step = _synth_step(msg)
         if step == _NATIVE_ARGS_UNRECOVERABLE:

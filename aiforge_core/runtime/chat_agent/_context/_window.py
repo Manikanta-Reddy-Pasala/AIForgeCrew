@@ -151,8 +151,18 @@ _SMALL_WINDOW_FRACTION = 0.75
 #: The condense point for a role whose model ran out of reply room while
 #: reasoning: about 40% of the window stays free for thinking + the answer.
 _REASONING_FRACTION = 0.6
-#: Roles whose model spent a whole reply on reasoning (process lifetime).
+#: (role, model) pairs whose model filled the window with reasoning (process
+#: lifetime). Keyed by model too: chats pick their own models.
 _NEEDS_ROOM: set = set()
+
+
+def _room_key(role) -> tuple:
+    try:
+        from aiforge_core.llm.router import resolve
+        model = resolve(role).model or ""
+    except Exception:  # noqa: BLE001
+        model = ""
+    return (str(role or ""), model)
 
 
 def note_reasoning_room(role: str | None) -> None:
@@ -160,7 +170,7 @@ def note_reasoning_room(role: str | None) -> None:
     no answer: condense it earlier from now on. A multi-day office run on a
     reasoning model hit 'ran out of room' once the condense point went from
     50% to 85% of the window (7bff2429)."""
-    _NEEDS_ROOM.add(str(role or ""))
+    _NEEDS_ROOM.add(_room_key(role))
 
 
 def _history_fraction(_role: str | None = None) -> float:
@@ -176,7 +186,7 @@ def _history_fraction(_role: str | None = None) -> float:
             pass
     win = _effective_window(_role)
     frac = _SMALL_WINDOW_FRACTION if 0 < win <= _SMALL_WINDOW_TOKENS else _CONDENSE_FRACTION
-    if str(_role or "") in _NEEDS_ROOM:
+    if _NEEDS_ROOM and _room_key(_role) in _NEEDS_ROOM:
         frac = min(frac, _REASONING_FRACTION)
     return frac
 

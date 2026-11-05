@@ -321,6 +321,9 @@ def _complete_raw_once(role: str, messages: list[dict], *,
     # Carried for the reader, never sent back: "length" with no content means
     # the model ran out of tokens while still reasoning (see _text._extract_text).
     out["_finish_reason"] = choice.get("finish_reason") if isinstance(choice, dict) else None
+    # ...and the token counts, so a reader can tell a full window from an
+    # output cap when a reply stops at "length".
+    out["_usage"] = body.get("usage") if isinstance(body.get("usage"), dict) else None
     return out
 
 

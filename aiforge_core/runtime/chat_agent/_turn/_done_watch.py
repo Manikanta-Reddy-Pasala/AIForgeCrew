@@ -139,6 +139,31 @@ def _green_now(st) -> bool:
         return False
 
 
+#: Replies that only re-check after every task-board item is closed, before
+#: the final answer is forced (the model itself said each part is done).
+BOARD_GRACE = 2
+
+
+def board_done(st) -> bool:
+    """Every item of a real task list (2+ items, at least one closed this turn)
+    is done or skipped, the turn's last test run is not red, and no user
+    message is waiting: the model has said, item by item, that the work is
+    done. Ends the turn sooner than the spec+suite check when the board was
+    worked (a long office run kept going after its last item closed)."""
+    if not _on() or not _applies(st):
+        return False
+    board = getattr(st, "board", None) or {}
+    if len(board) < 2 or getattr(st, "tests_green", None) is False:
+        return False
+    if getattr(st, "dw_blocked_at", None) == getattr(st, "edits_made", 0):
+        return False
+    if not getattr(st, "board_used", False) and not getattr(st, "board_touched", False):
+        return False                    # nobody worked this board in this turn
+    # done or skipped, not merely closed: a failed item is work not done
+    return all(isinstance(it, dict) and it.get("status") in ("done", "skipped")
+               for it in board.values())
+
+
 def done_now(st) -> bool:
     if not _on() or not _applies(st) or getattr(st, "edits_made", 0) <= 0:
         return False
@@ -391,25 +416,37 @@ def watch(st, n):
     except Exception:  # noqa: BLE001 — the probe never breaks a step
         pass
     looked = _replies_only_looked(st)
-    if not done_now(st):
+    spec = done_now(st)
+    board = not spec and board_done(st)
+    if not (spec or board):
         st.done_noted_at = None              # not (or no longer) done
         return None
     if getattr(st, "done_noted_at", None) is None:
         st.done_noted_at = n
         st.dw_quiet = 0
-        yield {"type": "thought", "role": "system",
-               "text": "✓ the work checks out (full suite green, every new named part "
-                       "present) — asking for the final answer"}
         from ._convo import _append_directive
-        _append_directive(st, (
-            "[harness — not the user] Done check: the full test suite passes on the "
-            "current code and every new name, signature and file the request spells "
-            "out is in the code. Mark the finished task-board items done, and unless "
-            "something the request asks for is still missing (then name it and do "
-            "it), stop now: reply with your final summary and no tool call."))
+        if spec:
+            yield {"type": "thought", "role": "system",
+                   "text": "✓ the work checks out (full suite green, every new named "
+                           "part present) — asking for the final answer"}
+            _append_directive(st, (
+                "[harness — not the user] Done check: the full test suite passes on "
+                "the current code and every new name, signature and file the request "
+                "spells out is in the code. Mark the finished task-board items done, "
+                "and unless something the request asks for is still missing (then "
+                "name it and do it), stop now: reply with your final summary and no "
+                "tool call."))
+        else:
+            yield {"type": "thought", "role": "system",
+                   "text": "✓ every task-board item is done — asking for the summary"}
+            _append_directive(st, (
+                "[harness — not the user] Every item on the task board is done. "
+                "Unless something the request asks for is still missing (then add it "
+                "to the board and do it), stop now: reply with your final summary of "
+                "what was done and what was checked, and no tool call."))
         return None
     st.dw_quiet = (getattr(st, "dw_quiet", 0) + 1) if looked else 0
-    if (st.dw_quiet < grace() or _jobs_running(st)
+    if (st.dw_quiet < (grace() if spec else BOARD_GRACE) or _jobs_running(st)
             or getattr(st, "dw_forced", 0) >= MAX_FORCED):
         return None
     st.dw_forced = getattr(st, "dw_forced", 0) + 1
@@ -417,7 +454,8 @@ def watch(st, n):
     from .._native import force_final_next
     force_final_next(getattr(st, "session_id", None))
     yield {"type": "thought", "role": "system",
-           "text": f"✓ {grace()} replies after the done check, only re-checking — the "
+           "text": f"✓ {grace() if spec else BOARD_GRACE} replies after the done "
+                   "check, only re-checking — the "
                    "next step writes the final answer"}
     from ._convo import _append_directive
     _append_directive(st, (
@@ -426,4 +464,5 @@ def watch(st, n):
     return None
 
 
-__all__ = ["IDLE", "MAX_FORCED", "done_now", "grace", "pre_existing", "watch"]
+__all__ = ["BOARD_GRACE", "IDLE", "MAX_FORCED", "board_done", "done_now", "grace",
+           "pre_existing", "watch"]
