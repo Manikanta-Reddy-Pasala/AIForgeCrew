@@ -388,6 +388,20 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
     _sig = yield from _plan_first.on_text(st, step)
     if _sig == "continue":
         return "continue"
+    if getattr(st, "deadline_final", None) is None:
+        _sig = yield from _finish_checks(st, step, builder, strict_finish, plan_mode,
+                                         readonly_mode, cwd, _asks, _wt_fp0)
+        if _sig == "continue":
+            return "continue"
+    # (the turn's time is up: the forced answer is the answer; a send-back
+    # here would only be cut off by the deadline one step later)
+    return (yield from _accept_final(st, step, builder, strict_finish, plan_mode,
+                                     readonly_mode, cwd, _asks, _wt_fp0))
+
+
+def _finish_checks(st, step, builder, strict_finish, plan_mode, readonly_mode,
+                   cwd, _asks, _wt_fp0):
+    """The checks a FINAL must pass; "continue" when one sends it back."""
     _sig = yield from _final_nudges(st, step, builder, strict_finish, _asks)
     if _sig == "continue":
         return "continue"
@@ -411,6 +425,12 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
     _sig = yield from _verify_on_final(st, step, cwd, plan_mode, builder)
     if _sig == "continue":
         return "continue"
+    return None
+
+
+def _accept_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
+                  cwd, _asks, _wt_fp0):
+    """FINAL accepted: close out the tracker, fire Stop, emit the answer."""
     # FINAL accepted on a multi-part turn: close out the tracker so
     # the dock never ends with stale pending items the model forgot
     # to flip.

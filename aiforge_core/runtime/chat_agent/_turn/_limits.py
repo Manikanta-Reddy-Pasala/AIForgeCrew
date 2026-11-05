@@ -163,9 +163,10 @@ def _deadline_guard(st, n):
         return None
     now = time.monotonic()          # read once: one clock per check
     yield from _time_wrap(st, now)
-    if getattr(st, "time_warned", False) and getattr(st, "deadline_final", None) is None \
+    if getattr(st, "deadline_final", None) is None \
             and st.extensions_used >= st.ext_budget and now > st.turn_deadline:
-        # Out of time, no slice to buy, and the model was told to wrap up:
+        # Out of time and no slice to buy (warned or not: one long step can
+        # jump the whole wrap-up window):
         # one more step, a final answer with no tools, so the turn ends with
         # a summary instead of being cut mid-edit. The next check stops it.
         st.deadline_final = n
