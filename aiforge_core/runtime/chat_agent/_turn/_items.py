@@ -391,6 +391,17 @@ def at_step_start(st):
     except Exception:  # noqa: BLE001 — a failed reset keeps the old context
         pass
     st.item_fresh_close = False
+    try:
+        from ._timebox import check
+        note = check(st)
+        if note:
+            from ._convo import _append_directive
+            _append_directive(st, note)
+            yield {"type": "thought", "role": "system",
+                   "text": "⏱ one board item is taking far longer than its share — "
+                           "asking the agent to move on and come back to it"}
+    except Exception:  # noqa: BLE001 — advisory only
+        pass
 
 
 def reset_pending_ready(st) -> bool:
