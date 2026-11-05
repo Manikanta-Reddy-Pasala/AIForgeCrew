@@ -606,10 +606,36 @@ def _file_under(ix, path: str) -> bool:
     return False
 
 
+def _no_file(ix, path: str) -> str:
+    """The gap line for a missing file, naming the same file one or more
+    folders up when it is there: a repo folder named like its package
+    (``mini/`` holding ``mini/``) got ``stairs.py`` at the root, and the
+    model, told only "mini/stairs.py does not exist", called the check stale
+    twice. Only a strict tail of the requested folders counts
+    (``mini/stairs.py`` → ``stairs.py``), never a same-named file in an
+    unrelated folder (``blog/models.py`` is not ``accounts/models.py``)."""
+    rel = path[2:] if path.startswith("./") else path
+    want = rel.split("/")
+    files = set(_all_files(ix) or [])
+    if want[-1].startswith("__"):
+        return f"{path} does not exist"      # __init__.py: one in every package
+    for k in range(1, len(want)):
+        near = "/".join(want[k:])
+        if near in files:
+            return (f"{path} does not exist ({HINT_LEAD}./{near}; if you wrote "
+                    "it there by mistake, move it)")
+    return f"{path} does not exist"
+
+
+#: The lead of the misplaced-file hint in a gap line; ``_contract_gate``
+#: strips the hint before it reads names from a gap.
+HINT_LEAD = "the request's path is from the project root; there is "
+
+
 def _check(c: dict, ix: _Index, declared: set) -> "str | None":
     k = c["kind"]
     if k == "file":
-        return None if _file_under(ix, c["path"]) else f"{c['path']} does not exist"
+        return None if _file_under(ix, c["path"]) else _no_file(ix, c["path"])
     if k in ("method", "member"):
         if c["cls"] not in ix.classes:
             if c["cls"] in ix.imported or c["cls"] not in declared:

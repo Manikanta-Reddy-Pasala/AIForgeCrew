@@ -685,3 +685,40 @@ def test_a_line_asking_to_fill_a_stub_is_no_waiver(tmp_path):
     gaps = S.missing(req, str(tmp_path))
     assert any("SC.get_completions is only a stub" in g for g in gaps)
     assert not any("Store.get" in g for g in gaps)              # Protocol[T]
+
+
+def test_a_missing_file_names_the_same_file_one_level_up(tmp_path):
+    """A repo folder named like its package: the model wrote stairs.py at the
+    root and read "mini/stairs.py does not exist" as a stale check."""
+    (tmp_path / "mini").mkdir()
+    (tmp_path / "mini" / "__init__.py").write_text("")
+    (tmp_path / "archive").mkdir()
+    (tmp_path / "archive" / "stairs.py").write_text("")
+    (tmp_path / "stairs.py").write_text("def ways(n):\n    return 1\n")
+    gaps = S.missing("In `mini/stairs.py` write the stairs helper.", str(tmp_path))
+    assert gaps == ["mini/stairs.py does not exist (the request's path is from the "
+                    "project root; there is ./stairs.py; if you wrote it there by "
+                    "mistake, move it)"]
+    assert G._bare(gaps[0]) == "mini/stairs.py does not exist"
+    # the hint's file name neither waives nor steers away the requested one
+    assert G._gap_names(gaps[0]) == G._gap_names("mini/stairs.py does not exist")
+    st = SimpleNamespace(goal="In `mini/stairs.py` write it.", cwd=str(tmp_path),
+                         steers=["leave archive alone"], convo=[], edits_made=1)
+    assert G._gaps(st, cached=False) == gaps
+
+
+def test_a_same_named_file_in_an_unrelated_folder_gives_no_hint(tmp_path):
+    (tmp_path / "accounts").mkdir()
+    (tmp_path / "accounts" / "models.py").write_text("x = 1\n")
+    (tmp_path / "blog").mkdir()
+    (tmp_path / "blog" / "views.py").write_text("x = 1\n")
+    assert S.missing("Create `blog/models.py`.", str(tmp_path)) == [
+        "blog/models.py does not exist"]
+
+
+def test_a_package_init_gets_no_hint(tmp_path):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("")
+    (tmp_path / "__init__.py").write_text("")
+    assert S.missing("Create `pkg/sub/__init__.py`.", str(tmp_path)) == [
+        "pkg/sub/__init__.py does not exist"]

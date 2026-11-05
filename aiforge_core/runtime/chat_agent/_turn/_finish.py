@@ -194,7 +194,8 @@ def _open_items_note(st, builder, text: str = "") -> str:
         gaps = getattr(st, "contract_gaps", None) or []
         if gaps:
             more = f" and {len(gaps) - 6} more" if len(gaps) > 6 else ""
-            out += f"\n\n_{_CONTRACT_HEAD} {'; '.join(gaps[:6])}{more}._"
+            from ._contract_gate import _bare
+            out += f"\n\n_{_CONTRACT_HEAD} {'; '.join(_bare(g) for g in gaps[:6])}{more}._"
         return out
     except Exception:  # noqa: BLE001 — the line never blocks an answer
         return ""

@@ -41,9 +41,19 @@ def _gaps(st, cached: bool = True) -> list:
     said = " ".join(str(s) for s in (getattr(st, "steers", None) or [])).lower()
     if said:
         gaps = [g for g in gaps if not any(
-            w.lower() in said for w in re.findall(r"[A-Za-z_]\w{3,}", g)
+            w.lower() in said for w in re.findall(r"[A-Za-z_]\w{3,}", _bare(g))
             if w.lower() not in _GAP_WORDS)]
     return gaps
+
+
+_HINT = re.compile(r"\s*\(the request's path is from the project root; there is \S+; "
+                   r"if you wrote it there by mistake, move it\)")
+
+
+def _bare(gap: str) -> str:
+    """A gap line without its misplaced-file hint (spec_contract._no_file):
+    the found file's name must not waive or steer away the requested one."""
+    return _HINT.sub("", gap)
 
 
 _WAIVE = re.compile(r"not required:\s*`?(\.?/?[A-Za-z_][\w./-]{2,})", re.I)
@@ -54,7 +64,7 @@ def _gap_names(gap: str) -> set:
     """The names a gap line is about: "Cart.total is missing" → {Cart.total,
     total}; never its own words."""
     out = set()
-    for t in _NAME.findall(gap):
+    for t in _NAME.findall(_bare(gap)):
         t = t.rstrip(".")
         if t.lower() in _GAP_WORDS or len(t) < 3:
             continue
