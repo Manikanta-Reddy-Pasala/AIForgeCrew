@@ -135,21 +135,69 @@ def _ride(st, note: str) -> None:
         st.convo.append({"role": "user", "content": note})
 
 
+#: Share of the last slice left at the halfway spec check.
+_HALF_SHARE = 0.5
+
+
+def _spec_gaps(st) -> list:
+    try:
+        from ._contract_gate import open_gaps
+        return open_gaps(st)
+    except Exception:  # noqa: BLE001 — advisory only
+        return []
+
+
+def _gap_list(gaps: list, shown: int) -> str:
+    more = f"; … and {len(gaps) - shown} more" if len(gaps) > shown else ""
+    return "; ".join(g.rstrip(".") for g in gaps[:shown]) + more
+
+
+def _half_check(st) -> None:
+    """Halfway through the last slice: what the request names that the code
+    still lacks. The finish gate never runs on a turn the clock ends (click
+    t4: 24 minutes debugging completion order, ``click.core._fast_exit`` that
+    20 of 37 hidden tests need never added, and the check that knew it was
+    skipped by the forced final). Said even when a condense-time progress
+    note already listed the same gaps: unchanged gaps a slice later are the
+    point."""
+    st.half_checked = True
+    gaps = _spec_gaps(st)
+    if not gaps:
+        return
+    st.contract_progress_said = tuple(gaps)
+    _ride(st, "[automated spec check — not the user] Most of this turn's time is "
+              "used. The request names these and the code does not have them yet: "
+              + _gap_list(gaps, 25) + ". Add them now, exactly where and as the "
+              "request writes them, before more debugging or polish: a part that "
+              "is not there fails every test that uses it.")
+
+
 def _time_wrap(st, now: float):
     """Last time slice: tell the model once to land what it is on and answer,
     so a turn that runs out of time ends with intact code and a summary
-    instead of being cut mid-edit."""
+    instead of being cut mid-edit. Halfway through it, a spec check."""
     if st.turn_deadline is None or getattr(st, "time_warned", False) \
             or st.extensions_used < st.ext_budget:
         return
     left = st.turn_deadline - now
-    if not 0 < left <= max(_WRAP_MIN_S, _WRAP_SHARE * st.turn_budget_s):
+    wrap_at = max(_WRAP_MIN_S, _WRAP_SHARE * st.turn_budget_s)
+    if wrap_at < left <= _HALF_SHARE * st.turn_budget_s \
+            and not getattr(st, "half_checked", False):
+        _half_check(st)          # inside the wrap window the wrap note says it
+    if not 0 < left <= wrap_at:
         return
     st.time_warned = True
+    gaps = _spec_gaps(st)
+    if gaps:
+        st.contract_progress_said = tuple(gaps)
+    todo = (" (no new parts)." if not gaps else
+            "; then add what the request names that the code still lacks, "
+            "where each is a small change (a name, a wrapper, a rename), and "
+            "nothing else new: " + _gap_list(gaps, 10) + ".")
     _ride(st, f"[harness — not the user] About {int(left // 60) or 1} min of this "
-              "turn's time budget is left. Finish the change you are on (no new "
-              "parts), run the tests once, then reply FINAL: what is done, what "
-              "is not, and what still fails.")
+              "turn's time budget is left. Finish the change you are on" + todo
+              + " Run the tests once, then reply FINAL: what is done, what is "
+              "not, and what still fails.")
     yield {"type": "thought", "role": "system",
            "text": "⏳ time budget nearly used — asking the agent to wrap up"}
 

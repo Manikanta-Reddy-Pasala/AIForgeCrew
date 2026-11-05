@@ -68,3 +68,61 @@ def test_the_forced_final_answer_skips_the_finish_checks(monkeypatch):
     evs, sig = _drain(_finish._handle_final(st, {"text": "x"}, None, False, False, False,
                                             "/tmp", [], ""))
     assert sig == "return" and not called and evs[-1]["text"] == "summary"
+
+
+def test_halfway_through_the_last_slice_names_missing_parts_once(monkeypatch):
+    from aiforge_core.runtime.chat_agent._turn import _contract_gate as G
+    monkeypatch.setattr(G, "_gaps", lambda st, cached=True: ["click.core._fast_exit is not defined"])
+    st = _st(left=400)
+    st.edits_made, st.goal = 3, "x"
+    st.contract_progress_said = ("click.core._fast_exit is not defined",)  # a condense said it
+    _drain(L._deadline_guard(st, 5))
+    assert "_fast_exit" in st.convo[-1]["content"] and "Most of this turn" in st.convo[-1]["content"]
+    st.convo.append({"role": "assistant", "content": "ok"})
+    _drain(L._deadline_guard(st, 6))
+    assert st.convo[-1]["role"] == "assistant"            # said once
+    st.turn_deadline = time.monotonic() + 100               # wrap-up names it again
+    _drain(L._deadline_guard(st, 7))
+    assert "_fast_exit" in st.convo[-1]["content"] and "Finish the change" in st.convo[-1]["content"]
+
+
+def test_no_halfway_note_before_half_the_slice_or_without_edits(monkeypatch):
+    from aiforge_core.runtime.chat_agent._turn import _contract_gate as G
+    monkeypatch.setattr(G, "_gaps", lambda st, cached=True: ["x is not defined"])
+    st = _st(left=700)
+    st.edits_made, st.goal = 3, "x"
+    _drain(L._deadline_guard(st, 5))
+    assert "Most of" not in st.convo[-1]["content"]
+    st = _st(left=400)
+    st.edits_made, st.goal = 0, "x"
+    _drain(L._deadline_guard(st, 5))
+    assert "Most of" not in st.convo[-1]["content"]
+
+
+def test_a_step_that_jumps_into_the_wrap_window_gets_one_note(monkeypatch):
+    from aiforge_core.runtime.chat_agent._turn import _contract_gate as G
+    monkeypatch.setattr(G, "_gaps", lambda st, cached=True: ["x is not defined."])
+    st = _st(left=100)
+    st.edits_made, st.goal = 3, "x"
+    _drain(L._deadline_guard(st, 5))
+    c = st.convo[-1]["content"]
+    assert "Most of" not in c and c.count("x is not defined") == 1
+    assert "no new parts" not in c and "defined.." not in c
+
+
+def test_after_the_wrap_note_a_condense_adds_no_progress_note(monkeypatch):
+    from aiforge_core.runtime.chat_agent._turn import _contract_gate as G
+    monkeypatch.setattr(G, "_gaps", lambda st, cached=True: ["x is not defined"])
+    st = _st(left=100)
+    st.edits_made, st.goal = 3, "x"
+    _drain(L._deadline_guard(st, 5))
+    assert st.time_warned and G.progress_note(st) is None
+
+
+def test_a_strict_finish_subtask_is_not_told_to_add_parts(monkeypatch):
+    from aiforge_core.runtime.chat_agent._turn import _contract_gate as G
+    monkeypatch.setattr(G, "_gaps", lambda st, cached=True: ["x is not defined"])
+    st = _st(left=400)
+    st.edits_made, st.goal, st.strict_finish = 3, "x", True
+    _drain(L._deadline_guard(st, 5))
+    assert "x is not defined" not in st.convo[-1]["content"]

@@ -136,7 +136,19 @@ def gate(st, step, builder=None, strict_finish=False):
     return "continue"
 
 
-__all__ = ["gate", "message"]
+__all__ = ["gate", "message", "open_gaps", "progress_note"]
+
+
+def open_gaps(st) -> list:
+    """What the request names that the code lacks right now (fresh read,
+    waivers applied); [] for a question, a review, nothing built yet, or a
+    builder / strict-finish subtask (other parts are done elsewhere, as in
+    ``gate``)."""
+    if getattr(st, "readonly_mode", False) or getattr(st, "plan_mode", False) \
+            or getattr(st, "builder", None) or getattr(st, "strict_finish", False) \
+            or not getattr(st, "edits_made", 0):
+        return []
+    return _waived(st, _gaps(st, cached=False))
 
 
 def progress_note(st) -> "str | None":
@@ -145,10 +157,9 @@ def progress_note(st) -> "str | None":
     the model tried to finish; a run that never did (click af5, 51 minutes,
     ShellComplete defined where the request's module never exported it, 0/37)
     heard nothing. Advisory: it never ends or blocks a step."""
-    if getattr(st, "readonly_mode", False) or getattr(st, "plan_mode", False) \
-            or not getattr(st, "edits_made", 0):
-        return None
-    gaps = _waived(st, _gaps(st, cached=False))
+    if getattr(st, "time_warned", False) or getattr(st, "deadline_final", None) is not None:
+        return None          # the wrap-up note owns the list from then on
+    gaps = open_gaps(st)
     key = tuple(gaps)
     if not gaps or getattr(st, "contract_progress_said", None) == key:
         return None
