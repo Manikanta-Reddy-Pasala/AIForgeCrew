@@ -153,9 +153,11 @@ def _capture_sections(md_store, path: Path, text: str, out: dict) -> None:
     Scoped by REPO, not per-heading. Passing the heading as ``topic`` would mint
     one compacted-<heading>.md brief per section (dozens of briefs from one file
     = proliferation). The heading is preserved inside the fact text instead, so
-    all of a repo's sections fold into its single compacted-<repo>.md brief. The
-    scope classifier may still promote a genuinely cross-project fact to the
-    global (shared) brief.
+    all of a repo's sections fold into its single compacted-<repo>.md brief.
+    A repo's own instruction files are about that repo: no per-section scope
+    classification (one model call per section, in the middle of the first
+    turn in the repo: 15-50 calls on sqlglot's CONTRIBUTING). The idle
+    re-scope passes can still promote a section later.
     """
     repo = _repo_hint(path)
     for heading, body in _split_sections(text):
@@ -165,7 +167,7 @@ def _capture_sections(md_store, path: Path, text: str, out: dict) -> None:
             out["skipped"] += 1
             continue
         try:
-            md_store.capture("learning", fact, repo=repo,
+            md_store.capture("learning", fact, repo=repo, classify=False,
                              title=(heading or path.name)[:70],
                              source=f"instructions:{path.name}")
             out["captured"] += 1

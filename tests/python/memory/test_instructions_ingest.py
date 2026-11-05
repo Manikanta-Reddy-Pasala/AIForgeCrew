@@ -75,3 +75,19 @@ def test_discover_scans_tree_multiple_names_skips_vendor(tmp_path):
     assert any("/a/CLAUDE.md" in f for f in found)
     assert any("/b/AGENTS.md" in f for f in found)          # multi-name discovery
     assert not any("node_modules" in f for f in found)
+
+
+def test_instruction_sections_are_captured_without_a_scope_call_each(monkeypatch, tmp_path):
+    """sqlglot: 15-50 'classify ONE captured knowledge item' calls in the
+    middle of the first turn in the repo, one per CONTRIBUTING section."""
+    from aiforge_core.memory import instructions_ingest as ii
+    seen = []
+
+    class _Store:
+        @staticmethod
+        def capture(kind, fact, **kw):
+            seen.append(kw.get("classify", True))
+    text = "# A\n" + "x " * 80 + "\n\n# B\n" + "y " * 80 + "\n"
+    out = {"sections": 0, "skipped": 0, "captured": 0}
+    ii._capture_sections(_Store, tmp_path / "CONTRIBUTING.md", text, out)
+    assert seen and not any(seen)
