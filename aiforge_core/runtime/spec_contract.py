@@ -291,6 +291,7 @@ class _Index:
         self.classes: dict = {}      # name -> {member: params | None}
         self.bases: dict = {}        # name -> [base names]
         self.funcs: dict = {}        # name -> [params, ...]
+        self.stubs: set = set()      # (class or "", name) whose body is only a stub
         self.imported: set = set()   # names brought in by `from x import y`
         self.modules: dict = {}      # rel path -> set of top-level names
         self.open_modules: set = set()   # rel paths with __getattr__ / import *
@@ -339,6 +340,9 @@ class _Index:
                 self._add_class(node)
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 self.funcs.setdefault(node.name, []).append(_arg_names(node))
+        for node in _top_level(tree.body):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _stub(node):
+                self.stubs.add(("", node.name))
 
     def _add_class(self, node: ast.ClassDef) -> None:
         members = self.classes.setdefault(node.name, {})
@@ -350,6 +354,10 @@ class _Index:
         for item in node.body:
             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 members[item.name] = _arg_names(item)
+                if _stub(item):
+                    self.stubs.add((node.name, item.name))
+                else:
+                    self.stubs.discard((node.name, item.name))
                 # attributes the methods set: self.items = {}
                 for sub in ast.walk(item):
                     if isinstance(sub, ast.Attribute) and isinstance(sub.ctx, ast.Store) \
@@ -383,6 +391,46 @@ class _Index:
                 return True, params
             unknown = unknown or not known
         return (False, None) if unknown else (True, "MISSING")
+
+
+def _stub(fn) -> bool:
+    """A def whose body, past a docstring, is only ``raise NotImplementedError``
+    or ``...``: the name is there, the behaviour is not. A click run ended at
+    0/37 with ``ShellComplete.get_completions`` a stub while the check called
+    every named part present. (``pass`` is not: a no-op hook is often meant.)"""
+    body = list(fn.body)
+    if body and isinstance(body[0], ast.Expr) and isinstance(
+            getattr(body[0], "value", None), ast.Constant) \
+            and isinstance(body[0].value.value, str):
+        body = body[1:]
+    if len(body) != 1:
+        return False
+    b = body[0]
+    if isinstance(b, ast.Expr) and isinstance(b.value, ast.Constant) and b.value.value is Ellipsis:
+        return True
+    if isinstance(b, ast.Raise) and b.exc is not None:
+        exc = b.exc.func if isinstance(b.exc, ast.Call) else b.exc
+        return isinstance(exc, ast.Name) and exc.id == "NotImplementedError"
+    return False
+
+
+#: Near a name, the request says it is meant to stay unimplemented here.
+_ABSTRACT = re.compile(r"\babstract\b|NotImplementedError|\bsubclass(?:es)?\s+"
+                       r"(?:must|should)\s+(?:implement|override)|\bno-?op\b|"
+                       r"\bdoes nothing\b|\bplaceholder\b", re.I)
+
+
+def _meant_abstract(request: str, text: str) -> bool:
+    """The request says this name is abstract / raises NotImplementedError /
+    does nothing, on a line that names it ("- `format_completion(item)` ->
+    str (abstract in the base class).")."""
+    req = request or ""
+    for m in re.finditer(re.escape(text), req):
+        line = req[req.rfind("\n", 0, m.start()) + 1:]
+        nl = line.find("\n")
+        if _ABSTRACT.search(line if nl < 0 else line[:nl]):
+            return True
+    return False
 
 
 def _guard_only(test) -> bool:
@@ -540,7 +588,13 @@ def _check(c: dict, ix: _Index, declared: set) -> "str | None":
         if params == "MISSING":
             return f"{c['cls']}.{c['name']} is missing"
         lacks = _takes(params, c.get("params") or [])
-        return f"{c['cls']}.{c['name']} does not take {', '.join(lacks)}" if lacks else None
+        if lacks:
+            return f"{c['cls']}.{c['name']} does not take {', '.join(lacks)}"
+        if (c["cls"], c["name"]) in ix.stubs and not _meant_abstract(
+                c.get("request", ""), c["text"]):
+            return (f"{c['cls']}.{c['name']} is only a stub (raise "
+                    "NotImplementedError / ...): implement it")
+        return None
     if k == "func":
         name = c["name"]
         if hasattr(builtins, name) or name in ix.imported:
@@ -555,7 +609,12 @@ def _check(c: dict, ix: _Index, declared: set) -> "str | None":
                 return None
             return f"function {name} is missing"
         best = min((_takes(s, c.get("params") or []) for s in sigs), key=len)
-        return f"{name}() does not take {', '.join(best)}" if best else None
+        if best:
+            return f"{name}() does not take {', '.join(best)}"
+        if ("", name) in ix.stubs and len(sigs) == 1 and not _meant_abstract(
+                c.get("request", ""), c["text"]):
+            return f"{name}() is only a stub (raise NotImplementedError / ...): implement it"
+        return None
     if k == "export":
         if not _local_package(c["module"], ix):
             return None                      # a library path: django.db.models.Model
@@ -612,6 +671,7 @@ def missing(request: str, root: str, key=None) -> list:
     declared = _declared(request, cs, ix) if code else set()
     out = []
     for c in files + code:
+        c.setdefault("request", request)
         try:
             gap = _check(c, ix, declared)
         except Exception:  # noqa: BLE001

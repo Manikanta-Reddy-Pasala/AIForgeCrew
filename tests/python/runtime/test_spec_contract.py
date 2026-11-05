@@ -631,3 +631,26 @@ def test_a_forced_write_never_reaches_the_next_turn_or_a_steer():
     _native.force_write_next(9)
     _native.clear_force_write(9)
     assert 9 not in _native._FORCE_WRITE
+
+
+def test_a_named_method_left_as_a_stub_is_not_done(tmp_path):
+    """click: ShellComplete.get_completions stayed `raise NotImplementedError`
+    for a whole run (0/37) while every named part counted as present."""
+    req = ("Add `ShellComplete.get_completions(args, incomplete)`.\n"
+           "- `ShellComplete.format_completion(item)` -> str (abstract in the base class).\n"
+           "And `helper(x)`.\n")
+    (tmp_path / "m.py").write_text(
+        "class ShellComplete:\n"
+        "    def get_completions(self, args, incomplete):\n"
+        "        \"\"\"Return items.\"\"\"\n        raise NotImplementedError\n"
+        "    def format_completion(self, item):\n        raise NotImplementedError\n\n"
+        "def helper(x):\n    ...\n")
+    gaps = S.missing(req, str(tmp_path))
+    assert any("ShellComplete.get_completions is only a stub" in g for g in gaps)
+    assert not any("format_completion" in g for g in gaps)       # the request says abstract
+    assert any("helper() is only a stub" in g for g in gaps)
+    (tmp_path / "m.py").write_text(
+        "class ShellComplete:\n    def get_completions(self, args, incomplete):\n        return []\n"
+        "    def format_completion(self, item):\n        raise NotImplementedError\n\n"
+        "def helper(x):\n    pass\n")
+    assert S.missing(req, str(tmp_path)) == []
