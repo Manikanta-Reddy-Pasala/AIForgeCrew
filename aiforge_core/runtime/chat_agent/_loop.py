@@ -288,6 +288,10 @@ def _run_action_path(st, step, n, cwd, session_id):
     # which parses to None/non-dict; every tool does `args.get(...)` and would
     # crash. An empty dict lets the tool return its own instructive error.
     args = step["args"] if isinstance(step["args"], dict) else {}
+    # Another agent's tool name (read_file, write, edit, bash...) runs the
+    # tool it means, so every gate below judges the real call.
+    from ._tools._aliases import resolve as _resolve_alias
+    name, args = _resolve_alias(name, args, TOOLS)
     # A raw family command becomes the project's recipe BEFORE the signature
     # and every gate (stall, approval, risk) so they all judge what runs.
     _apply_recipe(name, args, cwd)
