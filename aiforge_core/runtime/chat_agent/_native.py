@@ -572,6 +572,56 @@ def _after_thought_out(client, role, msgs, send, choice, msg, session_id):
     return msg
 
 
+#: A tool call written into the text of a reply (qwen's own markup), in the
+#: shape of a real call at the start of a line: a final answer that quotes
+#: ``<tool_call>`` inline is not one.
+_TEXT_CALL = re.compile(
+    r"^[ \t]*(?:<tool_call>\s*(?:\{|<function=)|<function=[\w.-]+>\s*<parameter=)"
+    r".*?(?:</tool_call>|</function>\s*(?!\s*</tool_call>)|\Z)", re.M | re.S)
+_PROSE_ONLY = ("[harness — not the user] Tools are off for this reply: a tool call "
+               "written as text is not run. Write the final answer now, in plain "
+               "prose: what is done, what is not, and what still fails.")
+_NO_SUMMARY = ("(no final summary: the last reply was a tool call written as text "
+               "while tools were off — the harness notes below say what changed)")
+
+
+def _prose(msg) -> str:
+    from aiforge_core.llm.client._text import strip_think
+    return strip_think(str(msg.get("content") or ""))
+
+
+def _cut_calls(msg) -> str:
+    return re.sub(r"\n{3,}", "\n\n", _TEXT_CALL.sub("", _prose(msg))).strip()
+
+
+def _final_in_prose(client, role, msgs, send, msg):
+    """A forced final (tools off) that came back as a tool call written as
+    text: click t5's whole answer was ``<tool_call><function=run_command>…``.
+    One re-post asking for prose; still a call, the markup is cut out (of
+    the re-post first); nothing left, a fixed line, never the reasoning."""
+    if not _TEXT_CALL.search(_prose(msg)):
+        return msg
+    log.info("forced final came back as a text tool call → re-post for prose")
+    again = None
+    try:
+        from aiforge_core.llm import reasoning as _reasoning
+        with _reasoning.forced_off():   # the deadline is near: no long think
+            again = client.complete_raw(role, msgs + [{"role": "user", "content": _PROSE_ONLY}],
+                                        tools=send, tool_choice="none")
+        if not _TEXT_CALL.search(_prose(again)) and _prose(again).strip():
+            return {**again, "tool_calls": None}
+    except Exception as exc:  # noqa: BLE001 — keep the first reply
+        from aiforge_core.llm import model_outage
+        if model_outage._is_cancel(exc) or model_outage.stall_budget_spent(exc):
+            raise
+        log.debug("prose re-post failed: %s", exc)
+    for m in (again, msg):
+        cut = _cut_calls(m) if isinstance(m, dict) else ""
+        if cut:
+            return {**m, "content": cut, "tool_calls": None, "reasoning_content": None}
+    return {**msg, "content": _NO_SUMMARY, "tool_calls": None, "reasoning_content": None}
+
+
 def make_native_complete_fn(mode: str = "act", builder: str = "",
                             session_id=None):
     """A drop-in ``complete_fn(role, convo) -> str`` that calls the model with
@@ -662,6 +712,8 @@ def make_native_complete_fn(mode: str = "act", builder: str = "",
                 return client.complete(role, convo)
         if _thought_out(msg):
             msg = _after_thought_out(client, role, msgs, send, choice, msg, session_id)
+        if choice == "none":
+            msg = _final_in_prose(client, role, msgs, send, msg)
         _log_native_step(msg.get("tool_calls") or [])
         step = _synth_step(msg)
         if step == _NATIVE_ARGS_UNRECOVERABLE:

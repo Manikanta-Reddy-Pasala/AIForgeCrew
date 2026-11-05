@@ -124,10 +124,15 @@ def _note_green_tests(st, name, args, result, cwd) -> None:
         st.last_green_fp = None
         if _full_and_honest(name, args):
             st.last_full_test = (name, dict(args or {}))
+            st.last_full_green = False
         return
     if not _full_and_honest(name, args):
         return                        # proves nothing about the whole suite
     st.last_full_test = (name, dict(args or {}))
+    # a narrow green run after a red full one leaves the suite red: the
+    # board-done check reads this, not tests_green (click t5 closed on a
+    # green single-file run 4 s after the full suite failed)
+    st.last_full_green = True
     text = result_text(result)
     if not (known or (runner_green(text) and _RAN.search(text))):
         return                        # a build with no test count ran no tests
@@ -259,6 +264,8 @@ def _verify_fix(st, step, cwd, plan_mode, builder):
         st.verify_capped_at = here
         _vok, _vout = _verify_known_ok(st, *_project_verify(st, cwd))
         _gaming.note_test_result(st, _vok)
+        if _vok is not None:
+            st.last_full_green = _vok     # a whole-tree verdict
         if _vok is False:
             try:
                 from aiforge_core.runtime.parallel_subtasks import _fail_count
@@ -274,6 +281,8 @@ def _verify_fix(st, step, cwd, plan_mode, builder):
            "text": "⧗ running the project's checks before finishing…"}
     _vok, _vout = _verify_known_ok(st, *_project_verify(st, cwd))
     _gaming.note_test_result(st, _vok)
+    if _vok is not None:
+        st.last_full_green = _vok         # a whole-tree verdict
     if _vok is not False:
         return None
     try:

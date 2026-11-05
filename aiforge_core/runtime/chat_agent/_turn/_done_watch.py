@@ -160,7 +160,9 @@ def board_done(st) -> bool:
         return False
     if not getattr(st, "board_touched", False):
         return False                    # the model did not work this board this turn
-    if getattr(st, "last_full_test", None) and getattr(st, "tests_green", None) is not True:
+    if getattr(st, "last_full_test", None) and (
+            getattr(st, "tests_green", None) is not True
+            or getattr(st, "last_full_green", None) is False):
         return False                    # a full test ran this turn: it must be green
     items = [it for it in board.values() if isinstance(it, dict)]
     if len(items) != len(board):
@@ -324,7 +326,7 @@ def _probe_tests(st):
     verdict = own_test_verdict(st, cmd)
     if verdict is None:
         return
-    st.tests_green = verdict[0]
+    st.tests_green = st.last_full_green = verdict[0]
     if verdict[0]:
         from ._outcomes import content_fingerprint
         st.last_green_fp = content_fingerprint(getattr(st, "cwd", None))

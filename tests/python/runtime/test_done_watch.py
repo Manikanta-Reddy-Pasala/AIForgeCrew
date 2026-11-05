@@ -389,3 +389,40 @@ def test_a_waived_gap_does_not_hold_a_done_board_and_the_check_runs_once_per_edi
     monkeypatch.setattr(_contract_gate, "_waived", lambda st, gaps: [])   # the model waived it
     assert W.board_done(st) and W.board_done(st)
     assert len(calls) == 1                                  # same code state: no re-index
+
+
+def test_a_narrow_green_run_after_a_red_full_suite_does_not_close_the_board(monkeypatch):
+    """click t5: board done fired on a green single-file run 4 s after the
+    full suite failed."""
+    from types import SimpleNamespace
+    from aiforge_core.runtime.chat_agent._turn import _done_watch as DW
+    monkeypatch.setenv("AIFORGE_CHAT_DONE_WATCH", "1")
+    st = SimpleNamespace(board={"a": {"title": "A", "status": "done"},
+                                "b": {"title": "B", "status": "done"}},
+                         board_touched=True, tests_green=True, last_full_green=False,
+                         last_full_test=("run_tests", {}), edits_made=3, dw_blocked_at=None,
+                         dw_board_gaps=(3, False))
+    assert not DW.board_done(st)
+    st.last_full_green = True
+    assert DW.board_done(st)
+
+
+def test_a_red_check_on_final_marks_the_full_suite_red(monkeypatch):
+    from types import SimpleNamespace
+    from aiforge_core.runtime.chat_agent._turn import _outcomes as O
+    monkeypatch.setattr(O, "_project_verify", lambda st, cwd: (False, "1 failed"))
+    monkeypatch.setattr(O, "_verify_known_ok", lambda st, ok, out: (ok, out))
+    monkeypatch.setattr(O, "_verify_on_final_enabled", lambda: True)
+    monkeypatch.setattr(O, "content_fingerprint", lambda cwd: "fp")
+    monkeypatch.setattr(O, "_verify_max_rounds", lambda: 2)
+    st = SimpleNamespace(last_full_green=True, tests_green=True, last_green_fp=None,
+                         edits_made=2, verify_rounds=0, convo=[], verify_fails=None)
+    g = O._verify_fix(st, {"text": "done"}, "/tmp", False, None)
+    try:
+        while True:
+            next(g)
+    except StopIteration:
+        pass
+    except Exception:  # noqa: BLE001 — later send-back plumbing; the flag is set first
+        pass
+    assert st.last_full_green is False

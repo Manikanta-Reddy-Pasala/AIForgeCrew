@@ -63,3 +63,93 @@ def test_forced_off_is_scoped_to_the_block():
     with reasoning.forced_off():
         assert reasoning.reasoning_off("m", "", "planner")
     assert reasoning._OFF.get() is False
+
+
+def test_a_forced_final_written_as_a_text_tool_call_is_asked_again_in_prose(monkeypatch):
+    """click t5: the whole answer was ``<tool_call><function=run_command>…``."""
+    from aiforge_core.llm import client
+    asked = []
+
+    def raw(role, msgs, tools=None, tool_choice="auto"):
+        asked.append((tool_choice, msgs[-1]["content"]))
+        if len(asked) == 1:
+            return {"role": "assistant", "_finish_reason": "stop",
+                    "content": "<tool_call>\n<function=run_command>\n<parameter=cmd>\npytest\n"
+                               "</parameter>\n</function>\n</tool_call>"}
+        return {"role": "assistant", "content": "FINAL: done A, B fails", "_finish_reason": "stop"}
+    monkeypatch.setattr(client, "complete_raw", raw)
+    monkeypatch.setattr(_native, "_model_for", lambda role: "m")
+    _native.force_final_next(92)
+    fn = _native.make_native_complete_fn(session_id=92)
+    out = fn("doer", [{"role": "system", "content": "s"}, {"role": "user", "content": "x"}])
+    assert "B fails" in out and "<tool_call>" not in out
+    assert asked[1][0] == "none" and "plain prose" in asked[1][1]
+
+
+def test_a_second_text_tool_call_has_the_markup_cut_out(monkeypatch):
+    from aiforge_core.llm import client
+    monkeypatch.setattr(client, "complete_raw", lambda role, msgs, tools=None, tool_choice="auto": {
+        "role": "assistant", "_finish_reason": "stop",
+        "content": "Summary: parts 1-3 done.\n<tool_call>\n<function=run_command>\n"
+                   "<parameter=cmd>\nx\n"})
+    monkeypatch.setattr(_native, "_model_for", lambda role: "m")
+    _native.force_final_next(93)
+    fn = _native.make_native_complete_fn(session_id=93)
+    out = fn("doer", [{"role": "system", "content": "s"}, {"role": "user", "content": "x"}])
+    assert "parts 1-3 done" in out and "<function=" not in out
+
+
+def test_an_ordinary_step_with_text_markup_is_left_alone(monkeypatch):
+    from aiforge_core.llm import client
+    calls = []
+    def raw(role, msgs, tools=None, tool_choice="auto"):
+        calls.append(1)
+        return {"role": "assistant", "_finish_reason": "stop", "content": "use <tool_call> tags"}
+    monkeypatch.setattr(client, "complete_raw", raw)
+    monkeypatch.setattr(_native, "_model_for", lambda role: "m")
+    fn = _native.make_native_complete_fn(session_id=94)
+    fn("doer", [{"role": "system", "content": "s"}, {"role": "user", "content": "x"}])
+    assert calls == [1]
+
+
+def test_a_final_that_quotes_the_markup_inline_is_kept_whole(monkeypatch):
+    from aiforge_core.llm import client
+    calls = []
+    def raw(role, msgs, tools=None, tool_choice="auto"):
+        calls.append(1)
+        return {"role": "assistant", "_finish_reason": "stop",
+                "content": "Done. The parser now handles `<tool_call>` blocks.\n\nStill failing: test_x."}
+    monkeypatch.setattr(client, "complete_raw", raw)
+    monkeypatch.setattr(_native, "_model_for", lambda role: "m")
+    _native.force_final_next(95)
+    fn = _native.make_native_complete_fn(session_id=95)
+    out = fn("doer", [{"role": "system", "content": "s"}, {"role": "user", "content": "x"}])
+    assert calls == [1] and "Still failing: test_x" in out
+
+
+def test_a_final_that_is_only_calls_twice_says_so_not_the_reasoning(monkeypatch):
+    from aiforge_core.llm import client
+    monkeypatch.setattr(client, "complete_raw", lambda role, msgs, tools=None, tool_choice="auto": {
+        "role": "assistant", "_finish_reason": "stop", "reasoning_content": "<tool_call>{}",
+        "content": "<tool_call>\n<function=run_command>\n<parameter=cmd>\nls\n</parameter>\n"
+                   "</function>\n</tool_call>"})
+    monkeypatch.setattr(_native, "_model_for", lambda role: "m")
+    _native.force_final_next(96)
+    fn = _native.make_native_complete_fn(session_id=96)
+    out = fn("doer", [{"role": "system", "content": "s"}, {"role": "user", "content": "x"}])
+    assert "no final summary" in out and "<tool_call>" not in out
+
+
+def test_markup_inside_a_think_block_is_not_a_call(monkeypatch):
+    from aiforge_core.llm import client
+    calls = []
+    def raw(role, msgs, tools=None, tool_choice="auto"):
+        calls.append(1)
+        return {"role": "assistant", "_finish_reason": "stop",
+                "content": "<think>\n<tool_call>\n<function=ls>\n<parameter=p>\n</think>\nAll done."}
+    monkeypatch.setattr(client, "complete_raw", raw)
+    monkeypatch.setattr(_native, "_model_for", lambda role: "m")
+    _native.force_final_next(97)
+    fn = _native.make_native_complete_fn(session_id=97)
+    out = fn("doer", [{"role": "system", "content": "s"}, {"role": "user", "content": "x"}])
+    assert calls == [1] and "All done." in out
