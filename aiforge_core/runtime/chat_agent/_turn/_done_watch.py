@@ -165,16 +165,29 @@ def board_done(st) -> bool:
     items = [it for it in board.values() if isinstance(it, dict)]
     if len(items) != len(board):
         return False
-    try:
-        if _raw_gaps(st):
-            return False            # the spec check still finds a named part missing
-    except Exception:  # noqa: BLE001
-        pass
     # done or skipped, not merely closed: a failed item is work not done, and
     # an item accepted UNVERIFIED (advisory board) still needs the check
-    return all(it.get("status") in ("done", "skipped")
+    if not all(it.get("status") in ("done", "skipped")
                and not str(it.get("note") or "").startswith("UNVERIFIED")
-               for it in items)
+               for it in items):
+        return False
+    return not _named_part_missing(st)
+
+
+def _named_part_missing(st) -> bool:
+    """The spec check still finds a named part missing (waived ones aside).
+    Read once per code state: the repo index is not rebuilt every step."""
+    edits = getattr(st, "edits_made", 0)
+    hit = getattr(st, "dw_board_gaps", None)
+    if hit and hit[0] == edits:
+        return hit[1]
+    try:
+        from ._contract_gate import _waived
+        missing = bool(_waived(st, _raw_gaps(st) or []))
+    except Exception:  # noqa: BLE001
+        missing = False
+    st.dw_board_gaps = (edits, missing)
+    return missing
 
 
 def done_now(st) -> bool:

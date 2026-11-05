@@ -374,4 +374,18 @@ def test_a_done_board_with_a_named_part_still_missing_is_not_done(tmp_path, monk
     monkeypatch.setattr(W, "_raw_gaps", lambda st: ["Cart.total is missing"])
     assert not W.board_done(st)
     monkeypatch.setattr(W, "_raw_gaps", lambda st: [])
+    st.edits_made = 2                                   # a new code state: checked again
     assert W.board_done(st)
+
+
+
+def test_a_waived_gap_does_not_hold_a_done_board_and_the_check_runs_once_per_edit(tmp_path, monkeypatch):
+    from aiforge_core.runtime.chat_agent._turn import _contract_gate
+    two = {"a": {"title": "a", "status": "done"}, "b": {"title": "b", "status": "done"}}
+    st = SimpleNamespace(goal="x", cwd=str(tmp_path), edits_made=1, steers=[],
+                         board_touched=True, board=two)
+    calls = []
+    monkeypatch.setattr(W, "_raw_gaps", lambda st: calls.append(1) or ["export_csv is missing"])
+    monkeypatch.setattr(_contract_gate, "_waived", lambda st, gaps: [])   # the model waived it
+    assert W.board_done(st) and W.board_done(st)
+    assert len(calls) == 1                                  # same code state: no re-index
