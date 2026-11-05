@@ -572,6 +572,15 @@ def _explicit_grants(session_id) -> list:
     return chat_write_grants.granted(session_id) if session_id is not None else []
 
 
+def _approvals_on(st) -> bool:
+    """This chat asks before acting (its own toggle, else the mode's default)."""
+    try:
+        from aiforge_core.runtime import chat_approve
+        return chat_approve.approvals_required(getattr(st, "session_id", None))
+    except Exception:  # noqa: BLE001 — unknown: ask, as before
+        return True
+
+
 def _workspace_jail(st, name, args, cwd):
     """Workspace jail (on by default). The session's cwd is otherwise only a
     DEFAULT: an absolute path in a mutating file tool (or, in a chat, a shell
@@ -592,13 +601,16 @@ def _workspace_jail(st, name, args, cwd):
         _jailed, _roots = [], []
     if not _jailed:
         return None
-    if interactive:
+    if interactive and _approvals_on(st):
         return (yield from _ask_write_grant(st, name, args, cwd, _jailed))
+    # Unattended, or approvals off for this chat: refuse at once. Asking here
+    # waited out the 15-minute approval timeout with nobody to answer (a test
+    # file written one folder above the repo stalled a 3-minute task for 15).
     _allowed = [cwd] + _roots
     result = {
         "ok": False, "error": "outside_workspace",
         "blocked_paths": _jailed, "allowed_folders": _allowed,
-        "hint": ("Write refused: this unattended run may only write in "
+        "hint": ("Write refused: this run may only write in "
                  + ", ".join(map(str, _allowed)) + ". Do NOT write there "
                  "another way (a shell redirect, cp, mv); do the work "
                  "inside those folders or report that it needs a folder "

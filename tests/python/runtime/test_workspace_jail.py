@@ -345,3 +345,27 @@ def test_an_unattended_shell_write_is_left_alone(monkeypatch, tmp_path):
         st, "run_command", {"cmd": "mkdir -p /srv/cache/x"}, str(ws), None))
     assert events == []
     assert ret is None
+
+
+def test_a_write_outside_the_folder_with_approvals_off_is_refused_at_once(monkeypatch, tmp_path):
+    """Asking waited out the 15-minute approval timeout with nobody to answer:
+    a test file written one folder above the repo stalled a 3-minute task."""
+    from types import SimpleNamespace
+    from aiforge_core.runtime import chat_approve, scope_guard
+    from aiforge_core.runtime.chat_agent._turn import _action
+    monkeypatch.setattr(chat_approve, "approvals_required", lambda sid: False)
+    monkeypatch.setattr(scope_guard, "outside_workspace",
+                        lambda *a, **k: [str(tmp_path.parent / "tests" / "t.py")])
+    monkeypatch.setattr(_action, "_team_repo_guard", lambda *a, **k: iter(()))
+    st = SimpleNamespace(session_id=7, convo=[], user_roots=[])
+    g = _action._workspace_jail(st, "file_write", {"path": "../tests/t.py", "content": "x"},
+                                str(tmp_path))
+    evs = []
+    try:
+        while True:
+            evs.append(next(g))
+    except StopIteration as e:
+        sig = e.value
+    assert sig == "continue"
+    assert not any(e.get("type") == "approval" for e in evs)
+    assert "outside_workspace" in st.convo[-1]["content"]
