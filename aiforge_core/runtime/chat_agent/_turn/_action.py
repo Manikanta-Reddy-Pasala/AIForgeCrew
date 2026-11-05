@@ -909,6 +909,20 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     return None
 
 
+def _rewrite_gate(st, name, args, cwd):
+    """A whole-file write that would drop lines this turn added to the file
+    is refused (``_rewrite_guard``). Returns "continue" when refused."""
+    from ._rewrite_guard import refusal
+    lost = refusal(st, name, args, cwd)
+    if lost is None:
+        return None
+    yield {"type": "thought", "role": "system",
+           "text": "⛔ refused a whole-file write that would drop this turn's own edits"}
+    yield {"type": "tool", "name": name, "args": args, "result": lost}
+    st.convo.append({"role": "user", "content": f"OBSERVATION: {json.dumps(lost)}"})
+    return "continue"
+
+
 def _discard_gate(st, name, args, cwd):
     """A shell command that would throw away this turn's own edits (an
     `rm core.py` / `git checkout .` reset mid-run) is refused before any
