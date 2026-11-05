@@ -341,7 +341,8 @@ class _Index:
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 self.funcs.setdefault(node.name, []).append(_arg_names(node))
         for node in _top_level(tree.body):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _stub(node):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _stub(node) \
+                    and not _meant_empty(node):
                 self.stubs.add(("", node.name))
 
     def _add_class(self, node: ast.ClassDef) -> None:
@@ -351,10 +352,14 @@ class _Index:
                 b.attr if isinstance(b, ast.Attribute) else "?")
             # `class Session(requests.Session)`: the base is not this class.
             self.bases.setdefault(node.name, []).append("?" if base == node.name else base)
+        abstract_cls = any(
+            (b.id if isinstance(b, ast.Name) else getattr(b, "attr", "")) in _ABSTRACT_BASES
+            for b in node.bases) or any(
+            k.arg == "metaclass" for k in node.keywords)
         for item in node.body:
             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 members[item.name] = _arg_names(item)
-                if _stub(item):
+                if _stub(item) and not abstract_cls and not _meant_empty(item):
                     self.stubs.add((node.name, item.name))
                 else:
                     self.stubs.discard((node.name, item.name))
@@ -414,9 +419,24 @@ def _stub(fn) -> bool:
     return False
 
 
+#: A class built to have bodiless methods (an interface, an ABC).
+_ABSTRACT_BASES = {"Protocol", "ABC", "ABCMeta"}
+_EMPTY_DECORATORS = {"abstractmethod", "abstractproperty", "overload"}
+
+
+def _meant_empty(fn) -> bool:
+    """``@abstractmethod`` / ``@overload``: a body of ``...`` is the point."""
+    for d in fn.decorator_list:
+        d = d.func if isinstance(d, ast.Call) else d
+        name = d.id if isinstance(d, ast.Name) else getattr(d, "attr", "")
+        if name in _EMPTY_DECORATORS:
+            return True
+    return False
+
+
 #: Near a name, the request says it is meant to stay unimplemented here.
 _ABSTRACT = re.compile(r"\babstract\b|NotImplementedError|\bsubclass(?:es)?\s+"
-                       r"(?:must|should)\s+(?:implement|override)|\bno-?op\b|"
+                       r"(?:must\s+|should\s+)?(?:implement|override)|\bno-?op\b|"
                        r"\bdoes nothing\b|\bplaceholder\b", re.I)
 
 

@@ -654,3 +654,21 @@ def test_a_named_method_left_as_a_stub_is_not_done(tmp_path):
         "    def format_completion(self, item):\n        raise NotImplementedError\n\n"
         "def helper(x):\n    pass\n")
     assert S.missing(req, str(tmp_path)) == []
+
+
+def test_an_abc_protocol_or_abstractmethod_body_is_not_a_stub(tmp_path):
+    req = ("Add `Base.run(x)`, `Port.send(m)`, `Shape.area()` and `Calc.add(a)`; "
+           "subclasses implement `Calc.add(a)`.\n")
+    (tmp_path / "m.py").write_text(
+        "from abc import ABC, abstractmethod\nfrom typing import Protocol\n"
+        "class Base(ABC):\n    def run(self, x):\n        raise NotImplementedError\n"
+        "class Port(Protocol):\n    def send(self, m): ...\n"
+        "class Shape:\n    @abstractmethod\n    def area(self):\n        ...\n"
+        "class Calc:\n    def add(self, a):\n        raise NotImplementedError\n")
+    assert S.missing(req, str(tmp_path)) == []
+
+
+def test_a_steer_or_waiver_word_does_not_drop_a_stub_gap():
+    from aiforge_core.runtime.chat_agent._turn import _contract_gate as CG
+    for w in ("only", "stub", "raise", "implement", "notimplementederror"):
+        assert w in CG._GAP_WORDS
