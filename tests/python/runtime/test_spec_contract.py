@@ -607,7 +607,6 @@ def test_not_type_checking_body_is_exported_and_its_else_is_not(tmp_path):
 
 
 def test_probe_guard_forces_a_write_step_after_two_ignored_notes(monkeypatch):
-    monkeypatch.setenv("AIFORGE_CHAT_FORCE_WRITE", "1")     # off by default since the bench
     from aiforge_core.runtime.chat_agent._turn import _probe_guard as P
     from aiforge_core.runtime.chat_agent import _native
     st = SimpleNamespace(edits_made=1, probe_edits_seen=1, cwd="/srv/work", session_id=5,

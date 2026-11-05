@@ -22,15 +22,15 @@ EVERY = 10
 #: between edits, which the in-a-row count never saw.
 PROBES_EVERY = 8
 #: Shell commands in a row (two notes ignored) before the next call may only
-#: edit files. Off by default (``AIFORGE_CHAT_FORCE_WRITE=1`` turns it on): the
-#: bench runs that forced the most writes (8-9) were the slowest and lowest
-#: scoring — a model still investigating wrote a guess.
+#: edit files. Off switch: ``AIFORGE_CHAT_FORCE_WRITE=0``. (Turned off once:
+#: the next click run made 281 commands and 253 reads, 615 calls, against
+#: 196 and 85 with it on — the step is what ends a probing streak.)
 FORCE_AT = 20
 
 
 def _force_on() -> bool:
-    return os.environ.get("AIFORGE_CHAT_FORCE_WRITE", "0").strip().lower() in (
-        "1", "true", "yes", "on")
+    return os.environ.get("AIFORGE_CHAT_FORCE_WRITE", "1").strip().lower() not in (
+        "0", "false", "no", "off")
 _PROBE = re.compile(r"\bpython[0-9.]*\s+(?:-c\b|-\s*<<|<<)")
 
 
