@@ -25,6 +25,11 @@ from aiforge_core.runtime import chat_status
     "any update?", "give me an update", "show me the status",
     "where are you at", "what step are you on?", "is anything happening?",
     "still there?", "STATUS!!",
+    # about a side task / sub-task by name (classified as a new side task before)
+    "check the sub task status", "check side task status", "check status",
+    "status of sub task?", "status of the side task", "is the side task done?",
+    "is the subtask still running", "has the job finished?", "how is the sub task going",
+    "please check the subtask progress", "how\u2019s the sub task going",
 ])
 def test_these_ask_how_the_run_is_going(text):
     assert chat_status.is_status_request(text) is True
@@ -38,6 +43,18 @@ def test_these_ask_how_the_run_is_going(text):
     "run another agent to check the logs for errors",
     "what is the status of the invoice with number 4412 in the database "
     "and also send it to the customer by email today please",
+    "check the build status and fix it", "check the side task status and restart it",
+    "start a side task to check the status page", "is the status endpoint done? add tests",
+    "check the status code handling in api.py",
+    "the status of a paid invoice should be PAID, not PENDING",
+    "status for expired users must be inactive", "check the order status",
+    "check that it returns the right status", "how is the user going to log in? use OAuth",
+    "how are we going to handle retries", "are the agents still using the old config?",
+    "is the build still failing? the import path is wrong",
+    "has the job finished? if so merge", "is the task done properly? I think tests are missing",
+    "how is the migration going to work with old rows", "how is this going to handle nulls",
+    "status of the order should be PAID after payment", "check the CI status",
+    "is the agent stuck in a loop when the token expires",
 ])
 def test_these_do_not(text):
     assert chat_status.is_status_request(text) is False
@@ -272,3 +289,20 @@ def test_a_commands_quiet_time_is_real_not_the_stuck_threshold(job_env):
     assert 1 < info["for_s"] < 8
     assert cmd_jobs.for_session(99999) == []
     job.kill()
+
+
+def test_a_status_question_about_a_side_task_never_starts_one():
+    """'is the side task done?' carries the side-task cue words; it used to
+    start a fresh agent with that sentence as its whole request."""
+    from aiforge_core.api.routes._chat._side_tasks import classify
+    for text in ("check side task status", "is the side task done?",
+                 "status of the side task"):
+        assert classify(text) == "steer", text
+    assert classify("is the side task done? stop it if not") == "steer"
+    for text in ("did the side task finish?", "check on the side task", "where is the side task at",
+                 "side task status?", "what did the side task find"):
+        assert classify(text) == "steer", text
+    assert classify("run another side task to lint") == "task"
+    assert classify("check the side task status and restart it") == "steer"
+    assert classify("start a side task to check the logs") == "task"
+    assert classify("meanwhile, write the docs") == "task"

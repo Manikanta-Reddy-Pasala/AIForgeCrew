@@ -19,19 +19,51 @@ import time
 # contain the word.
 _MAX_WORDS = 14
 
+#: What a status question about other work names (the agent's own run is
+#: "you" / "it" in the patterns below).
+_WORK_NOUN = r"(?:(?:side|sub)[ -]?tasks?|subtasks?|sidetasks?|background\s+(?:jobs?|tasks?)|jobs?|agents?|watch(?:er)?s?|schedulers?)"
 _ONLY = re.compile(r"^(?:status|progress|update|eta|sitrep)(?:\s+(?:please|pls|now|report))?$")
 _PATTERNS = [re.compile(p) for p in (
     r"\b(?:what(?:'s| is| are| s)?|whats)\b.{0,24}\b(?:status|progress|happening|going on|state|doing|up to)\b",
-    r"\bhow\b.{0,16}\b(?:far|long|much (?:is )?left|is it going|are you doing|is this going|goes it)\b",
-    r"\b(?:are|is)\s+(?:you|it|this|that)\s+(?:still\s+)?(?:working|running|stuck|done|finished|alive|hung|frozen|there|going|progressing)\b",
+    r"\bhow\b.{0,16}\b(?:far|long|much (?:is )?left|is it going(?!\s+to\b)|are you doing|is this going(?!\s+to\b)|goes it)\b",
+    r"\b(?:are|is)\s+(?:you|it|this|that)\s+(?:still\s+)?(?:working|running|stuck|done|finished|alive|hung|frozen|there|going|progressing)\b(?!\s+to\b)",
     r"\b(?:any|an?|the|your|latest)\s+(?:update|progress|status)\b",
     r"\b(?:give|send|show|tell)\s+me\s+(?:an?\s+|the\s+)?(?:update|status|progress)\b",
     r"\bwhere\s+(?:are|is)\s+(?:you|we|it|this)\b",
     r"\bwhat\s+(?:step|stage|part)\b",
     r"\b(?:is\s+)?anything\s+(?:happening|going on|moving)\b",
     r"\bstill\s+(?:there|alive|working|running|on it)\b",
-    r"\bhow(?:'s| is)\s+it\s+going\b",
+    r"\bhow(?:'s| is)\s+it\s+going\b(?!\s+to\b)",
+    # about a side task / sub-task / job by name: "check the sub task status",
+    # "status of the side task?", "is the side task done?" — classified as a
+    # request for a NEW side task (its cue words), which then went exploring.
+    # Only when the message names that work: "check the order status" or
+    # "status of a paid invoice should be PAID" is the agent's to read.
+    r"^(?:please\s+)?check\s+(?:the\s+)?(?:status|progress)$",
+    rf"^(?:please\s+)?check\b.{{0,24}}\b{_WORK_NOUN}\b.{{0,16}}\b(?:status|progress)$",
+    rf"^(?:the\s+)?(?:status|progress)\s+(?:of|on|for)\s+(?:the\s+|my\s+|your\s+|that\s+)?{_WORK_NOUN}$",
+    rf"^(?:is|are|has|have)\s+(?:the\s+|my\s+|your\s+|that\s+|this\s+)?{_WORK_NOUN}\s+"
+    r"(?:done|finished|complete|completed|started|ended|stuck|"
+    r"(?:still\s+)?(?:running|working|going))(?:\s+yet)?$",
+    rf"^how(?:'s| s| is| are)\s+(?:the\s+|my\s+|your\s+|that\s+)?{_WORK_NOUN}\s+(?:going|doing)$",
 )]
+
+#: "status" as part of a thing in the code ("the status code handling",
+#: "a status field"), not a question about the work.
+_STATUS_THING = re.compile(r"\bstatus\s+(?:code|codes|field|fields|column|columns|page|endpoint|"
+                           r"bar|flag|flags|line|enum|handling|check|checks|route|api|value|values)\b")
+#: A question with an order or a remark joined on ("if so merge", "but the
+#: tests are missing") is for the agent, not the status card.
+_FOLLOW_ON = re.compile(r"\b(?:then|if\s+so|if\s+not|if\s+yes|otherwise|once|after\s+that|"
+                        r"i\s+think|but|also|properly|correctly|because|since)\b")
+_FILLER = re.compile(r"^(?:thanks|thank you|thx|pls|please|ok|okay|now|hey|hi|\W*)$")
+#: A requirement, not a question: "the status of a paid invoice should be PAID".
+_SPEC_WORDS = re.compile(r"\b(?:should|must|needs?\s+to|has\s+to|have\s+to|ought\s+to)\b")
+#: Words that make a short message a task even when it mentions a status:
+#: "check the build status and fix it" is work.
+_WORK_VERB = re.compile(r"\b(?:fix|add|implement|create|write|change|build\s+(?:it|the)|deploy|"
+                        r"delete|remove|install|refactor|rename|start\s+(?:a|an|the|another)|"
+                        r"spawn|launch|make|run\s+(?:it|the|a|tests?)|retry|restart|rerun|stop|kill)\b")
 
 
 def is_status_request(text: str) -> bool:
@@ -45,6 +77,12 @@ def is_status_request(text: str) -> bool:
         return False
     if _ONLY.match(t):
         return True
+    if _WORK_VERB.search(t) or _STATUS_THING.search(t) or _SPEC_WORDS.search(t) \
+            or _FOLLOW_ON.search(t):
+        return False
+    parts = [x.strip(" ,'") for x in re.split(r"[.!?;\n]+", raw.lower())]
+    if len([x for x in parts if x and not _FILLER.match(x)]) > 1:
+        return False             # "is the job done? then merge": the rest is an order
     try:
         from aiforge_core.api.routes._chat._overlap import has_edit_intent
         if has_edit_intent(raw):

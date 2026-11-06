@@ -42,6 +42,11 @@ _SIDE_CUE_RE = re.compile(
     r"|\bin\s+parallel\b|\bmeanwhile\b|\bin\s+the\s+meantime\b"
     r"|\bside\s+task\b|\bat\s+the\s+same\s+time\b|\bspin\s+(?:off|up)\b",
     re.IGNORECASE)
+#: "the / my / that side task" points at one already running ("is the side
+#: task done? stop it if not", "check on the side task"): the run's business,
+#: not an order for a new agent; "a / another side task" asks for a new one.
+_EXISTING_SIDE_RE = re.compile(r"\b(?:the|my|your|that|this|those)\s+(?:side|sub)[\s-]*tasks?\b", re.I)
+_NEW_SIDE_RE = re.compile(r"\b(?:a|an|another|new|second|one\s+more)\s+(?:side|sub)[\s-]*tasks?\b", re.I)
 _ANSWER_CHARS = 12000
 _CONTEXT_TURNS = 6
 _CONTEXT_CHARS = 400
@@ -84,6 +89,19 @@ def classify(text: str, mode: str = "simple") -> str:
             return "steer"
     except Exception:  # noqa: BLE001
         pass
+    try:
+        from aiforge_core.runtime import chat_status
+        if chat_status.is_status_request(t):
+            # "is the side task done?" names a side task; it asks about one,
+            # it does not order a new one (a fresh agent with that sentence
+            # as its whole request went off doing work nobody asked for)
+            return "steer"
+    except Exception:  # noqa: BLE001
+        pass
+    if _EXISTING_SIDE_RE.search(t) and not _NEW_SIDE_RE.search(t):
+        return "steer"
+    if re.match(r"^\W*(?:side|sub)[\s-]*tasks?\s+(?:status|progress|done|result)", t, re.I):
+        return "steer"           # "side task status?"
     return "task" if _SIDE_CUE_RE.search(t) else "steer"
 
 
