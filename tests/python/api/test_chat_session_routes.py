@@ -131,7 +131,8 @@ def test_sessions_are_listed(client, store):
     store["sessions"] = [{"id": 1}, {"id": 2}]
     # each row also says whether a run is going in it (none here)
     assert client.get("/api/chat/sessions").json() == [
-        {"id": 1, "running": False}, {"id": 2, "running": False}]
+        {"id": 1, "running": False, "background": False},
+        {"id": 2, "running": False, "background": False}]
 
 
 def test_a_session_is_read_with_its_messages(client, store):

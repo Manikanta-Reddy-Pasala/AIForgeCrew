@@ -33,3 +33,31 @@ def chat_overview(session_id: int,
             "asked": g.get("asked") or "",
             "decisions": chat_decisions.rows(session_id)[-limit:],
             "turn": chat_decisions.current_turn(session_id)}
+
+
+@router.get("/api/chat/sessions/{session_id}/background",
+            responses={404: {"description": "Not found"}})
+def chat_background_work(session_id: int) -> dict:
+    """The chat's work outside a turn — watches, background commands and
+    scheduled jobs — for the progress panel: ``items`` (``kind``, ``title``,
+    ``state`` running|scheduled, times) and ``active`` (something busy now)."""
+    from aiforge_core.runtime import chat_background, chat_store
+    if not chat_store.get_session(session_id):
+        raise HTTPException(404, f"session {session_id} not found")
+    items = chat_background.items(session_id)
+    return {"items": items, "active": any(i["state"] == "running" for i in items)}
+
+
+@router.post("/api/chat/sessions/{session_id}/background/stop",
+             responses={404: {"description": "Not found"}})
+def chat_background_stop(session_id: int) -> dict:
+    """Stop the chat's watches, background commands and the scheduled run in
+    flight (the schedule stays; a live turn and the chat's services do not
+    stop). Returns what stopped and the background left."""
+    from aiforge_core.runtime import chat_background, chat_store
+    if not chat_store.get_session(session_id):
+        raise HTTPException(404, f"session {session_id} not found")
+    stopped = chat_background.stop(session_id)
+    items = chat_background.items(session_id)
+    return {"stopped": stopped, "items": items,
+            "active": any(i["state"] == "running" for i in items)}

@@ -15,6 +15,7 @@ export interface ChatSession {
   learn?: boolean;        // false = this chat writes no memory
   parent_id?: number | null;   // set on a side task: the chat it was spun off
   running?: boolean;          // a run is going in this chat right now
+  background?: boolean;       // a watch, background command or scheduled run is busy in it
   workdir?: string | null;   // this chat's own git worktree, when it has one
   temporary?: boolean;       // nothing of it is kept; deleted when closed
 }
@@ -449,4 +450,24 @@ export type ChatOverview = { goals: ChatGoal[]; now: string[]; current: string; 
 
 export function chatOverview(id: number): Promise<ChatOverview> {
   return j<ChatOverview>(`/chat/sessions/${id}/overview`);
+}
+
+/** Work of a chat outside a turn: watches, background commands, scheduled jobs. */
+export type ChatBackgroundItem = {
+  kind: 'watch' | 'command' | 'schedule' | string; id: string; title: string;
+  state: 'running' | 'scheduled' | string; since?: string; for_s?: number;
+  cron?: string; next_run_at?: string; last_run_at?: string; expires_at?: string;
+  last_error?: string | null;
+};
+export type ChatBackground = { items: ChatBackgroundItem[]; active: boolean };
+
+export function chatBackground(id: number): Promise<ChatBackground> {
+  return j<ChatBackground>(`/chat/sessions/${id}/background`);
+}
+
+/** Stop only the chat's background work (watches, background commands, the
+ *  scheduled run in flight): not a live turn, not its services, not the schedule. */
+export function chatBackgroundStop(id: number): Promise<ChatBackground> {
+  return apiFetch(`/chat/sessions/${id}/background/stop`, { method: 'POST' })
+    .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))));
 }

@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { chatOverview, ChatOverview, ChatDecision } from '../api';
+import { chatOverview, ChatOverview, ChatDecision, chatBackground, ChatBackground,
+         ChatBackgroundItem, chatBackgroundStop } from '../api';
 import { AgentStep, SubtaskItem } from './Chat.types';
 import { describeStep } from '../stepDescribe';
 
@@ -20,6 +21,12 @@ const STATUS_ICON: Record<string, string> = {
 };
 const CLOSED = new Set(['done', 'won', 'skipped', 'failed', 'cancelled', 'left']);
 const POLL_MS = 4000;
+// Background work (a watch, a scheduled job) runs with no turn: always polled,
+// often while some is there, rarely while there is none; never in a hidden tab.
+const BG_POLL_MS = 5000;
+const BG_IDLE_POLL_MS = 30000;
+const BG_ICON: Record<string, string> = { watch: '👁', command: '▶', schedule: '⏱' };
+const BG_KIND: Record<string, string> = { watch: 'Watch', command: 'Command', schedule: 'Scheduled' };
 const TICK_MS = 30000;
 const CHANGES_SHOWN = 4;
 // Lines worded from the user's message (goal changes, a question on it) are
@@ -170,12 +177,58 @@ function TaskRow({ s, notes, now }: Readonly<{ s: SubtaskItem; notes: ChatDecisi
   );
 }
 
-function NowCard({ running, next, busy, awaiting, items, action, phase }: Readonly<{
+/** "14:05", or the date and time when it is not today. */
+function whenAt(iso?: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);       // the server sends its offset
+  if (Number.isNaN(d.getTime())) return '';
+  const today = new Date().toDateString() === d.toDateString();
+  return today ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : d.toLocaleString([], { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' });
+}
+
+/** A title with `code` spans rendered as code. */
+function withCode(text: string): ReactNode {
+  return text.split('`').map((part, i) => (i % 2 ? <code key={i}>{part}</code> : part));
+}
+
+function BackgroundRow({ it }: Readonly<{ it: ChatBackgroundItem }>) {
+  const on = it.state === 'running';
+  let when = '';
+  if (on) when = it.kind === 'schedule' ? 'running now' : 'running';
+  else if (it.next_run_at) when = `next ${whenAt(it.next_run_at)}`;
+  return (
+    <li className={`run-ov-bg ${on ? 'on' : ''}`} title={(it.cron ? `${it.title} — ${it.cron}` : it.title).replaceAll('`', '')}>
+      {on ? <span className="run-ov-pulse" aria-hidden="true" />
+        : <span className="run-ov-bg-icon" aria-hidden="true">{BG_ICON[it.kind] ?? '•'}</span>}
+      <span className="sr-only">{BG_KIND[it.kind] ?? 'Background'}: </span>
+      <span className="run-ov-bg-title">{withCode(it.title)}{it.cron && <span className="run-ov-ago"> ({it.cron})</span>}</span>
+      {when && <span className="run-ov-ago">· {when}</span>}
+      {it.last_error && <div className="run-ov-note old">last error: {it.last_error}</div>}
+    </li>
+  );
+}
+
+function NowCard({ running, next, busy, awaiting, items, action, phase, bgBusy }: Readonly<{
   running?: SubtaskItem; next?: SubtaskItem; busy: boolean; awaiting?: boolean;
   items: SubtaskItem[]; action: string; phase?: string;
+  /** the first busy background item, when no turn runs */
+  bgBusy?: ChatBackgroundItem;
 }>) {
   if (awaiting) {
     return <div className="run-ov-now ask"><div className="run-ov-now-title">Waiting for your reply in the chat</div></div>;
+  }
+  if (!busy && bgBusy) {
+    // No turn holds the chat, but its watch or scheduled run is working.
+    return (
+      <div className="run-ov-now">
+        <div className="run-ov-now-head">
+          <span className="run-ov-pulse" aria-hidden="true" />
+          <span className="run-ov-now-label">Working in the background</span>
+        </div>
+        <div className="run-ov-now-title" title={bgBusy.title.replaceAll('`', '')}>{withCode(bgBusy.title)}</div>
+      </div>
+    );
   }
   if (!busy) {
     // A task still marked running when nothing runs: the run stopped there.
@@ -202,7 +255,8 @@ function NowCard({ running, next, busy, awaiting, items, action, phase }: Readon
   );
 }
 
-export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase, onClose }: Readonly<{
+export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase, onClose,
+                             onBackground }: Readonly<{
   sessionId: number;
   busy: boolean;
   /** the run asked something and waits for the user's answer */
@@ -214,14 +268,37 @@ export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase,
   /** what the run waits on while it is quiet (the heartbeat's phase) */
   phase?: string;
   onClose: () => void;
+  /** whether background work is busy now (the chat shows as working) */
+  onBackground?: (active: boolean) => void;
 }>) {
   const [ov, setOv] = useState<ChatOverview | null>(null);
+  const [bg, setBg] = useState<ChatBackground | null>(null);
+  const [stopping, setStopping] = useState(false);
   const [allChanges, setAllChanges] = useState(false);
   const [showEarlier, setShowEarlier] = useState(false);
   const [now, setNow] = useState(() => Date.now());
 
   // Another chat: nothing of the last one's stays on screen.
-  useEffect(() => { setOv(null); setAllChanges(false); setShowEarlier(false); }, [sessionId]);
+  useEffect(() => { setOv(null); setBg(null); setStopping(false); setAllChanges(false); setShowEarlier(false); }, [sessionId]);
+
+  const bgCount = bg?.items.length ?? 0;
+  useEffect(() => {
+    let live = true;
+    const load = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      chatBackground(sessionId)
+        .then(r => { if (live) setBg(r); })
+        .catch(() => { /* the panel keeps what it had */ });
+    };
+    load();
+    const h = setInterval(load, bgCount > 0 || busy ? BG_POLL_MS : BG_IDLE_POLL_MS);
+    return () => { live = false; clearInterval(h); };
+  }, [sessionId, busy, bgCount]);
+
+  const bgActive = !!bg?.active;
+  useEffect(() => { onBackground?.(bgActive); }, [bgActive, onBackground]);
+  // The panel closed: it no longer knows, so the chat stops saying so.
+  useEffect(() => () => onBackground?.(false), [onBackground]);
 
   useEffect(() => {
     let live = true;
@@ -266,6 +343,16 @@ export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase,
   let stateCls = '';
   if (awaiting) { state = 'Waiting for you'; stateCls = 'ask'; }
   else if (busy) { state = 'Running'; stateCls = 'on'; }
+  else if (bgActive) { state = 'Running in background'; stateCls = 'on'; }
+  const bgItems = bg?.items ?? [];
+  const stopBg = () => {
+    const sid = sessionId;
+    setStopping(true);
+    chatBackgroundStop(sid)
+      .then(r => { if (sid === sessionId) setBg(r); })
+      .catch(() => { /* the next poll shows what is left */ })
+      .finally(() => setStopping(false));
+  };
 
   return (
     <aside className="run-overview" aria-label="Run overview">
@@ -278,7 +365,23 @@ export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase,
 
       <div className="run-ov-body">
         <NowCard running={running} next={next} busy={busy} awaiting={awaiting} items={items}
-                 action={action} phase={busy ? phase : undefined} />
+                 action={action} phase={busy ? phase : undefined}
+                 bgBusy={bgItems.find(i => i.state === 'running')} />
+
+        {bgItems.length > 0 && (
+          <Section title="Background"
+                   extra={bgActive && !busy && (
+                     <button type="button" className="ghost xs run-ov-link" onClick={stopBg} disabled={stopping}
+                             aria-label="Stop background work"
+                             title="Stop this chat's watches, background commands and the scheduled run in flight (the schedule itself stays; nothing else of the chat stops)">
+                       {stopping ? 'stopping…' : 'stop'}
+                     </button>
+                   )}>
+            <ul className="run-ov-changes">
+              {bgItems.map(it => <BackgroundRow key={it.id} it={it} />)}
+            </ul>
+          </Section>
+        )}
 
         <Section title="Tasks" extra={items.length > 0 && <span className="run-ov-count">{closed}/{items.length} · {pct}%</span>}>
           {items.length === 0 ? (

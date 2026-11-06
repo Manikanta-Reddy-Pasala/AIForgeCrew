@@ -752,6 +752,10 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   // Composer
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  // A watch / scheduled run of this chat is working though no turn runs
+  // (reported by the progress panel, which polls it).
+  const [bgActive, setBgActive] = useState(false);
+  useEffect(() => { setBgActive(false); }, [activeId]);
   // Mirror busy into a ref so callbacks that run as .then() continuations (e.g.
   // attachToRun after selectSession) see the CURRENT value, not the stale one
   // captured at the render where the continuation was created.
@@ -1566,12 +1570,16 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   // Other chats with a run going: keep their dots current, and say so when one
   // of them works in the SAME folder as this chat (two agents editing one tree).
   const otherRunning = sessions.filter(s => s.running && s.id !== activeId && !s.parent_id);
+  // A chat busy only in the background (a watch, a scheduled run) keeps the
+  // list polled too, so its dot goes out when that work ends.
+  const otherBusy = otherRunning.length
+    + sessions.filter(s => !s.running && s.background && s.id !== activeId && !s.parent_id).length;
   useEffect(() => {
-    if (otherRunning.length === 0) return;
+    if (otherBusy === 0) return;
     const h = setInterval(() => loadSessions(true), 4000);
     return () => clearInterval(h);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [otherRunning.length]);
+  }, [otherBusy]);
   const sameFolderRunning = (() => {
     const mine = (sessions.find(s => s.id === activeId)?.cwd || '').replace(/\/+$/, '');
     if (!mine) return 0;
@@ -2585,8 +2593,11 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                 ) : (
                   <>
                     <div className="chat-session-title" title={s.title}>
-                      {s.running && s.id !== activeId && (
-                        <span className="session-running" title="A run is going in this chat" />
+                      {(s.id === activeId ? (bgActive && !busy)
+                        : (s.running || s.background)) && (
+                        <span className="session-running"
+                              title={s.running ? 'A run is going in this chat'
+                                : 'A watch or scheduled job is working in this chat'} />
                       )}
                       {s.title || 'Untitled'}
                       <ModeBadge mode={s.last_mode} />
@@ -3357,7 +3368,8 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                        subtasks={pickedSubtasks}
                        steps={liveTurn?.streaming ? liveTurn.steps : undefined}
                        phase={liveTurn?.quiet?.phase}
-                       onClose={() => showOverview(false)} />
+                       onClose={() => showOverview(false)}
+                       onBackground={setBgActive} />
         </ErrorBoundary>
       )}
     </div>

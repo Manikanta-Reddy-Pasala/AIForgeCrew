@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS bg (
   pgid INTEGER,
   created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS bg_status_sid ON bg(status, session_id);
 """
 
 
