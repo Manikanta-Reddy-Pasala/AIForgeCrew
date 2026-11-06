@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { chatOverview, ChatOverview, ChatDecision, chatBackground, ChatBackground,
-         ChatBackgroundItem, chatBackgroundStop } from '../api';
+         ChatBackgroundItem, ChatJobRun, chatBackgroundStop } from '../api';
 import { AgentStep, SubtaskItem } from './Chat.types';
 import { describeStep } from '../stepDescribe';
 
@@ -25,8 +25,10 @@ const POLL_MS = 4000;
 // often while some is there, rarely while there is none; never in a hidden tab.
 const BG_POLL_MS = 5000;
 const BG_IDLE_POLL_MS = 30000;
-const BG_ICON: Record<string, string> = { watch: '👁', command: '▶', schedule: '⏱' };
-const BG_KIND: Record<string, string> = { watch: 'Watch', command: 'Command', schedule: 'Scheduled' };
+const BG_ICON: Record<string, string> = { watch: '👁', command: '▶', schedule: '⏱', side_task: '⑂' };
+const BG_KIND: Record<string, string> = { watch: 'Watch', command: 'Command', schedule: 'Scheduled',
+                                          side_task: 'Side task' };
+const SIDE_ICON: Record<string, string> = { queued: '…', done: '✓', stopped: '–' };
 const TICK_MS = 30000;
 const CHANGES_SHOWN = 4;
 // Lines worded from the user's message (goal changes, a question on it) are
@@ -192,19 +194,57 @@ function withCode(text: string): ReactNode {
   return text.split('`').map((part, i) => (i % 2 ? <code key={i}>{part}</code> : part));
 }
 
+/** "42s", "3m 05s": how long a run took. */
+function took(a?: string | null, b?: string | null): string {
+  if (!a || !b) return '';
+  const s = Math.round((new Date(b).getTime() - new Date(a).getTime()) / 1000);
+  if (!Number.isFinite(s) || s < 0) return '';
+  return s < 90 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+}
+
+function RunChip({ r }: Readonly<{ r: ChatJobRun }>) {
+  const t = took(r.started_at, r.ended_at);
+  let cls = 'ok', icon = '✓', what = 'ok';
+  if (r.ok === false) { cls = 'bad'; icon = '✕'; what = 'failed'; }
+  else if (r.ok === null) { cls = 'neutral'; icon = '–'; what = r.note || 'stopped'; }
+  const label = `${what} · ${whenAt(r.ended_at ?? undefined)}${t ? ` · ${t}` : ''}`
+    + (r.note && r.ok !== null ? ` — ${r.note}` : '');
+  return (
+    <span role="listitem" className={`run-ov-run ${cls}`} title={label}>
+      <span aria-hidden="true">{icon} </span>{whenAt(r.ended_at ?? undefined)}
+      {t && <span className="run-ov-ago"> {t}</span>}
+      <span className="sr-only">: {label}</span>
+    </span>
+  );
+}
+
 function BackgroundRow({ it }: Readonly<{ it: ChatBackgroundItem }>) {
   const on = it.state === 'running';
   let when = '';
-  if (on) when = it.kind === 'schedule' ? 'running now' : 'running';
-  else if (it.next_run_at) when = `next ${whenAt(it.next_run_at)}`;
+  if (it.kind === 'side_task') {
+    if (on) when = it.started_at ? `running since ${whenAt(it.started_at)}` : 'running';
+    else if (it.state === 'queued') when = 'waiting for a slot';
+    else when = `${it.state} ${whenAt(it.ended_at ?? undefined)}`;
+  } else if (on) {
+    when = it.kind === 'schedule' ? 'running now' : (it.since ? `since ${whenAt(it.since)}` : 'running');
+  } else if (it.next_run_at) {
+    when = `next ${whenAt(it.next_run_at)}`;
+  }
+  const icon = it.kind === 'side_task' && !on ? (SIDE_ICON[it.state] ?? '⑂') : (BG_ICON[it.kind] ?? '•');
   return (
-    <li className={`run-ov-bg ${on ? 'on' : ''}`} title={(it.cron ? `${it.title} — ${it.cron}` : it.title).replaceAll('`', '')}>
+    <li className={`run-ov-bg ${on ? 'on' : ''} ${it.runs?.[0]?.ok === false ? 'bad' : ''}`}
+        title={(it.cron ? `${it.title} — ${it.cron}` : it.title).replaceAll('`', '')}>
       {on ? <span className="run-ov-pulse" aria-hidden="true" />
-        : <span className="run-ov-bg-icon" aria-hidden="true">{BG_ICON[it.kind] ?? '•'}</span>}
+        : <span className="run-ov-bg-icon" aria-hidden="true">{icon}</span>}
       <span className="sr-only">{BG_KIND[it.kind] ?? 'Background'}: </span>
       <span className="run-ov-bg-title">{withCode(it.title)}{it.cron && <span className="run-ov-ago"> ({it.cron})</span>}</span>
       {when && <span className="run-ov-ago">· {when}</span>}
-      {it.last_error && <div className="run-ov-note old">last error: {it.last_error}</div>}
+      {it.runs && it.runs.length > 0 && (
+        <div className="run-ov-runs" role="list" aria-label="Recent runs">
+          {it.runs.map((r, i) => <RunChip key={`${r.ended_at}:${i}`} r={r} />)}
+        </div>
+      )}
+      {it.last_error && <div className="run-ov-note old">last: {it.last_error}</div>}
     </li>
   );
 }
@@ -370,7 +410,7 @@ export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase,
 
         {bgItems.length > 0 && (
           <Section title="Background"
-                   extra={bgActive && !busy && (
+                   extra={!!bg?.stoppable && !busy && (
                      <button type="button" className="ghost xs run-ov-link" onClick={stopBg} disabled={stopping}
                              aria-label="Stop background work"
                              title="Stop this chat's watches, background commands and the scheduled run in flight (the schedule itself stays; nothing else of the chat stops)">

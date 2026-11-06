@@ -45,7 +45,8 @@ def chat_background_work(session_id: int) -> dict:
     if not chat_store.get_session(session_id):
         raise HTTPException(404, f"session {session_id} not found")
     items = chat_background.items(session_id)
-    return {"items": items, "active": any(i["state"] == "running" for i in items)}
+    return {"items": items, "active": any(i["state"] == "running" for i in items),
+            "stoppable": chat_background.stoppable(items)}
 
 
 @router.post("/api/chat/sessions/{session_id}/background/stop",
@@ -60,4 +61,5 @@ def chat_background_stop(session_id: int) -> dict:
     stopped = chat_background.stop(session_id)
     items = chat_background.items(session_id)
     return {"stopped": stopped, "items": items,
-            "active": any(i["state"] == "running" for i in items)}
+            "active": any(i["state"] == "running" for i in items),
+            "stoppable": chat_background.stoppable(items)}

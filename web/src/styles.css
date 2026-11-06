@@ -1074,6 +1074,13 @@ button.run-ov-link:hover:not(:disabled) { text-decoration: underline; }
 .run-ov-bg-icon { width: 14px; text-align: center; flex-shrink: 0; }
 .run-ov-bg-title { flex: 1 1 0; min-width: 0; overflow-wrap: anywhere; }
 .run-ov-bg .run-ov-note { flex-basis: 100%; }
+.run-ov-bg.bad .run-ov-bg-icon { color: var(--err); }
+.run-ov-runs { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 4px; padding-left: 20px; }
+.run-ov-run { font-size: var(--fs-xs); padding: 1px 6px; border-radius: 9px; white-space: nowrap;
+              background: var(--ok-soft); }
+.run-ov-run.ok { color: var(--ok); }
+.run-ov-run.bad { color: var(--err); background: var(--err-soft); }
+.run-ov-run.neutral { color: var(--fg-2); background: var(--bg-3, rgba(127,127,127,.12)); }
 .run-ov-tag {
   margin-left: 6px; font-size: 10px; color: var(--fg-3);
   border: 1px solid var(--border-1); border-radius: 4px; padding: 0 4px; font-weight: 400;

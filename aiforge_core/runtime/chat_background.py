@@ -91,7 +91,11 @@ def _schedule_items(session_id) -> list:
         expired = bool(job.get("expires_at")) and str(job["expires_at"]) <= now
         if not running and (not job.get("enabled") or expired):
             continue
-        out.append({"kind": "schedule", "id": f"job-{job['id']}",
+        from aiforge_core.jobs import run_log
+        runs = [{"started_at": _aware(r.get("started_at")), "ended_at": _aware(r.get("ended_at")),
+                 "ok": None if r.get("ok") is None else bool(r.get("ok")), "note": r.get("note")}
+                for r in run_log.recent(job["id"], 5)]
+        out.append({"kind": "schedule", "id": f"job-{job['id']}", "runs": runs,
                     "title": job.get("name") or job.get("ticket_title") or f"job {job['id']}",
                     "state": "running" if running else "scheduled",
                     "cron": job.get("cron"), "next_run_at": _aware(job.get("next_run_at")),
@@ -101,12 +105,66 @@ def _schedule_items(session_id) -> list:
     return out
 
 
+#: Finished side tasks shown for this long, at most this many.
+_SIDE_RECENT_S, _SIDE_SHOWN = 6 * 3600, 6
+
+
+def _side_items(session_id) -> list:
+    """The chat's side tasks: queued and running ones, and the last few that
+    ended (done or stopped) — several run at once, each its own row. Read
+    straight from the store (no settle write, no transcript read per poll);
+    a task marked running whose run is gone shows as stopped."""
+    import time
+    from aiforge_core.runtime import chat_runs, chat_store
+    out, done = [], []
+    for child in chat_store.child_sessions(int(session_id)):
+        task = child.get("task") or {}
+        state = str(task.get("state") or "queued")
+        started, ended = _num(task.get("started")), _num(task.get("ended"))
+        if state == "running" and not chat_runs.is_running(child["id"]) \
+                and not (started and time.time() - started < 30):
+            state = "stopped"          # the run is gone (a fresh start is let be)
+            ended = ended or started or time.time()
+        row = {"kind": "side_task", "id": f"side-{child['id']}", "chat_id": child["id"],
+               "title": child.get("title") or str(task.get("prompt") or "")[:100]
+               or f"side task {child['id']}",
+               "state": state, "started_at": _epoch(started),
+               "ended_at": _epoch(ended),
+               "last_error": (str(task.get("error") or ""))[:200] or None}
+        if state in ("running", "queued"):
+            out.append(row)
+        elif ended and time.time() - ended < _SIDE_RECENT_S:
+            done.append((ended, row))
+    done.sort(key=lambda e: e[0], reverse=True)
+    return out + [r for _, r in done[:_SIDE_SHOWN]]
+
+
+def _num(t) -> "float | None":
+    """An epoch from the task record (an ISO string read as local time)."""
+    if t in (None, ""):
+        return None
+    try:
+        return float(t)
+    except (TypeError, ValueError):
+        try:
+            return datetime.fromisoformat(str(t).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+
+
+def _epoch(t) -> "str | None":
+    try:
+        return datetime.fromtimestamp(float(t)).astimezone().isoformat() if t else None
+    except (TypeError, ValueError, OSError):
+        return _aware(t)
+
+
 def items(session_id) -> list:
     """Every piece of background work of the chat, busy ones first."""
     if session_id is None:
         return []
     out: list = []
-    for part in (_bg_items, _schedule_items):
+    for part in (_bg_items, _schedule_items, _side_items):
         try:
             out += part(session_id)
         except Exception as exc:  # noqa: BLE001
@@ -156,6 +214,12 @@ def active_sessions() -> set:
     return out
 
 
+def stoppable(items: list) -> bool:
+    """Something the background stop ends is running (a side task has its
+    own stop, in its own chat)."""
+    return any(i["state"] == "running" and i["kind"] != "side_task" for i in items)
+
+
 def stop(session_id) -> dict:
     """Stop the chat's background work only: its watches and background
     commands, and the scheduled run in flight — not a live turn, not the
@@ -174,4 +238,4 @@ def stop(session_id) -> dict:
     return out
 
 
-__all__ = ["active", "active_sessions", "items", "stop"]
+__all__ = ["active", "active_sessions", "items", "stop", "stoppable"]

@@ -453,13 +453,23 @@ export function chatOverview(id: number): Promise<ChatOverview> {
 }
 
 /** Work of a chat outside a turn: watches, background commands, scheduled jobs. */
+/** One run of a schedule; ``ok`` null: stopped by the user, or outcome unknown. */
+export type ChatJobRun = { started_at?: string | null; ended_at?: string | null; ok: boolean | null;
+                           note?: string | null };
 export type ChatBackgroundItem = {
-  kind: 'watch' | 'command' | 'schedule' | string; id: string; title: string;
-  state: 'running' | 'scheduled' | string; since?: string; for_s?: number;
+  kind: 'watch' | 'command' | 'schedule' | 'side_task' | string; id: string; title: string;
+  state: 'running' | 'scheduled' | 'queued' | 'done' | 'stopped' | string;
+  since?: string; for_s?: number;
   cron?: string; next_run_at?: string; last_run_at?: string; expires_at?: string;
   last_error?: string | null;
+  /** a schedule's last runs, newest first */
+  runs?: ChatJobRun[];
+  /** a side task: its own chat, and when it started / ended */
+  chat_id?: number; started_at?: string | null; ended_at?: string | null;
 };
-export type ChatBackground = { items: ChatBackgroundItem[]; active: boolean };
+export type ChatBackground = { items: ChatBackgroundItem[]; active: boolean;
+                               /** a watch / command / scheduled run the stop link ends */
+                               stoppable?: boolean };
 
 export function chatBackground(id: number): Promise<ChatBackground> {
   return j<ChatBackground>(`/chat/sessions/${id}/background`);

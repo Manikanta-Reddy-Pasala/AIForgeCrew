@@ -128,6 +128,7 @@ def _dispatch(job: dict) -> bool:
             metadata={"source": "scheduled_job", "job_id": job["id"]})
         ident = getattr(t, "identifier", None) or getattr(t, "id", "?")
         log.info("jobs.fired job=%s ticket=%s", job["id"], ident)
+        _record_last_error(job, None)
         from aiforge_core.jobs.outcome import post
         post(job, f"Scheduled “{job.get('name')}” filed ticket {ident}.")
         return True
@@ -137,6 +138,7 @@ def _dispatch(job: dict) -> bool:
             store.update(job["id"], last_error=str(exc)[:500])
         except Exception:  # noqa: BLE001
             pass
+        _log_run(job, ok=False, note=str(exc)[:300])
         log.warning("jobs.fire_failed job=%s: %s", job["id"], exc)
         return False
     finally:
@@ -202,6 +204,10 @@ def request_stop(job_id) -> bool:
                      run_attempt=0, run_pid=None)
     except Exception:  # noqa: BLE001
         pass
+    if inflight and job:
+        # The worker loses its claim and records nothing: the history says
+        # the run was stopped, not the previous run's green.
+        _log_run(job, ok=None, note="stopped")
     return stopped or inflight
 
 
@@ -302,7 +308,28 @@ def _record_last_error(job: dict, last_error) -> None:
     """Write last_error only while this claimed run still owns the row."""
     if not _claim_still_held(job):
         return
-    store.update_if_token(job["id"], job.get("run_token"), last_error=last_error)
+    if store.update_if_token(job["id"], job.get("run_token"), last_error=last_error) is None:
+        return
+    # the run's outcome also goes to its history (the panel shows the last few)
+    _log_run(job, ok=last_error is None, note=last_error)
+
+
+_LOGGED_RUNS: set = set()
+
+
+def _log_run(job: dict, *, ok, note=None) -> None:
+    """One history row per claimed run (a second outcome of the same run —
+    an error raised after the success was recorded, or a stop racing the
+    worker's own record — is not another run). Keyed by the claim's token."""
+    key = (job.get("id"), job.get("run_token") or job.get("last_run_at"))
+    with _RUNNING_LOCK:
+        if key in _LOGGED_RUNS:
+            return
+        _LOGGED_RUNS.add(key)
+        if len(_LOGGED_RUNS) > 2000:
+            _LOGGED_RUNS.clear()
+    from aiforge_core.jobs import run_log
+    run_log.record(job["id"], started_at=job.get("last_run_at"), ok=ok, note=note)
 
 
 def _fire_script(job: dict) -> bool:
@@ -537,6 +564,8 @@ def _fire_agent(job: dict) -> bool:
         try:
             store.update(job["id"], last_error="skipped: the previous run was "
                                                "still running at this firing")
+            from aiforge_core.jobs import run_log
+            run_log.record(job["id"], ok=False, note="skipped: the previous run was still running")
         except Exception:  # noqa: BLE001
             pass
         # The slot was claimed, but no worker is going to clear it. Leaving
@@ -614,6 +643,8 @@ def _watch_live_script(job: dict, ev, pid: int) -> None:
         with _RUNNING_LOCK:
             _STOP.pop(job["id"], None)
             _PROCS.pop(job["id"], None)
+        if _claim_still_held(job):
+            _log_run(job, ok=None, note="outcome unknown: the script outlived a restart")
         store.clear_run(job["id"], job.get("run_token"))
 
 
@@ -635,6 +666,7 @@ def resume_inflight() -> int:
         if (job.get("kind") == "script") and _pid_alive(pid):
             if attempt >= 2:
                 _kill_pid(pid)
+                _log_run(job, ok=False, note="stopped after restart; already retried once")
             else:
                 # One process wins the reattach. The loser must not
                 # dispatch a second copy of a script that is still alive.
@@ -658,6 +690,7 @@ def resume_inflight() -> int:
             except Exception:  # noqa: BLE001
                 won = False
             if won:
+                _log_run(job, ok=False, note="stopped after restart; already retried once")
                 post(job, f"Scheduled “{job.get('name')}” stopped: the process "
                           "restarted and this run was already retried.")
             continue
