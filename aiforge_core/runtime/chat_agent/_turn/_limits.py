@@ -152,7 +152,7 @@ def _gap_list(gaps: list, shown: int) -> str:
     return "; ".join(g.rstrip(".") for g in gaps[:shown]) + more
 
 
-def _half_check(st) -> None:
+def _half_check(st, examples_only: bool = False) -> None:
     """Halfway through the last slice: what the request names that the code
     still lacks. The finish gate never runs on a turn the clock ends (click
     t4: 24 minutes debugging completion order, ``click.core._fast_exit`` that
@@ -166,7 +166,7 @@ def _half_check(st) -> None:
         untried = untested(st, unwritten=True)
     except Exception:  # noqa: BLE001 — advisory only
         untried = []
-    gaps = _spec_gaps(st)
+    gaps = [] if examples_only else _spec_gaps(st)    # the wrap note says those
     if gaps:
         from ._contract_gate import _bare
         st.contract_progress_said = tuple(_bare(g) for g in gaps)
@@ -201,7 +201,7 @@ def _time_wrap(st, now: float):
     if not 0 < left <= wrap_at:
         return
     if not getattr(st, "half_checked", False):
-        _half_check(st)          # one long step jumped the halfway window
+        _half_check(st, examples_only=True)   # a long step jumped the halfway window
     st.time_warned = True
     gaps = _spec_gaps(st)
     if gaps:
