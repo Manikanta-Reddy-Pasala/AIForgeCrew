@@ -178,3 +178,47 @@ def test_a_tsconfig_error_is_not_clean(monkeypatch, tmp_path):
     assert PE.diagnostics(f, str(tmp_path)) is None
     run.stdout = "src/a.ts(1,5): error TS2322: bad\nsrc/b.ts(2,1): error TS2322: other\n"
     assert PE.diagnostics(f, str(tmp_path)) == ["src/a.ts(1,5): error TS2322: bad"]
+
+
+def test_an_undefined_name_the_project_defines_gets_a_where_hint(tmp_path):
+    """click a3: 'Undefined name CompletionItem' in types.py seven times; the
+    class lives in shell_completion.py, which imports types."""
+    import os
+    import subprocess
+    from aiforge_core.runtime.chat_agent._turn import _post_edit as PE
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+           "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+    pkg = tmp_path / "src" / "click"
+    pkg.mkdir(parents=True)
+    (pkg / "shell_completion.py").write_text("from . import types\n\nclass CompletionItem:\n    pass\n")
+    (pkg / "types.py").write_text("def f():\n    return CompletionItem()\n")
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True, env=env)
+    # shell_completion.py stays untracked: a module new this turn
+    hints = PE._where_defined(["src/click/types.py:2:12: F821 Undefined name `CompletionItem`"],
+                              str(pkg / "types.py"))
+    assert len(hints) == 1 and "src/click/shell_completion.py" in hints[0]
+    assert "inside the function" in hints[0]
+    assert PE._where_defined(["x.py:1:1: F821 Undefined name `Nowhere`"], str(pkg / "types.py")) == []
+
+
+def test_no_cycle_means_top_level_and_tests_or_many_owners_give_no_hint(tmp_path):
+    import os
+    import subprocess
+    from aiforge_core.runtime.chat_agent._turn import _post_edit as PE
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "models.py").write_text("class Order:\n    pass\n")
+    (pkg / "svc.py").write_text("def f():\n    return Order()\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_x.py").write_text("class Helper:\n    pass\n")
+    for i in range(3):
+        (pkg / f"m{i}.py").write_text("def setup():\n    pass\n")
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True,
+                   env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull})
+    err = lambda n: f"pkg/svc.py:2:12: F821 Undefined name `{n}`"
+    h = PE._where_defined([err("Order")], str(pkg / "svc.py"))
+    assert h and "`pkg.models`" in h[0] and "at the top of this file" in h[0]
+    assert PE._where_defined([err("Helper")], str(pkg / "svc.py")) == []   # only in tests
+    assert PE._where_defined([err("setup")], str(pkg / "svc.py")) == []    # no one owner
