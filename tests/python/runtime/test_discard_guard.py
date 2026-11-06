@@ -206,3 +206,50 @@ def test_only_one_file_a_turn_is_released(repo, monkeypatch):
     st.file_hashes[str(root / "src" / "other.py")] = "h"
     for _ in range(5):
         assert G.refusal(st, "run_command", {"cmd": "rm src/other.py"}, str(root))
+
+
+def _commit(root, *paths):
+    subprocess.run(["git", "-C", str(root), "add", *paths], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t",
+                    "commit", "-qm", "t"], check=True, capture_output=True)
+
+
+def test_removing_a_tracked_file_the_request_removes_is_the_work(repo):
+    """click t6: 20 refusals of ``rm`` on ``_bashcomplete.py`` and its tests,
+    which the request said may be deleted with it."""
+    root, edited = repo
+    (root / "src" / "_old.py").write_text("x = 1\n")
+    (root / "tests").mkdir()
+    (root / "tests" / "test_old.py").write_text("def test_x(): pass\n")
+    _commit(root, "src/_old.py", "tests/test_old.py")
+    edited = edited + [str(root / "src" / "_old.py"), str(root / "tests" / "test_old.py")]
+    goal = ("Replace it with a new module `src/new_mod.py`, `src/_old.py` (remove or "
+            "replace), keeping the suite working (except the tests for the old `_old` "
+            "module, which you may delete together with that module).")
+    assert G.hits("rm -f src/_old.py tests/test_old.py", str(root), edited, goal=goal) == []
+    # a new file in the same list, and a glob, stay protected
+    assert G.hits("rm src/new_mod.py", str(root), edited, goal=goal)
+    assert G.hits("rm -f src/*.py", str(root), edited, goal=goal)
+
+
+@pytest.mark.parametrize("goal", [
+    "Rename `Core` to `Engine`.",
+    "Remove the deprecated `core` function.",
+    "Remove the old `test_core.py`.",
+    "Remove `lib/core.py`.",
+    "Keep `src/core.py`, `src/other.py` is removed.",
+    "Fix `src/core.py`.",
+    "Do not remove `src/core.py`.",
+])
+def test_a_function_name_another_folder_or_a_kept_file_releases_nothing(repo, goal):
+    root, edited = repo
+    assert G.hits("rm src/core.py", str(root), edited, goal=goal)
+
+
+def test_a_new_staged_file_or_no_repo_releases_nothing(repo, tmp_path_factory):
+    root, edited = repo
+    subprocess.run(["git", "-C", str(root), "add", "src/new_mod.py"], check=True, capture_output=True)
+    assert G.hits("rm src/new_mod.py", str(root), edited, goal="Remove `src/new_mod.py`.")
+    bare = tmp_path_factory.mktemp("bare")
+    (bare / "core.py").write_text("x = 1\n")
+    assert G.hits("rm core.py", str(bare), [str(bare / "core.py")], goal="Remove `core.py`.")

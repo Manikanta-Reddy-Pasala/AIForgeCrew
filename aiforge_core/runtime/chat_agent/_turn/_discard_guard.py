@@ -14,7 +14,9 @@ expanded), ``git checkout [<commit>] [--] <path>``, ``git restore`` (not
 ``git reset --hard``, ``git clean -f`` (not ``-n``/``-X``) — through ``cd``,
 ``git -C``, multi-line commands, subshells, ``bash -c`` and prefixes. A
 throwaway named file by file (debug.py, repro_x.py, the chat's scratch
-folder) may be removed: that is cleanup. ``> file``, ``cp``/``mv`` onto it and
+folder) may be removed: that is cleanup. So may a file that was there
+before the turn and that the request says goes (or its ``test_<name>.py``),
+named file by file. ``> file``, ``cp``/``mv`` onto it and
 ``truncate`` count as overwriting it. The model can still undo: fix the
 file with file_patch, editor ``undo_edit`` for the last edit, or send the
 same command again with ``"discard": true``. Off switch:
@@ -204,6 +206,91 @@ def _probe_file(path: str, git: "_Git", goal: str) -> bool:
     return not re.search(rf"(?<![\w]){re.escape(stem)}(?![\w])", goal or "")
 
 
+_SPAN = re.compile(r"`([^`\n]+)`")
+_GOES = re.compile(r"\b(?:remove[sd]?|delete[sd]?|drop(?:ped|s)?)\b", re.I)
+_KEEP = re.compile(r"\b(?:keep|not|never|don'?t|leave)\b", re.I)
+_TESTS = re.compile(r"\btests?\b", re.I)
+_MODULE_WORD = re.compile(r"\s*(?:module|file)\b", re.I)
+
+
+def _removed(goal: str) -> "tuple[list, set, set]":
+    """What the request itself says goes, read narrowly: a backticked path
+    (``src/x/_old.py``), or a bare name the next word calls a module or file,
+    with remove/delete/drop in its own clause (no other backticked name
+    between, no "keep"/"not" before the verb). Returns
+    (paths, module stems, module stems whose tests go too)."""
+    spans = list(_SPAN.finditer(goal or ""))
+    paths, mods, tests = [], set(), set()
+    for i, m in enumerate(spans):
+        name = m.group(1).strip()
+        before = goal[spans[i - 1].end() if i else max(0, m.start() - 120):m.start()]
+        after = goal[m.end():spans[i + 1].start() if i + 1 < len(spans) else m.end() + 120]
+        # the name's own clause: back to the last . ; : ( or newline, on to
+        # the first . ; or newline, or through a ")" that closes the clause
+        before = re.split(r"[.;:(\n]", before[-160:])[-1]
+        after = re.split(r"[.;\n]", after[:160])[0]
+        after = after[:after.index(")") + 1] if ")" in after else after
+        near = before + " " + after
+        verb = _GOES.search(near)
+        if not verb or _KEEP.search(near[:verb.start()]):
+            continue
+        if "/" in name or name.endswith(".py"):
+            paths.append(name[2:] if name.startswith("./") else name)
+            stem = os.path.basename(name)[:-3] if name.endswith(".py") else ""
+        elif re.fullmatch(r"[A-Za-z_]\w*", name) and _MODULE_WORD.match(after):
+            stem = name
+            mods.add(stem)
+        else:
+            continue
+        if stem and _TESTS.search(near):
+            tests.add(stem)
+    return paths, mods, tests
+
+
+def _in_head(path: str, git: "_Git") -> "str | None":
+    """``path`` relative to its repo when HEAD has it; None outside a repo,
+    for a new file (staged or not), or on any git error."""
+    d = os.path.dirname(os.path.realpath(path))
+    top = git.top(d)
+    if top is None:
+        return None
+    rel = os.path.relpath(os.path.realpath(path), top)
+    import subprocess
+    try:
+        p = subprocess.run(["git", "-C", top, "cat-file", "-e", f"HEAD:{rel}"],
+                           capture_output=True, timeout=10)
+    except Exception:  # noqa: BLE001
+        return None
+    return rel if p.returncode == 0 else None
+
+
+def _request_removes(path: str, git: "_Git", removed) -> bool:
+    """A file HEAD has that the request says goes — by its path, as a module
+    the request names (``the old `_bashcomplete` module``), or that module's
+    ``test_<name>.py`` when the request says its tests go too. click t6:
+    "the tests for the old `_bashcomplete` module, which you may delete
+    together with that module" — 20 refusals of ``rm`` on the two files after
+    the run had edited them. A function or class name never releases a file;
+    a new file never goes this way."""
+    paths, mods, tests = removed
+    if not (paths or mods):
+        return False
+    rel = _in_head(path, git)
+    if rel is None:
+        return False
+    rel = rel.replace(os.sep, "/")
+    if any(rel == p or rel.endswith("/" + p) for p in paths):
+        return True
+    base = os.path.basename(rel)
+    if not base.endswith(".py"):
+        return False
+    stem = base[:-3]
+    if stem in mods and not any(os.path.basename(p) == base for p in paths):
+        return True          # a bare module name; a path given for it rules instead
+    m = re.fullmatch(r"test_(\w+)", stem)
+    return bool(m and m.group(1).lstrip("_") in {t.lstrip("_") for t in tests})
+
+
 def hits(cmd: str, cwd: str, edited, git: "_Git | None" = None, goal: str = "") -> list:
     """The edited files ``cmd`` would remove or overwrite (paths as given in
     ``edited``). ``goal``: the request — a new file it does not name, removed
@@ -223,6 +310,7 @@ def hits(cmd: str, cwd: str, edited, git: "_Git | None" = None, goal: str = "") 
 
     here = os.path.realpath(cwd or ".")
     found: list = []
+    removed = _removed(goal)
     for line in sw._strip_heredocs((cmd or "").replace("\\\n", " ")):
         for seg in sw._segments(sw._tokens(line)):
             if seg[0] == "cd":
@@ -253,7 +341,8 @@ def hits(cmd: str, cwd: str, edited, git: "_Git | None" = None, goal: str = "") 
                 # cleanup: click af11 was refused 61 times deleting its own
                 # untracked test_completion_item.py
                 found += [p for p in got if not (one_by_one and (
-                    _is_scratch(p) or _probe_file(p, git, goal)))]
+                    _is_scratch(p) or _probe_file(p, git, goal)
+                    or _request_removes(p, git, removed)))]
             elif head in sw._DEST_LAST or head == "truncate":
                 found += cover(_paths(sw._destination(args) if head != "truncate"
                                       else _operands(args, ("-s", "--size")), here))
