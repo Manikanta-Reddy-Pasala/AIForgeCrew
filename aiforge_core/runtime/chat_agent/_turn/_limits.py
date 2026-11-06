@@ -161,16 +161,26 @@ def _half_check(st) -> None:
     note already listed the same gaps: unchanged gaps a slice later are the
     point."""
     st.half_checked = True
+    try:
+        from ._example_gate import untested
+        untried = untested(st)
+    except Exception:  # noqa: BLE001 — advisory only
+        untried = []
     gaps = _spec_gaps(st)
-    if not gaps:
-        return
-    from ._contract_gate import _bare
-    st.contract_progress_said = tuple(_bare(g) for g in gaps)
-    _ride(st, "[automated spec check — not the user] Most of this turn's time is "
-              "used. The request names these and the code does not have them yet: "
-              + _gap_list(gaps, 25) + ". Add them now, exactly where and as the "
-              "request writes them, before more debugging or polish: a part that "
-              "is not there fails every test that uses it.")
+    if gaps:
+        from ._contract_gate import _bare
+        st.contract_progress_said = tuple(_bare(g) for g in gaps)
+        _ride(st, "[automated spec check — not the user] Most of this turn's time is "
+                  "used. The request names these and the code does not have them yet: "
+                  + _gap_list(gaps, 25) + ". Add them now, exactly where and as the "
+                  "request writes them, before more debugging or polish: a part that "
+                  "is not there fails every test that uses it.")
+    if untried:
+        _ride(st, "[automated example check — not the user] "
+                  + ("Then: n" if gaps else "Most of this turn's time is used. N")
+                  + "o test yet seems to hold these exact values the request gives: "
+                  + "; ".join(f"`{v}`" for v in untried[:8])
+                  + ". Test each as written, through the entry point the request shows.")
 
 
 def _time_wrap(st, now: float):

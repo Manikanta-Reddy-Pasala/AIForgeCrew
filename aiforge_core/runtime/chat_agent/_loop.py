@@ -569,6 +569,11 @@ def run_chat_agent(
     # with the chat when the turn ends however it ends (runtime/handoff_store).
     from aiforge_core.runtime import handoff_store
     rec = handoff_store.Recorder(st)
+    try:      # the turn's own tests are told from the files already there
+        from ._turn._example_gate import note_untracked
+        note_untracked(st, cwd)
+    except Exception:  # noqa: BLE001
+        pass
     inner = _drive(st, cwd, role, complete_fn, session_id, builder, strict_finish)
     _answer = None
     _unfinished = False

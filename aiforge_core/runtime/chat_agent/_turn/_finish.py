@@ -131,6 +131,11 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
     _sig = yield from _contract_gate.gate(st, step, builder, strict_finish)
     if _sig:
         return _sig
+    # The request's own example values must be in the turn's tests.
+    from . import _example_gate
+    _sig = yield from _example_gate.gate(st, step, builder, strict_finish)
+    if _sig:
+        return _sig
     # The wording rules above are free and catch the plain cases; what they
     # miss is asked of the model once: is the request done?
     from . import _done_check
