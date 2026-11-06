@@ -353,6 +353,8 @@ def gate(st, step, builder=None, strict_finish=False):
     # asked puts the earlier answer back, and its verdict stays with it.
     if _to_the_harness(text):
         return None
+    if getattr(st, "goals_cut", False):
+        return None          # a goal dropped mid-turn: the request is not the work
     # What an earlier verdict said was about an earlier reply.
     st.done_check_unfinished = False
     st.done_check_said = None

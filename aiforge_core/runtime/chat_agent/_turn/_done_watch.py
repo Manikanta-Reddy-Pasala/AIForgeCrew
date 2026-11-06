@@ -158,8 +158,9 @@ REVIEW_STEPS = 6
 _BIG_BOARD, _BIG_REQUEST = 3, 1500
 REVIEW_NOTE = (
     "[harness — not the user] The work looks done with more than half of this turn's "
-    "time left. One check before the summary: for each thing the request asks for "
-    "(each requirement, example and error case it states), name a test (existing or "
+    "time left. One check before the summary: for each thing the request asks for, as "
+    "the goals now stand (a goal the user dropped or changed counts as they left it) "
+    "(each requirement, example and error case), name a test (existing or "
     "new) that checks it. Write a test only where none exists, run the full suite "
     "once, and fix the code where a test fails. Do not add anything the request does "
     "not ask for. If every one already has a passing test, reply with the summary "
@@ -173,7 +174,8 @@ def _review_first(st) -> bool:
     3/12); a pass of every requirement against the tests is cheap next to
     the time left. A small request never gets it. Only on a turn that edits,
     with a deadline, before any extension. Off: ``AIFORGE_CHAT_REVIEW_PASS=0``."""
-    if getattr(st, "dw_reviewed", False) or not getattr(st, "edits_made", 0):
+    if getattr(st, "dw_reviewed", False) or not getattr(st, "edits_made", 0) \
+            or getattr(st, "goals_cut", False):
         return False
     if getattr(st, "extensions_used", 0):
         return False
@@ -535,7 +537,7 @@ def watch(st, n):
                    "text": "✓ every task-board item is done — asking for the summary"}
             _append_directive(st, (
                 "[harness — not the user] Every item on the task board is done. "
-                "Unless something the request asks for is still missing (then add it "
+                "Unless something the goals now ask for is still missing (then add it "
                 "to the board and do it), stop now: reply with your final summary of "
                 "what was done and what was checked, and no tool call."))
         return None

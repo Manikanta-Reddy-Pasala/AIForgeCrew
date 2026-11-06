@@ -278,7 +278,7 @@ def untested(st, expected_only: bool = False, unwritten: bool = False) -> list:
     before the finish gate)."""
     if not _on() or getattr(st, "readonly_mode", False) or getattr(st, "plan_mode", False) \
             or getattr(st, "builder", None) or getattr(st, "strict_finish", False) \
-            or not getattr(st, "edits_made", 0):
+            or not getattr(st, "edits_made", 0) or getattr(st, "goals_cut", False):
         return []
     goal = str(getattr(st, "goal", "") or "")
     if not _ASKS_TESTS.search(goal) or _NO_TESTS.search(goal):

@@ -140,6 +140,8 @@ _HALF_SHARE = 0.5
 
 
 def _spec_gaps(st) -> list:
+    if getattr(st, "goals_cut", False):
+        return []                # the user dropped part of the request mid-turn
     try:
         from ._contract_gate import open_gaps
         return open_gaps(st)
@@ -343,6 +345,10 @@ def _drain_steering(st, session_id):
                                         if e.get("type") != "subtasks"]
                     _board_events.append({"type": "subtasks",
                                           "items": board_items(st.board)})
+            if _goal_events or _goal_edits:
+                _blk = _sync_goals(st, session_id, _goal_edits)
+                if _blk:
+                    _parts.insert(0, _blk)
             _directive = "\n\n".join(p for p in _parts if p)
             _append_directive(st, _directive)
             for _k, _t in _items:
@@ -386,6 +392,7 @@ def _steer_goals(st, session_id, steers, events) -> "tuple[str, bool]":
                               by="harness", kind="question", why=said)
         st.goal_question = out["question"]      # the loop asks and ends the turn
         return chat_goals.ask_directive(out["question"]), True
+    st.goal_changes = list(out.get("changes") or [])
     if out.get("changes"):
         events.append({"type": "thought", "role": "goals",
                        "text": "Goals: " + "; ".join(out["changes"])})
@@ -393,6 +400,70 @@ def _steer_goals(st, session_id, steers, events) -> "tuple[str, bool]":
                               by="you", kind="goal", why=said)
     return (chat_goals.now_directive(out.get("current") or "",
                                      out.get("changes") or []), False)
+
+
+_GOAL_EDIT = re.compile(r"(?:^|\] |; )(?:Goal )?(dropped|marked done|changed) g\d+")
+
+
+def _swap_goal_block(text: str, new: str, mark: str) -> "str | None":
+    """``text`` with its GOALS block (from ``mark`` to the next blank line —
+    a compressed or condensed copy too) replaced by ``new``; None when it
+    has none."""
+    i = text.find(mark)
+    if i < 0:
+        return None
+    end = text.find("\n\n", i)
+    end = len(text) if end < 0 else end
+    if new:
+        return text[:i] + new + text[end:]
+    return text[:i] + text[end + 2 if end < len(text) else end:]
+
+
+def _sync_goals(st, session_id, panel_notes=()) -> str:
+    """The goals changed mid-turn: what the model and the checks read follows.
+
+    The GOALS block was put in the prompt when the turn began (the system
+    prompt, or the turn note in carry-on mode); a note further down saying
+    otherwise left two GOAL NOWs, the old one where the model trusts most.
+    Every copy is replaced with the goals as they are now. Returns the block
+    to add to the step's note when no copy was there to replace.
+
+    A goal dropped or finished mid-turn: the checks that read the turn's
+    request (spec, examples, review) would send the model back to its parts,
+    so they stand down (``st.goals_cut``); a goal reworded: the change is
+    added under the request, never a paraphrase in its place."""
+    if session_id is None or getattr(st, "builder", None) or getattr(st, "strict_finish", False):
+        return ""
+    try:
+        from aiforge_core.runtime import chat_goals
+        new = chat_goals.block(session_id)
+        data = chat_goals.goals(session_id)
+    except Exception:  # noqa: BLE001 — the notes stand without the swap
+        return ""
+    swapped = False
+    for m in st.convo or []:
+        if isinstance(m.get("content"), str):
+            out = _swap_goal_block(m["content"], new, chat_goals.MARK)
+            if out is not None:
+                m["content"], swapped = out, True
+    note = getattr(st, "turn_note_text", None)
+    if isinstance(note, str):
+        out = _swap_goal_block(note, new, chat_goals.MARK)
+        if out is not None:
+            st.turn_note_text = out
+    st.goals_block = new
+    chat_goals.mark_shown(session_id, data.get("now") or [])   # told now: may close
+    lines = list(getattr(st, "goal_changes", None) or []) + [str(n) for n in panel_notes]
+    st.goal_changes = []
+    kinds = {m.group(1) for ln in lines for m in _GOAL_EDIT.finditer(ln)}
+    if kinds & {"dropped", "marked done"}:
+        st.goals_cut = True
+    if "changed" in kinds and data.get("current"):
+        base = getattr(st, "goal_original", None) or getattr(st, "goal", "") or ""
+        st.goal_original = base
+        st.goal = (base + "\n\n[changed by the user since — this wins over the "
+                   "above where they differ] " + str(data["current"]))
+    return "" if swapped else new
 
 
 def _board_new_targets(st, session_id, steers=()) -> bool:

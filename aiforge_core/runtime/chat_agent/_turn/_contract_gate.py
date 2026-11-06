@@ -148,6 +148,8 @@ def gate(st, step, builder=None, strict_finish=False):
         return None
     if not getattr(st, "edits_made", 0):
         return None          # a question, a review: nothing was built
+    if getattr(st, "goals_cut", False):
+        return None          # a goal dropped mid-turn: the request is not the work
     found = _gaps(st)
     _note_waivers(st, step.get("text") or "", found)
     gaps = _waived(st, found)

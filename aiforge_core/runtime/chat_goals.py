@@ -24,6 +24,8 @@ everywhere: a broken store or a failed model call never breaks a turn.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import logging
 import os
@@ -114,9 +116,41 @@ _SYSTEM = (
     "\"now\": [\"g1\", \"new\"], \"current\": \"…\", \"question\": \"\"}")
 
 
+#: A run that is not a turn of the chat (a scheduled job's run): the chat's
+#: goals are not its work — its own prompt is (jobs/scheduler).
+_OFF_RUN: "contextvars.ContextVar[bool]" = contextvars.ContextVar("chat_goals_off", default=False)
+
+
 def enabled() -> bool:
+    if _OFF_RUN.get():
+        return False
     return os.environ.get("AIFORGE_CHAT_GOALS", "1").strip().lower() \
         not in ("0", "false", "no", "off")
+
+
+@contextlib.contextmanager
+def off_for_run():
+    """No goals in the prompt, no goal edits read, none closed: for a run
+    that does its own prompt's work in the chat (a scheduled job)."""
+    tok = _OFF_RUN.set(True)
+    try:
+        yield
+    finally:
+        _OFF_RUN.reset(tok)
+
+
+def mark_shown(session_id, ids) -> None:
+    """The goals the agent was shown as its work: only these close when the
+    turn completes (a goal added just before the end was never worked on)."""
+    if session_id is None or not enabled():
+        return
+    try:
+        with _session_lock(session_id):
+            data = _load(session_id)
+            data["shown"] = list(dict.fromkeys(list(data.get("shown") or []) + list(ids or [])))
+            _save(session_id, data)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("goals shown not kept: %s", exc)
 
 
 def _path(session_id) -> str:
@@ -156,6 +190,8 @@ def _load(session_id) -> dict:
     out["current"] = str(data.get("current") or "")
     out["asked"] = str(data.get("asked") or "")
     out["asked_about"] = str(data.get("asked_about") or "")
+    if isinstance(data.get("shown"), list):        # absent: an older store
+        out["shown"] = [i for i in data["shown"] if i in ids]
     try:
         out["seq"] = int(data.get("seq") or 0)
     except (TypeError, ValueError):
@@ -565,11 +601,16 @@ def _update(session_id, text, out, *, role, mid_run, said, turn, working_on,
     elif _says_nothing(text, said) and not data.get("asked"):
         # "continue": the unfinished goals are the work.
         if not data.get("now") and _open(data):
-            data["now"] = [g["id"] for g in _open(data)]
-            data["current"] = _flat(" / ".join(g["text"] for g in _open(data)),
-                                    _CURRENT_CHARS)
+            # the latest goals set, not ones parked as "not this turn"
+            last = max(int(g.get("turn") or 0) for g in _open(data))
+            pick = [g for g in _open(data) if int(g.get("turn") or 0) == last]
+            data["now"] = [g["id"] for g in pick]
+            data["current"] = _flat(" / ".join(g["text"] for g in pick), _CURRENT_CHARS)
             _save(session_id, data)
             out["resumed"] = True     # the note says which goal "continue" means
+        if data.get("now"):
+            data["shown"] = list(data["now"])   # this turn is told them: may close
+            _save(session_id, data)
         out["current"] = data.get("current") or ""
         return
     else:
@@ -580,7 +621,11 @@ def _update(session_id, text, out, *, role, mid_run, said, turn, working_on,
         before = json.loads(json.dumps(data))
         q = ""
         if reply is None:
-            data, changes = _fallback(data, text, mid_run, turn)
+            # an answer to the harness's question is about that message,
+            # not a new goal of its own
+            said_for = (f"{data['asked_about']} (the user's answer to \"{data['asked']}\": {text})"
+                        if data.get("asked") and data.get("asked_about") else text)
+            data, changes = _fallback(data, said_for, mid_run, turn)
         else:
             data, changes = _apply(data, reply, text, turn, mid_run)
             out["only_drops"] = (not reply.get("now")
@@ -608,6 +653,9 @@ def _update(session_id, text, out, *, role, mid_run, said, turn, working_on,
         out["dropped_stopped"] = bool(in_hand) and \
             any(g["status"] == DROPPED for g in in_hand) and \
             not any(g["status"] == OPEN for g in in_hand)
+    # the goals this turn is told to work on (a steer adds to them)
+    if not mid_run:              # mid-run, the turn hears of it in _sync_goals
+        data["shown"] = list(data.get("now") or [])
     _trim(data)
     _save(session_id, data)
     out["current"] = data.get("current") or ""
@@ -633,11 +681,14 @@ def finish_turn(session_id, *, completed: bool) -> None:
             if not data["now"] or data.get("asked"):
                 return
             turn = _user_turns(session_id)
+            shown = data.get("shown")
             for g in data["goals"]:
-                if g["id"] in data["now"] and g["status"] == OPEN:
+                if g["id"] in data["now"] and g["status"] == OPEN \
+                        and (shown is None or g["id"] in shown):
                     g["status"] = DONE
                     g["closed_turn"] = turn
             data["now"] = []
+            data["shown"] = []
             data["current"] = ""
             _save(session_id, data)
     except Exception as exc:  # noqa: BLE001
@@ -837,7 +888,10 @@ def drop_open(session_id, like: str = "") -> list:
         score = {g["id"]: len(words & set(re.findall(r"[a-z0-9_]{3,}", (g.get("text") or "").lower())))
                  for g in opened}
         best = max(score.values()) if score else 0
-        gone = [g for g in opened if best and score[g["id"]] == best] or opened[:1]
+        gone = [g for g in opened if best and score[g["id"]] == best] \
+            or [g for g in opened if g["id"] in (data.get("now") or [])][:1]
+        if not gone:
+            return []                 # cannot tell which: drop nothing
         turn = max((int(g.get("turn") or 0) for g in data["goals"]), default=0)
         for g in gone:
             g["status"] = DROPPED

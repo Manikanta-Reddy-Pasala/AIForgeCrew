@@ -238,7 +238,9 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         try:
             from aiforge_core.runtime import chat_interject as _ci
             _ci.set_steerable(session_id, True)
-            _ci.set_goal_reader(session_id, True)     # goal edits from the panel
+            from aiforge_core.runtime import chat_goals as _cg
+            if _cg.enabled():                         # not a job's own run
+                _ci.set_goal_reader(session_id, True)     # goal edits from the panel
         except Exception:  # noqa: BLE001
             pass
 
@@ -329,6 +331,13 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         # unattended runs share session None and run in parallel).
         compact_key=uuid.uuid4().hex,
         **progress_fields(), **item_fields())
+    # the GOALS block as the system prompt has it: a mid-turn goal change
+    # swaps exactly this text for the goals then (_limits._sync_goals)
+    try:
+        from ._convo import _goals_text
+        st.goals_block = _goals_text(session_id, builder, strict_finish)
+    except Exception:  # noqa: BLE001
+        st.goals_block = ""
     # The chat's unverified targets each hold an enforced board item: closed
     # only by a passing compare command (runtime/targets).
     try:

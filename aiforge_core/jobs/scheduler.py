@@ -245,6 +245,18 @@ def running_agent_for_session(session_id):
         return _SESSION_AGENT.get(sid)
 
 
+def _goals_off(gen, chat_goals):
+    """Run ``gen`` with the chat's goals off: the job's prompt is its work,
+    not the chat's GOAL NOW (each step runs inside the switch)."""
+    while True:
+        with chat_goals.off_for_run():
+            try:
+                ev = next(gen)
+            except StopIteration:
+                return
+        yield ev
+
+
 def _session_of(job: dict):
     raw = job.get("session_id")
     if raw in (None, ""):
@@ -484,8 +496,9 @@ def _run_agent_job(job: dict, prompt: str) -> None:
         from aiforge_core.runtime.chat_agent import run_chat_agent
         cwd = _job_workspace(job)
         final, err = "", None
-        for ev in run_chat_agent([{"role": "user", "content": prompt}],
-                                 cwd=cwd, role="chat", session_id=sid):
+        from aiforge_core.runtime import chat_goals as _goals
+        for ev in _goals_off(run_chat_agent([{"role": "user", "content": prompt}],
+                                            cwd=cwd, role="chat", session_id=sid), _goals):
             etype = ev.get("type")
             if etype == "message" and not ev.get("supplementary"):
                 final = ev.get("text") or final
