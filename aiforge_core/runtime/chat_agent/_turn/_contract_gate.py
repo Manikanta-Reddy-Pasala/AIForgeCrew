@@ -14,12 +14,27 @@ import re
 # The words of a gap line itself, never a name.
 _GAP_WORDS = {"does", "take", "missing", "class", "found", "function", "module",
               "exist", "defined", "only", "stub", "raise", "implement",
-              "notimplementederror", "unfinished"}
+              "notimplementederror", "unfinished", "unchanged"}
 
 #: Send-backs in a row (reset once the model acts), and per turn.
 _SEND_BACKS = 2
 _SEND_BACKS_TOTAL = 3
 _SHOWN = 25
+
+
+def work_base(st) -> "str | None":
+    """The commit the request's work started from: a chat worktree's own base
+    (each turn's end seals its edits into the branch, so a "continue" turn's
+    HEAD already holds them), else the turn's starting commit."""
+    cwd = getattr(st, "cwd", None)
+    try:
+        from aiforge_core.runtime import chat_worktree
+        wt = chat_worktree._read_meta(str(cwd)) if cwd else {}
+        if wt.get("base_sha"):
+            return wt["base_sha"]
+    except Exception:  # noqa: BLE001
+        pass
+    return getattr(st, "head0", None) or getattr(st, "dw_base_rev", None)
 
 
 def _gaps(st, cached: bool = True) -> list:
@@ -33,22 +48,26 @@ def _gaps(st, cached: bool = True) -> list:
         # the mid-run note reads the tree fresh.
         key = (id(st), len(getattr(st, "convo", None) or []),
                getattr(st, "edits_made", 0)) if cached else None
-        gaps = spec_contract.missing(goal, str(cwd), key=key)
+        gaps = spec_contract.missing(goal, str(cwd), key=key, base=work_base(st))
     except Exception:  # noqa: BLE001 — the check never blocks an answer
         return []
     # What the user said mid-run wins over the first message: a gap whose
     # names a steer mentions ("skip the invoices module") is theirs to drop.
     said = " ".join(str(s) for s in (getattr(st, "steers", None) or [])).lower()
     if said:
-        gaps = [g for g in gaps if not any(
-            w.lower() in said for w in re.findall(r"[A-Za-z_]\w{3,}", _bare(g))
-            if w.lower() not in _GAP_WORDS)]
+        gaps = [g for g in gaps if not (
+            # a listed file: only its whole path in a steer drops it
+            _bare(g).split(" ", 1)[0].lower() in said
+            if spec_contract.is_unchanged_gap(g) else any(
+                w.lower() in said for w in re.findall(r"[A-Za-z_]\w{3,}", _bare(g))
+                if w.lower() not in _GAP_WORDS))]
     return gaps
 
 
 _HINT = re.compile(r"\s*\((?:the request's path is from the project root; there is \S+; "
                    r"if you wrote it there by mistake, move it|[^()]*; the request renames it:"
-                   r"[^()]*)\)")
+                   r"[^()]*|" + re.escape(__import__("aiforge_core.runtime.spec_contract",
+                                                     fromlist=["x"]).UNCHANGED_LEAD) + r")\)")
 
 
 def _bare(gap: str) -> str:
@@ -115,7 +134,9 @@ def message(gaps: list) -> str:
             "own tests passing does not count when the API differs from the request.\n"
             "Only if the request means one of these must NOT exist (it is removed, "
             "renamed away, or only shown as an example), put a line "
-            "`not required: <name>` for it in your answer instead.")
+            "`not required: <name>` for it in your answer instead. A listed file "
+            "\"unchanged\" that truly needs no change for the request: "
+            "`not required: <path>` (do not touch it just to clear this).")
 
 
 def gate(st, step, builder=None, strict_finish=False):

@@ -736,6 +736,94 @@ def _calls(node, name: str) -> bool:
 
 _RENAME_CACHE: dict = {}
 
+#: A section's own file list: "Files: `a.py`, `b.py`." / "File: `x.py`."
+#: (never "Files likely involved:" — a hint, not a list of what must change).
+_FILES_LINE = re.compile(r"^[ \t]*(?:[-*][ \t]*)?\**Files?\**[ \t]*:\**[ \t]*(\S.*)$", re.M | re.I)
+_SOFT_FILES = re.compile(r"\b(?:likely|may|might|e\.g\.|for example|such as|optional)\b", re.I)
+#: The lead of the unchanged-file gap's explanation (stripped by _contract_gate).
+UNCHANGED_LEAD = "the request lists it among the files to change"
+
+
+_FENCE = re.compile(r"^[ \t]*(```|~~~).*?^[ \t]*\1[^\n]*$", re.M | re.S)
+#: A per-file qualifier that says the file is not one to change.
+_NOT_TO_CHANGE = re.compile(r"\b(?:read[- ]only|do\s+not\s+(?:change|edit|touch)|don'?t\s+"
+                            r"(?:change|edit|touch)|reference|for\s+context|unchanged|optional|"
+                            r"may|if\s+needed)\b", re.I)
+
+
+def listed_files(request: str) -> list:
+    """Existing files the request's ``Files:`` lines name (``new`` ones are
+    claimed elsewhere; fenced blocks and per-file "read only" / "may" /
+    "for context" qualifiers are not lists of what must change): shopkit
+    lists ``shopkit/storage.py`` for parts 1-3 (round-trip batches, coupons,
+    refunds) and v6a/v7a never opened it — 9 hidden tests."""
+    out = []
+    text = _FENCE.sub("", request or "")
+    for m in _FILES_LINE.finditer(text):
+        line = m.group(1)
+        if _SOFT_FILES.search(line.split("`", 1)[0]) or "likely" in line.lower()[:40]:
+            continue
+        spans = list(re.finditer(r"(new\s+)?`([^`\s]+)`", line, re.I))
+        for i, sp in enumerate(spans):
+            path = sp.group(2).strip()
+            if sp.group(1) or not ("/" in path or re.search(r"\.\w{1,5}$", path)):
+                continue
+            tail = line[sp.end():spans[i + 1].start() if i + 1 < len(spans) else len(line)]
+            if _NOT_TO_CHANGE.search(re.split(r",", tail, 1)[0]):
+                continue
+            out.append(path[2:] if path.startswith("./") else path)
+    return list(dict.fromkeys(out))
+
+
+_UNCHANGED_CACHE: dict = {}
+
+
+def _unchanged(root: str, paths: list, base: "str | None" = None, key=None) -> list:
+    """The listed files HEAD has that are unchanged since ``base`` (the
+    commit the work started from) — a file edited and committed since counts
+    as changed. No base: nothing (HEAD may already hold an earlier turn's
+    sealed work). Read-only git (``diff``, ``ls-tree``: no
+    index lock), two processes for all paths. Outside git, or on any git
+    error: nothing (never a false gap)."""
+    import subprocess
+    if not base:
+        return []
+    ck = (root, key, base, tuple(paths))
+    if key is not None and ck in _UNCHANGED_CACHE:
+        return _UNCHANGED_CACHE[ck]
+    out: list = []
+    try:
+        top = subprocess.run(["git", "-C", root, "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=10)
+        if top.returncode == 0:
+            top_dir = os.path.realpath(top.stdout.strip())
+            rels = {}
+            for p in paths:
+                full = os.path.join(root, p)
+                if os.path.isfile(full):
+                    rels[os.path.relpath(os.path.realpath(full), top_dir).replace(os.sep, "/")] = p
+            if rels:
+                git = ["git", "--no-optional-locks", "-C", top_dir]
+                tree = subprocess.run(git + ["ls-tree", "--name-only", "HEAD", "--", *rels],
+                                      capture_output=True, text=True, timeout=15)
+                diff = subprocess.run(git + ["diff", "--name-only", base, "--", *rels],
+                                      capture_output=True, text=True, timeout=15)
+                if tree.returncode == 0 and diff.returncode == 0:
+                    in_head = set(tree.stdout.split("\n"))
+                    changed = set(diff.stdout.split("\n"))
+                    out = [rels[r] for r in rels if r in in_head and r not in changed]
+    except Exception:  # noqa: BLE001
+        out = []
+    if key is not None:
+        if len(_UNCHANGED_CACHE) > 64:
+            _UNCHANGED_CACHE.clear()
+        _UNCHANGED_CACHE[ck] = out
+    return out
+
+
+def is_unchanged_gap(gap: str) -> bool:
+    return UNCHANGED_LEAD in (gap or "")
+
 
 def _old_name_left(root: str, old: str, new: str, mod: "str | None" = None,
                    key=None) -> "str | None":
@@ -814,7 +902,7 @@ def _index(root: str, key) -> "_Index":
     return ix
 
 
-def missing(request: str, root: str, key=None) -> list:
+def missing(request: str, root: str, key=None, base: "str | None" = None) -> list:
     """Lines naming what the request spells out and the code lacks. Empty
     when everything is there, nothing can be told, or it is off. ``key``:
     changes when the files may have (an edit count) — same key, same index."""
@@ -848,6 +936,12 @@ def missing(request: str, root: str, key=None) -> list:
             gap = None
         if gap and gap not in out:
             out.append(gap)
+    listed = listed_files(request)
+    if listed:
+        for p in _unchanged(root, listed, base, key):
+            gap = f"{p} unchanged ({UNCHANGED_LEAD})"
+            if gap not in out:
+                out.append(gap)
     if code:
         for old_name, new_name, mod in renames(request):
             try:
@@ -859,4 +953,4 @@ def missing(request: str, root: str, key=None) -> list:
     return out
 
 
-__all__ = ["claims", "enabled", "missing", "renames"]
+__all__ = ["claims", "enabled", "listed_files", "missing", "renames"]

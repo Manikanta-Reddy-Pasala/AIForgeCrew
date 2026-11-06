@@ -1,6 +1,7 @@
 # tests/python/runtime/test_spec_contract.py
 """What a request spells out in backticks is looked for in the code before a
 turn ends: a run that said "all parts completed" lacked half the API."""
+import os
 from types import SimpleNamespace
 
 from aiforge_core.runtime import spec_contract as S
@@ -769,3 +770,48 @@ def test_a_done_rename_a_shim_or_a_method_elsewhere_is_no_gap(tmp_path):
     (tmp_path / "pkg" / "a.py").write_text("def fetch(key):\n    return key\n")
     (tmp_path / "pkg" / "b.py").write_text("class C:\n    def get(self):\n        return 1\n")
     assert not any("get" in g for g in S.missing("Rename `get()` to `fetch(key)`.", str(tmp_path)))
+
+
+def test_files_lines_are_read_and_soft_hints_are_not():
+    req = ("## 1. Batches\n\nFiles: `shopkit/inventory.py`, `shopkit/storage.py`.\n\n"
+           "## 2. Coupons\n\nFiles: new `shopkit/coupons.py`, `shopkit/storage.py`.\n\n"
+           "Files likely involved: `src/core.py`.\n")
+    assert S.listed_files(req) == ["shopkit/inventory.py", "shopkit/storage.py"]
+
+
+def test_a_listed_file_left_unchanged_is_a_gap(tmp_path):
+    """shopkit v6a/v7a never opened shopkit/storage.py, listed for parts 1-3."""
+    import subprocess
+    (tmp_path / "shopkit").mkdir()
+    for f in ("inventory.py", "storage.py"):
+        (tmp_path / "shopkit" / f).write_text("x = 1\n")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+           "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+    def git(*c):
+        return subprocess.run(["git", "-C", str(tmp_path), "-c", "commit.gpgsign=false", *c],
+                              check=True, capture_output=True, text=True, env=env).stdout
+    for c in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "s"]):
+        git(*c)
+    base = git("rev-parse", "HEAD").strip()
+    (tmp_path / "shopkit" / "inventory.py").write_text("x = 2\n")
+    req = "Add `Inventory.batch(sku)`.\n\nFiles: `shopkit/inventory.py`, `shopkit/storage.py`.\n"
+    gaps = [g for g in S.missing(req, str(tmp_path), base=base) if "unchanged" in g]
+    assert gaps == ["shopkit/storage.py unchanged (the request lists it among the files to change)"]
+    assert not [g for g in S.missing(req, str(tmp_path)) if "unchanged" in g]   # no base: never
+    assert G._bare(gaps[0]) == "shopkit/storage.py unchanged"
+    # committed by the turn: still changed since the turn's base
+    (tmp_path / "shopkit" / "storage.py").write_text("x = 3\n")
+    git("commit", "-qam", "turn")
+    assert not [g for g in S.missing(req, str(tmp_path), base=base) if "unchanged" in g]
+    waived = SimpleNamespace(contract_waived=set())
+    G._note_waivers(waived, "not required: shopkit/storage.py", gaps)
+    assert G._waived(waived, gaps) == []
+
+
+def test_fenced_or_read_only_listed_files_are_not_to_change():
+    req = ("```\nFiles: `a/x.py`\n```\n"
+           "Files: `pkg/core.py`, `pkg/ref.py` (read only), `pkg/opt.py` (optional).\n"
+           "Files:\n\nDo not touch `legacy.py`.\n")
+    assert S.listed_files(req) == ["pkg/core.py"]

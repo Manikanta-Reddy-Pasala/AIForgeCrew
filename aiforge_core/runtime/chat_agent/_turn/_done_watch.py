@@ -83,7 +83,9 @@ def _raw_gaps(st) -> "list | None":
     hit = getattr(st, "dw_gap_cache", None)
     if hit and hit[0] == key:
         return hit[1]
-    gaps = spec_contract.missing(goal, str(cwd), key=key)   # builds / reuses the index
+    from ._contract_gate import work_base
+    gaps = spec_contract.missing(goal, str(cwd), key=key,    # builds / reuses the index
+                                 base=work_base(st))
     ix = (spec_contract._CACHE.get(str(cwd)) or (None, None))[1]
     if ix is None or ix.truncated or not ix.py \
             or ix.py < spec_contract._MIN_PY_SHARE * max(ix.source, 1):
@@ -104,8 +106,11 @@ def _initial_gaps(st) -> int:
         except Exception:  # noqa: BLE001
             st.dw_base_rev = None
         try:
-            gaps = _raw_gaps(st)
-            st.dw_initial = len(gaps) if gaps else 0
+            from aiforge_core.runtime.spec_contract import is_unchanged_gap
+            # named things to add; a listed file not yet edited is not one
+            # (a bug fix with a Files: line would then close on "touched")
+            gaps = [g for g in (_raw_gaps(st) or []) if not is_unchanged_gap(g)]
+            st.dw_initial = len(gaps)
         except Exception:  # noqa: BLE001
             st.dw_initial = 0
     return getattr(st, "dw_initial", None) or 0
