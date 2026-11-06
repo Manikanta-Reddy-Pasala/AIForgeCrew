@@ -617,6 +617,11 @@ const QUIET_SHOW_S = 15;
 // means the stream is dead.
 const LOST_SIGNAL_S = 40;
 
+// The chat list's one-line status: an icon per state.
+const GLANCE_ICON: Record<string, string> = {
+  running: '●', waiting: '?', background: '⟳', stopped: '■', done: '✓', partial: '!', failed: '✕',
+};
+
 export default function Chat({ project }: { project?: ChatProject } = {}) {
   // Each project remembers its own last-open chat.
   const lsSessionKey = project ? `${LS_SESSION_KEY}:${project.name}` : LS_SESSION_KEY;
@@ -2602,6 +2607,11 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
                       {s.title || 'Untitled'}
                       <ModeBadge mode={s.last_mode} />
                     </div>
+                    {s.glance && !(s.id === activeId && busy) && (
+                      <div className={`chat-session-glance g-${s.glance.kind}`} title={s.glance.text}>
+                        <span aria-hidden="true">{GLANCE_ICON[s.glance.kind] ?? '•'}</span> {s.glance.text}
+                      </div>
+                    )}
                     <div className="chat-session-meta">
                       <span title={new Date(s.updated_at).toLocaleString()}>
                         {dateTimeLabel(s.updated_at)} · {relTime(s.updated_at)}

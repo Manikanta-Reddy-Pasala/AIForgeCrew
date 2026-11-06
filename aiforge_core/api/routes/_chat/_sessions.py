@@ -186,12 +186,19 @@ def chat_session_list(cwd: str | None = None, no_project: bool = False) -> list[
                 if not _projects.project_path_of(r.get("cwd"), _paths)]
     # Which chats have a run going right now, so the list can show it and the
     # user can open another chat beside a busy one.
-    from aiforge_core.runtime import chat_background, chat_runs
+    from aiforge_core.runtime import chat_background, chat_glance, chat_runs
     # A watch, background command or scheduled run working in a chat counts:
     # the chat is busy though no turn holds it.
     bg = chat_background.active_sessions()
-    return [{**r, "running": chat_runs.is_running(r["id"]),
+    rows = [{**r, "running": chat_runs.is_running(r["id"]),
              "background": r["id"] in bg} for r in rows]
+    # Where each chat stands, in one line (live, background, or how its last
+    # turn ended).
+    try:
+        glance = chat_glance.lines(rows, bg)
+    except Exception:  # noqa: BLE001 — the list never breaks over it
+        glance = {}
+    return [{**r, "glance": glance[r["id"]]} if r["id"] in glance else r for r in rows]
 
 
 def _sweep_orphan_session_dirs() -> int:

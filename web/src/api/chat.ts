@@ -16,6 +16,9 @@ export interface ChatSession {
   parent_id?: number | null;   // set on a side task: the chat it was spun off
   running?: boolean;          // a run is going in this chat right now
   background?: boolean;       // a watch, background command or scheduled run is busy in it
+  /** where the chat stands, in one line: running / waiting / background /
+   *  stopped / done / partial / failed */
+  glance?: { kind: string; text: string };
   workdir?: string | null;   // this chat's own git worktree, when it has one
   temporary?: boolean;       // nothing of it is kept; deleted when closed
 }

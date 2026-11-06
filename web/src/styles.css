@@ -1263,6 +1263,20 @@ button.run-ov-note:active:not(:disabled), button.run-ov-text:active:not(:disable
   line-height: 1.3;
 }
 .chat-session-item.active .chat-session-title { color: var(--accent); }
+.chat-session-glance {
+  font-size: var(--fs-xs); color: var(--fg-2); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; margin: 1px 0 1px;
+}
+.chat-session-glance.g-running, .chat-session-glance.g-background { color: var(--accent); }
+.chat-session-glance.g-waiting { color: var(--glance-warn); font-weight: 600; }
+.chat-session-glance.g-done { color: var(--ok); }
+.chat-session-glance.g-partial { color: var(--glance-warn); }
+.chat-session-glance.g-stopped { color: var(--fg-2); }
+/* amber text readable on white (--warn is a fill colour) */
+:root { --glance-warn: #8a5300; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --glance-warn: var(--warn); } }
+:root[data-theme="dark"] { --glance-warn: var(--warn); }
+.chat-session-glance.g-failed { color: var(--err); }
 .chat-session-meta {
   font-size: var(--fs-xs);
   color: var(--fg-3);

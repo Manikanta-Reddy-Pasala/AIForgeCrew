@@ -171,6 +171,9 @@ def persist_turn(*, session_id: int, cwd: str, prompt: str,
     from aiforge_core.runtime import chat_private
     if chat_private.is_temporary(session_id):
         return          # no trace, no memory note: the message is all there is
+    # where the chat stands, one line for the chat list (every mode saves here)
+    from aiforge_core.runtime import chat_glance
+    chat_glance.record(session_id, steps, final_text, awaiting, cancelled)
     _append_trace(session_id, prompt, steps, final_text, team, cwd)
     if _skip_auto_memory(final_text, awaiting, cancelled):
         return
