@@ -51,6 +51,8 @@ def set_steerable(session_id: int, on: bool) -> None:
             _STEERABLE.add(session_id)
         else:
             _STEERABLE.discard(session_id)
+            _GOAL_READERS.discard(session_id)
+            _GOALS.pop(session_id, None)      # no run reads them now
 
 
 def is_steerable(session_id: int) -> bool:
@@ -120,6 +122,63 @@ def drain_items(session_id: int) -> "list[tuple[str, str]]":
     return out
 
 
+#: The user's goal edits from the progress panel, for the running chat loop
+#: only: kept apart from typed messages, so no other reader (a too-late
+#: reply, a cancelled turn's goal pass, a team run's SPEC, a retry wait)
+#: takes the harness note for something the user typed.
+_GOALS: dict = {}
+#: Chats whose run is the chat loop, the one reader of ``_GOALS`` (a team run
+#: or a pipeline is steerable too, but never reads them).
+_GOAL_READERS: set = set()
+
+
+def set_goal_reader(session_id: int, on: bool) -> None:
+    if session_id is None:
+        return
+    with _LOCK:
+        if on:
+            _GOAL_READERS.add(session_id)
+        else:
+            _GOAL_READERS.discard(session_id)
+            _GOALS.pop(session_id, None)
+
+
+def reads_goals(session_id: int) -> bool:
+    """A run of the chat will read a goals note at its next step."""
+    with _LOCK:
+        return session_id in _STEERABLE and session_id in _GOAL_READERS
+
+
+def push_goals(session_id: int, text: str) -> bool:
+    """Queue a goals note for the running turn; False (nothing queued) when
+    no chat loop runs — the edit is saved and the next turn sees it."""
+    text = str(text or "").strip()
+    if session_id is None or not text:
+        return False
+    with _LOCK:
+        if session_id not in _STEERABLE or session_id not in _GOAL_READERS:
+            return False
+        _GOALS.setdefault(session_id, []).append(text)
+    return True
+
+
+def pending_goals(session_id: int) -> bool:
+    """A goals note waits: the reply in flight, a long wait or the rest of a
+    batch stops for it, as for a typed message."""
+    if session_id is None:
+        return False
+    with _LOCK:
+        return bool(_GOALS.get(session_id))
+
+
+def drain_goals(session_id: int) -> list:
+    """Return + remove the queued goals notes (oldest first)."""
+    if session_id is None:
+        return []
+    with _LOCK:
+        return list(_GOALS.pop(session_id, None) or [])
+
+
 def pending(session_id: int) -> bool:
     """True if there are queued steer messages for ``session_id``."""
     if session_id is None:
@@ -152,6 +211,8 @@ def clear(session_id: int) -> None:
         return
     with _LOCK:
         _QUEUES.pop(session_id, None)
+        _GOALS.pop(session_id, None)
+        _GOAL_READERS.discard(session_id)
         _STEERABLE.discard(session_id)
         _APPLIED.pop(session_id, None)
 

@@ -455,6 +455,37 @@ export function chatOverview(id: number): Promise<ChatOverview> {
   return j<ChatOverview>(`/chat/sessions/${id}/overview`);
 }
 
+function goalCall(path: string, method: string, body?: object): Promise<ChatOverview> {
+  return apiFetch(path, {
+    method, headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  }).then(async r => {
+    if (r.ok) return r.json();
+    let why = `HTTP ${r.status}`;
+    try {
+      const d = (await r.json()).detail;
+      if (typeof d === 'string' && d) why = d;          // a 422 sends a list
+    } catch { /* keep the status */ }
+    throw new Error(why);
+  });
+}
+
+/** Edit a goal from the panel: its words, or open / done / dropped. */
+export function chatGoalEdit(id: number, goalId: string,
+                             change: { text?: string; status?: string }): Promise<ChatOverview> {
+  return goalCall(`/chat/sessions/${id}/goals/${encodeURIComponent(goalId)}`, 'PATCH', change);
+}
+
+/** Drop a goal: the agent does no more work on it. */
+export function chatGoalDrop(id: number, goalId: string): Promise<ChatOverview> {
+  return goalCall(`/chat/sessions/${id}/goals/${encodeURIComponent(goalId)}`, 'DELETE');
+}
+
+/** Add a goal from the panel. */
+export function chatGoalAdd(id: number, text: string): Promise<ChatOverview> {
+  return goalCall(`/chat/sessions/${id}/goals`, 'POST', { text });
+}
+
 /** Work of a chat outside a turn: watches, background commands, scheduled jobs. */
 /** One run of a schedule; ``ok`` null: stopped by the user, or outcome unknown. */
 export type ChatJobRun = { started_at?: string | null; ended_at?: string | null; ok: boolean | null;

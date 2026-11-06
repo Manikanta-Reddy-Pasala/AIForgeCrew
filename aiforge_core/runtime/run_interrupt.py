@@ -95,7 +95,7 @@ def reason(session_id) -> "str | None":
     if chat_cancel.is_cancelled(session_id):
         return "stop"
     try:
-        if chat_interject.pending(session_id):
+        if chat_interject.pending(session_id) or chat_interject.pending_goals(session_id):
             return "steer"
     except Exception:  # noqa: BLE001 — a steer probe must not wedge the wait
         return None

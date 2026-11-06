@@ -282,9 +282,14 @@ def _drain_steering(st, session_id):
     # shows the steer was applied.
     if session_id is not None:
         _items = chat_interject.drain_items(session_id)
+        # the user's goal edits (progress panel): their own queue
+        _items = [("goals", t) for t in chat_interject.drain_goals(session_id)] + _items
         if _items:
             from aiforge_core.runtime import chat_steer
-            _steers = [t for k, t in _items if k != "reject"]
+            _steers = [t for k, t in _items if k not in ("reject", "goals")]
+            # the user's own goal edits (progress panel): already the goals,
+            # handed over as they are — no goal pass (the board is revised)
+            _goal_edits = [t for k, t in _items if k == "goals"]
             st.steers.extend(_steers)
             if _items:
                 # the user spoke: their words decide the next step, not a
@@ -296,7 +301,10 @@ def _drain_steering(st, session_id):
             _rejects = [t for k, t in _items if k == "reject"]
             # ONE block for everything that drained together, so three
             # queued messages cannot each claim to be the latest.
-            _parts = ([chat_steer.steer_block(_steers)] if _steers else [])
+            # goal edits first: a message drained with them is newer, and its
+            # goal pass's GOAL NOW comes after
+            _parts = list(_goal_edits)
+            _parts += ([chat_steer.steer_block(_steers)] if _steers else [])
             _parts += [chat_steer.reject_note(g) for g in _rejects]
             _board_events: list = []
             _goal_events: list = []
@@ -308,6 +316,14 @@ def _drain_steering(st, session_id):
                 # the board waits for the answer.
                 _gnote, _asking = _steer_goals(st, session_id, _steers, _goal_events)
                 _parts.append(_gnote)
+            if _goal_edits:
+                # the work follows the user's goals: what serves a dropped one
+                # may come off the board, and the board is brought in line
+                if any(("Goal dropped " in g or "Goal marked done " in g) for g in _goal_edits):
+                    st.user_dropped_goal = True
+                if not _steers:
+                    note = yield from _revise_board(st, _goal_edits, _board_events)
+                    _parts.append(note)
             if _steers and not _asking:
                 # The task list follows the message: the harness brings the
                 # board in line with it (a model call), else the model is
@@ -325,6 +341,10 @@ def _drain_steering(st, session_id):
             _directive = "\n\n".join(p for p in _parts if p)
             _append_directive(st, _directive)
             for _k, _t in _items:
+                if _k == "goals":
+                    yield {"type": "thought", "role": "goals",
+                           "text": "Goals edited in the panel — the agent was told"}
+                    continue
                 yield chat_steer.steer_event(_t)
             yield from _goal_events
             yield from _board_events

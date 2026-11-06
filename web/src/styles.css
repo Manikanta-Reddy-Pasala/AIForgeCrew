@@ -1026,6 +1026,18 @@ button.run-ov-link:hover:not(:disabled) { text-decoration: underline; }
 .run-ov-bar > .st-left { background: var(--warn); }
 .run-ov-bar > .st-skipped, .run-ov-bar > .st-cancelled { background: var(--border-2); }
 .run-ov-tasks, .run-ov-changes { list-style: none; margin: 0; padding: 0; }
+/* Goals: the chat's goals, editable in place. */
+.run-ov-goals { list-style: none; margin: 0; padding: 0; }
+.run-ov-goal { display: flex; align-items: flex-start; gap: 4px; padding: 3px 0; font-size: var(--fs-sm); }
+.run-ov-goal.now .run-ov-goal-text { font-weight: 600; }
+.run-ov-goal.done .run-ov-goal-text { color: var(--fg-3); cursor: default; }
+.run-ov-goal-now { color: var(--accent); font-weight: 600; }
+.run-ov-goal-text { flex: 1; min-width: 0; overflow-wrap: anywhere; cursor: text; }
+.run-ov-goal-actions { display: flex; gap: 2px; opacity: .8; flex-shrink: 0; }
+.run-ov-goal:hover .run-ov-goal-actions, .run-ov-goal:focus-within .run-ov-goal-actions { opacity: 1; }
+.run-ov-goal-actions button { padding: 0 4px; }
+.run-ov-goal-input { flex: 1; min-width: 0; font: inherit; padding: 2px 4px; }
+.run-ov-goal-add input { width: 100%; margin-top: 4px; font-size: var(--fs-sm); padding: 3px 6px; }
 .run-ov-task { position: relative; display: flex; gap: 10px; padding: 0 0 10px; }
 .run-ov-task:not(:last-child)::before {
   content: ''; position: absolute; left: 8px; top: 20px; bottom: 2px; width: 1px; background: var(--border-1);

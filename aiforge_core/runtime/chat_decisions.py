@@ -193,7 +193,8 @@ def goal_lines(changes) -> list:
     for c in changes or []:
         c = str(c)
         for raw, said in (("dropped ", "Goal dropped "), ("changed ", "Goal changed "),
-                          ("reopened ", "Goal reopened "), ("added ", "Goal added ")):
+                          ("reopened ", "Goal reopened "), ("added ", "Goal added "),
+                          ("marked done ", "Goal marked done ")):
             if c.startswith(raw):
                 c = said + c[len(raw):]
                 break

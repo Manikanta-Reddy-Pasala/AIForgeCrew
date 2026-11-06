@@ -254,7 +254,8 @@ def _pre_dispatch_gates(st, name, args, readonly_mode, analyze_mode):
             st.board, args,
             # A message the user sent mid-run may drop a part of the request:
             # then the model may take it off (or skip it) as the user asked.
-            allow_request_removal=user_dropped_work(getattr(st, "steers", None)),
+            allow_request_removal=user_dropped_work(getattr(st, "steers", None))
+            or bool(getattr(st, "user_dropped_goal", False)),
             context_words=context_words(st.board, getattr(st, "goal", ""),
                                         getattr(st, "steers", None)))
         from ._section_check import check_back

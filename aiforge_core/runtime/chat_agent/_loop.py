@@ -437,7 +437,7 @@ def _dispatch_step(st, out, n, cwd, role, _complete_fn, session_id, builder,
     # not seen it. The next step folds the message in and the model decides.
     if session_id is not None:
         from aiforge_core.runtime import chat_interject
-        if chat_interject.pending(session_id):
+        if chat_interject.pending(session_id) or chat_interject.pending_goals(session_id):
             return "continue"
     step = _parse(out)
     # What the model said this call does, for the user: the step's events
@@ -714,6 +714,10 @@ def _drive(st, cwd, role, complete_fn, session_id, builder, strict_finish):
         # However the turn ends (answer, a pause for the user, a closed
         # stream), batched reads still waiting for a worker never run.
         _cancel_early_reads(st)
+        # No loop reads goal edits now (a team run goes on after its doer).
+        if session_id is not None:
+            from aiforge_core.runtime import chat_interject as _ci
+            _ci.set_goal_reader(session_id, False)
         # Commands this turn handed back to the model (still running at a
         # check-in) end with it; an explicit background command does not.
         try:

@@ -238,6 +238,7 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
         try:
             from aiforge_core.runtime import chat_interject as _ci
             _ci.set_steerable(session_id, True)
+            _ci.set_goal_reader(session_id, True)     # goal edits from the panel
         except Exception:  # noqa: BLE001
             pass
 

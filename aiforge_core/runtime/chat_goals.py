@@ -630,7 +630,8 @@ def render(data: dict) -> str:
         return ""
     now = set(data.get("now") or [])
     lines = [f"{MARK} — every goal the user set, kept across messages. Work "
-             "toward GOAL NOW; never drop or contradict another open goal "
+             "toward GOAL NOW and only toward the open goals: anything else only "
+             "when one of them needs it. Never drop or contradict an open goal "
              "unless the user says so. A later change to a goal overrides its "
              "earlier wording."]
     if data.get("current") and now:
@@ -687,6 +688,88 @@ def turn_note(out: dict) -> str:
         "it to the user in one line, and do not start, continue or undo any "
         "work."))
     return "\n\n---\n" + "\n".join(lines)
+
+
+def _refresh_current(data: dict) -> None:
+    open_now = [g for g in data["goals"] if g["id"] in (data.get("now") or [])
+                and g.get("status") == OPEN]
+    data["now"] = [g["id"] for g in open_now]
+    data["current"] = _flat(" / ".join(g["text"] for g in open_now), _CURRENT_CHARS)
+
+
+def user_edit(session_id, goal_id: str, *, text: "str | None" = None,
+              status: "str | None" = None, in_hand: bool = False) -> "dict | None":
+    """The user changed a goal in the progress panel: its words, or its status
+    (open / done / dropped). Returns ``{"change": line, "current": ...}``, or
+    None when there is no such goal or nothing changed. ``in_hand``: a run
+    is going and will hear of it — a reopened goal joins the work now (an
+    idle chat's waits for the next message). No model call: the user's own
+    edit is the goal. ValueError on a status that is not one."""
+    if session_id is None or not enabled():
+        return None
+    status = (status or "").strip().lower() or None
+    if status not in (None, OPEN, DONE, DROPPED):
+        raise ValueError(f"status must be open, done or dropped, not {status!r}")
+    text = _flat(text, 600) if text is not None else None
+    with _session_lock(session_id):
+        data = _load(session_id)
+        g = next((x for x in data["goals"] if x.get("id") == goal_id), None)
+        if g is None:
+            return None
+        turn = _user_turns(session_id) or 0
+        was_now = list(data.get("now") or [])
+        changes = []
+        if text and text != g["text"]:
+            g["text"] = text
+            changes.append(f"changed {goal_id}: {text[:160]}")
+        if status and status != g.get("status"):
+            if status == DROPPED:
+                changes.append(f"dropped {goal_id}: {g['text'][:160]}")
+            elif status == DONE:
+                changes.append(f"marked done {goal_id}: {g['text'][:160]}")
+            else:
+                changes.append(f"reopened {goal_id}: {g['text'][:160]}")
+                g["reopened_from"] = g.get("status")
+                g.pop("closed_turn", None)
+                if in_hand:
+                    data["now"] = list(dict.fromkeys(was_now + [goal_id]))
+            g["status"] = status
+            if status != OPEN:
+                g["closed_turn"] = turn
+        if not changes:
+            return None
+        if goal_id in was_now or data.get("now") != was_now:
+            _refresh_current(data)       # the work in hand changed: say it anew
+        data["asked"] = data["asked_about"] = ""
+        _save(session_id, data)
+        return {"change": "; ".join(changes), "changes": changes,
+                "current": data["current"],
+                "emptied": bool(was_now) and not data.get("now"),
+                "open": [x["text"] for x in data["goals"] if x.get("status") == OPEN
+                         and x["id"] not in (data.get("now") or [])]}
+
+
+def user_add(session_id, text: str, in_hand: bool = False) -> "dict | None":
+    """The user added a goal in the progress panel: open; part of the work
+    now when a run is going and will hear of it."""
+    if session_id is None or not enabled():
+        return None
+    text = _flat(text, 600)
+    if not text:
+        return None
+    with _session_lock(session_id):
+        data = _load(session_id)
+        gid = _new_id(data)
+        data["goals"].append({"id": gid, "text": text, "status": OPEN,
+                              "turn": _user_turns(session_id) or 0, "at": int(time.time())})
+        if in_hand:
+            data["now"] = list(dict.fromkeys((data.get("now") or []) + [gid]))
+            _refresh_current(data)
+        _trim(data)
+        _save(session_id, data)
+        line = f"added {gid}: {text[:160]}"
+        return {"change": line, "changes": [line], "current": data["current"], "id": gid,
+                "emptied": False, "open": []}
 
 
 def drop_open(session_id, like: str = "") -> list:

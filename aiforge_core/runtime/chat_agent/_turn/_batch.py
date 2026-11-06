@@ -166,6 +166,8 @@ def _batch_stop_reason(st, n, session_id):
         return "stopped"
     if session_id is not None and chat_interject.pending(session_id):
         return "the user sent new instructions"
+    if session_id is not None and chat_interject.pending_goals(session_id):
+        return "the user edited the goals"
     # Leave the model a step to answer in: a capped run (Quick mode) must not
     # spend its whole budget on one batch.
     if st.capped and n >= st.safety:

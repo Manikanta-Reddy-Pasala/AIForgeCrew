@@ -1,13 +1,14 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { chatOverview, ChatOverview, ChatDecision, chatBackground, ChatBackground,
-         ChatBackgroundItem, ChatJobRun, chatBackgroundStop } from '../api';
+         ChatBackgroundItem, ChatJobRun, chatBackgroundStop, ChatGoal,
+         chatGoalEdit, chatGoalDrop, chatGoalAdd } from '../api';
 import { AgentStep, SubtaskItem } from './Chat.types';
 import { describeStep } from '../stepDescribe';
 
 // ── Run overview — progress beside the chat ──────────────────────────────────
-// What runs now and how far the task list got, at a glance. Your own
-// messages (steers included) stay in the chat as your bubbles: the panel
-// never repeats them, nor goals worded from them.
+// The chat's goals (kept in line with your messages; edit, finish, delete or
+// add one here), what runs now and how far the task list got, at a glance.
+// Your messages themselves stay in the chat as your bubbles.
 //
 // The agent's lines are sorted by what they are about: a note on a task of
 // the list shows under that task (newest only, the rest on a click); a change
@@ -249,6 +250,65 @@ function BackgroundRow({ it }: Readonly<{ it: ChatBackgroundItem }>) {
   );
 }
 
+/** One goal: its words (editable in place), done / drop buttons. */
+function GoalRow({ g, now, pending, onEdit, onDrop, onDone }: Readonly<{
+  g: ChatGoal; now: boolean; pending: boolean;
+  /** resolves false when the save failed (the draft comes back to edit) */
+  onEdit: (text: string) => Promise<boolean>; onDrop: () => void; onDone: () => void;
+}>) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(g.text);
+  const [shown, setShown] = useState<string | null>(null);   // saved, not echoed yet
+  const cancel = useRef(false);
+  const byKey = useRef(false);            // left by Enter / Escape, not a click away
+  const grab = useRef(true);              // a failed save reopens without taking the cursor
+  const editBtn = useRef<HTMLButtonElement>(null);
+  useEffect(() => { setShown(null); }, [g.text]);
+  // blur is the one place an edit is saved (Enter blurs; Escape blurs cancelled)
+  const finish = () => {
+    if (cancel.current) { cancel.current = false; setText(g.text); }
+    else {
+      const t = text.trim();
+      if (t && t !== g.text) {
+        setShown(t);
+        onEdit(t).then(ok => {
+          if (!ok) { setShown(null); setText(t); grab.current = false; setEditing(true); }
+        });
+      } else setText(g.text);
+    }
+    setEditing(false);
+    if (byKey.current) { byKey.current = false; setTimeout(() => editBtn.current?.focus(), 0); }
+  };
+  return (
+    <li className={`run-ov-goal ${now ? 'now' : ''}`}>
+      {editing ? (
+        <input className="run-ov-goal-input" value={text} autoFocus={grab.current} aria-label={`Edit goal: ${g.text}`}
+               onChange={e => setText(e.target.value)} onBlur={finish}
+               onKeyDown={e => {
+                 if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); byKey.current = true; e.currentTarget.blur(); }
+                 if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cancel.current = true; byKey.current = true; e.currentTarget.blur(); }
+               }} />
+      ) : (
+        <span className="run-ov-goal-text" title="Click to edit" aria-hidden="true"
+              onClick={() => { if (!pending) { grab.current = true; setEditing(true); } }}>
+          {now && <span className="run-ov-goal-now">now · </span>}{shown ?? g.text}
+        </span>
+      )}
+      {!editing && (
+        <span className="run-ov-goal-actions">
+          <button type="button" ref={editBtn} className="ghost xs" disabled={pending}
+                  onClick={() => { grab.current = true; setEditing(true); }}
+                  aria-label={`Edit goal: ${g.text}`} title="Edit">✎</button>
+          <button type="button" className="ghost xs" onClick={onDone} disabled={pending}
+                  aria-label={`Mark done: ${g.text}`} title="Mark done">✓</button>
+          <button type="button" className="ghost xs" onClick={onDrop} disabled={pending}
+                  aria-label={`Delete goal: ${g.text}`} title="Delete (the agent stops work on it)">✕</button>
+        </span>
+      )}
+    </li>
+  );
+}
+
 function NowCard({ running, next, busy, awaiting, items, action, phase, bgBusy }: Readonly<{
   running?: SubtaskItem; next?: SubtaskItem; busy: boolean; awaiting?: boolean;
   items: SubtaskItem[]; action: string; phase?: string;
@@ -321,6 +381,38 @@ export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase,
   // Another chat: nothing of the last one's stays on screen.
   useEffect(() => { setOv(null); setBg(null); setStopping(false); setAllChanges(false); setShowEarlier(false); }, [sessionId]);
 
+  const [newGoal, setNewGoal] = useState('');
+  const [showDoneGoals, setShowDoneGoals] = useState(false);
+  const [goalErr, setGoalErr] = useState('');
+  // The chat shown now, and which overview answer is the newest one asked
+  // for: a slower poll or another chat's reply never overwrites a newer one.
+  const sidRef = useRef(sessionId);
+  sidRef.current = sessionId;
+  const ovSeq = useRef(0);
+  // One goal call at a time: a double click or a second Enter sends nothing.
+  const [goalPending, setGoalPending] = useState(false);
+  const goalAct = (p: () => Promise<ChatOverview>, onOk?: () => void): Promise<boolean> => {
+    if (goalPending) return Promise.resolve(false);
+    const sid = sessionId;
+    setGoalErr('');
+    setGoalPending(true);
+    return p().then(r => {
+      if (sid !== sidRef.current) return false;
+      // the edit's own answer is the newest: a poll sent before it is dropped
+      ++ovSeq.current;
+      setOv(r); setNow(Date.now());
+      onOk?.();
+      return true;
+    }).catch((e: Error) => {
+      if (sid === sidRef.current) setGoalErr(`Could not save the goal (${e.message}) — try again.`);
+      return false;
+    }).finally(() => { if (sid === sidRef.current) setGoalPending(false); });
+  };
+  useEffect(() => { setNewGoal(''); setGoalErr(''); setShowDoneGoals(false); setGoalPending(false); }, [sessionId]);
+  const goals = ov?.goals ?? [];
+  const openGoals = goals.filter(g => g.status === 'open');
+  const doneGoals = goals.filter(g => g.status === 'done');
+  const nowIds = new Set(ov?.now ?? []);
   const bgCount = bg?.items.length ?? 0;
   useEffect(() => {
     let live = true;
@@ -342,9 +434,12 @@ export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase,
 
   useEffect(() => {
     let live = true;
-    const load = () => chatOverview(sessionId)
-      .then(r => { if (live) { setOv(r); setNow(Date.now()); } })
-      .catch(() => { /* the panel keeps what it had */ });
+    const load = () => {
+      const seq = ++ovSeq.current;
+      chatOverview(sessionId)
+        .then(r => { if (live && seq === ovSeq.current) { setOv(r); setNow(Date.now()); } })
+        .catch(() => { /* the panel keeps what it had */ });
+    };
     load();
     // Polled while the run goes on; once more when it ends (busy flips).
     const h = busy ? setInterval(load, POLL_MS) : undefined;
@@ -389,7 +484,7 @@ export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase,
     const sid = sessionId;
     setStopping(true);
     chatBackgroundStop(sid)
-      .then(r => { if (sid === sessionId) setBg(r); })
+      .then(r => { if (sid === sidRef.current) setBg(r); })
       .catch(() => { /* the next poll shows what is left */ })
       .finally(() => setStopping(false));
   };
@@ -404,6 +499,54 @@ export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase,
       </div>
 
       <div className="run-ov-body">
+        <Section title="Goals" extra={doneGoals.length > 0 && (
+          <button type="button" className="ghost xs run-ov-link" onClick={() => setShowDoneGoals(v => !v)}
+                  aria-expanded={showDoneGoals}>
+            {showDoneGoals ? 'hide done' : `done ${doneGoals.length}`}
+          </button>
+        )}>
+          {openGoals.length === 0 ? (
+            <div className="run-ov-empty">No open goal. Your messages set them; you can add one here.</div>
+          ) : (
+            <ul className="run-ov-goals">
+              {openGoals.map(g => (
+                <GoalRow key={g.id} g={g} now={nowIds.has(g.id)} pending={goalPending}
+                         onEdit={t => goalAct(() => chatGoalEdit(sessionId, g.id, { text: t }))}
+                         onDone={() => goalAct(() => chatGoalEdit(sessionId, g.id, { status: 'done' }))}
+                         onDrop={() => {
+                           const shortText = g.text.length > 200 ? `${g.text.slice(0, 200)}…` : g.text;
+                           if (window.confirm(`Delete this goal? The agent stops work on it.\n\n${shortText}`)) {
+                             goalAct(() => chatGoalDrop(sessionId, g.id));
+                           }
+                         }} />
+              ))}
+            </ul>
+          )}
+          {showDoneGoals && (
+            <ul className="run-ov-goals done">
+              {doneGoals.map(g => (
+                <li key={g.id} className="run-ov-goal done">
+                  <span className="run-ov-goal-text">✓ {g.text}</span>
+                  <span className="run-ov-goal-actions">
+                    <button type="button" className="ghost xs" aria-label={`Reopen goal: ${g.text}`} title="Reopen"
+                            disabled={goalPending}
+                            onClick={() => goalAct(() => chatGoalEdit(sessionId, g.id, { status: 'open' }))}>↺</button>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <form className="run-ov-goal-add" onSubmit={e => {
+            e.preventDefault();
+            const t = newGoal.trim();
+            if (t && !goalPending) void goalAct(() => chatGoalAdd(sessionId, t), () => setNewGoal(''));
+          }}>
+            <input value={newGoal} onChange={e => setNewGoal(e.target.value)} placeholder="Add a goal…"
+                   aria-label="Add a goal" />
+          </form>
+          {goalErr && <div className="run-ov-note old" role="alert">{goalErr}</div>}
+        </Section>
+
         <NowCard running={running} next={next} busy={busy} awaiting={awaiting} items={items}
                  action={action} phase={busy ? phase : undefined}
                  bgBusy={bgItems.find(i => i.state === 'running')} />
