@@ -689,6 +689,37 @@ def turn_note(out: dict) -> str:
     return "\n\n---\n" + "\n".join(lines)
 
 
+def drop_open(session_id, like: str = "") -> list:
+    """The user said no to continuing the earlier work: the open goal(s) of
+    that work are dropped (texts returned). ``like``: the work's own words
+    (its handoff goal) — the open goals that share most words with it; none
+    shares any: the oldest open goal, never every goal of the chat. No model
+    call."""
+    if session_id is None or not enabled():
+        return []
+    words = {w for w in re.findall(r"[a-z0-9_]{3,}", (like or "").lower())}
+    with _session_lock(session_id):
+        data = _load(session_id)
+        opened = _open(data)
+        if not opened:
+            return []
+        score = {g["id"]: len(words & set(re.findall(r"[a-z0-9_]{3,}", (g.get("text") or "").lower())))
+                 for g in opened}
+        best = max(score.values()) if score else 0
+        gone = [g for g in opened if best and score[g["id"]] == best] or opened[:1]
+        turn = max((int(g.get("turn") or 0) for g in data["goals"]), default=0)
+        for g in gone:
+            g["status"] = DROPPED
+            g["closed_turn"] = turn
+        ids = {g["id"] for g in gone}
+        data["now"] = [i for i in (data.get("now") or []) if i not in ids]
+        if not data["now"]:
+            data["current"] = ""
+        data["asked"] = data["asked_about"] = ""
+        _save(session_id, data)
+    return [g.get("text") or "" for g in gone]
+
+
 def drop_reply(session_id, out: dict) -> str:
     """The harness's own answer to a message that only dropped goals (no
     work left for it): what was dropped and what is still open. "" when the

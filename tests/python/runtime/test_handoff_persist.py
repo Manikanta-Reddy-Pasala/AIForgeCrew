@@ -315,7 +315,6 @@ _REFERENCE = ("The user's new message, above, is the request for this turn: do w
 @pytest.mark.parametrize("text", [
     "write a haiku about autumn rain",                  # unrelated
     "new task: refactor the billing parser",            # an explicit new task
-    "why did the benchmark fail?",                      # a question
     "also make the cache size configurable in settings.py",
 ])
 def test_the_model_is_given_the_handoff_and_decides_whether_it_applies(text):
@@ -373,7 +372,7 @@ def test_an_unrelated_message_ignores_the_handoff_and_the_work_stays_resumable(t
     evs, seen = _answer(sid, tmp_path, history, "Paris.")
     assert [e["text"] for e in evs if e.get("type") == "message"] == ["Paris."]
     assert len(seen) == 1                                 # no extra model step
-    assert "ignore this block: do not resume the earlier work" in seen[0]
+    assert "Do NOT resume, continue, redo or change the earlier work" in seen[0]
     chat_store.add_message(sid, "assistant", "Paris.")
     got = H.load(sid)
     assert H.is_unfinished(got) and got["status"] == "stopped"
@@ -553,3 +552,91 @@ def test_idle_status_mentions_unfinished_work(client):
     H.save(sid, _rec())
     text = client.get(f"/api/chat/sessions/{sid}/status").json()["text"]
     assert "ended unfinished" in text and "add the index" in text
+
+
+@pytest.mark.parametrize("text", [
+    "why did the benchmark fail?", "check the sub task status", "what did it change so far?",
+])
+def test_a_question_gets_the_answer_only_note_and_the_resume_ask(text):
+    """A live run answered 'check the sub task status' after a stop, then went
+    back into the earlier work on its own. A question now gets the answer-only
+    note, and its answer ends by asking whether to continue."""
+    sid = _unfinished_chat()
+    brief, _ = _next(sid, text)
+    assert brief.startswith(handoff.QUESTION_HEAD)
+    assert H.load(sid)["ask_resume"] is True
+
+
+def _live(sid, prior, edits=0):
+    rec = pytypes.SimpleNamespace(prior=prior, st=pytypes.SimpleNamespace(edits_made=edits))
+    rec._left_untouched = lambda: H.Recorder._left_untouched(rec)
+    with H._LIVE_LOCK:
+        H._LIVE[sid] = rec
+    return rec
+
+
+def test_the_resume_ask_comes_at_the_turns_end_only_when_the_work_stays_open():
+    from aiforge_core.api.routes._chat import _turn_events as TE
+    sid = _unfinished_chat()
+    _next(sid, "what did it change so far?")
+    prior = H.load(sid)
+    st = {"final_text": "It changed read.py.", "awaiting": False}
+    try:
+        _live(sid, prior)
+        ev = TE._resume_ask_event(st, sid)
+        assert ev["awaiting_input"] and ev["text"].startswith("It changed read.py.")
+        assert handoff.RESUME_ASK_MARK in ev["text"] and "refactor the parser" in ev["text"]
+        _live(sid, prior, edits=2)                          # the turn did work after all
+        assert TE._resume_ask_event(st, sid) is None
+        _live(sid, {**prior, "ask_resume": False})          # an order turn
+        assert TE._resume_ask_event(st, sid) is None
+        _live(sid, {**prior, "offers": H._MAX_OFFERS})      # no longer offered
+        assert TE._resume_ask_event(st, sid) is None
+    finally:
+        with H._LIVE_LOCK:
+            H._LIVE.pop(sid, None)
+
+
+def test_an_order_gets_the_reference_note_and_no_resume_ask():
+    sid = _unfinished_chat()
+    brief, _ = _next(sid, "write a haiku about autumn rain")
+    assert brief.startswith(handoff.REFERENCE_HEAD) and not H.load(sid)["ask_resume"]
+
+
+def test_no_to_the_resume_ask_drops_the_earlier_work(monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_GOALS", "1")
+    from aiforge_core.api.routes._chat import _producer as P
+    from aiforge_core.runtime import chat_goals
+    sid = _unfinished_chat()
+    chat_goals._save(sid, {**chat_goals._empty(), "goals": [
+        {"id": "g1", "text": "refactor the parser and add the cache", "status": "open"},
+        {"id": "g2", "text": "write release notes for v2", "status": "open"}],
+        "now": ["g1"], "current": "refactor the parser and add the cache"})
+    H.save(sid, {**H.load(sid), "goal": "refactor the parser and add the cache"})
+    chat_store.add_message(sid, "assistant", "It is at step 3." + handoff.resume_ask("refactor"))
+    chat_store.add_message(sid, "user", "no")
+    pc = pytypes.SimpleNamespace(session_id=sid, prompt="no", history=[], _resume_brief="x")
+    reply = P._resume_answer(pc, chat_store.get_messages(sid))
+    assert reply and "dropped" in reply and H.load(sid) is None
+    assert [g["id"] for g in chat_goals._open(chat_goals._load(sid))] == ["g2"]   # only that work
+    for text in ("yes", "no problem, go ahead", "no, but fix the tests instead", "don't stop, continue",
+                 "nope, keep going", "never mind the question, continue", "do not drop it"):
+        pc.prompt = text
+        assert P._resume_answer(pc, chat_store.get_messages(sid)) is None, text
+    pc.prompt = "yes"
+    assert P._resume_answer(pc, chat_store.get_messages(sid)) is None   # yes: a normal continue
+
+
+@pytest.mark.parametrize("text", [
+    "can you write a script that parses logs", "could you make the button blue",
+    "can you run the migration", "check the build then deploy", "can you finish the parser?",
+    "could you complete the remaining steps?", "do the remaining steps",
+])
+def test_an_order_phrased_as_a_question_is_not_a_question(text):
+    assert not H._is_question(text)
+
+
+def test_what_did_it_change_is_a_question_and_did_the_test_pass_too():
+    for q in ("what did it change so far?", "did the test pass?", "why did it remove the cache?",
+              "do the tests pass?"):
+        assert H._is_question(q), q

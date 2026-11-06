@@ -3,6 +3,8 @@ background, with its turn-setup helpers (logger, request meter,
 stale-notes notice)."""
 from __future__ import annotations
 
+import re
+
 import json
 import os
 
@@ -134,9 +136,56 @@ def _settle_early_exit(pc, answer: str) -> None:
         pass
 
 
+#: A bare no to "continue the earlier work?": "no problem, go ahead" or "no,
+#: but fix the tests" is not one (it goes to the agent as a message).
+_SAYS_NO = re.compile(
+    r"^\W*(?:no|nope|nah|no thanks|no thank you|not now|drop it|drop that|leave it|skip it|"
+    r"cancel|cancel it|forget it|never ?mind|stop|stop it|don['\u2019]?t continue|do not continue|"
+    r"no,?\s*(?:drop|leave|skip|cancel|forget|stop)\s+(?:it|that))"
+    r"(?:[\s,.!]+(?:thanks|thank you|please))?\W*$", re.I)
+
+
+def _resume_answer(pc, rows) -> "str | None":
+    """The reply to the harness's "continue the earlier work?" (handoff
+    .resume_ask) under the last answer: "no" drops that work — every open
+    goal and the saved handoff — and the harness says so; no agent runs.
+    "yes" goes on as a normal "continue" (the handoff resumes)."""
+    from aiforge_core.runtime import handoff
+    last = next((r for r in reversed(rows[:-1]) if r.get("role") == "assistant"), None)
+    if not last or handoff.RESUME_ASK_MARK not in str(last.get("content") or "")[-800:]:
+        return None
+    if not _SAYS_NO.match((pc.prompt or "").strip()):
+        return None
+    from aiforge_core.runtime import chat_goals, handoff_store
+    h = handoff_store.load(pc.session_id) or {}
+    try:
+        gone = chat_goals.drop_open(pc.session_id, like=h.get("goal") or "")
+    except Exception as exc:  # noqa: BLE001 — the handoff still goes
+        _af_log.debug("drop goals skipped: %s", exc)
+        gone = []
+    handoff_store.clear(pc.session_id)
+    pc._resume_brief = ""
+    what = (h.get("goal") or (gone[0] if gone else "") or "").strip()
+    what = (what[:200] + "…") if len(what) > 200 else what
+    return ("Okay — I will not continue it" + (f": {what}" if what else "") +
+            ". It is dropped; tell me what to do next.")
+
+
 def _goal_pass(pc, gctx):
     """Bring the chat's goals in line with this turn's message; a question
     for the user ends the turn waiting on the answer."""
+    try:
+        from aiforge_core.runtime import chat_store
+        reply = _resume_answer(pc, chat_store.get_messages(pc.session_id))
+    except Exception as exc:  # noqa: BLE001
+        _af_log.debug("resume answer skipped: %s", exc)
+        reply = None
+    if reply:
+        _settle_early_exit(pc, reply)
+        yield {"type": "message", "text": reply}
+        yield {"type": "done"}
+        gctx["done"] = True
+        return
     try:
         from aiforge_core.runtime import chat_goals, chat_runs, chat_store
         from aiforge_core.runtime.chat_agent._native_prompt import is_plan_execution

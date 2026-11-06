@@ -121,6 +121,11 @@ def _consume_produce_events(_events, st, steps, run, session_id, turn_t0,
                                           clog, emit)
         if ev is None:
             continue
+        if ev.get("type") == "done":
+            ask = _resume_ask_event(st, session_id)
+            if ask is not None:
+                _route_produce_event(ask, st, steps)
+                run.publish(ask)
         _route_produce_event(ev, st, steps)
         run.publish(ev)
         saver.maybe_save(steps, st["subtasks"])
@@ -174,6 +179,29 @@ def _clean_and_log_produce_event(ev, session_id, turn_t0, turn_mode, clog, emit)
               "mode": turn_mode}
     _mirror_event_to_log(ev, session_id, clog, emit)
     return ev
+
+
+def _resume_ask_event(st: dict, session_id) -> "dict | None":
+    """At the turn's end (its ``done``): a question answered while earlier
+    work is unfinished ends by asking whether to continue that work, and the
+    chat waits for the reply — the run does not drift back into it on its own.
+
+    Decided by the turn's own handoff recorder, still live at ``done``: the
+    turn was seeded as a question (``ask_resume``) and leaves the record
+    unfinished (no edit, still offered) — the same test its ``finish`` runs
+    a moment later. The answer is sent again, last, with the ask under it."""
+    if session_id is None or st.get("awaiting") or not st.get("final_text"):
+        return None
+    try:
+        from aiforge_core.runtime import handoff, handoff_store
+        with handoff_store._LIVE_LOCK:
+            rec = handoff_store._LIVE.get(session_id)
+        if rec is None or not rec.prior.get("ask_resume") or not rec._left_untouched():
+            return None
+        return {"type": "message", "text": st["final_text"] + handoff.resume_ask(rec.prior.get("goal")),
+                "awaiting_input": True}
+    except Exception:  # noqa: BLE001 — the answer stands as it is
+        return None
 
 
 def _route_produce_event(ev, st: dict, steps: list) -> None:

@@ -174,13 +174,37 @@ REFERENCE_HEAD = ("[HANDOFF — for reference only. The previous turn in this ch
                   "done, do not repeat what failed). If it is about something "
                   "else, ignore this block: do not resume the earlier work on "
                   "your own, and do not mention it.]")
+#: The record under a QUESTION after a turn that stopped with work left: a
+#: live run answered "check the sub task status" and then went back into the
+#: earlier work nobody had asked it to resume. The question is answered and
+#: nothing more; the harness then asks whether to continue (RESUME_ASK).
+QUESTION_HEAD = ("[HANDOFF — for reference only. The previous turn in this chat "
+                 "stopped before its work was finished; this is what is known "
+                 "about that work. The user's new message, above, is a QUESTION: "
+                 "answer it (reading files or running read-only checks for it is "
+                 "fine). Do NOT resume, continue, redo or change the earlier work "
+                 "in this turn, even when the question is about it; after your "
+                 "answer the user is asked whether to continue it.]")
+#: The line the harness adds under that answer. The next message reads it:
+#: "no" drops the earlier work, "yes" resumes it.
+RESUME_ASK_MARK = "The earlier work is not finished"
+
+
+def resume_ask(goal: str) -> str:
+    g = " ".join(str(goal or "").split())
+    g = (g[:200] + "…") if len(g) > 200 else g
+    return (f"\n\n---\n**{RESUME_ASK_MARK}**" + (f": {g}" if g else "") +
+            "\nDo you want me to continue it? Reply **yes** to continue, or "
+            "**no** to drop it.")
+
+
 _DEFAULT_HEAD = ("[HANDOFF — the earlier attempt went in circles, so this is a "
                  "fresh start. It holds what is known; do not repeat what failed.]")
 
 
 def render(h: dict, offload_id: "str | None" = None,
            header: "str | None" = None, resumed: bool = False,
-           reference: bool = False) -> str:
+           reference: bool = False, question: bool = False) -> str:
     """The handoff as the one user message a restarted run starts from.
 
     ``header`` replaces the first line (a condense restart is not a stuck one).
@@ -189,7 +213,7 @@ def render(h: dict, offload_id: "str | None" = None,
     ``reference``: the new message names a task of its own, so the record is
     reference material under it, not the turn's request."""
     if reference:
-        header = header or REFERENCE_HEAD
+        header = header or (QUESTION_HEAD if question else REFERENCE_HEAD)
     lines = [header or (RESUME_HEAD if resumed else _DEFAULT_HEAD)]
     if h.get("goal"):
         lines.append(("EARLIER GOAL: " if reference else "GOAL: ") + h["goal"])
@@ -232,5 +256,5 @@ def render(h: dict, offload_id: "str | None" = None,
     return "\n".join(lines)
 
 
-__all__ = ["MARK", "RESUME_HEAD", "REFERENCE_HEAD", "REFERENCE_MARK", "note_failed", "record_failed", "render_failed", "last_attempt", "build_chat", "render", "without_pinned",
+__all__ = ["MARK", "QUESTION_HEAD", "RESUME_ASK_MARK", "resume_ask", "RESUME_HEAD", "REFERENCE_HEAD", "REFERENCE_MARK", "note_failed", "record_failed", "render_failed", "last_attempt", "build_chat", "render", "without_pinned",
            "MAX_FAILED"]

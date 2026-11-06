@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 
@@ -106,6 +107,9 @@ def bound(h: dict) -> dict:
         # Times it was handed to a next turn, and its status before that.
         "offers": int(h.get("offers") or 0),
         "was": str(h.get("was") or "")[:20] or None,
+        # The turn it was handed to is a question: its answer asks whether
+        # to continue the work (handoff.resume_ask).
+        "ask_resume": bool(h.get("ask_resume")),
         "updated_at": float(h.get("updated_at") or time.time()),
     }
     if isinstance(h.get("pipeline"), dict):
@@ -254,6 +258,39 @@ def _names_no_task(prompt: str, h: dict) -> bool:
                 or (is_go_ahead(text) and not wants_changes(text)))
 
 
+#: The earlier work itself asked for ("can you finish it?", "do the rest").
+_GO_ON = re.compile(r"\b(?:finish|complete|continue|carry\s+on|go\s+on|keep\s+going|proceed|"
+                    r"resume|do\s+the\s+rest|the\s+remaining|rest\s+of)\b", re.I)
+#: Work a "can you …" / "check … then …" message orders, beyond the change
+#: verbs chat_router knows: "can you write a script" is a task, not a question.
+_ORDER_VERB = re.compile(
+    r"(?:^\W*|\b(?:can|could|would|will)\s+you\s+(?:please\s+)?|\bplease\s+|\b(?:and|then)\s+)"
+    r"(?:write|make|run|test|install|deploy|commit|push|generate|set\s+up|save|apply|"
+    r"create|add|implement|build|refactor|rename|delete|remove|update|fix|change|move|"
+    r"start|restart|rerun|retry|merge|release|tag|publish|send|draft|open\s+a\s+pr)\b", re.I)
+
+
+def _is_question(prompt: str) -> bool:
+    """A message that asks rather than orders: no change asked for, and a
+    question mark or a question/status opening ("check the sub task status",
+    "what did it change?")."""
+    text = (prompt or "").strip()
+    if not text:
+        return False
+    try:
+        from aiforge_core.runtime.chat_router import wants_changes
+        if wants_changes(text) or _ORDER_VERB.search(text):
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    if _GO_ON.search(text):
+        return False             # "can you finish the parser?" asks for the work
+    from aiforge_core.runtime import chat_status
+    return (text.rstrip().endswith("?") or chat_status.is_status_request(text)
+            or bool(re.match(r"^(?:what|why|how|where|when|which|who|is|are|was|were|did|does|"
+                             r"show|tell|explain|list)\b", text, re.I)))
+
+
 # ── seeding the next turn ───────────────────────────────────────────────────
 
 def _unfinished_tail(rows: list) -> int:
@@ -308,7 +345,9 @@ def seed_next_turn(session_id, rows: list, prompt: str, history: list,
         # task of its own; whether the work is continued stays the model's call.
         same = _norm(prompt) in (_norm(h.get("turn_prompt")), _norm(h.get("goal")))
         bare = forced is True or _names_no_task(prompt, h)
-        text = handoff.render(h, resumed=True, reference=not (same or bare))
+        question = not (same or bare) and _is_question(prompt)
+        text = handoff.render(h, resumed=True, reference=not (same or bare),
+                              question=question)
         if h.get("goal") and bare and not same:
             # The new message says nothing about the task ("continue"):
             # quote the goal so the run, and every condense, still knows it.
@@ -323,6 +362,7 @@ def seed_next_turn(session_id, rows: list, prompt: str, history: list,
             prefix.append(new)
         history[:] = prefix
         save(session_id, {**h, "status": "running", "reason": "resumed",
+                          "ask_resume": bool(question),
                           "was": h.get("status") if h.get("status") != "running"
                           else h.get("was") or "interrupted",
                           "offers": int(h.get("offers") or 0) + 1})
@@ -499,7 +539,8 @@ class Recorder:
                 # The turn was handed unfinished work and changed nothing (it
                 # answered a question, or was about something else): the work
                 # is still unfinished, and the next message is offered it.
-                save(self.sid, {**self.prior, "status": self.prior_status})
+                save(self.sid, {**self.prior, "status": self.prior_status,
+                                "ask_resume": False})
             elif outcome == "final":
                 clear(self.sid)             # finished: nothing to resume
             elif open_items(board):
