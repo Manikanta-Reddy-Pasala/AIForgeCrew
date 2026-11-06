@@ -16,6 +16,12 @@ after an output word ("->", "returns", "is", "contains", "the output is")
 are EXPECTED: when the request asks for tests and some are missing, the
 finish sends the answer back once. All of them are named, as advice, at the
 halfway time check. Off: ``AIFORGE_CHAT_EXAMPLE_GATE=0``.
+
+An example written as an input and its result (`` `[] ""` -> `[]` ``) is a
+pair: a test holds it when one test function has both the input's parts and
+the result. click a7: the request gave ``[] "" -> []`` (options only after a
+dash); the tests checked ``"-"`` alone, the code listed options on an empty
+word too, and 28 of 37 hidden tests failed on it.
 """
 from __future__ import annotations
 
@@ -42,7 +48,12 @@ _TEST_DIR = re.compile(r"(?:^|/)(?:tests?|spec|specs|__tests__|testdata|fixtures
 _TEST_NAME = re.compile(r"(?:^|/)test_|_test\.|\.test\.|\.spec\.|_spec\.rb$|Test\.(?:java|kt)$")
 _SKIP_DIR = re.compile(r"(?:^|/)(?:node_modules|\.venv|venv|site-packages|\.git|dist|build)/")
 _MAX_FILES, _MAX_BYTES = 200, 512_000
-_SHOWN = 12
+_SHOWN = 16
+#: `input` -> `result`, the two spans side by side.
+_PAIR = re.compile(r"`([^`\n]{1,160})`[ \t]*(?:->|=>)[ \t]*`([^`\n]{1,200})`")
+#: A result that is a value, not a description (``(args, incomplete)``).
+_LITERAL = re.compile(r"""["']|^[\[(]\s*[\])]$|^-?\d|^(?:True|False|None)$""")
+_DEF = re.compile(r"\n(?=[ \t]*(?:async[ \t]+)?def[ \t])")
 
 
 def _on() -> bool:
@@ -92,6 +103,59 @@ def examples(request: str, expected_only: bool = False) -> list:
             continue
         out.append(v)
     return list(dict.fromkeys(out))
+
+
+def _pnorm(text: str) -> str:
+    """Pair matching keeps the quotes (``""`` is the input), one kind of them,
+    and the parentheses (``f()`` is no ``[]``)."""
+    t = re.sub(r"\s", "", (text or "").replace("'", '"'))
+    return re.sub(r",(?=[\])])", "", t)
+
+
+def _parts(value: str) -> list:
+    """The top-level pieces of an input: ``["-t", "a"] "-"`` is
+    ``["-t","a"]`` and ``"-"``."""
+    out, cur, depth, quote = [], "", 0, ""
+    for ch in value or "":
+        if quote:
+            cur += ch
+            if ch == quote:
+                quote = ""
+            continue
+        if ch in "\"'":
+            quote, cur = ch, cur + ch
+        elif ch in "[(":
+            depth, cur = depth + 1, cur + ch
+        elif ch in "])":
+            depth, cur = max(0, depth - 1), cur + ch
+        elif depth == 0 and (ch.isspace() or ch == ","):
+            if cur:
+                out.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    if cur:
+        out.append(cur)
+    return [p for p in (_pnorm(x) for x in out) if p]
+
+
+def pairs(request: str) -> list:
+    """The request's ``input -> result`` examples, as ``(input, result)``."""
+    text = request or ""
+    out = []
+    for m in _PAIR.finditer(text):
+        a, b = m.group(1).strip(), m.group(2).strip()
+        if any(c in a + b for c in "{%") or not _LITERAL.search(b):
+            continue
+        if _NOT_EXPECTED.search(_sentence(text, m.start(), m.end())):
+            continue
+        out.append((a, b))
+    return list(dict.fromkeys(out))
+
+
+def _pair_held(a: str, b: str, chunks: list) -> bool:
+    parts, want = _parts(a), _pnorm(b)
+    return any(all(p in c for p in parts) and want in c for c in chunks)
 
 
 def _is_test_path(n: str) -> bool:
@@ -171,7 +235,9 @@ def untested(st, expected_only: bool = False) -> list:
     wanted = examples(goal, expected_only=expected_only)
     said = " ".join(str(s) for s in (getattr(st, "steers", None) or []))
     wanted = [v for v in wanted if not said or _norm(v) not in _norm(said)]   # a steer names it
-    if not wanted:
+    wanted_pairs = [(a, b) for a, b in pairs(goal)
+                    if not said or _norm(b) not in _norm(said)]
+    if not (wanted or wanted_pairs):
         return []
     from ._contract_gate import work_base
     base = work_base(st)
@@ -181,7 +247,12 @@ def untested(st, expected_only: bool = False) -> list:
     if not text:
         return []                         # no test written yet, or git cannot tell
     norm, loose = _norm(text), _loose(text)
-    return [v for v in wanted if not _held(v, norm, loose)]
+    chunks = [_pnorm(c) for c in _DEF.split(text)]
+    # a pair reads `input` -> `result` once the list wraps each item in backticks
+    missed = [f"{a}` -> `{b}" for a, b in wanted_pairs if not _pair_held(a, b, chunks)]
+    in_pairs = {_norm(b) for a, b in wanted_pairs}
+    return missed + [v for v in wanted if not _held(v, norm, loose)
+                     and (_norm(v) not in in_pairs or not missed)]
 
 
 def message(missing: list) -> str:
@@ -190,8 +261,9 @@ def message(missing: list) -> str:
             "results, and the tests you wrote this turn do not seem to contain them:\n"
             + "\n".join(f"- `{v}`" for v in missing[:_SHOWN]) + more + "\n"
             "Test each the way the request's example uses it: through the entry point "
-            "it shows (the command, the environment variable, the function), asserting "
-            "the result it gives. Run the tests and fix the code where they fail; do "
+            "it shows (the command, the environment variable, the function), with "
+            "exactly that input (`a` -> `b`: one test calls with `a` and asserts `b`), "
+            "asserting the result it gives. Run the tests and fix the code where they fail; do "
             "not change an expected value to match the code. If one of them is not a "
             "result the request expects, leave it out; do not write a test just to "
             "hold the string.")

@@ -37,8 +37,27 @@ def _repo(tmp_path, test_text):
 
 
 def test_untested_examples_are_named_and_tested_ones_are_not(tmp_path):
-    st = _repo(tmp_path, "def test_a():\n    assert f() == ['-t', '--test', '--help']\n")
+    st = _repo(tmp_path, "def test_a():\n    assert f([], '-') == ['-t', '--test', '--help']\n"
+                         "def test_b():\n    assert f([], '') == []\n")
     assert E.untested(st) == ["_CLI_COMPLETE=complete_bash", '"plain\\na\\n_\\nplain\\nb\\nbee\\n"']
+
+
+def test_an_input_and_its_result_must_meet_in_one_test(tmp_path):
+    """click a7: `[] ""` -> `[]` untested; the value `[]` alone is everywhere."""
+    st = _repo(tmp_path, "def test_a():\n    assert f([], '-') == ['-t', '--test', '--help']\n"
+                         "def test_b():\n    assert f([], '-x') == []\n"
+                         "def test_c():\n    assert g('') == ['x']\n")
+    got = E.untested(st)
+    assert got[0] == '[] ""` -> `[]' and not any("--test" in v for v in got)
+    assert "exactly that input" in E.message(got)
+
+
+def test_pair_parts_are_split_at_the_top_level():
+    assert E._parts('["-t", "a"] "-"') == ['["-t","a"]', '"-"']
+    assert E._parts("[] \"\"") == ["[]", '""']
+    assert E.pairs("`a` -> `'b'`; it was `c` -> `'d'` before") == [("a", "'b'")]
+    assert E.pairs("`get_args()` -> `(args, incomplete)`; `f()` -> `[]`; `n` -> `3`") == [
+        ("f()", "[]"), ("n", "3")]
 
 
 def test_the_gate_sends_back_once(tmp_path):
