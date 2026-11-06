@@ -195,6 +195,30 @@ def _review_first(st) -> bool:
     return left > _REVIEW_LEFT * budget and left > 600
 
 
+def review_gate(st, step, builder=None, strict_finish=False):
+    """At the finish: a big request answered with more than half the time
+    left gets the review pass once (shopkit a3 answered at 24 of 50 minutes
+    with 18/60 — the pass ran only from the done watch, never on a plain
+    final answer)."""
+    if builder or strict_finish or not _on() or not _applies(st) or not _review_first(st):
+        return None
+    text = str(step.get("text") or "").strip()
+    if text.endswith("?") or getattr(st, "goal_question", None):
+        return None                      # a question to the user: let it through
+    from ._done_check import _to_the_harness
+    if _to_the_harness(text):
+        return None                      # "SAME" to a harness check
+    st.dw_reviewed = True
+    st.dw_gate_edits = getattr(st, "edits_made", 0)   # the watch gives it its room
+    if step.get("text"):
+        yield {"type": "thought", "text": step["text"]}
+    yield {"type": "thought", "role": "system",
+           "text": "✓ answered with more than half the time left — one check of "
+                   "every requirement against the tests first"}
+    st.convo.append({"role": "user", "content": REVIEW_NOTE})
+    return "continue"
+
+
 def board_done(st) -> bool:
     """Every item of a real task list (2+ items, at least one closed this turn)
     is done or skipped, the turn's last test run is not red, and no user
@@ -505,6 +529,8 @@ def watch(st, n):
         st.dw_trigger = trigger
     if getattr(st, "done_noted_at", None) is None and _jobs_running(st):
         return None                          # a job still runs: not the time to stop
+    if getattr(st, "dw_gate_edits", None) is not None and getattr(st, "dw_review", None) is None:
+        st.dw_review = (n, st.dw_gate_edits)     # the finish asked for the review
     rev = getattr(st, "dw_review", None)
     if rev and rev[1] == edits and n - rev[0] < REVIEW_STEPS:
         return None                          # the review pass is at work

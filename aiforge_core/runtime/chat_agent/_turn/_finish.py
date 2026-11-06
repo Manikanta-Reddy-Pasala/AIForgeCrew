@@ -142,6 +142,12 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
     _sig = yield from _done_check.gate(st, step, builder, strict_finish)
     if _sig:
         return _sig
+    # A big request answered with more than half the time left: one pass of
+    # every requirement against the tests first.
+    from . import _done_watch
+    _sig = yield from _done_watch.review_gate(st, step, builder, strict_finish)
+    if _sig:
+        return _sig
     # Task board gate: the model planned items and some are still open. A
     # long run must not stop to report half the work; bounded so a model
     # that cannot finish still exits.

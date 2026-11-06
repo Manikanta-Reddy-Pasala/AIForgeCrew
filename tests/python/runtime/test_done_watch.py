@@ -462,3 +462,33 @@ def test_done_early_gets_one_review_pass_first(monkeypatch):
     extended = mk(3000, )
     extended.extensions_used = 1
     assert "every task-board item is done" in list(DW.watch(extended, 5))[0]["text"]
+
+
+def test_a_plain_final_answer_early_gets_the_review_pass_once(monkeypatch):
+    """shopkit a3: answered at 24 of 50 minutes (18/60), no board-done event."""
+    import time
+    from types import SimpleNamespace
+    from aiforge_core.runtime.chat_agent._turn import _done_watch as DW
+    big = {f"p{i}": {"title": "t", "status": "pending", "from_request": True} for i in range(4)}
+    st = SimpleNamespace(edits_made=3, turn_deadline=time.monotonic() + 2000, turn_budget_s=3000,
+                         extensions_used=0, board=big, goal="x", steers=[],
+                         convo=[{"role": "user", "content": "x"}])
+
+    def run(g):
+        out = []
+        try:
+            while True:
+                out.append(next(g))
+        except StopIteration as e:
+            return out, e.value
+    monkeypatch.setattr(DW, "_applies", lambda st: True)
+    assert run(DW.review_gate(st, {"text": "Should I also add refunds?"}))[1] is None
+    out, sig = run(DW.review_gate(st, {"text": "FINAL: done"}))
+    assert sig == "continue" and st.convo[-1]["content"] == DW.REVIEW_NOTE
+    assert run(DW.review_gate(st, {"text": "FINAL: done"}))[1] is None      # once
+    assert st.dw_gate_edits == 3
+    late = SimpleNamespace(**{**vars(st), "dw_reviewed": False,
+                              "turn_deadline": time.monotonic() + 600})
+    assert run(DW.review_gate(late, {"text": "FINAL"}))[1] is None
+    assert run(DW.review_gate(SimpleNamespace(**{**vars(st), "dw_reviewed": False}),
+                              {"text": "F"}, builder="job"))[1] is None
