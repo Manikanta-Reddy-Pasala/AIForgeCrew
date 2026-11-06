@@ -164,7 +164,8 @@ def _half_check(st) -> None:
     gaps = _spec_gaps(st)
     if not gaps:
         return
-    st.contract_progress_said = tuple(gaps)
+    from ._contract_gate import _bare
+    st.contract_progress_said = tuple(_bare(g) for g in gaps)
     _ride(st, "[automated spec check — not the user] Most of this turn's time is "
               "used. The request names these and the code does not have them yet: "
               + _gap_list(gaps, 25) + ". Add them now, exactly where and as the "
@@ -189,7 +190,8 @@ def _time_wrap(st, now: float):
     st.time_warned = True
     gaps = _spec_gaps(st)
     if gaps:
-        st.contract_progress_said = tuple(gaps)
+        from ._contract_gate import _bare
+        st.contract_progress_said = tuple(_bare(g) for g in gaps)
     todo = (" (no new parts)." if not gaps else
             "; then add what the request names that the code still lacks, "
             "where each is a small change (a name, a wrapper, a rename), and "

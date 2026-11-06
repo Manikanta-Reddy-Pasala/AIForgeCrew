@@ -688,6 +688,117 @@ def _check(c: dict, ix: _Index, declared: set) -> "str | None":
     return None
 
 
+#: An explicit rename of a helper: "rename `old` to `new`", "`new` …
+#: (rename the existing `old` helper", "`new`, renamed from `old`". The
+#: new name may be dotted (``click.core._fast_exit``): its module is scope.
+_RENAME_TO = re.compile(r"\brename\s+(?:the\s+)?(?:existing\s+|old\s+|current\s+)?"
+                        r"`([A-Za-z_]\w*)(?:\(\))?`\s+(?:(?:function|helper|method)\s+)?"
+                        r"to\s+`([\w.]+?)(?:\([^`]*\))?`", re.I)
+_RENAME_PAREN = re.compile(r"`([\w.]+?)(?:\([^`]*\))?`[^`.;\n]{0,60}?\(\s*rename\s+(?:the\s+)?"
+                           r"(?:existing\s+|old\s+|current\s+)?`([A-Za-z_]\w*)(?:\(\))?`", re.I)
+_RENAMED_FROM = re.compile(r"`([\w.]+?)(?:\([^`]*\))?`,?\s+renamed\s+from\s+`([A-Za-z_]\w*)(?:\(\))?`", re.I)
+#: Wording in a rename's own clause that keeps the old name (or negates it).
+_KEEPS_OLD = re.compile(r"\b(?:not|don'?t|never|keep|keeps|kept|alias|wrapper|shim|"
+                        r"deprecated|instead\s+of|backward)\b", re.I)
+#: The lead of the explanation a rename gap carries; stripped before names
+#: are read from it (``_contract_gate._bare``).
+RENAME_LEAD = "the request renames it"
+
+
+def _clause_of(request: str, m) -> str:
+    lo = max(request.rfind(c, 0, m.start()) for c in ".;\n")
+    his = [i for i in (request.find(c, m.end()) for c in ".;\n") if i >= 0]
+    return request[lo + 1:min(his) if his else len(request)]
+
+
+def renames(request: str) -> list:
+    """``[(old, new, module path or None)]`` the request renames, explicit
+    wording only (never a list a remove verb swept up), bare function names;
+    a clause that keeps the old name (alias, wrapper, deprecated, not) is no
+    rename to check."""
+    out = []
+    req = request or ""
+    for rx, o, n in ((_RENAME_TO, 1, 2), (_RENAME_PAREN, 2, 1), (_RENAMED_FROM, 2, 1)):
+        for m in rx.finditer(req):
+            clause = _clause_of(req, m).replace(m.group(0), " ")
+            if _KEEPS_OLD.search(clause) or _KEEPS_OLD.search(m.group(0)):
+                continue
+            new = m.group(n)
+            mod = (new.rsplit(".", 1)[0].replace(".", "/") + ".py") if "." in new else None
+            out.append((m.group(o), new.rsplit(".", 1)[-1], mod))
+    return [t for t in dict.fromkeys(out) if t[0] != t[1]]
+
+
+def _calls(node, name: str) -> bool:
+    return any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == name
+               for n in ast.walk(node))
+
+
+_RENAME_CACHE: dict = {}
+
+
+def _old_name_left(root: str, old: str, new: str, mod: "str | None" = None,
+                   key=None) -> "str | None":
+    """In the module that defines ``new`` at top level (the one the request
+    names, when it does): where ``old`` is still a top-level def — the
+    request's name, none of its behaviour. click t7 kept
+    ``def fast_exit`` and its call and added ``_fast_exit = fast_exit``; the
+    tests patch ``_fast_exit``, ``os._exit`` killed pytest, 0/37. A def of
+    ``old`` that calls ``new`` is a shim, not a leftover. Methods, nested
+    functions and other modules are never looked at."""
+    ck = (root, key, old, new, mod)
+    if key is not None and ck in _RENAME_CACHE:
+        return _RENAME_CACHE[ck]
+    found, n_files = None, 0
+    for d, dirs, files in os.walk(root):
+        dirs[:] = [x for x in dirs if x not in _SKIP_DIRS and x not in _NOT_SOURCE_DIRS
+                   and not x.startswith(".")]
+        for f in files:
+            if not f.endswith(".py") or f.startswith("test_") or f.endswith("_test.py") \
+                    or f == "conftest.py":
+                continue
+            path = os.path.join(d, f)
+            rel = os.path.relpath(path, root).replace(os.sep, "/")
+            if mod and not (rel == mod or rel.endswith("/" + mod)):
+                continue
+            n_files += 1
+            if n_files > MAX_FILES:
+                break
+            try:
+                if os.path.getsize(path) > _MAX_BYTES:
+                    continue
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    tree = ast.parse(fh.read())
+            except (OSError, SyntaxError, ValueError, RecursionError):
+                continue
+            top = tree.body
+            has_new = any(
+                (isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == new)
+                or (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == new
+                                                      for t in n.targets))
+                for n in top)
+            if not has_new:
+                continue
+            for n in top:
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == old \
+                        and not _calls(n, new):
+                    found = (f"{rel}:{n.lineno}", f"still defines {old}")
+                    break
+            if found:
+                break
+        if found or n_files > MAX_FILES:
+            break
+    out = None
+    if found:
+        out = (f"{old} -> {new} unfinished ({found[0]} {found[1]}; {RENAME_LEAD}: rename "
+               "the def and its callers, not an alias)")
+    if key is not None:
+        if len(_RENAME_CACHE) > 64:
+            _RENAME_CACHE.clear()
+        _RENAME_CACHE[ck] = out
+    return out
+
+
 _CACHE: dict = {}
 
 
@@ -737,7 +848,15 @@ def missing(request: str, root: str, key=None) -> list:
             gap = None
         if gap and gap not in out:
             out.append(gap)
+    if code:
+        for old_name, new_name, mod in renames(request):
+            try:
+                left = _old_name_left(root, old_name, new_name, mod, key)
+            except Exception:  # noqa: BLE001
+                left = None
+            if left and left not in out:
+                out.append(left)
     return out
 
 
-__all__ = ["claims", "enabled", "missing"]
+__all__ = ["claims", "enabled", "missing", "renames"]

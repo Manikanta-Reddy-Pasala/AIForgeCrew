@@ -14,7 +14,7 @@ import re
 # The words of a gap line itself, never a name.
 _GAP_WORDS = {"does", "take", "missing", "class", "found", "function", "module",
               "exist", "defined", "only", "stub", "raise", "implement",
-              "notimplementederror"}
+              "notimplementederror", "unfinished"}
 
 #: Send-backs in a row (reset once the model acts), and per turn.
 _SEND_BACKS = 2
@@ -46,8 +46,9 @@ def _gaps(st, cached: bool = True) -> list:
     return gaps
 
 
-_HINT = re.compile(r"\s*\(the request's path is from the project root; there is \S+; "
-                   r"if you wrote it there by mistake, move it\)")
+_HINT = re.compile(r"\s*\((?:the request's path is from the project root; there is \S+; "
+                   r"if you wrote it there by mistake, move it|[^()]*; the request renames it:"
+                   r"[^()]*)\)")
 
 
 def _bare(gap: str) -> str:
@@ -170,7 +171,7 @@ def progress_note(st) -> "str | None":
     if getattr(st, "time_warned", False) or getattr(st, "deadline_final", None) is not None:
         return None          # the wrap-up note owns the list from then on
     gaps = open_gaps(st)
-    key = tuple(gaps)
+    key = tuple(_bare(g) for g in gaps)     # a line number moving is no new gap
     if not gaps or getattr(st, "contract_progress_said", None) == key:
         return None
     st.contract_progress_said = key

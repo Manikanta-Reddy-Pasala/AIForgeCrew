@@ -722,3 +722,50 @@ def test_a_package_init_gets_no_hint(tmp_path):
     (tmp_path / "__init__.py").write_text("")
     assert S.missing("Create `pkg/sub/__init__.py`.", str(tmp_path)) == [
         "pkg/sub/__init__.py does not exist"]
+
+
+def test_explicit_renames_are_read_and_list_sweeps_are_not():
+    assert S.renames("exits via `click.core._fast_exit(code)` (rename the existing "
+                     "`fast_exit` helper; it flushes)") == [("fast_exit", "_fast_exit", "click/core.py")]
+    assert S.renames("Rename `get()` to `fetch(key)`.") == [("get", "fetch", None)]
+    assert S.renames("`new_api(x)`, renamed from `old_api`.") == [("old_api", "new_api", None)]
+    for req in ("Remove `a`, `b` and replace `c`.",
+                "Do not rename `old` to `new`; add a wrapper.",
+                "Rename `fast_exit` to `_fast_exit` and keep `fast_exit` as a deprecated wrapper.",
+                "Rename `parse` so it points to `Config`.",
+                "Use `helper` from utils.py. All done here (rename the existing `x` helper)"):
+        assert S.renames(req) == [], req
+
+
+def _rename_tree(tmp_path, core):
+    (tmp_path / "pkg").mkdir(exist_ok=True)
+    (tmp_path / "pkg" / "core.py").write_text(core)
+    return str(tmp_path)
+
+
+_REQ = "`main()` exits via `pkg.core._fast_exit(code)` (rename the existing `fast_exit` helper)."
+
+
+def test_an_alias_for_a_renamed_helper_is_a_gap(tmp_path):
+    """click t7: ``_fast_exit = fast_exit`` beside the old def and call."""
+    root = _rename_tree(tmp_path, "def fast_exit(code):\n    raise SystemExit(code)\n\n"
+                                  "_fast_exit = fast_exit\n\ndef main():\n    fast_exit(1)\n")
+    gaps = [g for g in S.missing(_REQ, root) if "fast_exit" in g]
+    assert gaps == ["fast_exit -> _fast_exit unfinished (pkg/core.py:1 still defines fast_exit; "
+                    "the request renames it: rename the def and its callers, not an alias)"]
+    from aiforge_core.runtime.chat_agent._turn import _contract_gate as CG
+    assert CG._bare(gaps[0]) == "fast_exit -> _fast_exit unfinished"
+    assert CG._gap_names(gaps[0]) == {"fast_exit", "_fast_exit"}
+
+
+def test_a_done_rename_a_shim_or_a_method_elsewhere_is_no_gap(tmp_path):
+    root = _rename_tree(tmp_path, "def _fast_exit(code):\n    raise SystemExit(code)\n\n"
+                                  "def main():\n    _fast_exit(1)\n")
+    (tmp_path / "pkg" / "other.py").write_text("def fast_exit():\n    pass\n")
+    assert not any("fast_exit" in g for g in S.missing(_REQ, root))
+    root = _rename_tree(tmp_path, "def _fast_exit(code):\n    raise SystemExit(code)\n\n"
+                                  "def fast_exit(code):\n    _fast_exit(code)\n")
+    assert not any("fast_exit" in g for g in S.missing(_REQ, root))
+    (tmp_path / "pkg" / "a.py").write_text("def fetch(key):\n    return key\n")
+    (tmp_path / "pkg" / "b.py").write_text("class C:\n    def get(self):\n        return 1\n")
+    assert not any("get" in g for g in S.missing("Rename `get()` to `fetch(key)`.", str(tmp_path)))
