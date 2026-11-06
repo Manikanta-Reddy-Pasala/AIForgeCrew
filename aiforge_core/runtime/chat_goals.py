@@ -759,6 +759,9 @@ def user_add(session_id, text: str, in_hand: bool = False) -> "dict | None":
         return None
     with _session_lock(session_id):
         data = _load(session_id)
+        if any(g.get("status") == OPEN and g["text"].casefold() == text.casefold()
+               for g in data["goals"]):
+            return {"same": True}          # already an open goal: nothing added
         gid = _new_id(data)
         data["goals"].append({"id": gid, "text": text, "status": OPEN,
                               "turn": _user_turns(session_id) or 0, "at": int(time.time())})

@@ -53,7 +53,11 @@ _SHOWN = 16
 _PAIR = re.compile(r"`([^`\n]{1,160})`[ \t]*(?:->|=>)[ \t]*`([^`\n]{1,200})`")
 #: A result that is a value, not a description (``(args, incomplete)``).
 _LITERAL = re.compile(r"""["']|^[\[(]\s*[\])]$|^-?\d|^(?:True|False|None)$""")
-_DEF = re.compile(r"\n(?=[ \t]*(?:async[ \t]+)?def[ \t])")
+#: Lines a call and its assert (or one parametrize row) fit in.
+_WINDOW = 4
+_CALL = re.compile(r"^([A-Za-z_][\w.]*)\((.*)\)$")
+_BLOCK = re.compile(r"\n(?=[ \t]*(?:@|(?:async[ \t]+)?def[ \t]|class[ \t]))")
+_DOCSTRING = re.compile(r'"""(?:[^"\\]|\\.|"(?!""))*"""|\'\'\'(?:[^\'\\]|\\.|\'(?!\'\'))*\'\'\'')
 
 
 def _on() -> bool:
@@ -115,11 +119,15 @@ def _pnorm(text: str) -> str:
 def _parts(value: str) -> list:
     """The top-level pieces of an input: ``["-t", "a"] "-"`` is
     ``["-t","a"]`` and ``"-"``."""
-    out, cur, depth, quote = [], "", 0, ""
+    out, cur, depth, quote, esc = [], "", 0, "", False
     for ch in value or "":
         if quote:
             cur += ch
-            if ch == quote:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == quote:
                 quote = ""
             continue
         if ch in "\"'":
@@ -153,9 +161,43 @@ def pairs(request: str) -> list:
     return list(dict.fromkeys(out))
 
 
-def _pair_held(a: str, b: str, chunks: list) -> bool:
-    parts, want = _parts(a), _pnorm(b)
-    return any(all(p in c for p in parts) and want in c for c in chunks)
+def _windows(text: str) -> list:
+    """Every run of ``_WINDOW`` lines of the tests, docstrings gone, never
+    across a ``def`` or a decorator (a parametrize table is its own block)."""
+    out = []
+    for block in _BLOCK.split(_DOCSTRING.sub("", text or "")):
+        lines = block.splitlines()
+        out += [_pnorm("\n".join(lines[i:i + _WINDOW]))
+                for i in range(max(1, len(lines) - _WINDOW + 1))]
+    return out
+
+
+def _take(part: str, text: str) -> "str | None":
+    """``text`` with ``part`` taken out once, or None. An empty string is a
+    whole argument (``f([], "")``), not the end of ``"x"`` or a docstring."""
+    if part == '""':
+        m = re.search(r'(?<=[,(\[=])""(?=[,)\]])', text)
+        return None if m is None else text[:m.start()] + text[m.end():]
+    i = text.find(part)
+    return None if i < 0 else text[:i] + text[i + len(part):]
+
+
+def _pair_held(a: str, b: str, windows: list) -> bool:
+    """One window holds every part of the input and, apart from them, the
+    result (``[] ""`` -> ``[]``: the ``[]`` argument is not the result)."""
+    parts, want = [], _pnorm(b)
+    for p in _parts(a):
+        call = _CALL.match(p)
+        # a call is its name and its own arguments, however the test spells
+        # the rest (a parametrize table, keywords, another variable)
+        parts += ([call.group(1)] + _parts(call.group(2))) if call else [p]
+    for w in windows:
+        rest = w
+        for p in parts:
+            rest = _take(p, rest) if rest is not None else None
+        if rest is not None and _take(want, rest) is not None:
+            return True
+    return False
 
 
 def _is_test_path(n: str) -> bool:
@@ -235,8 +277,8 @@ def untested(st, expected_only: bool = False) -> list:
     wanted = examples(goal, expected_only=expected_only)
     said = " ".join(str(s) for s in (getattr(st, "steers", None) or []))
     wanted = [v for v in wanted if not said or _norm(v) not in _norm(said)]   # a steer names it
-    wanted_pairs = [(a, b) for a, b in pairs(goal)
-                    if not said or _norm(b) not in _norm(said)]
+    wanted_pairs = [(a, b) for a, b in pairs(goal)       # a steer names it (long enough to tell)
+                    if not said or len(_norm(b)) < 6 or _norm(b) not in _norm(said)]
     if not (wanted or wanted_pairs):
         return []
     from ._contract_gate import work_base
@@ -247,7 +289,7 @@ def untested(st, expected_only: bool = False) -> list:
     if not text:
         return []                         # no test written yet, or git cannot tell
     norm, loose = _norm(text), _loose(text)
-    chunks = [_pnorm(c) for c in _DEF.split(text)]
+    chunks = _windows(text)
     # a pair reads `input` -> `result` once the list wraps each item in backticks
     missed = [f"{a}` -> `{b}" for a, b in wanted_pairs if not _pair_held(a, b, chunks)]
     in_pairs = {_norm(b) for a, b in wanted_pairs}

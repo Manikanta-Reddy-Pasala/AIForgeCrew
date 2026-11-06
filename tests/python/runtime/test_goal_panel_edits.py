@@ -35,6 +35,7 @@ def test_edit_drop_done_reopen_and_add():
     out = G.user_add(5, "add refunds", in_hand=True)
     assert out["id"] == "g3" and "add refunds" in out["current"]
     assert G.user_edit(5, "nope", text="x") is None and G.user_add(5, "  ") is None
+    assert G.user_add(5, "Add Refunds") == {"same": True}
 
 
 def test_idle_chat_reopen_or_add_waits_for_the_next_message():

@@ -52,6 +52,24 @@ def test_an_input_and_its_result_must_meet_in_one_test(tmp_path):
     assert "exactly that input" in E.message(got)
 
 
+def test_the_input_is_not_the_result_and_a_docstring_is_no_empty_word():
+    w = E._windows('def test_a():\n    """doc"""\n    assert f([], "-x") == []\n')
+    assert not E._pair_held('[] ""', "[]", w)
+    w = E._windows('def test_a():\n    assert f([], "") == ["--help"]\n')
+    assert not E._pair_held('[] ""', "[]", w)                    # the wrong result
+    w = E._windows('def test_a():\n    words = f([], "")\n    assert words == []\n')
+    assert E._pair_held('[] ""', "[]", w)
+    w = E._windows('@pytest.mark.parametrize("a,i,want", [\n    ([], "-", ["-t"]),\n'
+                   '    (["x"], "", []),\n])\ndef test_p(a, i, want):\n    pass\n')
+    assert E._pair_held('[] "-"', '["-t"]', w)
+    assert E._parts('"a\\" b" x') == ['"a\\"b"', "x"]
+    w = E._windows('@pytest.mark.parametrize("v,want", [("a \'b c\'", ["a", "b c"])])\n'
+                   'def test_s(v, want):\n    assert split_arg_string(v) == want\n')
+    assert not E._pair_held('split_arg_string("a \'b c\'")', '["a", "b c"]', w)   # name in another block
+    w = E._windows('def test_s():\n    v = "a \'b c\'"\n    assert split_arg_string(v) == ["a", "b c"]\n')
+    assert E._pair_held('split_arg_string("a \'b c\'")', '["a", "b c"]', w)
+
+
 def test_pair_parts_are_split_at_the_top_level():
     assert E._parts('["-t", "a"] "-"') == ['["-t","a"]', '"-"']
     assert E._parts("[] \"\"") == ["[]", '""']

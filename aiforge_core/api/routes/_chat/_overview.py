@@ -140,7 +140,7 @@ def chat_goal_delete(session_id: int, goal_id: str) -> dict:
 
 
 @router.post("/api/chat/sessions/{session_id}/goals",
-             responses={404: {"description": "Not found"}})
+             responses={404: {"description": "Not found"}, 409: {"description": "Already open"}})
 def chat_goal_add(session_id: int, body: _GoalNew) -> dict:
     """Add a goal from the panel."""
     from aiforge_core.runtime import chat_goals, chat_store
@@ -149,4 +149,6 @@ def chat_goal_add(session_id: int, body: _GoalNew) -> dict:
     out = chat_goals.user_add(session_id, body.text, in_hand=_running(session_id))
     if out is None:
         raise HTTPException(400, "empty goal")
+    if out.get("same"):
+        raise HTTPException(409, "that goal is already open")
     return _after_goal_edit(session_id, out)
