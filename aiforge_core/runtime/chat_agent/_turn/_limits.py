@@ -163,7 +163,7 @@ def _half_check(st) -> None:
     st.half_checked = True
     try:
         from ._example_gate import untested
-        untried = untested(st)
+        untried = untested(st, unwritten=True)
     except Exception:  # noqa: BLE001 — advisory only
         untried = []
     gaps = _spec_gaps(st)
@@ -178,9 +178,12 @@ def _half_check(st) -> None:
     if untried:
         _ride(st, "[automated example check — not the user] "
                   + ("Then: n" if gaps else "Most of this turn's time is used. N")
-                  + "o test yet seems to hold these exact values the request gives: "
-                  + "; ".join(f"`{v}`" for v in untried[:8])
-                  + ". Test each as written, through the entry point the request shows.")
+                  + "o test yet holds these examples the request gives: "
+                  + "; ".join(f"`{v[:160]}`" for v in untried[:16])
+                  + (f" (and {len(untried) - 16} more)" if len(untried) > 16 else "")
+                  + ". Write one test per example now, with exactly that input and result "
+                  "(`a` -> `b`: call with `a`, assert `b`), through the entry point the "
+                  "request shows; run them and fix the code where they fail.")
 
 
 def _time_wrap(st, now: float):
@@ -197,6 +200,8 @@ def _time_wrap(st, now: float):
         _half_check(st)          # inside the wrap window the wrap note says it
     if not 0 < left <= wrap_at:
         return
+    if not getattr(st, "half_checked", False):
+        _half_check(st)          # one long step jumped the halfway window
     st.time_warned = True
     gaps = _spec_gaps(st)
     if gaps:

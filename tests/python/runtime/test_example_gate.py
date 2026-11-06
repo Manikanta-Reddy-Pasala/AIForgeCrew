@@ -132,3 +132,18 @@ def test_a_currently_sentence_is_no_expectation_and_loose_forms_match(tmp_path):
                          '    assert run() == [\n        "a",\n        "b",\n    ]\n')
     st.goal = req
     assert E.untested(st) == []
+
+
+def test_halfway_with_no_test_written_names_every_example(tmp_path):
+    st = _repo(tmp_path, "")
+    (tmp_path / "tests" / "test_new.py").unlink()
+    assert E.untested(st) == []
+    got = E.untested(st, unwritten=True)
+    assert got and got[0] == '[] ""` -> `[]'
+
+
+def test_halfway_silent_when_tests_are_only_mentioned(tmp_path):
+    st = _repo(tmp_path, "")
+    (tmp_path / "tests" / "test_new.py").unlink()
+    st.goal = 'Fix the parser; it fails with the existing tests: `[] ""` -> `[]`.'
+    assert E.untested(st, unwritten=True) == []

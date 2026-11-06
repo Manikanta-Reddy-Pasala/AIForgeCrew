@@ -43,6 +43,9 @@ _NOT_EXPECTED = re.compile(r"\b(?:currently|today|used\s+to|instead\s+of|was|wer
                            r"incorrect|broken|before\s+the\s+fix|no\s+longer)\b", re.I)
 _ASKS_TESTS = re.compile(r"\b(?:add|write|with|include|cover|create|own)\b[^.\n]{0,40}\b"
                          r"(?:tests?|pytest|unit\s+tests?)\b", re.I)
+#: Plainly asks for new tests ("add your own pytest tests"): only then is
+#: "no test yet" a gap worth naming.
+_ASKS_NEW_TESTS = re.compile(r"\b(?:add|write|create)\s+(?:\w+\s+){0,3}(?:tests?|unit\s+tests?)\b", re.I)
 _NO_TESTS = re.compile(r"\b(?:no|don'?t|do\s+not|without|skip)\s+(?:\w+\s+){0,2}tests?\b", re.I)
 _TEST_DIR = re.compile(r"(?:^|/)(?:tests?|spec|specs|__tests__|testdata|fixtures)/")
 _TEST_NAME = re.compile(r"(?:^|/)test_|_test\.|\.test\.|\.spec\.|_spec\.rb$|Test\.(?:java|kt)$")
@@ -232,6 +235,9 @@ def _changed_tests(st, cwd: str, base: str) -> "str | None":
         paths |= {os.path.realpath(os.path.join(root, n)) for n in names if _is_test_path(n)}
     except Exception:  # noqa: BLE001
         return None
+    if paths and not any(os.path.isfile(p) and os.path.getsize(p) <= _MAX_BYTES
+                         for p in sorted(paths)[:_MAX_FILES]):
+        return None                       # tests there, none readable: cannot tell
     texts = []
     for p in sorted(paths)[:_MAX_FILES]:
         try:
@@ -264,9 +270,12 @@ def _held(v: str, norm: str, loose: str) -> bool:
     return _norm(v) in norm or _loose(v) in loose
 
 
-def untested(st, expected_only: bool = False) -> list:
+def untested(st, expected_only: bool = False, unwritten: bool = False) -> list:
     """The request's examples no test of this turn holds; [] when the request
-    asks for no tests, nothing was built, or it cannot be told."""
+    asks for no tests, nothing was built, or it cannot be told. ``unwritten``:
+    no test written yet means every example is still to test (the halfway
+    check — click a9 had none at 15 minutes and the clock ended the turn
+    before the finish gate)."""
     if not _on() or getattr(st, "readonly_mode", False) or getattr(st, "plan_mode", False) \
             or getattr(st, "builder", None) or getattr(st, "strict_finish", False) \
             or not getattr(st, "edits_made", 0):
@@ -286,8 +295,10 @@ def untested(st, expected_only: bool = False) -> list:
     if not base:
         return []                         # HEAD may hold the turn's own commit
     text = _changed_tests(st, str(getattr(st, "cwd", "") or "."), base)
-    if not text:
+    if text is None or (not text and not (unwritten and _ASKS_NEW_TESTS.search(goal))):
         return []                         # no test written yet, or git cannot tell
+    if not text:                          # none yet: the expected results only
+        wanted = [v for v in wanted if v in examples(goal, expected_only=True)]
     norm, loose = _norm(text), _loose(text)
     chunks = _windows(text)
     # a pair reads `input` -> `result` once the list wraps each item in backticks
