@@ -446,7 +446,7 @@ def test_done_early_gets_one_review_pass_first(monkeypatch):
                                convo=[{"role": "user", "content": "x"}], steers=[], **kw)
     st = mk(3000)
     out = list(DW.watch(st, 5))
-    assert "half the time left" in out[0]["text"] and DW.REVIEW_NOTE in st.convo[-1]["content"]
+    assert "time to spare" in out[0]["text"] and DW.REVIEW_NOTE in st.convo[-1]["content"]
     assert list(DW.watch(st, 6)) == []          # the review is at work
     out = list(DW.watch(st, 5 + DW.REVIEW_STEPS))   # no edit came: the done note after its room
     assert out and "every task-board item is done" in out[0]["text"]

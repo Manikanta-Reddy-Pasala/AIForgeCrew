@@ -152,12 +152,12 @@ BOARD_GRACE = 4
 
 #: Share of the time slice that must be left for the review pass, and the
 #: steps it gets before the done note may come (any edit ends the wait).
-_REVIEW_LEFT = 0.5
+_REVIEW_LEFT = 0.3
 REVIEW_STEPS = 6
 #: A big request: a board this long, or a request this long.
 _BIG_BOARD, _BIG_REQUEST = 3, 1500
 REVIEW_NOTE = (
-    "[harness — not the user] The work looks done with more than half of this turn's "
+    "[harness — not the user] The work looks done with a good share of this turn's "
     "time left. One check before the summary: for each thing the request asks for, as "
     "the goals now stand (a goal the user dropped or changed counts as they left it) "
     "(each requirement, example and error case), name a test (existing or "
@@ -169,7 +169,8 @@ REVIEW_NOTE = (
 
 def _review_first(st) -> bool:
     """Once per turn: a big request (a board of 3+ items, or a long request)
-    is first seen done with more than half of its first time slice left.
+    is first seen done with 30% or more of its first time slice left
+    (and 10 minutes: shopkit a4 finished at 43 of 50 minutes, 33/60).
     shopkit a2 closed its board at 22 of 70 minutes with 37/60 (returns:
     3/12); a pass of every requirement against the tests is cheap next to
     the time left. A small request never gets it. Only on a turn that edits,
@@ -196,7 +197,7 @@ def _review_first(st) -> bool:
 
 
 def review_gate(st, step, builder=None, strict_finish=False):
-    """At the finish: a big request answered with more than half the time
+    """At the finish: a big request answered with 30% or more of the time
     left gets the review pass once (shopkit a3 answered at 24 of 50 minutes
     with 18/60 — the pass ran only from the done watch, never on a plain
     final answer)."""
@@ -213,7 +214,7 @@ def review_gate(st, step, builder=None, strict_finish=False):
     if step.get("text"):
         yield {"type": "thought", "text": step["text"]}
     yield {"type": "thought", "role": "system",
-           "text": "✓ answered with more than half the time left — one check of "
+           "text": "✓ answered with time to spare — one check of "
                    "every requirement against the tests first"}
     st.convo.append({"role": "user", "content": REVIEW_NOTE})
     return "continue"
@@ -538,7 +539,7 @@ def watch(st, n):
         st.dw_reviewed = True
         st.dw_review = (n, edits)            # a few steps of room, then the done note
         yield {"type": "thought", "role": "system",
-               "text": "✓ looks done with more than half the time left — one check of "
+               "text": "✓ looks done with time to spare — one check of "
                        "every requirement against the tests first"}
         from ._convo import _append_directive
         _append_directive(st, REVIEW_NOTE)
