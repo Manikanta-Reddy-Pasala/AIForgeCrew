@@ -510,6 +510,25 @@ export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase,
       </div>
 
       <div className="run-ov-body">
+        <NowCard running={running} next={next} busy={busy} awaiting={awaiting} items={items}
+                 action={action} phase={busy ? phase : undefined}
+                 bgBusy={bgItems.find(i => i.state === 'running')} />
+
+        {bgItems.length > 0 && (
+          <Section title="Background"
+                   extra={!!bg?.stoppable && !busy && (
+                     <button type="button" className="ghost xs run-ov-link" onClick={stopBg} disabled={stopping}
+                             aria-label="Stop background work"
+                             title="Stop this chat's watches, background commands and the scheduled run in flight (the schedule itself stays; nothing else of the chat stops)">
+                       {stopping ? 'stopping…' : 'stop'}
+                     </button>
+                   )}>
+            <ul className="run-ov-changes">
+              {bgItems.map(it => <BackgroundRow key={it.id} it={it} />)}
+            </ul>
+          </Section>
+        )}
+
         <Section title="Goals" extra={doneGoals.length > 0 && (
           <button type="button" className="ghost xs run-ov-link" onClick={() => setShowDoneGoals(v => !v)}
                   aria-expanded={showDoneGoals}>
@@ -557,25 +576,6 @@ export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase,
           </form>
           {goalErr && <div className="run-ov-note old" role="alert">{goalErr}</div>}
         </Section>
-
-        <NowCard running={running} next={next} busy={busy} awaiting={awaiting} items={items}
-                 action={action} phase={busy ? phase : undefined}
-                 bgBusy={bgItems.find(i => i.state === 'running')} />
-
-        {bgItems.length > 0 && (
-          <Section title="Background"
-                   extra={!!bg?.stoppable && !busy && (
-                     <button type="button" className="ghost xs run-ov-link" onClick={stopBg} disabled={stopping}
-                             aria-label="Stop background work"
-                             title="Stop this chat's watches, background commands and the scheduled run in flight (the schedule itself stays; nothing else of the chat stops)">
-                       {stopping ? 'stopping…' : 'stop'}
-                     </button>
-                   )}>
-            <ul className="run-ov-changes">
-              {bgItems.map(it => <BackgroundRow key={it.id} it={it} />)}
-            </ul>
-          </Section>
-        )}
 
         <Section title="Tasks" extra={items.length > 0 && <span className="run-ov-count">{closed}/{items.length} · {pct}%</span>}>
           {items.length === 0 ? (
