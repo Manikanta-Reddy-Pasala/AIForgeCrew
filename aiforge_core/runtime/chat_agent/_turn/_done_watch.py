@@ -150,6 +150,49 @@ def _green_now(st) -> bool:
 BOARD_GRACE = 4
 
 
+#: Share of the time slice that must be left for the review pass, and the
+#: steps it gets before the done note may come (any edit ends the wait).
+_REVIEW_LEFT = 0.5
+REVIEW_STEPS = 6
+#: A big request: a board this long, or a request this long.
+_BIG_BOARD, _BIG_REQUEST = 3, 1500
+REVIEW_NOTE = (
+    "[harness — not the user] The work looks done with more than half of this turn's "
+    "time left. One check before the summary: for each thing the request asks for "
+    "(each requirement, example and error case it states), name a test (existing or "
+    "new) that checks it. Write a test only where none exists, run the full suite "
+    "once, and fix the code where a test fails. Do not add anything the request does "
+    "not ask for. If every one already has a passing test, reply with the summary "
+    "now, with no tool call.")
+
+
+def _review_first(st) -> bool:
+    """Once per turn: a big request (a board of 3+ items, or a long request)
+    is first seen done with more than half of its first time slice left.
+    shopkit a2 closed its board at 22 of 70 minutes with 37/60 (returns:
+    3/12); a pass of every requirement against the tests is cheap next to
+    the time left. A small request never gets it. Only on a turn that edits,
+    with a deadline, before any extension. Off: ``AIFORGE_CHAT_REVIEW_PASS=0``."""
+    if getattr(st, "dw_reviewed", False) or not getattr(st, "edits_made", 0):
+        return False
+    if getattr(st, "extensions_used", 0):
+        return False
+    board = getattr(st, "board", None) or {}
+    seeded = sum(1 for it in board.values() if isinstance(it, dict) and it.get("from_request"))
+    big = seeded >= _BIG_BOARD or len(str(getattr(st, "goal", "") or "")) > _BIG_REQUEST \
+        or (getattr(st, "dw_initial", 0) or 0) >= 3
+    if not big:
+        return False                     # the model's own board items make no request big
+    if os.environ.get("AIFORGE_CHAT_REVIEW_PASS", "1").strip().lower() in ("0", "false", "no", "off"):
+        return False
+    deadline, budget = getattr(st, "turn_deadline", None), getattr(st, "turn_budget_s", 0)
+    if deadline is None or not budget:
+        return False
+    import time
+    left = deadline - time.monotonic()
+    return left > _REVIEW_LEFT * budget and left > 600
+
+
 def board_done(st) -> bool:
     """Every item of a real task list (2+ items, at least one closed this turn)
     is done or skipped, the turn's last test run is not red, and no user
@@ -458,8 +501,20 @@ def watch(st, n):
     if getattr(st, "dw_trigger", None) != trigger:
         st.done_noted_at = None              # each trigger has its own note and count
         st.dw_trigger = trigger
-    if board and getattr(st, "done_noted_at", None) is None and _jobs_running(st):
+    if getattr(st, "done_noted_at", None) is None and _jobs_running(st):
         return None                          # a job still runs: not the time to stop
+    rev = getattr(st, "dw_review", None)
+    if rev and rev[1] == edits and n - rev[0] < REVIEW_STEPS:
+        return None                          # the review pass is at work
+    if getattr(st, "done_noted_at", None) is None and _review_first(st):
+        st.dw_reviewed = True
+        st.dw_review = (n, edits)            # a few steps of room, then the done note
+        yield {"type": "thought", "role": "system",
+               "text": "✓ looks done with more than half the time left — one check of "
+                       "every requirement against the tests first"}
+        from ._convo import _append_directive
+        _append_directive(st, REVIEW_NOTE)
+        return None
     if getattr(st, "done_noted_at", None) is None:
         st.done_noted_at = n
         st.dw_quiet = 0

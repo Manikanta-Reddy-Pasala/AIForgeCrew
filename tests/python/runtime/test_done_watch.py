@@ -426,3 +426,39 @@ def test_a_red_check_on_final_marks_the_full_suite_red(monkeypatch):
     except Exception:  # noqa: BLE001 — later send-back plumbing; the flag is set first
         pass
     assert st.last_full_green is False
+
+
+def test_done_early_gets_one_review_pass_first(monkeypatch):
+    """shopkit a2: board closed at 22 of 70 minutes with 37/60."""
+    import time
+    from types import SimpleNamespace
+    from aiforge_core.runtime.chat_agent._turn import _done_watch as DW
+    monkeypatch.setenv("AIFORGE_CHAT_DONE_WATCH", "1")
+    monkeypatch.setattr(DW, "done_now", lambda st: False)
+    monkeypatch.setattr(DW, "board_done", lambda st: True)
+    monkeypatch.setattr(DW, "_initial_gaps", lambda st: 0)
+    monkeypatch.setattr(DW, "_jobs_running", lambda st: False)
+    big = {f"p{i}": {"title": "t", "status": "done", "from_request": True} for i in range(4)}
+
+    def mk(left, **kw):
+        return SimpleNamespace(edits_made=3, turn_deadline=time.monotonic() + left,
+                               turn_budget_s=4000, extensions_used=0, board=big, goal="x",
+                               convo=[{"role": "user", "content": "x"}], steers=[], **kw)
+    st = mk(3000)
+    out = list(DW.watch(st, 5))
+    assert "half the time left" in out[0]["text"] and DW.REVIEW_NOTE in st.convo[-1]["content"]
+    assert list(DW.watch(st, 6)) == []          # the review is at work
+    out = list(DW.watch(st, 5 + DW.REVIEW_STEPS))   # no edit came: the done note after its room
+    assert out and "every task-board item is done" in out[0]["text"]
+    st = mk(3000)
+    list(DW.watch(st, 5))
+    st.edits_made = 4                           # the review landed an edit: done note at once
+    assert "every task-board item is done" in list(DW.watch(st, 6))[0]["text"]
+    late = mk(100)
+    assert "every task-board item is done" in list(DW.watch(late, 5))[0]["text"]
+    small = mk(3000)
+    small.board = {f"m{i}": {"title": "t", "status": "done"} for i in range(5)}   # model-added
+    assert "every task-board item is done" in list(DW.watch(small, 5))[0]["text"]
+    extended = mk(3000, )
+    extended.extensions_used = 1
+    assert "every task-board item is done" in list(DW.watch(extended, 5))[0]["text"]
