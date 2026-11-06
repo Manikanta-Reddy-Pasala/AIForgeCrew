@@ -20,3 +20,10 @@ def test_the_finish_messages_agree_with_the_rule():
     msg = _verify_fix_message("FAILED t.py::x\n1 failed, 2 passed")
     assert "two focused attempts" in msg
     assert "names a side failure still there" in _done_check._SYSTEM
+
+
+def test_the_rule_asks_to_assert_the_stated_type_not_a_round_trip():
+    """sqlglot a1: the model's validate_identity tests passed on the opaque
+    Command fallback; the request said triggers parse into an exp.Create tree."""
+    from aiforge_core.runtime.chat_agent._native_prompt import NATIVE_RULES
+    assert "what type or structure a result has, assert exactly that, and only" in NATIVE_RULES

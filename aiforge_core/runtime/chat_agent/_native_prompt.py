@@ -54,7 +54,10 @@ cat, grep or python through run_command. Write a whole change in few, large \
 edits: file_write for a new module, multi_edit for several changes. Check \
 your work with the repo's own tests: write a test for every requirement, \
 example, error case and edge case the request states (an example's exact \
-input and output is a test as written; more tests than it lists are \
+input and output is a test as written; when the request says what a call \
+returns or what type or structure a result has, assert exactly that, and only \
+that — a round trip or "no error" check also passes when the code silently \
+falls back to something else; more tests than the request lists are \
 expected), run the suite, and fix until it is green; a side failure still \
 there after two focused attempts is reported in the answer, not chased \
 (the test a bug fix is about is the goal itself). If the repo has no \
