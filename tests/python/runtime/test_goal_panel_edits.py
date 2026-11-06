@@ -112,3 +112,36 @@ def test_the_route_tells_a_running_agent_as_goals_not_a_message(monkeypatch):
     with pytest.raises(HTTPException) as e:
         O.chat_goal_edit(5, "g1", O._GoalEdit(status="paused"))
     assert e.value.status_code == 400
+
+
+def test_a_goal_has_one_short_sentence_for_the_panel():
+    long = ("Clone the vicom-integration source (C++ repo) from https://gitlab.internal/server/"
+            "vicom-integration into the code repo folder, move it to the VM, and modify the "
+            "source code to bypass the option check. Note: the executable is scanner-main.")
+    assert G.short_title(long) == "Clone the vicom-integration source into the code repo folder"
+    assert G.short_title(long, "Fix the scanner-main timeout.") == "Fix the scanner-main timeout"
+    assert G.short_title("add coupons") == "add coupons"
+    t = G.short_title("Make the login page faster and also fix the flaky test in auth and update docs")
+    assert len(t.split()) <= 13 and t.endswith("…")
+    data, _ = G._apply({**G._empty()}, {"goals": [{"id": None, "status": "open", "title": "Fix the timeout",
+                                                    "text": long}], "now": ["new"]}, "m", 1)
+    assert data["goals"][0]["title"] == "Fix the timeout" and data["goals"][0]["text"] == long
+
+
+def test_short_title_edge_cases():
+    assert G.short_title("e.g. add a button") == "e.g. add a button"
+    assert G.short_title("Upgrade to v1.2.3 of the lib and rerun tests") == "Upgrade to v1.2.3 of the lib and rerun tests"
+    assert G.short_title("Use git@github.com:org/repo.git as the remote, then push") == \
+        "Use repo.git as the remote"
+    assert G.short_title("Fix this: login fails") == "Fix this: login fails"
+    assert G.short_title("Fix the login page: it fails on Safari") == "Fix the login page"
+    t = G.short_title(" ".join(["word"] * 400))
+    assert t == " ".join(["word"] * 12) + "…"
+    assert G.short_title("x", "Clone https://h/r into the folder (C++)") == "Clone r into the folder"
+
+
+def test_short_title_more_edges():
+    assert G.short_title("Clone repo (https://x/y) now") == "Clone repo now"
+    assert G.short_title("Deploy to QA. Then run smoke tests") == "Deploy to QA"
+    assert G.short_title("Goal: build login") == "Goal: build login"
+    assert G.short_title("Use a cache, e.g. Redis") == "Use a cache, e.g. Redis"

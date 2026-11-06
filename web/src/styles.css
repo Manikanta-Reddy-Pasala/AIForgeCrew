@@ -1032,11 +1032,14 @@ button.run-ov-link:hover:not(:disabled) { text-decoration: underline; }
 .run-ov-goal.now .run-ov-goal-text { font-weight: 600; }
 .run-ov-goal.done .run-ov-goal-text { color: var(--fg-3); cursor: default; }
 .run-ov-goal-now { color: var(--accent); font-weight: 600; }
+.run-ov-goal-body { flex: 1; min-width: 0; }
 .run-ov-goal-text { flex: 1; min-width: 0; overflow-wrap: anywhere; cursor: text; }
+.run-ov-goal-more { margin-left: 4px; font-size: var(--fs-xs, 11px); padding: 0 2px; }
+.run-ov-goal-detail { margin-top: 2px; color: var(--fg-3); font-size: var(--fs-xs, 11px); white-space: pre-wrap; overflow-wrap: anywhere; }
 .run-ov-goal-actions { display: flex; gap: 2px; opacity: .8; flex-shrink: 0; }
 .run-ov-goal:hover .run-ov-goal-actions, .run-ov-goal:focus-within .run-ov-goal-actions { opacity: 1; }
 .run-ov-goal-actions button { padding: 0 4px; }
-.run-ov-goal-input { flex: 1; min-width: 0; font: inherit; padding: 2px 4px; }
+.run-ov-goal-input { flex: 1; min-width: 0; font: inherit; padding: 2px 4px; resize: vertical; }
 .run-ov-goal-add input { width: 100%; margin-top: 4px; font-size: var(--fs-sm); padding: 3px 6px; }
 .run-ov-task { position: relative; display: flex; gap: 10px; padding: 0 0 10px; }
 .run-ov-task:not(:last-child)::before {

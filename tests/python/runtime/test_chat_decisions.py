@@ -155,7 +155,8 @@ def test_overview_route_has_goals_and_decisions(monkeypatch):
     app.include_router(ch.router)
     c = TestClient(app)
     body = c.get("/api/chat/sessions/1/overview").json()
-    assert body["goals"] == [{"id": "g1", "text": "build login", "status": "open"}]
+    assert body["goals"] == [{"id": "g1", "text": "build login", "status": "open",
+                              "title": "build login"}]
     assert body["now"] == ["g1"] and body["current"] == "build login"
     assert body["decisions"][0]["text"] == "Added task msg-1: x"
     assert "slug" not in body["decisions"][0]

@@ -443,7 +443,7 @@ export async function chatProcessDownload(id: number, key: string, path?: string
 }
 
 /** The Run overview: the chat's goals and what changed the course of the work. */
-export type ChatGoal = { id: string; text: string; status: 'open' | 'done' | 'dropped' | string;
+export type ChatGoal = { id: string; text: string; title?: string; status: 'open' | 'done' | 'dropped' | string;
                          turn?: number; closed_turn?: number };
 export type ChatDecision = { t: number; by: 'you' | 'agent' | 'harness' | string;
                              kind: string; text: string; why?: string; turn?: number;

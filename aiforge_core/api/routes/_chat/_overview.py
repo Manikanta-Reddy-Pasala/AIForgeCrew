@@ -27,7 +27,10 @@ def chat_overview(session_id: int,
     if not chat_store.get_session(session_id):
         raise HTTPException(404, f"session {session_id} not found")
     g = chat_goals.goals(session_id)
-    return {"goals": [{k: x.get(k) for k in _GOAL_KEYS if x.get(k) is not None}
+    return {"goals": [{**{k: x.get(k) for k in _GOAL_KEYS if x.get(k) is not None},
+                       # one short sentence for the panel (older goals: made now)
+                       "title": chat_goals.short_title(x.get("text") or "", x.get("title") or "")
+                       or (x.get("text") or "")[:90]}
                       for x in g.get("goals") or []],
             "now": list(g.get("now") or []),
             "current": g.get("current") or "",

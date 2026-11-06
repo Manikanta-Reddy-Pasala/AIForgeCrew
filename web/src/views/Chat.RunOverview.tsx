@@ -259,6 +259,9 @@ function GoalRow({ g, now, pending, onEdit, onDrop, onDone }: Readonly<{
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(g.text);
   const [shown, setShown] = useState<string | null>(null);   // saved, not echoed yet
+  const [open, setOpen] = useState(false);                   // the full text shown
+  const title = g.title || g.text;
+  const more = !shown && g.text.trim() !== title.replace(/…$/, '').trim();
   const cancel = useRef(false);
   const byKey = useRef(false);            // left by Enter / Escape, not a click away
   const grab = useRef(true);              // a failed save reopens without taking the cursor
@@ -268,7 +271,7 @@ function GoalRow({ g, now, pending, onEdit, onDrop, onDone }: Readonly<{
   const finish = () => {
     if (cancel.current) { cancel.current = false; setText(g.text); }
     else {
-      const t = text.trim();
+      const t = text.replace(/\s+/g, ' ').trim();     // the server keeps one line
       if (t && t !== g.text) {
         setShown(t);
         onEdit(t).then(ok => {
@@ -282,27 +285,35 @@ function GoalRow({ g, now, pending, onEdit, onDrop, onDone }: Readonly<{
   return (
     <li className={`run-ov-goal ${now ? 'now' : ''}`}>
       {editing ? (
-        <input className="run-ov-goal-input" value={text} autoFocus={grab.current} aria-label={`Edit goal: ${g.text}`}
+        <textarea className="run-ov-goal-input" value={text} autoFocus={grab.current} rows={Math.min(6, Math.max(2, Math.ceil(text.length / 40)))}
+               aria-label={`Edit goal: ${title}`} title="Enter saves, Escape cancels"
                onChange={e => setText(e.target.value)} onBlur={finish}
                onKeyDown={e => {
                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); byKey.current = true; e.currentTarget.blur(); }
                  if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cancel.current = true; byKey.current = true; e.currentTarget.blur(); }
                }} />
       ) : (
-        <span className="run-ov-goal-text" title="Click to edit" aria-hidden="true"
-              onClick={() => { if (!pending) { grab.current = true; setEditing(true); } }}>
-          {now && <span className="run-ov-goal-now">now · </span>}{shown ?? g.text}
-        </span>
+        <div className="run-ov-goal-body">
+          <span className="run-ov-goal-text" title={g.text} aria-hidden="true"
+                onClick={() => { if (!pending) { grab.current = true; setEditing(true); } }}>
+            {now && <span className="run-ov-goal-now">now · </span>}{shown ? (shown.length > 90 ? `${shown.slice(0, 90)}…` : shown) : title}
+          </span>
+          {more && (
+            <button type="button" className="ghost xs run-ov-link run-ov-goal-more" aria-expanded={open}
+                    onClick={() => setOpen(v => !v)}>{open ? 'less' : 'details'}</button>
+          )}
+          {more && open && <div className="run-ov-goal-detail">{g.text}</div>}
+        </div>
       )}
       {!editing && (
         <span className="run-ov-goal-actions">
           <button type="button" ref={editBtn} className="ghost xs" disabled={pending}
                   onClick={() => { grab.current = true; setEditing(true); }}
-                  aria-label={`Edit goal: ${g.text}`} title="Edit">✎</button>
+                  aria-label={`Edit goal: ${title}`} title="Edit">✎</button>
           <button type="button" className="ghost xs" onClick={onDone} disabled={pending}
-                  aria-label={`Mark done: ${g.text}`} title="Mark done">✓</button>
+                  aria-label={`Mark done: ${title}`} title="Mark done">✓</button>
           <button type="button" className="ghost xs" onClick={onDrop} disabled={pending}
-                  aria-label={`Delete goal: ${g.text}`} title="Delete (the agent stops work on it)">✕</button>
+                  aria-label={`Delete goal: ${title}`} title="Delete (the agent stops work on it)">✕</button>
         </span>
       )}
     </li>
@@ -514,7 +525,7 @@ export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase,
                          onEdit={t => goalAct(() => chatGoalEdit(sessionId, g.id, { text: t }))}
                          onDone={() => goalAct(() => chatGoalEdit(sessionId, g.id, { status: 'done' }))}
                          onDrop={() => {
-                           const shortText = g.text.length > 200 ? `${g.text.slice(0, 200)}…` : g.text;
+                           const shortText = g.title || g.text.slice(0, 200);
                            if (window.confirm(`Delete this goal? The agent stops work on it.\n\n${shortText}`)) {
                              goalAct(() => chatGoalDrop(sessionId, g.id));
                            }
@@ -526,9 +537,9 @@ export function RunOverview({ sessionId, busy, awaiting, subtasks, steps, phase,
             <ul className="run-ov-goals done">
               {doneGoals.map(g => (
                 <li key={g.id} className="run-ov-goal done">
-                  <span className="run-ov-goal-text">✓ {g.text}</span>
+                  <span className="run-ov-goal-text" title={g.text}>✓ {g.title || g.text}</span>
                   <span className="run-ov-goal-actions">
-                    <button type="button" className="ghost xs" aria-label={`Reopen goal: ${g.text}`} title="Reopen"
+                    <button type="button" className="ghost xs" aria-label={`Reopen goal: ${g.title || g.text}`} title="Reopen"
                             disabled={goalPending}
                             onClick={() => goalAct(() => chatGoalEdit(sessionId, g.id, { status: 'open' }))}>↺</button>
                   </span>

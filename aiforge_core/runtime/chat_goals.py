@@ -104,9 +104,13 @@ _SYSTEM = (
     "guessing wrong would throw work away — set \"question\" "
     "to ONE short question for the user; otherwise \"question\" is \"\". "
     "Do not ask about details the agent can find out itself.\n"
+    "Each goal also has a \"title\": the goal in ONE short sentence (at most "
+    "12 words) naming the outcome only — no URLs, paths, steps or notes "
+    "(\"Fix the scanner-main timeout in vicom-integration\"). The \"text\" "
+    "keeps every detail.\n"
     "Reply with JSON only, no prose:\n"
-    "{\"goals\": [{\"id\": \"g1\", \"status\": \"open\", \"text\": \"…\"}, "
-    "{\"id\": null, \"status\": \"open\", \"text\": \"…\"}], "
+    "{\"goals\": [{\"id\": \"g1\", \"status\": \"open\", \"title\": \"…\", \"text\": \"…\"}, "
+    "{\"id\": null, \"status\": \"open\", \"title\": \"…\", \"text\": \"…\"}], "
     "\"now\": [\"g1\", \"new\"], \"current\": \"…\", \"question\": \"\"}")
 
 
@@ -183,6 +187,44 @@ def goals(session_id) -> dict:
 
 def _flat(text, n: int) -> str:
     return " ".join(str(text or "").split())[:n]
+
+
+_TITLE_WORDS, _TITLE_CHARS = 12, 90
+_URL = re.compile(r"(?:https?://|git@)[^\s()]+", re.I)
+_URL_PREP = re.compile(r"\s*\b(?:from|at|on|in|to|via)\s+(?:https?://|git@)[^\s()]+", re.I)
+_ASIDE = re.compile(r"\s*\([^()]{0,80}\)")
+_ABBREV = re.compile(r"\b(?:e\.g|i\.e|etc|vs|approx|incl)\.", re.I)
+
+
+def _url_name(m) -> str:
+    """A link the sentence needs (``use <url> as the remote``): its last part."""
+    tail = re.split(r"[/:]", m.group(0).rstrip("/.,;"))[-1]
+    return tail or "the link"
+
+
+def short_title(text: str, given: str = "") -> str:
+    """A goal in one short sentence for the panel: the model's title when it
+    is one, else the text's first clause, URLs and asides gone."""
+    given = _ASIDE.sub("", _URL.sub(_url_name, _URL_PREP.sub("", _flat(given, 200)))).strip()
+    given = given.rstrip(".")
+    if given and len(given.split()) <= _TITLE_WORDS + 3 and len(given) <= 120:
+        return given
+    t = _ASIDE.sub("", _URL.sub(_url_name, _URL_PREP.sub("", _flat(text, 600))))
+    t = _ABBREV.sub(lambda m: m.group(0).replace(".", "\0"), t)       # no split inside
+    first = re.split(r"(?<=[A-Za-z0-9)])[.;!?](?:\s|$)", t, maxsplit=1)[0]
+    head, colon, _ = first.partition(": ")
+    if colon and len(head.split()) >= 3:
+        first = head                              # "Fix the login page: it fails" -> head
+    words = first.replace("\0", ".").split()
+    for i, w in enumerate(words):              # cut at the first "," after 4 words
+        if i >= 4 and w.endswith(","):
+            words = words[:i + 1]
+            break
+    out = " ".join(words).rstrip(",;: ")
+    if len(words) > _TITLE_WORDS or len(out) > _TITLE_CHARS:
+        cut = " ".join(words[:_TITLE_WORDS])
+        out = (cut if len(cut) <= _TITLE_CHARS else cut[:_TITLE_CHARS].rsplit(" ", 1)[0]) + "…"
+    return out or _flat(text, _TITLE_CHARS)
 
 
 def _users_words(text: str) -> str:
@@ -295,6 +337,7 @@ def _apply(data: dict, reply: dict, message: str, turn,
             continue
         gid = str(row.get("id") or "").strip()
         text = _flat(row.get("text"), _GOAL_CHARS)
+        title = short_title(text, row.get("title") or "") if text else ""
         status = str(row.get("status") or OPEN).strip().lower()
         if status not in (OPEN, DONE, DROPPED):
             status = OPEN
@@ -313,9 +356,11 @@ def _apply(data: dict, reply: dict, message: str, turn,
                 g["status"] = OPEN           # the user wants more of it
                 g["reopened_turn"] = turn
                 changes.append(f"reopened {gid}")
+            if title and text == g["text"] and row.get("title"):
+                g["title"] = title              # a better title, same goal
             if text and text != g["text"] and g["status"] == OPEN:
                 prev = g["text"]
-                g["text"] = text
+                g["text"], g["title"] = text, title
                 ups = [u for u in g.get("updates") or [] if isinstance(u, dict)]
                 ups.append({"text": _flat(message, _UPDATE_CHARS), "turn": turn,
                             "prev": prev})
@@ -337,7 +382,7 @@ def _apply(data: dict, reply: dict, message: str, turn,
                 new_ids.append(same["id"])
             continue
         gid = _new_id(data)
-        g = {"id": gid, "text": text, "status": OPEN, "turn": turn,
+        g = {"id": gid, "text": text, "title": title, "status": OPEN, "turn": turn,
              "at": int(time.time())}
         data["goals"].append(g)
         by_id[gid] = g
@@ -720,7 +765,7 @@ def user_edit(session_id, goal_id: str, *, text: "str | None" = None,
         was_now = list(data.get("now") or [])
         changes = []
         if text and text != g["text"]:
-            g["text"] = text
+            g["text"], g["title"] = text, short_title(text)
             changes.append(f"changed {goal_id}: {text[:160]}")
         if status and status != g.get("status"):
             if status == DROPPED:
@@ -763,7 +808,7 @@ def user_add(session_id, text: str, in_hand: bool = False) -> "dict | None":
                for g in data["goals"]):
             return {"same": True}          # already an open goal: nothing added
         gid = _new_id(data)
-        data["goals"].append({"id": gid, "text": text, "status": OPEN,
+        data["goals"].append({"id": gid, "text": text, "title": short_title(text), "status": OPEN,
                               "turn": _user_turns(session_id) or 0, "at": int(time.time())})
         if in_hand:
             data["now"] = list(dict.fromkeys((data.get("now") or []) + [gid]))
@@ -872,6 +917,7 @@ def drop_after_turn(session_id, turn: int) -> None:
                     u = ups.pop()
                     if u.get("prev"):
                         g["text"] = u["prev"]
+                        g.pop("title", None)      # made again from the text
                 g["updates"] = ups
                 if gone(g.get("closed_turn")):
                     g["status"] = OPEN
@@ -903,6 +949,6 @@ def forget(session_id) -> None:
         _SESSION_LOCKS.pop(str(session_id), None)
 
 
-__all__ = ["MARK", "TURN_NOTE_MARK", "ask_directive", "drop_reply", "keep_unread", "turn_note", "block", "drop_after_turn", "enabled",
+__all__ = ["MARK", "TURN_NOTE_MARK", "short_title", "ask_directive", "drop_reply", "keep_unread", "turn_note", "block", "drop_after_turn", "enabled",
            "finish_turn", "forget", "goals", "now_directive", "on_message",
            "render"]
