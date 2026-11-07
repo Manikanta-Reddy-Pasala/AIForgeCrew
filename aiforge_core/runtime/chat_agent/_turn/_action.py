@@ -108,9 +108,6 @@ def _unseen(st, name, args) -> str:
     return ", ".join(f"{x}-{y}" if x != y else str(x) for x, y in out)
 
 
-_EDIT_NAMES = frozenset({"file_patch", "multi_edit", "file_edit", "editor", "file_write"})
-
-
 def _edit_paths(args) -> list:
     """The files an edit call names (``path``/``file``/``file_path``, and each
     of a multi_edit's ``edits``)."""
@@ -128,7 +125,8 @@ def _forget_after_failed_edit(st, name, args, result) -> None:
     needing the file's exact text again: its reads of that file stop counting
     as shown — ranged or whole — so a re-read is let through (sqlglot a5: 54
     failed patches, 54 re-reads skipped as 'already shown', 7/25)."""
-    if name not in _EDIT_NAMES or not isinstance(result, dict) or result.get("ok") is not False:
+    from aiforge_core.runtime.tools.mutating import FILE_WRITE_TOOLS
+    if name not in FILE_WRITE_TOOLS or not isinstance(result, dict) or result.get("ok") is not False:
         return
     import os
     names = {os.path.basename(os.path.normpath(p)) for p in _edit_paths(args)}

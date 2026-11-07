@@ -148,6 +148,12 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
     _sig = yield from _done_watch.review_gate(st, step, builder, strict_finish)
     if _sig:
         return _sig
+    # A big request: one fresh read of the request against the change (the
+    # turn's own tests only check its own reading of the spec).
+    from . import _spec_audit
+    _sig = yield from _spec_audit.gate(st, step, builder, strict_finish)
+    if _sig:
+        return _sig
     # Task board gate: the model planned items and some are still open. A
     # long run must not stop to report half the work; bounded so a model
     # that cannot finish still exits.

@@ -118,6 +118,7 @@ def _note_green_tests(st, name, args, result, cwd) -> None:
         return
     if stale:
         return                        # tested the code as it was before the edits
+    st.last_test_cmd = (name, dict(args or {}))      # any test run: its interpreter
     known = _only_known_failures(st, result)
     _gaming.note_test_result(st, True if known else result.get("ok"))
     if result.get("ok") is not True and not known:
@@ -498,9 +499,60 @@ def _verify_known_ok(st, ok, out):
         # the starting commit (uc-feature: 3 failures already in the repo,
         # two fix rounds and 4 of the run's 6 minutes spent on them).
         green = _own_green(st)
+        if green is None:
+            green = _ids_green(st, out)
         if green is not None:
             return True, green
     return ok, out
+
+
+def _ids_green(st, out) -> "str | None":
+    """The harness's red run when every test it names as failing fails the
+    same way on the commit the work started from: those tests alone, run with
+    the turn's own pytest interpreter (uc-feature: the turn only ran
+    tests/test_helper.py, so no whole-suite command could vouch; 3 tests the
+    repo already failed cost two fix rounds and three 80-s suite runs)."""
+    import re as _re
+    last = getattr(st, "last_test_cmd", None)
+    text = out or ""
+    fails = set(_re.findall(r"^FAILED\s+(\S+::\S+)", text, _re.M))
+    errs = set(_re.findall(r"^ERROR\s+(\S+::\S+)", text, _re.M))
+    ids = sorted(fails | errs)
+    if not last or not ids or len(ids) > 40 or getattr(st, "own_red_at", None):
+        return None
+    # every failure named: the summary's counts are the listed ids, and no
+    # collection error (no ::) hides among them
+    n_f = _re.findall(r"\b(\d+) failed\b", text)
+    n_e = _re.findall(r"\b(\d+) errors?\b", text)
+    if (n_f and int(n_f[-1]) != len(fails)) or (n_e and int(n_e[-1]) != len(errs)) \
+            or _re.search(r"^ERROR\s+(?!\S+::)\S+", text, _re.M):
+        return None
+    try:
+        from aiforge_core.runtime import git_target
+        from aiforge_core.runtime.shell_writes import command_of
+        from ._contract_gate import work_base
+        from ._done_watch import _interpreter, pre_existing
+        py = _interpreter(command_of(last[1]) or "")
+        base = work_base(st)
+        if not py or not base:
+            return None
+        cwd = str(getattr(st, "cwd", "") or ".")
+        here = git_target.command_base(cwd) or cwd
+        key = (content_fingerprint(cwd) or f"edits:{getattr(st, 'edits_made', 0)}", tuple(ids))
+        cached = getattr(st, "ids_green_at", None)
+        if cached and cached[0] == key:
+            return cached[1]
+        import shlex
+        cmd = f"{shlex.quote(py)} -m pytest -q -p no:cacheprovider " + " ".join(
+            shlex.quote(i) for i in ids)
+        # only the named tests: the suite's error total cannot match a rerun of three
+        named = "\n".join(ln for ln in (out or "").splitlines()
+                           if _re.match(r"^(?:FAILED|ERROR)\s+\S+::", ln))
+        verdict = out if pre_existing(here, cmd, named, base, only_failing=True) else None
+        st.ids_green_at = (key, verdict)
+        return verdict
+    except Exception:  # noqa: BLE001 — the runner's verdict stands
+        return None
 
 
 def _own_green(st) -> "str | None":
@@ -535,6 +587,8 @@ def _own_green(st) -> "str | None":
         v = own_test_verdict(st)
         if v and v[0]:
             out = v[1]
+        elif v is not None:
+            st.own_red_at = here           # the turn's own whole suite says red
     except Exception:  # noqa: BLE001 — the runner's verdict stands
         out = None
     st.own_green_at = (here, out)

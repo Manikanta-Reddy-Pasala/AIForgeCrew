@@ -38,6 +38,7 @@ import re
 IDLE = 8
 MAX_FORCED = 2
 _RAN = re.compile(r"\b([1-9]\d*) passed\b")
+_RAN_ANY = re.compile(r"\b([1-9]\d*) (?:passed|failed|errors?)\b")
 _FAILED_ID = re.compile(r"^(?:FAILED|ERROR)\s+(\S+::\S+)", re.M)
 _PROBE_TIMEOUT_S = 900
 #: Shell commands that only look: running them is "checking again".
@@ -323,7 +324,8 @@ _FAIL_ONLY = re.compile(r"^FAILED\s+(\S+::\S+)", re.M)
 _ERROR_ONLY = re.compile(r"^ERROR\s+(\S+::\S+)", re.M)
 
 
-def pre_existing(cwd: str, cmd: str, out: str, base_rev: "str | None" = None) -> bool:
+def pre_existing(cwd: str, cmd: str, out: str, base_rev: "str | None" = None,
+                 only_failing: bool = False) -> bool:
     """Every failure and error of ``out`` (the turn's own full test command
     run now) is there on the original code too: the same command, run on a
     git worktree of ``base_rev`` (the turn's starting commit; HEAD when
@@ -355,7 +357,8 @@ def pre_existing(cwd: str, cmd: str, out: str, base_rev: "str | None" = None) ->
         line = cmd.replace(top, base)
         line = re.sub(r"(^|\s)PYTHONPATH=\S*", r"\1", line)     # ours wins
         code, base_out = _run(line, here, env=env)
-        if not _RAN.search(base_out):
+        # a run of only the failing tests passes none: it ran when it counted any
+        if not (_RAN_ANY if only_failing else _RAN).search(base_out):
             return False
         return (fails <= set(_FAIL_ONLY.findall(base_out))
                 and errs <= set(_ERROR_ONLY.findall(base_out))
