@@ -42,7 +42,7 @@ def test_parts_are_checked():
     assert "full task" in D._parts({"parts": [{"title": "a", "task": "do", "files": ["a"]}, _p("z", ["z.py"])]})[1]
     assert "after names no part" in D._parts({"parts": [
         {"title": "a", "task": "x" * 30, "files": ["a"], "after": ["zz"]}, _p("z", ["z.py"])]})[1]
-    assert "at most" in D._parts({"parts": [_p(str(i), [f"{i}.py"]) for i in range(5)]})[1]
+    assert "at most" in D._parts({"parts": [_p(str(i), [f"{i}.py"]) for i in range(7)]})[1]
     ok, why = D._parts({"parts": [{"title": "a", "task": "x" * 30, "files": ["./src/a.py"]}, _p("z", ["z.py"])]})
     assert not why and ok[0]["files"] == ["src/a.py"]
     assert "do it yourself" in D._parts({"parts": [_p("a", ["a.py"])]})[1]   # one part: no doer

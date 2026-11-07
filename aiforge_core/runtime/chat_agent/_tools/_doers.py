@@ -24,7 +24,7 @@ import os
 import threading
 import time
 
-_MAX_PARTS = 4
+_MAX_PARTS = 6
 #: The lead's turn deadline (time.monotonic), set by the loop for its turn.
 LEAD_DEADLINE: "contextvars.ContextVar[float | None]" = contextvars.ContextVar(
     "aiforge_lead_deadline", default=None)
