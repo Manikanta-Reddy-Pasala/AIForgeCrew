@@ -93,6 +93,9 @@ def _can_start_early(st, name, args, sig):
             return False        # its gate changes or refuses it: run in order
     if st.long_chain_help and sig in st.read_sigs_seen:
         return False
+    from ._action import _covered
+    if st.long_chain_help and _covered(st, name, args):
+        return False            # lines already shown: the guard skips it
     if name == "web_fetch" and egress.check(str(args.get("url") or "")):
         return False
     try:

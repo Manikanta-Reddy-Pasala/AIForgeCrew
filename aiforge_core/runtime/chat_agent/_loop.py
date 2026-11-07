@@ -348,8 +348,9 @@ def _gated_action(st, step, name, args, sig, n, cwd, session_id):
     """Stall guard, gates, dispatch and bookkeeping for one tool call. Returns
     return/continue/None, "repeat" when a read already done was skipped, or
     "handled" when the loop did the call's bookkeeping itself."""
+    from ._turn._action import _covered
     repeat = bool(st.long_chain_help and name in _READ_OBS_TOOLS
-                  and sig in st.read_sigs_seen)
+                  and (sig in st.read_sigs_seen or _covered(st, name, args)))
     _sig = yield from _action_stall_guard(st, name, args, sig, st.long_chain_help)
     if _sig == "return":
         return "return"

@@ -42,6 +42,72 @@ from ._items import note_evidence, review_progress
 from ._tasks import apply_progress, context_words, user_dropped_work
 
 
+_WINDOW_READS = frozenset({"file_read", "read_lines"})
+#: Share of a requested line range already shown since the last edit that
+#: makes the read a repeat (click a15: lines 1727-1737 of core.py asked ~30
+#: times each, shifted a line or two, 340 reads; an exact-match check saw
+#: few of them).
+_COVERED = 0.8
+#: Skipped repeat reads in a row before the stuck recovery takes over.
+_SKIP_STREAK = 3
+
+
+def _window(name, args) -> "tuple[str, int, int] | None":
+    """``(path, start, end)`` a ranged read asks for; None for a whole file."""
+    if name not in _WINDOW_READS or not isinstance(args, dict):
+        return None
+    if not any(args.get(k) not in (None, "") for k in ("start", "end", "offset", "limit")):
+        return None
+    try:
+        from .._tools._code import _line_range
+        st_, en = _line_range(args, 10 ** 9)
+    except Exception:  # noqa: BLE001
+        return None
+    path = str(args.get("path") or "")
+    if not path or en == 10 ** 9 or en < st_:
+        return None
+    import os
+    return os.path.normpath(path), st_, en
+
+
+def _seen_lines(st, name, args) -> "tuple[set, int, int] | None":
+    want = _window(name, args)
+    wins = getattr(st, "read_windows", None)
+    if not want or not wins:
+        return None
+    path, a, b = want
+    seen = set()
+    for sig, (p, x, y) in list(wins.items()):
+        if p == path and sig in st.read_sigs_seen:
+            seen.update(range(max(a, x), min(b, y) + 1))
+    return seen, a, b
+
+
+def _covered(st, name, args) -> bool:
+    """The range was (almost all) shown already, since the last edit and
+    still in the conversation (its read signature not forgotten)."""
+    got = _seen_lines(st, name, args)
+    return bool(got) and len(got[0]) >= _COVERED * (got[2] - got[1] + 1)
+
+
+def _unseen(st, name, args) -> str:
+    """The lines of the range not shown yet, as ``"101-120, 140"``."""
+    got = _seen_lines(st, name, args)
+    if not got:
+        return ""
+    seen, a, b = got
+    out, run = [], None
+    for i in range(a, b + 1):
+        if i not in seen:
+            run = [i, i] if run is None else [run[0], i]
+        elif run:
+            out.append(run)
+            run = None
+    if run:
+        out.append(run)
+    return ", ".join(f"{x}-{y}" if x != y else str(x) for x, y in out)
+
+
 def _action_stall_guard(st, name, args, sig, _long_chain_help):
     """Stall guard for an action: short-circuit a duplicate read with a progress
     recap, and on the same tool+args repeated too often first recover with a
@@ -72,16 +138,29 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
     # read counts only toward the lifetime backstop, so a model that keeps
     # re-asking between new reads is still stopped eventually.
     duplicate = (_long_chain_help and name in _READ_OBS_TOOLS
-                 and sig in st.read_sigs_seen)
+                 and (sig in st.read_sigs_seen or _covered(st, name, args)))
     signal = detect("action", st, sig, strike(st, sig, per_state=not duplicate),
                     duplicate)
     looping = signal.detail if signal else ""
+    st.dup_skip_streak = (getattr(st, "dup_skip_streak", 0) + 1) if duplicate else 0
+    if duplicate and not looping and st.dup_skip_streak > _SKIP_STREAK:
+        # skipped reads in a row: the plain "skipped" note is not working —
+        # the stuck recovery (recap, change of approach, else a pause) takes over
+        looping = (f"asked {st.dup_skip_streak} times in a row for reads whose "
+                   "result it already has")
+        st.dup_skip_streak = 0          # one recovery per run of skips
     if duplicate and not looping:
         _recap = _progress_recap(st.convo)
+        _rest = "" if sig in st.read_sigs_seen else _unseen(st, name, args)
         yield from nudge(
             st, f"⏭ duplicate read skipped ({name})",
-            "OBSERVATION: [skipped — duplicate] You ALREADY ran this exact "
-            "read; its result is above and re-reading wastes a step. "
+            ("OBSERVATION: [skipped — duplicate] You ALREADY ran this exact "
+             "read; its result is above and re-reading wastes a step. "
+             if sig in st.read_sigs_seen else
+             "OBSERVATION: [skipped — already shown] These lines are above, "
+             "from an earlier read of this file; re-reading wastes a step. "
+             + (f"Lines {_rest} are not shown yet: read just those if you need "
+                "them. " if _rest else ""))
             + (_recap + ". " if _recap else "")
             + "Read a DIFFERENT file you have not read yet, or if you have "
             "enough, WRITE your output now (file_write) or emit FINAL.")
@@ -721,7 +800,7 @@ def _git_target_after(st, name, args, result, cwd) -> str:
     return git_target.after(getattr(st, "session_id", None), name, args, result, cwd)
 
 
-def _record_read(st, name, sig, result, _long_chain_help):
+def _record_read(st, name, sig, result, _long_chain_help, args=None):
     """Count a landed READ as new progress the first time its signature is seen
     (feeds the extension budget), and remember it for the duplicate-read guard."""
     if (name in _READ_OBS_TOOLS and not (
@@ -741,6 +820,23 @@ def _record_read(st, name, sig, result, _long_chain_help):
                 st.read_sigs_ever.popitem(last=False)
         if _long_chain_help:
             st.read_sigs_seen.add(sig)
+            # the lines the result HOLDS, not the ones asked for (a long range
+            # is cut at 5000 lines / 60k chars)
+            win = _window(name, args)
+            if win and isinstance(result, dict) and result.get("start") and result.get("text") \
+                    and not str(result["text"]).lstrip().startswith("[already in context:"):
+                s0 = int(result["start"])
+                got = s0 + str(result["text"]).count("\n") - 1
+                win = (win[0], s0, min(int(result.get("end") or got), max(s0, got)))
+            elif win:
+                win = None              # no line range came back: record nothing
+            if win:
+                wins = getattr(st, "read_windows", None)
+                if wins is None:
+                    wins = st.read_windows = {}
+                wins[sig] = win
+                while len(wins) > _ACTION_SIG_MAX:
+                    wins.pop(next(iter(wins)))
 
 
 def _note_target_compare(st, name, args, result) -> list:
@@ -805,7 +901,7 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     # Loop-engineering bookkeeping: count edits that actually LANDED (gates
     # the verify-on-final loop — a 0-edit Q&A turn is never test-gated).
     # Remember a successful read so a later identical re-read short-circuits.
-    _record_read(st, name, sig, result, _long_chain_help)
+    _record_read(st, name, sig, result, _long_chain_help, args)
     from ._evidence import note as _note_evidence
     _note_evidence(st, name, args, result)
     if name in _READ_OBS_TOOLS:
