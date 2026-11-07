@@ -46,13 +46,13 @@ def _verify_max_rounds() -> int:
         return 2
 
 
-def _run_project_verify(cwd: str):
+def _run_project_verify(cwd: str, python: "str | None" = None):
     """Run the project's test/build gate on ``cwd``. Returns ``(ok, output)`` or
     ``(None, "")`` when there's nothing to test — reuses the SAME runner the
     pipeline reconcile uses, so simple/doer runs get the same real pass/fail."""
     try:
         from aiforge_core.runtime.parallel_subtasks import _project_test_output
-        return _project_test_output(cwd)
+        return _project_test_output(cwd, python=python)
     except Exception:  # noqa: BLE001
         return None, ""
 

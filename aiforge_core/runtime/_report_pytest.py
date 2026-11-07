@@ -177,12 +177,12 @@ def _pytest_timeout_args() -> list[str]:
     return ["--timeout", str(ptt)]
 
 
-def _run_pytest_capturing(py: str, cwd: str, env: dict, timeout: int):
+def _run_pytest_capturing(py: str, cwd: str, env: dict, timeout: int, cap: bool = True):
     """Run pytest, retrying once with addopts stripped when a broken CONFIG (a
     plugin/addopts the tree can't satisfy → usage error, no tests collected)
     stopped it from starting. Returns ``(returncode, combined_output)``."""
     import subprocess
-    to = _pytest_timeout_args()
+    to = _pytest_timeout_args() if cap else []
     p = subprocess.run([py, "-m", "pytest", "-q", *to], cwd=cwd, env=env,
                        capture_output=True, text=True, timeout=timeout)
     # warnings (stderr) first: the run's results and summary close stdout, and
@@ -201,7 +201,28 @@ def _run_pytest_capturing(py: str, cwd: str, env: dict, timeout: int):
     return p.returncode, out
 
 
-def run_bare_python_tests(cwd: str, timeout: int = 300):
+def _has_module(py, name: str) -> bool:
+    import subprocess
+    try:
+        return subprocess.run([py, "-c", f"import {name}"], capture_output=True,
+                              timeout=60).returncode == 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _usable_python(py) -> bool:
+    """``py`` exists and imports pytest."""
+    import subprocess
+    if not py or not os.path.exists(py):
+        return False
+    try:
+        return subprocess.run([py, "-c", "import pytest"], capture_output=True,
+                              timeout=60).returncode == 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def run_bare_python_tests(cwd: str, timeout: int = 300, python: "str | None" = None):
     """Run pytest on a bare (marker-less) Python tree via a managed venv that
     pip-installs pytest + the tree's third-party imports. Returns ``(ok, output)``
     or ``None`` when there are no tests (nothing to check). The venv lives at
@@ -212,20 +233,39 @@ def run_bare_python_tests(cwd: str, timeout: int = 300):
     venv = os.path.join(cwd, pkg._AIFORGE_VENV)
     py = os.path.join(venv, "bin", "python")
     try:
-        why = pkg._ensure_pytest_venv(cwd, venv, py, timeout)
-        if why:
-            return False, why
+        if _usable_python(python):
+            # the project's own interpreter (the one its tests already run
+            # with): no venv to build, nothing installed from guessed import
+            # names (uc-feature: ~42 s of pip, packages `a`, `b`, `base`)
+            py = python
+        else:
+            why = pkg._ensure_pytest_venv(cwd, venv, py, timeout)
+            if why:
+                return False, why
         env = dict(os.environ, SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy")
-        rc, out = pkg._run_pytest_capturing(py, cwd, env, timeout)
+        if py == python and not _has_module(py, "pytest_timeout"):
+            # the per-test cap needs pytest-timeout, which the project's own
+            # interpreter may lack ("unrecognized arguments: --timeout")
+            rc, out = pkg._run_pytest_capturing(py, cwd, env, timeout, cap=False)
+        else:
+            rc, out = pkg._run_pytest_capturing(py, cwd, env, timeout)
         ok = rc == 0
         # LINT gate (Python leg): when tests otherwise PASS, run the real-bug ruff
         # codes via the managed venv's ruff. The generic multi-language dispatch
         # in ``integration_report`` handles other stacks.
         if ok and os.environ.get("AIFORGE_LINT_GATE", "1") not in ("0", "false"):
-            lok, lout = pkg._static_lint_python(cwd, py, env)
+            lint_py = py
+            if py == python and not _has_module(py, "ruff"):
+                import sys
+                lint_py = sys.executable if _has_module(sys.executable, "ruff") else None
+            lok, lout = pkg._static_lint_python(cwd, lint_py, env) if lint_py else (True, "")
             if not lok:
                 ok = False
                 out += lout
         return ok, out[-4000:]
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        import subprocess
+        if isinstance(exc, subprocess.TimeoutExpired) and py == python:
+            # no per-test cap with the project's interpreter: a hang is a fail
+            return False, f"the test run did not finish in {timeout} s — a test hangs"
         return None

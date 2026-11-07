@@ -235,7 +235,7 @@ def test_the_finish_check_falls_back_to_the_turns_own_command_when_the_runner_ca
     import sys
     _git_repo(tmp_path, {"test_a.py": "def test_ok():\n    assert True\n"})
     monkeypatch.setattr(_outcomes, "_run_project_verify",
-                        lambda cwd: (False, "ImportError while loading conftest"))
+                        lambda cwd, **kw: (False, "ImportError while loading conftest"))
     st = SimpleNamespace(cwd=str(tmp_path), goal="x", last_full_test=(
         "run_command", {"cmd": f"cd {tmp_path} && {sys.executable} -m pytest -q -p no:cacheprovider"}))
     ok, out = _outcomes._project_verify(st, str(tmp_path))
@@ -248,7 +248,7 @@ def test_the_finish_check_falls_back_to_the_turns_own_command_when_the_runner_ca
     monkeypatch.setattr(_outcomes, "_BROKEN_AT_BASE", {})
     assert _outcomes._project_verify(st, str(tmp_path))[0] is False
     monkeypatch.setattr(_outcomes, "_run_project_verify",   # the runner ran tests: it stands
-                        lambda cwd: (False, "FAILED t.py::x\n1 failed, 9 passed"))
+                        lambda cwd, **kw: (False, "FAILED t.py::x\n1 failed, 9 passed"))
     st.last_full_test = ("run_command", {"cmd": f"cd {tmp_path} && true"})
     assert _outcomes._project_verify(st, str(tmp_path)) == (False, "FAILED t.py::x\n1 failed, 9 passed")
 
@@ -344,14 +344,14 @@ def test_a_runner_that_cannot_run_the_original_suite_either_has_no_verdict(tmp_p
     (tmp_path / ".aiforge-venv").mkdir()                       # the runner's venv exists
     monkeypatch.setattr(_outcomes, "_BROKEN_AT_BASE", {})
     monkeypatch.setattr(_outcomes, "_run_project_verify",
-                        lambda cwd: (False, "ImportError while loading conftest"))
+                        lambda cwd, **kw: (False, "ImportError while loading conftest"))
     st = SimpleNamespace(cwd=str(tmp_path), goal="x", dw_base_rev="HEAD", last_full_test=(
         "run_command", {"cmd": "pytest tests/test_a.py"}))       # narrower than the suite
     ok, out = _outcomes._project_verify(st, str(tmp_path))
     assert ok is None                                          # unknown, not FAIL
     monkeypatch.setattr(_outcomes, "_BROKEN_AT_BASE", {})
     calls = []
-    def runner(cwd):
+    def runner(cwd, **kw):
         calls.append(cwd)
         return (True, "3 passed") if len(calls) == 2 else (False, "ImportError while loading conftest")
     monkeypatch.setattr(_outcomes, "_run_project_verify", runner)

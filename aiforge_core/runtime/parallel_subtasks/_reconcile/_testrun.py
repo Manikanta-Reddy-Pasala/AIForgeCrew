@@ -130,7 +130,7 @@ def _run_project_tests(cwd: str) -> tuple[bool, str]:
     return _static_check_gate(cwd, bool(res.get("ok")), out)
 
 
-def _project_test_output(cwd: str) -> tuple[bool, str]:
+def _project_test_output(cwd: str, python: "str | None" = None) -> tuple[bool, str]:
     """Run the project's tests and return ``(ok, raw_output)`` — the RAW build/
     test output (not the formatted report), so the reconciler sees exact errors.
     ``ok`` True when there's no project / no tests (nothing to reconcile)."""
@@ -140,7 +140,7 @@ def _project_test_output(cwd: str) -> tuple[bool, str]:
         # pip-installs the third-party deps (pygame, numpy, …) that a plain
         # project(action=test) misses — otherwise pytest fails to import and the
         # captured output is EMPTY, so the reconciler gets no errors to act on.
-        bare = run_bare_python_tests(cwd)
+        bare = run_bare_python_tests(cwd, python=python) if python else run_bare_python_tests(cwd)
         if bare is not None:
             return bare
         return _run_project_tests(cwd)

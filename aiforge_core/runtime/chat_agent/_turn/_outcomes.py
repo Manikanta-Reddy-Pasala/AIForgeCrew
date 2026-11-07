@@ -325,6 +325,25 @@ def _verify_fix(st, step, cwd, plan_mode, builder):
     return None
 
 
+def _project_python(st, cwd) -> "str | None":
+    """The interpreter the turn's own test command ran the tests with (an
+    absolute path that exists — the one proven to have the project's deps);
+    never the runner's own .aiforge-venv. None: the runner builds its own."""
+    import os
+    try:
+        from aiforge_core.runtime._report_pytest import _AIFORGE_VENV
+        from aiforge_core.runtime.shell_writes import command_of
+        from ._done_watch import _interpreter
+        for last in (getattr(st, "last_test_cmd", None), getattr(st, "last_full_test", None)):
+            if last:
+                py = _interpreter(command_of(last[1]) or "")
+                if py and os.path.isabs(py) and os.path.exists(py) and _AIFORGE_VENV not in py:
+                    return py
+    except Exception:  # noqa: BLE001 — the runner builds its own
+        return None
+    return None
+
+
 def _project_verify(st, cwd):
     """``(ok, output)`` of the finish check: the harness's own project runner,
     unless it could not run the tests at all (no counts, a collection error)
@@ -332,7 +351,8 @@ def _project_verify(st, cwd):
     click: the runner's guessed command failed to collect a suite the model
     ran green ("(999) failing", two false fix rounds). The runner's verdict
     stands whenever it ran tests: it covers the whole tree and the lint legs."""
-    ok, out = _run_project_verify(cwd)
+    py = _project_python(st, cwd)
+    ok, out = _run_project_verify(cwd, python=py) if py else _run_project_verify(cwd)
     try:
         from aiforge_core.runtime.parallel_subtasks import _fail_count
         if ok is not False or lint_only(out) or _fail_count(out) != 999:
@@ -346,12 +366,12 @@ def _project_verify(st, cwd):
         if not _whole_suite(cmd or "", base):
             # a narrower run cannot stand for the tree; a runner that cannot
             # run this suite on the original code either has no verdict
-            return (None, out) if _runner_broken_at_base(st, cwd) else (ok, out)
+            return (None, out) if _runner_broken_at_base(st, cwd, py) else (ok, out)
         own = own_test_verdict(st)
     except Exception:  # noqa: BLE001 — the runner's verdict stands
         return ok, out
     if own is None:
-        return (None, out) if _runner_broken_at_base(st, cwd) else (ok, out)
+        return (None, out) if _runner_broken_at_base(st, cwd, py) else (ok, out)
     green, own_out = own
     if not green:
         return False, own_out
@@ -372,7 +392,7 @@ def _project_verify(st, cwd):
 _BROKEN_AT_BASE: dict = {}
 
 
-def _runner_broken_at_base(st, cwd) -> bool:
+def _runner_broken_at_base(st, cwd, py=None) -> bool:
     """The harness's project runner cannot run this repo's tests on the
     original code either (no counts, a collection error there too): its
     'could not run' says nothing about the turn's edits, so the finish has no
@@ -391,7 +411,8 @@ def _runner_broken_at_base(st, cwd) -> bool:
     top = repo_ident.git_toplevel(cwd)
     base = getattr(st, "dw_base_rev", None)
     venv = os.path.join(top, _AIFORGE_VENV) if top else ""
-    if not top or not base or not os.path.isdir(venv):
+    # the same interpreter as the turn's run: the project's own, else the venv
+    if not top or not base or (not py and not os.path.isdir(venv)):
         return False
     try:
         rev = subprocess.run(["git", "-C", top, "rev-parse", "--verify", f"{base}^{{commit}}"],
@@ -411,9 +432,12 @@ def _runner_broken_at_base(st, cwd) -> bool:
                            capture_output=True, text=True, timeout=60)
         added = r.returncode == 0
         if added:
-            os.symlink(venv, os.path.join(tmp, _AIFORGE_VENV))
             from aiforge_core.runtime.parallel_subtasks import _fail_count
-            ok, out = _run_project_verify(tmp)
+            if py:
+                ok, out = _run_project_verify(tmp, python=py)
+            else:
+                os.symlink(venv, os.path.join(tmp, _AIFORGE_VENV))
+                ok, out = _run_project_verify(tmp)
             broken = ok is False and _fail_count(out) == 999 and not lint_only(out)
     except Exception:  # noqa: BLE001 — unknown: keep the runner's verdict
         broken = False
