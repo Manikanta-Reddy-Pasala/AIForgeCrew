@@ -176,3 +176,10 @@ def test_absolute_paths_under_the_repo_become_relative(monkeypatch, tmp_path):
                               {"title": "b", "task": "x" * 30,
                                "files": [str(tmp_path / "b.py")]}]}, str(tmp_path))
     assert sorted(g[0] for g in got) == ["b.py", "src/a.py"]
+
+
+def test_a_refusal_is_logged(caplog):
+    import logging
+    with caplog.at_level(logging.INFO, logger="aiforge.chat.doers"):
+        D._t_run_doers({"parts": [_p("a", ["a.py"])]}, ".")
+    assert "run_doers refused" in caplog.text and "do it yourself" in caplog.text

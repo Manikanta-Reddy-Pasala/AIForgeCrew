@@ -20,9 +20,12 @@ that answers one request at a time gains focus, not speed.
 from __future__ import annotations
 
 import contextvars
+import logging
 import os
 import threading
 import time
+
+log = logging.getLogger("aiforge.chat.doers")
 
 _MAX_PARTS = 6
 #: The lead's turn deadline (time.monotonic), set by the loop for its turn.
@@ -254,6 +257,22 @@ def _run_one(part: dict, others: list, cwd: str, budget: float, lead_sid=None) -
 
 
 def _t_run_doers(args: dict, cwd: str) -> dict:
+    """The tool: run the parts, and log what came back (a refusal returns at
+    once and is otherwise only in the model's context)."""
+    out = _run_doers(args, cwd)
+    try:
+        if out.get("error"):
+            log.info("run_doers refused: %s", out["error"])
+        else:
+            log.info("run_doers waves=%s results=%s", out.get("waves"), [
+                (r.get("title"), r.get("ok"), r.get("secs"), r.get("files_changed"))
+                for r in out.get("results") or []])
+    except Exception:  # noqa: BLE001 — logging never breaks the tool
+        pass
+    return out
+
+
+def _run_doers(args: dict, cwd: str) -> dict:
     if not _on():
         return {"ok": False, "error": "doers are off: do the work yourself"}
     if IN_DOER.get():
