@@ -181,6 +181,12 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     # Stop, or the stall guard catches it repeating the same step.
     _turn_budget_s = _turn_deadline_s()
     _turn_deadline = (time.monotonic() + _turn_budget_s) if _turn_budget_s > 0 else None
+    try:
+        from .._tools._doers import IN_DOER, LEAD_DEADLINE
+        if not IN_DOER.get():
+            LEAD_DEADLINE.set(_turn_deadline)   # doers end before the lead's time does
+    except Exception:  # noqa: BLE001
+        pass
 
     # Latest user message drives mentions (#4) + skill triggers (#6) +
     # memory recall. In simple/plan mode the API augments the last user turn

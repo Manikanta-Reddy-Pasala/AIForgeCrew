@@ -116,6 +116,13 @@ def _turn_deadline_s() -> float:
     number the runtime is not using.
     """
     try:
+        from .._tools._doers import DOER_BUDGET_S
+        own = DOER_BUDGET_S.get()
+        if own is not None:
+            return float(own)            # a doer: its share of the lead's time
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         from aiforge_core.config import runtime_settings as _rs
         stored = _rs.stored("chat_turn_deadline_s")
     except Exception:  # noqa: BLE001 — settings must never break a turn

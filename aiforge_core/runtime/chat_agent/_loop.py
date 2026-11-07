@@ -185,6 +185,19 @@ def _compact_on_request(st, role, complete_fn, session_id):
                     f"{got['messages_after']} messages) — continuing the task")}
 
 
+def _lead_stopped() -> bool:
+    """A doer (no chat session of its own): its lead's chat was stopped."""
+    try:
+        from ._tools._doers import LEAD_SID
+        sid = LEAD_SID.get()
+        if sid is None:
+            return False
+        from aiforge_core.runtime import chat_cancel
+        return bool(chat_cancel.is_cancelled(sid))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _step_prologue(st, n, _cwd, role, complete_fn, session_id, builder):
     """Per-step prologue up to a parsed reply: cap/deadline/cancel guards, builder
     nudge, steering drain, condense+usage, the model completion, and the stuck-
@@ -202,7 +215,8 @@ def _step_prologue(st, n, _cwd, role, complete_fn, session_id, builder):
     except Exception:  # noqa: BLE001
         _job_stopped = False
     if _job_stopped or (
-            session_id is not None and chat_cancel.is_cancelled(session_id)):
+            session_id is not None and chat_cancel.is_cancelled(session_id)) or (
+            session_id is None and _lead_stopped()):
         yield {"type": "error", "text": "stopped by user"}
         yield {"type": "done"}
         return None, "return"

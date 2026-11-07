@@ -30,6 +30,12 @@ _T = {
     "arrs": {"type": "array", "items": {"type": "string"}},
     "arr": {"type": "array"},
     "obj": {"type": "object"},
+    # run_doers parts: [{title, task, files, after}]
+    "arrobj": {"type": "array", "items": {"type": "object", "properties": {
+        "title": {"type": "string"}, "task": {"type": "string"},
+        "files": {"type": "array", "items": {"type": "string"}},
+        "after": {"type": "array", "items": {"type": "string"}}},
+        "required": ["title", "task", "files"]}},
 }
 
 # name -> (description, {prop: type_code}, (required, …))
@@ -146,6 +152,15 @@ CATALOG: dict = {
         "exit_nonzero | contains:TEXT | not_contains:TEXT | regex:PATTERN.",
         {"cmd": "s", "until": "s", "interval_s": "i", "max_checks": "i",
          "timeout_s": "i", "cmd_timeout": "i"}, ("cmd",)),
+    "run_doers": (
+        "Hand parts of YOUR coding work to doer agents and wait for them. Use it "
+        "for a big change with parts that do not depend on each other and touch "
+        "different files; do small or tightly linked work yourself. Each part: "
+        "title, task (the full text: what to build, names, rules, examples), "
+        "files (the only files it may change), after (titles it must wait for). "
+        "Independent parts run side by side; you get each part's answer and "
+        "changed files, then run the tests and finish.",
+        {"parts": "arrobj"}, ("parts",)),
     "spawn_task": (
         "Start a SECOND agent on a part of the request that does not depend on "
         "your own part (research, analysis, a separate question). It runs in its "
@@ -526,7 +541,7 @@ _CORE_ACT = frozenset({
     "plan_progress", "tool_help",
     "file_read", "read_files", "read_lines", "list_dir", "find", "grep",
     "file_patch", "multi_edit", "file_write",
-    "run_command", "run_tests", "spawn_task",
+    "run_command", "run_tests", "spawn_task", "run_doers",
     "command_wait", "command_output", "command_kill",
     "memory_lookup", "memory_write",
 })
