@@ -207,6 +207,12 @@ def _step_prologue(st, n, _cwd, role, complete_fn, session_id, builder):
         yield {"type": "done"}
         return None, "return"
     _builder_nudge(st, builder, n)
+    # an error the post-edit check named, still in the file steps later
+    try:
+        from ._turn._post_edit import stale_errors
+        yield from stale_errors(st, getattr(st, "cwd", None) or ".", n)
+    except Exception:  # noqa: BLE001 — a reminder never stops the step
+        pass
     _sig = yield from _deadline_guard(st, n)
     if _sig == "return":
         return None, "return"

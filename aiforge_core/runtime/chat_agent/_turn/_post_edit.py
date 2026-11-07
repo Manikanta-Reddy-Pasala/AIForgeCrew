@@ -63,8 +63,15 @@ def post_edit_diagnostics(st, files, cwd):
             continue
         if not errs:
             said.pop(full, None)
+            (getattr(st, "open_errors", None) or {}).pop(full, None)
             continue
         key = sorted(_PLACE.sub("", e) for e in errs)
+        opened = st.__dict__.setdefault("open_errors", {}) if hasattr(st, "__dict__") else {}
+        new = _new_since_base(st, full, cwd, key)
+        if new and (full not in opened or opened[full][2] != new):
+            opened[full] = (shown, getattr(st, "step_n", 0) or 0, new)
+        elif not new:
+            opened.pop(full, None)
         if said.get(full) == key:
             continue
         said[full] = key
@@ -153,4 +160,76 @@ def _where_defined(errs, full) -> list:
     return out
 
 
-__all__ = ["edited_files", "post_edit_diagnostics", "post_edit_format"]
+def _new_since_base(st, full, cwd, key) -> list:
+    """The errors of ``key`` the file did not have at the commit the work
+    began (the repo's own old ones are not this turn's to fix); [] when that
+    cannot be told."""
+    import os
+    import subprocess
+    import tempfile
+    from aiforge_core.runtime import post_edit
+    try:
+        from ._contract_gate import work_base
+        base = work_base(st)
+        top = subprocess.run(["git", "-C", os.path.dirname(full), "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=4)
+        if not base or top.returncode != 0:
+            return []
+        rel = os.path.relpath(os.path.realpath(full), os.path.realpath(top.stdout.strip()))
+        old = subprocess.run(["git", "-C", top.stdout.strip(), "show", f"{base}:{rel}"],
+                             capture_output=True, text=True, timeout=4)
+        if old.returncode != 0:
+            return list(key)          # a file the turn created: every error is new
+        with tempfile.TemporaryDirectory(prefix="aiforge-base-") as d:
+            p = os.path.join(d, os.path.basename(full))
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write(old.stdout)
+            was = _quiet(post_edit.diagnostics, p, d)
+        if was is None:
+            return []
+        before = {_PLACE.sub("", e).replace(p, "") for e in was}
+        return [k for k in key if k.replace(full, "") not in before]
+    except Exception:  # noqa: BLE001 — cannot tell: say nothing more
+        return []
+
+
+#: Steps an error the check named may stay in a file before it is said again,
+#: louder (attrs n3: `_make_class_props` undefined in _make.py, said twice, then
+#: 30 minutes of reads with the package unable to import — 0/18).
+STALE_STEPS = 8
+
+
+def stale_errors(st, cwd, n=None):
+    """Once per file and error set: errors named STALE_STEPS steps ago that
+    the file still has, said again as the thing to fix first."""
+    from aiforge_core.runtime import post_edit
+    opened = getattr(st, "open_errors", None) or {}
+    if not opened or getattr(st, "goals_cut", False):
+        return
+    told = st.__dict__.setdefault("open_errors_told", set()) if hasattr(st, "__dict__") else set()
+    now = n if n is not None else (getattr(st, "step_n", 0) or 0)
+    for full, (shown, since, key) in list(opened.items()):
+        if now - since < STALE_STEPS or (full, tuple(key)) in told:
+            continue
+        errs = _quiet(post_edit.diagnostics, full, cwd)
+        if errs is None:
+            continue
+        if not errs:
+            opened.pop(full, None)
+            (getattr(st, "post_edit_said", None) or {}).pop(full, None)
+            continue
+        told.add((full, tuple(key)))
+        yield {"type": "thought", "role": "system",
+               "text": f"⚠ {shown} still has {len(errs)} error(s) from {now - since} steps ago — "
+                       "fixing them first"}
+        hints = _quiet(_where_defined, errs, full) or []
+        from ._limits import _ride
+        _ride(st, "[automated error check — not the user] " + shown + " still has the "
+                  f"errors named {now - since} steps ago. Until they are fixed the module "
+                  "cannot be imported or run, so every test that touches it fails. Fix "
+                  "them now, before anything else — define the missing name, import it, "
+                  "or remove the call:\n" + "\n".join(errs)[:1500]
+                  + ("\n" + "\n".join(hints) if hints else ""))
+
+
+__all__ = ["edited_files", "post_edit_diagnostics", "post_edit_format", "stale_errors"]
