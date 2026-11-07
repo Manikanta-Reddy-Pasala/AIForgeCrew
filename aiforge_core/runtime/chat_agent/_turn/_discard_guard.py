@@ -17,7 +17,9 @@ throwaway named file by file (debug.py, repro_x.py, the chat's scratch
 folder) may be removed: that is cleanup. So may a file that was there
 before the turn and that the request says goes (or its ``test_<name>.py``),
 named file by file. ``> file``, ``cp``/``mv`` onto it and
-``truncate`` count as overwriting it. The model can still undo: fix the
+``truncate`` count as overwriting it. A command whose every such file is
+broken now (Python that does not compile), named file by file, goes through: nothing that works is
+lost. The model can still undo: fix the
 file with file_patch, editor ``undo_edit`` for the last edit, or send the
 same command again with ``"discard": true``. Off switch:
 ``AIFORGE_CHAT_DISCARD_GUARD=0``.
@@ -351,6 +353,32 @@ def hits(cmd: str, cwd: str, edited, git: "_Git | None" = None, goal: str = "") 
     return list(dict.fromkeys(found))
 
 
+def _all_broken(paths) -> bool:
+    """Each file is Python source that does not compile now. Python only: its
+    check is exact and fast, where other kinds fall back to counting brackets
+    (prose, data and empty files would look broken)."""
+    if not paths:
+        return False
+    for p in paths:
+        if not str(p).endswith(".py"):
+            return False
+        try:
+            with open(p, encoding="utf-8") as fh:
+                src = fh.read()
+        except Exception:  # noqa: BLE001 — unreadable / not text: not "broken"
+            return False
+        if not src.strip():
+            return False
+        try:
+            compile(src, p, "exec")
+        except SyntaxError:
+            continue
+        except Exception:  # noqa: BLE001
+            return False
+        return False                      # compiles: real work, keep it
+    return True
+
+
 def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     """The result to hand back instead of running ``args``, or None."""
     if not _on() or not isinstance(args, dict) \
@@ -370,6 +398,13 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     except Exception:  # noqa: BLE001 — the guard never blocks on its own error
         return None
     if not lost:
+        return None
+    # Every file it would undo is broken right now (does not even parse): no
+    # working edit is lost, and the model has no other way back (attrs n1: an
+    # edit left _make.py with 12 syntax errors, 28 refused `git checkout`s,
+    # 45 minutes and 2/18).
+    broken = _all_broken(lost)
+    if broken and not _REPO_WIDE.search(cmd) and all(_names_file(cmd, p, base) for p in lost):
         return None
     # The same untracked files refused, sent again as the very next shell
     # command: the model means it (looping on refusals cost 61 calls in one
@@ -398,6 +433,14 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
             tried.pop(lost[0], None)
             return None
     shown = [os.path.relpath(p, base) for p in lost[:8]]
+    if broken:
+        # a repo-wide reset also wipes work the guard does not track: name
+        # the per-file undo that is allowed
+        return {"ok": False, "error": "would_discard_own_edits", "files": shown,
+                "hint": ("These files do not compile, so undoing them is allowed — "
+                         "but only file by file (a repo-wide reset/stash/clean also "
+                         "wipes other uncommitted work). Run: git checkout -- "
+                         + " ".join(shown))}
     return {"ok": False, "error": "would_discard_own_edits", "files": shown,
             "hint": ("This command would throw away your own edits from this turn "
                      f"to: {', '.join(shown)}. Do not start over — if an edit broke "

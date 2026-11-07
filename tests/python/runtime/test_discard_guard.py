@@ -253,3 +253,28 @@ def test_a_new_staged_file_or_no_repo_releases_nothing(repo, tmp_path_factory):
     bare = tmp_path_factory.mktemp("bare")
     (bare / "core.py").write_text("x = 1\n")
     assert G.hits("rm core.py", str(bare), [str(bare / "core.py")], goal="Remove `core.py`.")
+
+
+def test_undoing_files_that_are_broken_now_goes_through(repo, monkeypatch):
+    """attrs n1: _make.py left with syntax errors, 28 refused `git checkout`s."""
+    root, edited = repo
+    from aiforge_core.runtime import git_target
+    monkeypatch.setattr(git_target, "command_base", lambda cwd: str(root))
+    st = SimpleNamespace(file_hashes={edited[0]: "h"}, goal="")
+    (root / "src" / "core.py").write_text("def f(:\n    pass\n")      # broken by the turn
+    assert G.refusal(st, "run_command", {"cmd": "git checkout -- src/core.py"}, str(root)) is None
+    r = G.refusal(st, "run_command", {"cmd": "git reset --hard"}, str(root))    # repo-wide: no
+    assert r and "git checkout -- src/core.py" in r["hint"]
+    (root / "src" / "core.py").write_text("def f():\n    return 2\n")  # works: still guarded
+    assert G.refusal(st, "run_command", {"cmd": "git checkout -- src/core.py"}, str(root))
+
+
+def test_only_python_that_does_not_compile_counts_as_broken(tmp_path):
+    bad, ok, empty, md = (tmp_path / n for n in ("a.py", "b.py", "c.py", "d.md"))
+    bad.write_text("def f(:\n")
+    ok.write_text("x = 1\n")
+    empty.write_text("")
+    md.write_text("1) item :)\n")
+    assert G._all_broken([str(bad)])
+    assert not G._all_broken([str(bad), str(ok)])
+    assert not G._all_broken([str(empty)]) and not G._all_broken([str(md)])
