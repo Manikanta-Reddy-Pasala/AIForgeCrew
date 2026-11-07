@@ -125,3 +125,31 @@ def test_the_switch(monkeypatch):
 def test_the_note_covers_check_requests_and_the_direction_of_a_change():
     assert "check, review, compare, list" in pf.ASK
     assert "changes the code, not the page" in pf.ASK and "no tool call" in pf.ASK
+
+
+def test_a_change_request_with_a_task_list_needs_no_extra_statement(monkeypatch):
+    """uc-code-lru: the held first write cost a model round trip."""
+    from types import SimpleNamespace
+    from aiforge_core.runtime.chat_agent._turn import _plan_first as P
+    monkeypatch.setattr(P, "changes_something", lambda name, args: True)
+    monkeypatch.setattr(P, "_applies", lambda st: True)
+    st = SimpleNamespace(goal="In `mini/lru.py` write a class `LRUCache`.", convo=[], steers=[],
+                         board={"a": {"title": "Write LRUCache"}, "b": {"title": "Add tests"},
+                                "r": {"title": "the request part", "from_request": True}})
+    out = list(P.gate(st, {"thought": ""}, "file_write", {}))
+    assert out and out[0]["text"] == "Plan: Write LRUCache; Add tests" and st.plan_said
+    for goal in ("Does the parser support unicode?", "Make sure the cache works",
+                 "Don't fix it, only report what breaks"):
+        st2 = SimpleNamespace(goal=goal, convo=[], steers=[], board={"a": {"title": "x"}})
+        assert P._board_says_it(st2) == ""
+    seeded = SimpleNamespace(goal="Add a and b", convo=[], steers=[],
+                             board={"a": {"title": "a", "from_request": True}})
+    assert P._board_says_it(seeded) == ""
+    st = SimpleNamespace(goal="Check whether `mini/lru.py` handles capacity 0 and fix it.",
+                         convo=[], board={"a": {"title": "Fix"}})
+    g = P.gate(st, {"thought": ""}, "file_write", {})
+    try:
+        while True:
+            next(g)
+    except StopIteration as e:
+        assert e.value == "continue"                # a check request: still asked

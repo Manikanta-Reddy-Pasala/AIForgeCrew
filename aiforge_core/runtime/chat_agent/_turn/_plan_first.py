@@ -12,6 +12,10 @@ alone. The statement is shown as a message of its own, and the work goes on —
 the user corrects it by typing (a steer), nothing waits for a go-ahead.
 
 * The model already said it next to the call: that text is shown, no extra step.
+* The request plainly asks for a change (add, write, fix…; no check, review,
+  compare or explain) and the agent already posted its task list: that list
+  is the statement — shown, no extra step (uc-code-lru: the held call cost a
+  model round trip, 9 of 51 seconds).
 * It said nothing: the call is held once and the model is asked for the
   statement, then repeats its call (the statement ends with the word
   PROCEED, on a line of its own or closing the last line). A request that
@@ -89,6 +93,32 @@ def _already_agreed(st) -> bool:
         return False
 
 
+_CHANGE_ASK = re.compile(r"^\W*(?:please\s+)?(?:in\s+`[^`]+`\s*,?\s*)?(?:add|write|implement|create|"
+                         r"fix|refactor|rename|update|build|remove|delete|replace|convert)\b", re.I)
+_ANSWER_ASK = re.compile(r"\?|\b(?:check|review|compare|explain|list|describe|analy[sz]e|"
+                         r"investigate|look\s+into|report|show|summari[sz]e|tell|"
+                         r"don'?t|do\s+not|only|whether|should\s+(?:we|i))\b", re.I)
+
+
+def _board_says_it(st) -> str:
+    """The agent's own task list already shown, as the statement, when the
+    request plainly opens with a change (``write …``, ``In `a.py` add …``)
+    and nothing since changed it; "" otherwise."""
+    if getattr(st, "steers", None):
+        return ""                         # a message since: let the model say it
+    goal = str(getattr(st, "goal", "") or "").strip()
+    first = goal.split("\n", 1)[0][:400]
+    if not _CHANGE_ASK.search(first) or _ANSWER_ASK.search(first):
+        return ""
+    items = [it.get("title") for it in (getattr(st, "board", None) or {}).values()
+             if isinstance(it, dict) and it.get("title") and not it.get("from_request")
+             and not it.get("enforced")
+             and it.get("status") not in ("done", "skipped", "cancelled")]
+    if not items:
+        return ""
+    return "Plan: " + "; ".join(str(t) for t in items[:8])
+
+
 def gate(st, step, name, args):
     """Run before a tool call. Returns ``"continue"`` when the call is held for
     the statement, else None (the call goes on)."""
@@ -96,7 +126,9 @@ def gate(st, step, name, args):
             or not changes_something(name, args):
         return None
     said = (step.get("thought") or "").strip()
-    if len(said) >= _MIN_CHARS:
+    if len(said) < _MIN_CHARS:
+        said = _board_says_it(st) or said
+    if len(said) >= _MIN_CHARS or (said.startswith("Plan: ") and said == _board_says_it(st)):
         st.plan_said = True
         yield {"type": "message", "supplementary": True, "role": "plan",
                "text": said}

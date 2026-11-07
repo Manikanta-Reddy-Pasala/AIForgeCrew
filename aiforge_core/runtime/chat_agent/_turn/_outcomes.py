@@ -492,7 +492,53 @@ def _verify_known_ok(st, ok, out):
     the green fingerprint, the done watch and the item log give it."""
     if ok is False and _only_known_failures(st, {"ok": False, "stdout": out}):
         return True, out
+    if ok is False and not lint_only(out):
+        # Red only for tests the original code fails too: the turn's own full
+        # test command, run again, with each failure checked on a worktree of
+        # the starting commit (uc-feature: 3 failures already in the repo,
+        # two fix rounds and 4 of the run's 6 minutes spent on them).
+        green = _own_green(st)
+        if green is not None:
+            return True, green
     return ok, out
+
+
+def _own_green(st) -> "str | None":
+    """The output of the turn's own full test command when it is green or
+    red only for failures the original code has (``own_test_verdict``).
+    Only a whole-suite command stands for the tree, and only against the
+    commit the work started from (never a HEAD that may hold the turn's own
+    commit); once per code state and command."""
+    last = getattr(st, "last_full_test", None)
+    try:
+        from aiforge_core.runtime import git_target
+        from aiforge_core.runtime.shell_writes import command_of
+        from ._contract_gate import work_base
+        cmd = command_of(last[1]) if last else ""
+        cwd = str(getattr(st, "cwd", "") or ".")
+        if not cmd or not _whole_suite(cmd, git_target.command_base(cwd) or cwd):
+            return None
+        base = work_base(st)
+        if not base:
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    here = (content_fingerprint(cwd) or f"edits:{getattr(st, 'edits_made', 0)}", cmd)
+    cached = getattr(st, "own_green_at", None)
+    if cached and cached[0] == here:
+        return cached[1]
+    out = None
+    try:
+        from ._done_watch import own_test_verdict
+        if not getattr(st, "dw_base_rev", None):
+            st.dw_base_rev = base         # pre_existing compares against this
+        v = own_test_verdict(st)
+        if v and v[0]:
+            out = v[1]
+    except Exception:  # noqa: BLE001 — the runner's verdict stands
+        out = None
+    st.own_green_at = (here, out)
+    return out
 
 
 def still_failing_note(fails, output: str) -> str:
