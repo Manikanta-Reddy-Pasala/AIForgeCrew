@@ -379,11 +379,17 @@ def _all_broken(paths) -> bool:
     return True
 
 
+#: The user's own words asking to throw the work away: then the override stands.
+_USER_RESET = re.compile(r"\b(?:start (?:over|again|from scratch)|from scratch|reset (?:everything|"
+                         r"all|the repo|the changes)|discard (?:all|my|the) changes|"
+                         r"throw (?:it|everything) away)\b", re.I)
+
+
 def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     """The result to hand back instead of running ``args``, or None."""
-    if not _on() or not isinstance(args, dict) \
-            or str(args.get("discard")).strip().lower() in ("true", "1", "yes"):
+    if not _on() or not isinstance(args, dict):
         return None
+    forced = str(args.get("discard")).strip().lower() in ("true", "1", "yes")
     try:
         from aiforge_core.runtime import git_target
         from aiforge_core.runtime.shell_writes import SHELL_TOOLS, command_of
@@ -398,6 +404,13 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     except Exception:  # noqa: BLE001 — the guard never blocks on its own error
         return None
     if not lost:
+        return None
+    # The override is for one file the model means to drop — not for a
+    # repo-wide stash/reset of its own tracked work (attrs n5: 14/18 at 25
+    # minutes, `git stash` sent again with discard: true "to test the
+    # original behaviour", never popped; the run ended at 3/18).
+    one_file = len(lost) == 1 and _names_file(cmd, lost[0], base)
+    if forced and (one_file or _USER_RESET.search(str(getattr(st, "goal", "") or ""))):
         return None
     # Every file it would undo is broken right now (does not even parse): no
     # working edit is lost, and the model has no other way back (attrs n1: an
@@ -444,9 +457,15 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     return {"ok": False, "error": "would_discard_own_edits", "files": shown,
             "hint": ("This command would throw away your own edits from this turn "
                      f"to: {', '.join(shown)}. Do not start over — if an edit broke "
-                     "a file, fix that part with file_patch or multi_edit. Only if "
-                     "you really mean to discard that work, send "
-                     "the same command again with \"discard\": true.")}
+                     "a file, fix that part with file_patch or multi_edit. To see or "
+                     "run the original code, do not stash or reset: read it with "
+                     "`git show HEAD:<path>`, or check it out beside the repo with "
+                     f"`git worktree add /tmp/orig-{os.getpid()}-{n} HEAD` and run it there. "
+                     + ("Only if you really mean to drop that one file, send the same "
+                        "command again with \"discard\": true."
+                        if len(lost) == 1 else
+                        "A command that throws away several of your edited files at once "
+                        "is never run, with or without \"discard\"."))}
 
 
 __all__ = ["hits", "refusal"]

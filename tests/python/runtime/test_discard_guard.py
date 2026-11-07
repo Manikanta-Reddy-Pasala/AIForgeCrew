@@ -278,3 +278,20 @@ def test_only_python_that_does_not_compile_counts_as_broken(tmp_path):
     assert G._all_broken([str(bad)])
     assert not G._all_broken([str(bad), str(ok)])
     assert not G._all_broken([str(empty)]) and not G._all_broken([str(md)])
+
+
+def test_a_repo_wide_stash_of_own_tracked_work_ignores_the_override(repo, monkeypatch):
+    """attrs n5: `git stash` with discard: true wiped 14/18 of work."""
+    root, edited = repo
+    from aiforge_core.runtime import git_target
+    monkeypatch.setattr(git_target, "command_base", lambda cwd: str(root))
+    st = SimpleNamespace(file_hashes=dict.fromkeys(edited, "h"), goal="")
+    for cmd in ("git stash", "git stash --include-untracked", "git reset --hard HEAD",
+                "git checkout HEAD -- .", "git restore -W ."):
+        r = G.refusal(st, "run_command", {"cmd": cmd, "discard": True}, str(root))
+        assert r and "git show HEAD:" in r["hint"]
+    assert G.refusal(st, "run_command", {"cmd": "rm src/core.py", "discard": True},
+                     str(root)) is None                         # one file: the override stands
+    st.goal = "this is wrong, start over from scratch"
+    assert G.refusal(st, "run_command", {"cmd": "git stash", "discard": True},
+                     str(root)) is None                         # the user asked for it
