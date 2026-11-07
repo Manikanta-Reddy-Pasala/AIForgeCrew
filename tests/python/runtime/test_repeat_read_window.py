@@ -62,3 +62,27 @@ def test_a_dedupe_pointer_is_not_recorded_as_shown():
                     "text": "[already in context: file a.py sha256:0123456789abcdef — same text is above; not repeated]"},
                    True, {"path": "a.py", "start": 1, "end": 50})
     assert "s1" not in st.read_windows
+
+
+def test_a_failed_edit_lets_the_file_be_read_again():
+    """sqlglot a5: patches failed on stale text, every re-read was skipped."""
+    st = _st()
+    st.read_sigs_seen.update({"s1", "s2"})
+    st.read_windows.update({"s1": ("sqlglot/parser.py", 9400, 9460), "s2": ("other.py", 1, 40)})
+    A._forget_after_failed_edit(st, "file_patch", {"path": "sqlglot/parser.py"},
+                                {"ok": False, "error": "old_str not found"})
+    assert "s1" not in st.read_windows and "s1" not in st.read_sigs_seen
+    assert "s2" in st.read_windows
+    assert not A._covered(st, "read_lines", {"path": "sqlglot/parser.py", "start": 9440, "end": 9450})
+    A._forget_after_failed_edit(st, "file_patch", {"path": "other.py"}, {"ok": True})
+    assert "s2" in st.read_windows
+
+
+def test_a_failed_multi_edit_frees_whole_file_reads_of_its_files_only():
+    st = _st()
+    st.read_sigs_seen.update({'file_read:{"path": "pkg/a.py"}', 'file_read:{"path": "pkg/b.py"}'})
+    A._forget_after_failed_edit(st, "multi_edit", {"edits": [{"path": "pkg/a.py", "old": "x"}]},
+                                {"ok": False})
+    assert st.read_sigs_seen == {'file_read:{"path": "pkg/b.py"}'}
+    A._forget_after_failed_edit(st, "multi_edit", {"edits": []}, {"ok": False})
+    assert st.read_sigs_seen == {'file_read:{"path": "pkg/b.py"}'}       # no path: nothing dropped

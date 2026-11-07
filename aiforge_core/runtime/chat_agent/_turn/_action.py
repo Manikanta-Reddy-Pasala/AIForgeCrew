@@ -108,6 +108,42 @@ def _unseen(st, name, args) -> str:
     return ", ".join(f"{x}-{y}" if x != y else str(x) for x, y in out)
 
 
+_EDIT_NAMES = frozenset({"file_patch", "multi_edit", "file_edit", "editor", "file_write"})
+
+
+def _edit_paths(args) -> list:
+    """The files an edit call names (``path``/``file``/``file_path``, and each
+    of a multi_edit's ``edits``)."""
+    if not isinstance(args, dict):
+        return []
+    out = [args.get(k) for k in ("path", "file", "file_path")]
+    for e in args.get("edits") or []:
+        if isinstance(e, dict):
+            out += [e.get("path"), e.get("file"), e.get("file_path")]
+    return [str(p) for p in out if p]
+
+
+def _forget_after_failed_edit(st, name, args, result) -> None:
+    """An edit that failed (the old text did not match) leaves the model
+    needing the file's exact text again: its reads of that file stop counting
+    as shown — ranged or whole — so a re-read is let through (sqlglot a5: 54
+    failed patches, 54 re-reads skipped as 'already shown', 7/25)."""
+    if name not in _EDIT_NAMES or not isinstance(result, dict) or result.get("ok") is not False:
+        return
+    import os
+    names = {os.path.basename(os.path.normpath(p)) for p in _edit_paths(args)}
+    if not names:
+        return                        # cannot tell which file: keep the rest
+    wins = getattr(st, "read_windows", None) or {}
+    for sig, (p, _a, _b) in list(wins.items()):
+        if os.path.basename(p) in names:
+            wins.pop(sig, None)
+            st.read_sigs_seen.discard(sig)
+    for sig in list(st.read_sigs_seen):       # whole-file reads have no window
+        if any(n in str(sig) for n in names):
+            st.read_sigs_seen.discard(sig)
+
+
 def _action_stall_guard(st, name, args, sig, _long_chain_help):
     """Stall guard for an action: short-circuit a duplicate read with a progress
     recap, and on the same tool+args repeated too often first recover with a
@@ -902,6 +938,7 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     # the verify-on-final loop — a 0-edit Q&A turn is never test-gated).
     # Remember a successful read so a later identical re-read short-circuits.
     _record_read(st, name, sig, result, _long_chain_help, args)
+    _forget_after_failed_edit(st, name, args, result)
     from ._evidence import note as _note_evidence
     _note_evidence(st, name, args, result)
     if name in _READ_OBS_TOOLS:
