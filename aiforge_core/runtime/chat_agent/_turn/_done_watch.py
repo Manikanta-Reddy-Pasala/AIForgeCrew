@@ -321,6 +321,27 @@ def _errors(out: str) -> int:
 
 
 _FAIL_ONLY = re.compile(r"^FAILED\s+(\S+::\S+)", re.M)
+_SUMMARY = "short test summary info"
+_ANY_ID = re.compile(r"(?:^|[\s\]])([\w./-]+\.py::[^\s\[]+(?:\[[^\]\n]*\])?)")
+
+
+def failing_ids(text: str) -> "tuple[set, set] | None":
+    """``(failed, errored)`` test ids of pytest's short summary, subtest lines
+    (``SUBFAILED[...] path::test``, the params over several lines) included;
+    None when there is no summary section."""
+    i = (text or "").rfind(_SUMMARY)
+    if i < 0:
+        return None
+    failed, errored, kind = set(), set(), "F"
+    for ln in text[i:].splitlines()[1:]:
+        if ln.startswith(("FAILED", "SUBFAILED")):
+            kind = "F"
+        elif ln.startswith("ERROR"):
+            kind = "E"
+        head = ln.split(" - ", 1)[0]      # an id named in the reason is not a failure
+        for m in _ANY_ID.finditer(head):
+            (failed if kind == "F" else errored).add(m.group(1))
+    return failed, errored
 _ERROR_ONLY = re.compile(r"^ERROR\s+(\S+::\S+)", re.M)
 
 
@@ -336,6 +357,11 @@ def pre_existing(cwd: str, cmd: str, out: str, base_rev: "str | None" = None,
     import shutil
     import tempfile
     fails, errs = set(_FAIL_ONLY.findall(out or "")), set(_ERROR_ONLY.findall(out or ""))
+    if only_failing:
+        got = failing_ids(out)
+        if not got or not (got[0] or got[1]):
+            return False                  # no ids read: cannot tell
+        fails, errs = got
     if not fails and not errs and not _errors(out):
         return True
     tmp = tempfile.mkdtemp(prefix="aiforge-base-")
@@ -360,6 +386,10 @@ def pre_existing(cwd: str, cmd: str, out: str, base_rev: "str | None" = None,
         # a run of only the failing tests passes none: it ran when it counted any
         if not (_RAN_ANY if only_failing else _RAN).search(base_out):
             return False
+        if only_failing:
+            got = failing_ids(base_out) or (set(_FAIL_ONLY.findall(base_out)),
+                                            set(_ERROR_ONLY.findall(base_out)))
+            return fails <= got[0] and errs <= got[1]
         return (fails <= set(_FAIL_ONLY.findall(base_out))
                 and errs <= set(_ERROR_ONLY.findall(base_out))
                 and _errors(out) <= _errors(base_out))

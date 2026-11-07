@@ -64,7 +64,8 @@ def test_failing_ids_checked_on_the_base_when_no_whole_suite_command(monkeypatch
     monkeypatch.setattr(DW, "pre_existing", lambda here, cmd, out, base, only_failing=False: seen.update(cmd=cmd) or True)
     st = SimpleNamespace(cwd=str(tmp_path), edits_made=2, head0="abc",
                          last_test_cmd=(1, {"cmd": "/v/bin/python -m pytest tests/test_helper.py"}))
-    out = "FAILED tests/test_a.py::test_x - boom\nFAILED tests/test_b.py::test_y\n2 failed"
+    out = ("=== short test summary info ===\nFAILED tests/test_a.py::test_x - boom\n"
+           "FAILED tests/test_b.py::test_y\n2 failed")
     assert O._verify_known_ok(st, False, out) == (True, out)
     assert "/v/bin/python -m pytest" in seen["cmd"] and "tests/test_a.py::test_x" in seen["cmd"]
     monkeypatch.setattr(DW, "pre_existing", lambda *a: False)
@@ -82,9 +83,26 @@ def test_unlisted_failures_or_collection_errors_never_count_as_old(monkeypatch, 
     def st():
         return SimpleNamespace(cwd=str(tmp_path), edits_made=2, head0="abc",
                                last_test_cmd=(1, {"cmd": "/v/bin/python -m pytest t.py"}))
-    assert O._ids_green(st(), "FAILED a.py::x\n3 failed in 1s") is None          # 2 unlisted
-    assert O._ids_green(st(), "FAILED a.py::x\nERROR b.py - ImportError\n1 failed, 1 error") is None
+    H = "=== short test summary info ===\n"
+    assert O._ids_green(st(), "FAILED a.py::x\n1 failed in 1s") is None          # no summary: cut
+    assert O._ids_green(st(), H + "FAILED a.py::x\n3 failed in 1s") is None      # 2 unlisted
+    assert O._ids_green(st(), H + "FAILED a.py::x\nERROR b.py - ImportError\n1 failed, 1 error") is None
     s2 = st()
     s2.own_red_at = "x"
-    assert O._ids_green(s2, "FAILED a.py::x\n1 failed in 1s") is None              # own suite red
-    assert O._ids_green(st(), "FAILED a.py::x\n1 failed in 1s") is not None
+    assert O._ids_green(s2, H + "FAILED a.py::x\n1 failed in 1s") is None         # own suite red
+    assert O._ids_green(st(), H + "FAILED a.py::x\n1 failed in 1s") is not None
+
+
+def test_subtest_failures_are_read_from_the_summary():
+    text = ("x\n=== short test summary info ===\n"
+            "FAILED tests/t.py::A::test_one - boom\n"
+            "SUBFAILED[21, select\n  a\nlimit\n 100] tests/e.py::E::test_two - err\n"
+            "SUBFAILED[(x) 1, y] tests/o.py::O::test_three\n"
+            "3 failed, 10 passed in 1s")
+    assert DW.failing_ids(text) == ({"tests/t.py::A::test_one", "tests/e.py::E::test_two",
+                                     "tests/o.py::O::test_three"}, set())
+    assert DW.failing_ids("no summary") is None
+    got = DW.failing_ids("=== short test summary info ===\n"
+                         "FAILED tests/a.py::test_x[1-2] - boom\n"
+                         "FAILED t.py::a - AssertionError: see other.py::b\n")
+    assert got == ({"tests/a.py::test_x[1-2]", "t.py::a"}, set())

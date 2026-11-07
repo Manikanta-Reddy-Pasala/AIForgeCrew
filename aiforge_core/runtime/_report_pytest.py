@@ -185,7 +185,10 @@ def _run_pytest_capturing(py: str, cwd: str, env: dict, timeout: int):
     to = _pytest_timeout_args()
     p = subprocess.run([py, "-m", "pytest", "-q", *to], cwd=cwd, env=env,
                        capture_output=True, text=True, timeout=timeout)
-    out = p.stdout + p.stderr
+    # warnings (stderr) first: the run's results and summary close stdout, and
+    # the caller keeps the tail (uc-feature: plugin warnings pushed the failing
+    # ids and the "3 failed" line out of the last 4000 chars)
+    out = p.stderr + p.stdout
     config_broke = (p.returncode == 4
                     or "unrecognized arguments" in out
                     or "usage: pytest" in out.lower())
@@ -194,7 +197,7 @@ def _run_pytest_capturing(py: str, cwd: str, env: dict, timeout: int):
             [py, "-m", "pytest", "-q", "-p", "no:cacheprovider",
              "-o", "addopts=", *to], cwd=cwd, env=env,
             capture_output=True, text=True, timeout=timeout)
-        out = p.stdout + p.stderr
+        out = p.stderr + p.stdout
     return p.returncode, out
 
 

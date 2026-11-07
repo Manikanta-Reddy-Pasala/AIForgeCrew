@@ -515,8 +515,11 @@ def _ids_green(st, out) -> "str | None":
     import re as _re
     last = getattr(st, "last_test_cmd", None)
     text = out or ""
-    fails = set(_re.findall(r"^FAILED\s+(\S+::\S+)", text, _re.M))
-    errs = set(_re.findall(r"^ERROR\s+(\S+::\S+)", text, _re.M))
+    from ._done_watch import failing_ids
+    got = failing_ids(text)
+    if got is None:
+        return None                       # no summary: the list may be cut
+    fails, errs = got
     ids = sorted(fails | errs)
     if not last or not ids or len(ids) > 40 or getattr(st, "own_red_at", None):
         return None
@@ -546,9 +549,7 @@ def _ids_green(st, out) -> "str | None":
         cmd = f"{shlex.quote(py)} -m pytest -q -p no:cacheprovider " + " ".join(
             shlex.quote(i) for i in ids)
         # only the named tests: the suite's error total cannot match a rerun of three
-        named = "\n".join(ln for ln in (out or "").splitlines()
-                           if _re.match(r"^(?:FAILED|ERROR)\s+\S+::", ln))
-        verdict = out if pre_existing(here, cmd, named, base, only_failing=True) else None
+        verdict = out if pre_existing(here, cmd, text, base, only_failing=True) else None
         st.ids_green_at = (key, verdict)
         return verdict
     except Exception:  # noqa: BLE001 — the runner's verdict stands
