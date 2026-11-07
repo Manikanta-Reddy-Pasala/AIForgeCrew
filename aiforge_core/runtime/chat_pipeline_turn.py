@@ -176,9 +176,10 @@ def _run_doer_on_plan(q, steps, cwd, session_id, brief: str) -> str:
     """Run the single agent (writable) on the brief, streaming its events into
     the turn. Returns its final message ("" if it produced none)."""
     from .chat_agent import run_chat_agent
+    from .chat_agent._turn._doer_hint import quiet
     final = ""
-    for ev in run_chat_agent([{"role": "user", "content": brief}], cwd=cwd,
-                             session_id=session_id, mode="act"):
+    for ev in quiet(run_chat_agent([{"role": "user", "content": brief}], cwd=cwd,
+                                   session_id=session_id, mode="act")):
         if ev.get("type") == "done":
             continue
         _extra = ev.get("type") == "message" and ev.get("supplementary")

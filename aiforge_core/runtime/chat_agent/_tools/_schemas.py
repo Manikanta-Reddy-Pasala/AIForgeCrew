@@ -154,7 +154,7 @@ CATALOG: dict = {
          "timeout_s": "i", "cmd_timeout": "i"}, ("cmd",)),
     "run_doers": (
         "Hand parts of YOUR coding work to doer agents and wait for them. Use it "
-        "for a big change with parts that do not depend on each other and touch "
+        "for a big change with 2 to 4 parts that do not depend on each other and touch "
         "different files; do small or tightly linked work yourself. Each part: "
         "title, task (the full text: what to build, names, rules, examples), "
         "files (the only files it may change), after (titles it must wait for). "

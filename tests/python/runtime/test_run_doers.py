@@ -38,24 +38,25 @@ def test_waves_put_independent_parts_together_and_dependent_ones_later():
 
 def test_parts_are_checked():
     assert D._parts({})[1]
-    assert "files" in D._parts({"parts": [{"title": "a", "task": "x" * 30}]})[1]
-    assert "full task" in D._parts({"parts": [{"title": "a", "task": "do", "files": ["a"]}]})[1]
+    assert "files" in D._parts({"parts": [{"title": "a", "task": "x" * 30}, _p("z", ["z.py"])]})[1]
+    assert "full task" in D._parts({"parts": [{"title": "a", "task": "do", "files": ["a"]}, _p("z", ["z.py"])]})[1]
     assert "after names no part" in D._parts({"parts": [
-        {"title": "a", "task": "x" * 30, "files": ["a"], "after": ["zz"]}]})[1]
+        {"title": "a", "task": "x" * 30, "files": ["a"], "after": ["zz"]}, _p("z", ["z.py"])]})[1]
     assert "at most" in D._parts({"parts": [_p(str(i), [f"{i}.py"]) for i in range(5)]})[1]
-    ok, why = D._parts({"parts": [{"title": "a", "task": "x" * 30, "files": ["./src/a.py"]}]})
+    ok, why = D._parts({"parts": [{"title": "a", "task": "x" * 30, "files": ["./src/a.py"]}, _p("z", ["z.py"])]})
     assert not why and ok[0]["files"] == ["src/a.py"]
+    assert "do it yourself" in D._parts({"parts": [_p("a", ["a.py"])]})[1]   # one part: no doer
 
 
 def test_a_doer_cannot_start_doers_and_no_time_means_no_doers(monkeypatch):
     tok = D.IN_DOER.set(True)
     try:
-        assert "own part" in D._t_run_doers({"parts": [_p("a", ["a.py"])]}, ".")["error"]
+        assert "own part" in D._t_run_doers({"parts": [_p("a", ["a.py"]), _p("z", ["z.py"])]}, ".")["error"]
     finally:
         D.IN_DOER.reset(tok)
     tok = D.LEAD_DEADLINE.set(time.monotonic() + 100)
     try:
-        assert "time" in D._t_run_doers({"parts": [_p("a", ["a.py"])]}, ".")["error"]
+        assert "time" in D._t_run_doers({"parts": [_p("a", ["a.py"]), _p("z", ["z.py"])]}, ".")["error"]
     finally:
         D.LEAD_DEADLINE.reset(tok)
 
@@ -110,7 +111,7 @@ def test_a_crashing_doer_is_its_own_result(monkeypatch):
         raise RuntimeError("model down")
         yield  # pragma: no cover
     monkeypatch.setattr(ca, "run_chat_agent", boom)
-    out = D._t_run_doers({"parts": [_p("a", ["a.py"])]}, ".")
+    out = D._t_run_doers({"parts": [_p("a", ["a.py"]), _p("z", ["z.py"])]}, ".")
     assert not out["ok"] and "model down" in out["results"][0]["error"]
 
 
@@ -137,10 +138,10 @@ def test_changed_files_come_from_git_within_the_parts_files(tmp_path):
 
 def test_dot_paths_keep_their_dot_and_outside_paths_are_refused():
     ok, why = D._parts({"parts": [{"title": "a", "task": "x" * 30,
-                                   "files": ["./.github/ci.yml", ".env"]}]})
+                                   "files": ["./.github/ci.yml", ".env"]}, _p("z", ["z.py"])]})
     assert not why and ok[0]["files"] == [".github/ci.yml", ".env"]
     assert "inside the repository" in D._parts({"parts": [
-        {"title": "a", "task": "x" * 30, "files": ["../x.py"]}]})[1]
+        {"title": "a", "task": "x" * 30, "files": ["../x.py"]}, _p("z", ["z.py"])]})[1]
 
 
 def test_a_doer_stops_when_the_lead_chat_is_stopped(monkeypatch):
@@ -160,7 +161,7 @@ def test_approvals_on_means_no_doers(monkeypatch):
     from aiforge_core.runtime import request_context
     monkeypatch.setattr(request_context, "get_session_id", lambda: 5)
     monkeypatch.setattr(D, "_approvals_on", lambda sid: True)
-    out = D._t_run_doers({"parts": [_p("a", ["a.py"])]}, ".")
+    out = D._t_run_doers({"parts": [_p("a", ["a.py"]), _p("z", ["z.py"])]}, ".")
     assert not out["ok"] and "approvals" in out["error"]
 
 
@@ -171,5 +172,7 @@ def test_absolute_paths_under_the_repo_become_relative(monkeypatch, tmp_path):
         [{"type": "message", "text": "FINAL: ok"}]))
     monkeypatch.setattr(D, "_dirty", lambda cwd: set())
     D._t_run_doers({"parts": [{"title": "a", "task": "x" * 30,
-                               "files": [str(tmp_path / "src" / "a.py")]}]}, str(tmp_path))
-    assert got and got[0][0] == "src/a.py"
+                               "files": [str(tmp_path / "src" / "a.py")]},
+                              {"title": "b", "task": "x" * 30,
+                               "files": [str(tmp_path / "b.py")]}]}, str(tmp_path))
+    assert sorted(g[0] for g in got) == ["b.py", "src/a.py"]

@@ -380,6 +380,10 @@ def _gated_action(st, step, name, args, sig, n, cwd, session_id):
     _sig = yield from _steer_reply.gate(st, step, name, args)
     if _sig == "continue":
         return "continue"
+    from ._turn import _doer_hint
+    _sig = yield from _doer_hint.gate(st, step, name, args)
+    if _sig == "continue":
+        return "continue"
     _sig = yield from _plan_first.gate(st, step, name, args)
     if _sig == "continue":
         return "continue"

@@ -96,6 +96,10 @@ def _parts(args) -> "tuple[list, str]":
     raw = (args or {}).get("parts") or (args or {}).get("tasks") or []
     if not isinstance(raw, list) or not raw:
         return [], "give parts: a list of {title, task, files, after?}"
+    if len(raw) < 2:
+        # live (attrs h1): one part handed off is the lead's own work with a
+        # thinner brief, and nothing runs side by side
+        return [], "one part is your own work: do it yourself (doers need 2+ independent parts)"
     if len(raw) > _MAX_PARTS:
         return [], f"at most {_MAX_PARTS} parts; do the rest yourself"
     out, titles = [], set()
