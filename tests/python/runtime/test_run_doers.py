@@ -15,7 +15,8 @@ from aiforge_core.runtime.chat_agent._tools import _doers as D
 def _clean_doer_context(monkeypatch):
     # an earlier chat test leaves its turn deadline set on this thread
     toks = [(v, v.set(d)) for v, d in ((D.LEAD_DEADLINE, None), (D.IN_DOER, False),
-                                       (D.DOER_BUDGET_S, None), (D.LEAD_SID, None))]
+                                       (D.DOER_BUDGET_S, None), (D.LEAD_SID, None),
+                                       (D.LEAD_REQUEST, ""))]
     from aiforge_core.runtime import request_context
     monkeypatch.setattr(request_context, "get_session_id", lambda: None)
     yield
@@ -183,3 +184,20 @@ def test_a_refusal_is_logged(caplog):
     with caplog.at_level(logging.INFO, logger="aiforge.chat.doers"):
         D._t_run_doers({"parts": [_p("a", ["a.py"])]}, ".")
     assert "run_doers refused" in caplog.text and "do it yourself" in caplog.text
+
+
+def test_each_doer_gets_the_users_request_word_for_word(monkeypatch):
+    import aiforge_core.runtime.chat_agent as ca
+    briefs = []
+    monkeypatch.setattr(ca, "run_chat_agent", lambda m, **kw: briefs.append(m[0]["content"]) or iter(
+        [{"type": "message", "text": "FINAL: ok"}]))
+    monkeypatch.setattr(D, "_dirty", lambda cwd: set())
+    tok = D.LEAD_REQUEST.set("Add Coupon(code, kind, value, usage_limit=None) in coupons.py")
+    try:
+        D._t_run_doers({"parts": [_p("a", ["a.py"]), _p("b", ["b.py"])]}, ".")
+    finally:
+        D.LEAD_REQUEST.reset(tok)
+    assert len(briefs) == 2
+    assert all("Coupon(code, kind, value, usage_limit=None)" in b and "word for word" in b
+               for b in briefs)
+    assert "<request>" not in D._brief(_p("a", ["a.py"]), [], "")   # no request: no block

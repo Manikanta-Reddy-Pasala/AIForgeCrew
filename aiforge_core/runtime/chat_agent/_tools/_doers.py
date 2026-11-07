@@ -40,6 +40,13 @@ LEAD_SID: "contextvars.ContextVar[int | None]" = contextvars.ContextVar(
 #: A doer's own deadline (seconds of wall clock), read by the turn budget.
 DOER_BUDGET_S: "contextvars.ContextVar[float | None]" = contextvars.ContextVar(
     "aiforge_doer_budget_s", default=None)
+#: The user's request of the lead's turn, word for word: each doer gets it.
+#: Live (shopkit): briefs the lead wrote were summaries, and every doer built
+#: its own idea of the names and signatures the request had spelled out.
+LEAD_REQUEST: "contextvars.ContextVar[str]" = contextvars.ContextVar(
+    "aiforge_lead_request", default="")
+#: The most of that request a brief carries.
+_REQUEST_CHARS = 40000
 #: Time the lead keeps for itself after the doers (tests, answer).
 _LEAD_RESERVE_S = 240
 #: All the doers of one call together, when the lead has no deadline.
@@ -157,11 +164,16 @@ def waves(parts: list) -> "list[list]":
     return out
 
 
-def _brief(part: dict, others: list) -> str:
+def _brief(part: dict, others: list, request: str = "") -> str:
     rest = "; ".join(f"{o['title']} ({', '.join(o['files'])})" for o in others
                      if o is not part)
+    request = (request or "").strip()
+    asked = ("The user's whole request, word for word. Names, signatures, fields, "
+             "defaults, rules and examples in it are exact: follow them for your "
+             "part, do not invent your own. Build ONLY your part.\n"
+             "<request>\n" + request[:_REQUEST_CHARS] + "\n</request>\n\n") if request else ""
     return (f"You are a doer on ONE part of a larger request. Your part: {part['title']}.\n\n"
-            f"{part['task']}\n\n"
+            f"{part['task']}\n\n" + asked +
             f"Change ONLY these files: {', '.join(part['files'])}. "
             + (f"Other doers are working on other parts at the same time: {rest}. "
                "Do not touch their files. " if rest else "")
@@ -236,7 +248,7 @@ def _run_one(part: dict, others: list, cwd: str, budget: float, lead_sid=None) -
         os.path.join(os.path.realpath(cwd), f) for f in part["files"]]))
     t0 = time.monotonic()
     try:
-        for ev in run_chat_agent([{"role": "user", "content": _brief(part, others)}],
+        for ev in run_chat_agent([{"role": "user", "content": _brief(part, others, LEAD_REQUEST.get())}],
                                  cwd=cwd, role="chat", session_id=None,
                                  scope_globs=scope, strict_finish=True):
             kind = ev.get("type")
