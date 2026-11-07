@@ -59,13 +59,18 @@ def post_edit_diagnostics(st, files, cwd):
         said = st.post_edit_said = {}
     for shown, full in files:
         errs = _quiet(post_edit.diagnostics, full, cwd)
+        if not errs:
+            # the file is clean on its own: does its package still import?
+            imp = _quiet(import_error, st, full)
+            if imp:
+                errs = [imp]
         if errs is None:
             continue
         if not errs:
             said.pop(full, None)
             (getattr(st, "open_errors", None) or {}).pop(full, None)
             continue
-        key = sorted(_PLACE.sub("", e) for e in errs)
+        key = sorted(_LINE_NO.sub(")", _PLACE.sub("", e)) for e in errs)
         opened = st.__dict__.setdefault("open_errors", {}) if hasattr(st, "__dict__") else {}
         new = _new_since_base(st, full, cwd, key)
         if new and (full not in opened or opened[full][2] != new):
@@ -193,6 +198,150 @@ def _new_since_base(st, full, cwd, key) -> list:
         return []
 
 
+_IMPORT_TIMEOUT_S = 20
+_TRACE_TAIL = re.compile(r"^([\w.]+(?:Error|Exception|Configured|Exit)):\s*(.+)$", re.M)
+_TRACE_LINE = re.compile(r'File "([^"]+)", line (\d+)')
+_SKIP_PATH = re.compile(r"(?:^|/)(?:site-packages|dist-packages|\.venv|venv|\.aiforge-venv)/")
+
+
+def _package_root(full: str) -> "tuple[str, str] | None":
+    """``(sys.path entry, dotted module)`` of a file inside a package (real
+    paths); None for a loose script or a ``__main__``."""
+    import os
+    full = os.path.realpath(full)
+    if os.path.basename(full) == "__main__.py":
+        return None                       # importing it runs the program
+    mod = _module_of(full)
+    pkg_init = os.path.basename(full) == "__init__.py"
+    if "." not in mod and not pkg_init:
+        return None                       # a loose script: nothing to import
+    root = os.path.dirname(full)          # the folder of the file
+    if pkg_init:
+        root = os.path.dirname(root)      # a package's __init__: its parent
+    for _ in range(mod.count(".")):      # one folder up per dot: the path entry
+        root = os.path.dirname(root)
+    return root, mod
+
+
+def _try_import(py: str, root: str, mod: str) -> "str | None":
+    """The error importing ``mod`` from ``root`` with ``py``; None when it
+    imports, cannot be told, or fails only on a package that is not the
+    project's own (an optional or third-party dependency); ``"timeout"``."""
+    import os
+    import signal
+    import subprocess
+    env = dict(os.environ, PYTHONPATH=root + (os.pathsep + os.environ["PYTHONPATH"]
+                                               if os.environ.get("PYTHONPATH") else ""))
+    env.pop("PYTHONSAFEPATH", None)
+    try:
+        p = subprocess.Popen([py, "-c", f"import {mod}"], cwd=root, env=env,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.PIPE, text=True, start_new_session=True)
+    except OSError:
+        return None
+    try:
+        _out, err = p.communicate(timeout=_IMPORT_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)  # and anything it started
+        except OSError:
+            pass
+        p.communicate()
+        return "timeout"
+    if p.returncode == 0:
+        return None
+    tail = _TRACE_TAIL.findall(err or "")
+    if not tail:
+        return None
+    kind, msg = tail[-1]
+    if kind.endswith("ModuleNotFoundError"):
+        missing = re.search(r"No module named '([^']+)'", msg)
+        top = mod.split(".")[0]
+        if not missing or missing.group(1).split(".")[0] != top:
+            return None                   # not the project's own module
+        if mod == missing.group(1) or mod.startswith(missing.group(1) + "."):
+            return None                   # the path guess was wrong, not the code
+    where = [(f, n) for f, n in _TRACE_LINE.findall(err or "")
+             if os.path.realpath(f).startswith(root + os.sep) and not _SKIP_PATH.search(f)]
+    at = f" ({os.path.relpath(os.path.realpath(where[-1][0]), root)}:{where[-1][1]})" if where else ""
+    return f"{kind}: {msg.strip()[:200]}{at}"
+
+
+def _base_imports(st, root: str, mod: str, py: str) -> bool:
+    """``mod`` imports on the commit the work began (a git worktree of it, no
+    hooks); False when it does not or cannot be told."""
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+    try:
+        from ._contract_gate import work_base
+        base = work_base(st)
+        top = subprocess.run(["git", "-C", root, "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=10).stdout.strip()
+        if not base or not top:
+            return False
+        top = os.path.realpath(top)
+        tmp = tempfile.mkdtemp(prefix="aiforge-import-")
+        w = os.path.join(tmp, "b")
+        try:
+            if subprocess.run(["git", "-C", top, "-c", "core.hooksPath=/dev/null",
+                               "worktree", "add", "--detach", w, base],
+                              capture_output=True, timeout=60).returncode != 0:
+                return False
+            broot = os.path.join(w, os.path.relpath(root, top))
+            if not os.path.isdir(broot):
+                return False
+            return _try_import(py, broot, mod) is None
+        finally:
+            subprocess.run(["git", "-C", top, "worktree", "remove", "--force", w],
+                           capture_output=True, timeout=60)
+            subprocess.run(["git", "-C", top, "worktree", "prune"], capture_output=True,
+                           timeout=30)
+            shutil.rmtree(tmp, ignore_errors=True)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def import_error(st, full) -> "str | None":
+    """``import <module>`` of an edited package file fails now and did not on
+    the commit the work began, run with the project's interpreter (the one the
+    turn's own tests use; none known: no check). attrs n3 (0/18): a function
+    called while _make.py was still loading, defined further down; the file
+    linted clean, the package could not import, every test failed."""
+    import os
+    if not str(full).endswith(".py"):
+        return None
+    try:
+        from ._outcomes import _project_python
+        py = _project_python(st, getattr(st, "cwd", None) or os.path.dirname(full))
+    except Exception:  # noqa: BLE001
+        return None
+    found = _package_root(full)
+    if not py or not found:
+        return None
+    root, mod = found
+    slow = st.__dict__.setdefault("import_slow", set()) if hasattr(st, "__dict__") else set()
+    if (root, mod) in slow:
+        return None                       # timed out once: not checked again
+    err = _try_import(py, root, mod)
+    if err == "timeout":
+        slow.add((root, mod))
+        return None
+    if not err:
+        return None
+    seen = st.__dict__.setdefault("import_base_ok", {}) if hasattr(st, "__dict__") else {}
+    if (root, mod) not in seen:
+        seen[(root, mod)] = _base_imports(st, root, mod, py)
+    if not seen[(root, mod)]:
+        return None                       # broken at the base too, or unknown
+    return (f"import {mod} fails: {err} — the package cannot be imported, so every "
+            "test that uses it fails")
+
+
+_LINE_NO = re.compile(r":\d+\)")
+
+
 #: Steps an error the check named may stay in a file before it is said again,
 #: louder (attrs n3: `_make_class_props` undefined in _make.py, said twice, then
 #: 30 minutes of reads with the package unable to import — 0/18).
@@ -212,6 +361,10 @@ def stale_errors(st, cwd, n=None):
         if now - since < STALE_STEPS or (full, tuple(key)) in told:
             continue
         errs = _quiet(post_edit.diagnostics, full, cwd)
+        if not errs:
+            imp = _quiet(import_error, st, full)    # an import error has no lint line
+            if imp:
+                errs = [imp]
         if errs is None:
             continue
         if not errs:
