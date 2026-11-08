@@ -184,6 +184,12 @@ def test_a_sleep_then_look_shell_poll_is_waiting():
     assert _waiting.waiting(st, "run_command", {"cmd": "cd /r && sleep 20 && cat out.txt"})
     assert not _waiting.waiting(st, "run_command", {"cmd": "python3 -c 'import time; time.sleep(1)'"})
     assert not _waiting.waiting(st, "run_command", {"cmd": "ls; sleep 5"})
+    # a sleep in front of real work is not a wait
+    assert not _waiting.waiting(st, "run_command", {"cmd": "sleep 1; tail x.log"})          # too short
+    assert not _waiting.waiting(st, "run_command", {"cmd": "sleep 10; pytest -q"})
+    assert not _waiting.waiting(st, "run_command", {"cmd": "sleep 10 && python -c 'print(1)'"})
+    assert not _waiting.waiting(st, "run_command", {"cmd": "sleep 10; tail x.log; rm -rf y"})
+    assert _waiting.waiting(st, "run_command", {"cmd": "sleep 30 && kubectl get pods | grep api"})
 
 
 def test_superseded_whole_file_writes_are_cut():
@@ -195,7 +201,19 @@ def test_superseded_whole_file_writes_are_cut():
     convo = [{"role": "system", "content": "s"}, w("src/a.py", big), {"role": "user", "content": "OBSERVATION: ok"},
              w("src/b.py", big), {"role": "user", "content": "OBSERVATION: ok"},
              w("/repo/src/a.py", big + "y = 2\n")]
-    assert trim_superseded_writes(convo, "/repo/src/a.py") == 1
+    assert trim_superseded_writes(convo, "/repo/src/a.py", "/repo") == 1
     assert len(convo[1]["content"]) < 1000                 # the earlier a.py write: cut
     assert len(convo[3]["content"]) > 10000                # b.py: untouched
     assert len(convo[5]["content"]) > 10000                # the latest a.py write: whole
+
+
+
+def test_a_same_named_file_elsewhere_is_not_trimmed():
+    import json
+    from aiforge_core.runtime.chat_agent._context._aging import trim_superseded_writes
+    big = "x = 1\n" * 2000
+    w = lambda p: {"role": "assistant", "content":
+                   "ACTION: file_write\nARGS_JSON: " + json.dumps({"path": p, "content": big})}
+    convo = [w("src/a.py"), w("a.py")]
+    assert trim_superseded_writes(convo, "a.py", "/repo") == 0     # /repo/a.py is not /repo/src/a.py
+    assert len(convo[0]["content"]) > 10000

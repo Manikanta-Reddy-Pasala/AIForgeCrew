@@ -824,7 +824,7 @@ def _record_edit(st, name, args, result, cwd):
         if name == "file_write" and isinstance(args, dict) and args.get("path"):
             # earlier whole-file writes to this file are replaced text: cut them
             from .._context._aging import trim_superseded_writes
-            _safely(trim_superseded_writes, st.convo, args["path"])
+            _safely(trim_superseded_writes, st.convo, args["path"], cwd)
         yield from formatted
         # D: post-edit self-check. Immediately syntax-check the file just
         # written and, if broken, hand the model the error THIS step (tight

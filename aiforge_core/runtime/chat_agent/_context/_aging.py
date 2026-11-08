@@ -222,7 +222,7 @@ def _age_spent_args(convo: list, stop: int, dry: bool) -> int:
     return done
 
 
-def trim_superseded_writes(convo: list, path: str) -> int:
+def trim_superseded_writes(convo: list, path: str, cwd: str = "") -> int:
     """A whole-file write just landed on ``path``: the content of EARLIER
     whole-file writes to that same file is replaced text, so it is cut to a
     head now, not at the condense point.
@@ -233,7 +233,11 @@ def trim_superseded_writes(convo: list, path: str) -> int:
     write); a read brings back anything else. Returns calls cut."""
     import json as _json
     import os
-    want = os.path.normpath(str(path or ""))
+
+    def _real(p):
+        p = str(p or "")
+        return os.path.realpath(p if os.path.isabs(p) else os.path.join(cwd or ".", p)) if p else ""
+    want = _real(path)
     if not want:
         return 0
     writes = []
@@ -251,8 +255,8 @@ def trim_superseded_writes(convo: list, path: str) -> int:
             args = _json.loads(ma.group(1))
         except ValueError:
             continue
-        got = os.path.normpath(str(args.get("path") or args.get("file_path") or ""))
-        if got and (got == want or got.endswith(os.sep + want) or want.endswith(os.sep + got)):
+        got = _real(args.get("path") or args.get("file_path"))
+        if got and got == want:                   # the same file, not a same-named one
             writes.append((i, text, ma, args))
     done = 0
     for i, text, ma, args in writes[:-1]:         # the latest write stays whole

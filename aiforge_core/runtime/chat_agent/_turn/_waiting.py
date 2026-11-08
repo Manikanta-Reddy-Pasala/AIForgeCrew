@@ -51,7 +51,13 @@ def note_result(st, name, args, result) -> bool:
 
 
 #: A shell command that only waits and then looks: ``sleep 15; tail log``.
-_SHELL_POLL = re.compile(r"^\s*(?:cd\s+\S+\s*&&\s*)?sleep\s+\d+(?:\.\d+)?\s*(?:;|&&|$)")
+_SHELL_POLL = re.compile(r"^\s*(?:cd\s+\S+\s*&&\s*)?sleep\s+(\d+(?:\.\d+)?)\s*(?:;|&&)\s*(.*)$", re.S)
+#: What may follow the sleep: commands that only look (a poll does no work).
+_LOOKERS = frozenset({"tail", "cat", "head", "ls", "grep", "wc", "ps", "curl", "echo",
+                      "test", "stat", "pgrep", "jobs", "date", "du", "df", "kubectl",
+                      "docker", "systemctl", "journalctl"})
+#: Shorter sleeps are not a wait.
+_MIN_SLEEP_S = 5
 _SHELL_TOOLS = frozenset({"run_command", "bash", "shell", "run_shell"})
 
 
@@ -62,8 +68,14 @@ def shell_poll(st, name, args) -> bool:
     if name not in _SHELL_TOOLS:
         return False
     a = args if isinstance(args, dict) else {}
-    if not _SHELL_POLL.search(str(a.get("cmd") or a.get("command") or "")):
+    m = _SHELL_POLL.search(str(a.get("cmd") or a.get("command") or ""))
+    if not m or float(m.group(1)) < _MIN_SLEEP_S:
         return False
+    # every command after the sleep only looks (tail, cat, ls, kubectl get ...)
+    for part in re.split(r"\s*(?:;|&&|\|\||\|)\s*", m.group(2).strip()):
+        word = (part.split() or [""])[0]
+        if word and word.rsplit("/", 1)[-1] not in _LOOKERS:
+            return False
     first = st.__dict__.setdefault("shell_poll_since", time.monotonic()) \
         if hasattr(st, "__dict__") else time.monotonic()
     return time.monotonic() - first <= cap_s()
