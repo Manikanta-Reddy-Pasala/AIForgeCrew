@@ -15,6 +15,7 @@ that never ends is treated as stuck again.
 from __future__ import annotations
 
 import os
+import re
 import time
 
 CHECK_INS = frozenset({"command_wait", "command_output"})
@@ -49,9 +50,30 @@ def note_result(st, name, args, result) -> bool:
     return False
 
 
+#: A shell command that only waits and then looks: ``sleep 15; tail log``.
+_SHELL_POLL = re.compile(r"^\s*(?:cd\s+\S+\s*&&\s*)?sleep\s+\d+(?:\.\d+)?\s*(?:;|&&|$)")
+_SHELL_TOOLS = frozenset({"run_command", "bash", "shell", "run_shell"})
+
+
+def shell_poll(st, name, args) -> bool:
+    """A ``sleep N; <look>`` command polling a job the shell way, within the
+    cap from the first such poll (quietjob chat check, 11-08: six loop notes
+    on a correct wait polled this way)."""
+    if name not in _SHELL_TOOLS:
+        return False
+    a = args if isinstance(args, dict) else {}
+    if not _SHELL_POLL.search(str(a.get("cmd") or a.get("command") or "")):
+        return False
+    first = st.__dict__.setdefault("shell_poll_since", time.monotonic()) \
+        if hasattr(st, "__dict__") else time.monotonic()
+    return time.monotonic() - first <= cap_s()
+
+
 def waiting(st, name, args) -> bool:
     """Before the call runs: the last check on this job found it running, and
-    the wait is within the cap."""
+    the wait is within the cap; or the call is a shell ``sleep N; ...`` poll."""
+    if shell_poll(st, name, args):
+        return True
     if name not in CHECK_INS:
         return False
     first = (getattr(st, "job_waits", None) or {}).get(_key(args))

@@ -59,6 +59,12 @@ def _watching(st, name, args) -> bool:
     scheduled jobs work in a /tmp folder, and requirements.txt is code."""
     if name in _WAITING:
         return True
+    try:
+        from ._waiting import shell_poll
+        if shell_poll(st, name, args):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
     a = args if isinstance(args, dict) else {}
     if name not in _READS:
         try:

@@ -193,8 +193,8 @@ def note_step(st, name, args, result):
     track = getattr(st, "same_fail", None)
     if track is None:
         return None
-    from ._waiting import note_result
-    if note_result(st, name, args, result):
+    from ._waiting import note_result, shell_poll
+    if note_result(st, name, args, result) or shell_poll(st, name, args):
         return None                       # checking on a job still running: waiting
     _fields(st)
     before, st.np_mark = st.np_mark, _mark(st)

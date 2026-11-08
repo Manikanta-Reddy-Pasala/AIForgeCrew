@@ -821,6 +821,10 @@ def _record_edit(st, name, args, result, cwd):
     if _safely(note_write, st, name, args, result, cwd):
         st.edits_made += 1
         st.read_sigs_seen.clear()   # a file just changed → re-reads are valid again
+        if name == "file_write" and isinstance(args, dict) and args.get("path"):
+            # earlier whole-file writes to this file are replaced text: cut them
+            from .._context._aging import trim_superseded_writes
+            _safely(trim_superseded_writes, st.convo, args["path"])
         yield from formatted
         # D: post-edit self-check. Immediately syntax-check the file just
         # written and, if broken, hand the model the error THIS step (tight

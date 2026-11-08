@@ -222,6 +222,49 @@ def _age_spent_args(convo: list, stop: int, dry: bool) -> int:
     return done
 
 
+def trim_superseded_writes(convo: list, path: str) -> int:
+    """A whole-file write just landed on ``path``: the content of EARLIER
+    whole-file writes to that same file is replaced text, so it is cut to a
+    head now, not at the condense point.
+
+    Live (click z1, 11-08): 7 file_write calls of 17-22K chars each - one
+    file rewritten again and again - were 137K of a 463K prompt, carried by
+    every later call. The current text is in the file (and in the latest
+    write); a read brings back anything else. Returns calls cut."""
+    import json as _json
+    import os
+    want = os.path.normpath(str(path or ""))
+    if not want:
+        return 0
+    writes = []
+    for i, m in enumerate(convo):
+        text = m.get("content") if isinstance(m, dict) else None
+        if m.get("role") != "assistant" or not isinstance(text, str) or len(text) < _ARG_MIN:
+            continue
+        mt = _ACTION_RE.search(text)
+        if not mt or mt.group(1).lower() != "file_write":
+            continue
+        ma = _ARGS_RE.search(text)
+        if not ma:
+            continue
+        try:
+            args = _json.loads(ma.group(1))
+        except ValueError:
+            continue
+        got = os.path.normpath(str(args.get("path") or args.get("file_path") or ""))
+        if got and (got == want or got.endswith(os.sep + want) or want.endswith(os.sep + got)):
+            writes.append((i, text, ma, args))
+    done = 0
+    for i, text, ma, args in writes[:-1]:         # the latest write stays whole
+        new_args, saved = _cut_strings(args)
+        if saved <= 0:
+            continue
+        convo[i] = {**convo[i], "content": text[:ma.start(1)]
+                    + _json.dumps(new_args, ensure_ascii=False) + text[ma.end(1):]}
+        done += 1
+    return done
+
+
 def _shrink_command(body: str) -> str:
     """Head, every error line (bounded), tail: the exit status and the failure
     survive, the long passing output does not."""

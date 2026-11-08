@@ -173,3 +173,29 @@ def test_a_log_read_is_never_a_duplicate(tmp_path):
     assert _log_read(st, "read_lines", {"path": str(tmp_path / "build.log")})
     assert _log_read(st, "read_lines", {"path": "/var/log/app/out.txt"})
     assert not _log_read(st, "read_lines", {"path": str(tmp_path / "src" / "a.py")})
+
+
+def test_a_sleep_then_look_shell_poll_is_waiting():
+    from aiforge_core.runtime.chat_agent._turn import _waiting
+    st = _st()
+    poll = {"cmd": "sleep 15; tail -3 /tmp/deploy.log"}
+    assert all(not P.note(st, "run_command", poll) for _ in range(30))
+    assert _waiting.waiting(st, "run_command", poll)
+    assert _waiting.waiting(st, "run_command", {"cmd": "cd /r && sleep 20 && cat out.txt"})
+    assert not _waiting.waiting(st, "run_command", {"cmd": "python3 -c 'import time; time.sleep(1)'"})
+    assert not _waiting.waiting(st, "run_command", {"cmd": "ls; sleep 5"})
+
+
+def test_superseded_whole_file_writes_are_cut():
+    import json
+    from aiforge_core.runtime.chat_agent._context._aging import trim_superseded_writes
+    big = "x = 1\n" * 2000
+    w = lambda p, c: {"role": "assistant", "content":
+                      "ACTION: file_write\nARGS_JSON: " + json.dumps({"path": p, "content": c})}
+    convo = [{"role": "system", "content": "s"}, w("src/a.py", big), {"role": "user", "content": "OBSERVATION: ok"},
+             w("src/b.py", big), {"role": "user", "content": "OBSERVATION: ok"},
+             w("/repo/src/a.py", big + "y = 2\n")]
+    assert trim_superseded_writes(convo, "/repo/src/a.py") == 1
+    assert len(convo[1]["content"]) < 1000                 # the earlier a.py write: cut
+    assert len(convo[3]["content"]) > 10000                # b.py: untouched
+    assert len(convo[5]["content"]) > 10000                # the latest a.py write: whole
