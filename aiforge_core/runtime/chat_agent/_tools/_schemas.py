@@ -89,8 +89,9 @@ CATALOG: dict = {
              {"name": "s", "kind": "s"}, ("name",)),
     "grep": ("Recursively search file contents.", {"pattern": "s", "path": "s"},
              ("pattern",)),
-    "read_lines": ("Read a line range from a file.",
-                   {"path": "s", "start": "i", "end": "i"}, ("path",)),
+    "read_lines": ("Read a line range from a file. Several parts of one file: "
+                   "pass ranges [[start, end], …] to read them in ONE call.",
+                   {"path": "s", "start": "i", "end": "i", "ranges": "arr"}, ("path",)),
     "summarize_doc": ("Summarize an attached/loaded document (pdf/docx/xlsx). "
                       "Give the file name/path. Optional `pages` selects a page "
                       "range to summarize ONLY those pages/sections — e.g. "

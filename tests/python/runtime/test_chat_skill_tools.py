@@ -220,7 +220,9 @@ def test_a_clean_batch_writes_every_file(repo):
     out = sk._t_multi_edit({"edits": [_edit("a.py", "x = 1", "x = 99"),
                                       _edit("b.py", "v = 1", "v = 2",
                                             replace_all=True)]}, "/repo")
+    now = out.pop("now_reads")            # the changed lines, so no re-read is needed
     assert out == {"ok": True, "files": ["a.py", "b.py"], "edits_applied": 2}
+    assert "x = 99" in now["a.py"]["text"] and "v = 2" in now["b.py"]["text"]
     assert (repo / "a.py").read_text().startswith("x = 99")
 
 

@@ -123,12 +123,23 @@ def _note_green_tests(st, name, args, result, cwd) -> None:
     _gaming.note_test_result(st, True if known else result.get("ok"))
     if result.get("ok") is not True and not known:
         st.last_green_fp = None
+        st.narrow_green_fp = None             # a red run: nothing may skip the suite
         if _full_and_honest(name, args):
             st.last_full_test = (name, dict(args or {}))
             st.last_full_green = False
         return
     if not _full_and_honest(name, args):
-        return                        # proves nothing about the whole suite
+        # proves nothing about the whole suite — but a green narrow run with
+        # real tests is what lets a small change skip the end-of-turn suite
+        if _no_pipe(name, args) and runner_green(result_text(result)) \
+                and _RAN.search(result_text(result)):
+            try:
+                st.narrow_green_fp = content_fingerprint(cwd)
+                st.narrow_green_cmd = str((args or {}).get("cmd") or (args or {}).get("command")
+                                          or (args or {}).get("pattern") or "")
+            except Exception:  # noqa: BLE001
+                st.narrow_green_fp = None
+        return
     st.last_full_test = (name, dict(args or {}))
     # a narrow green run after a red full one leaves the suite red: the
     # board-done check reads this, not tests_green (click t5 closed on a
@@ -253,6 +264,11 @@ def _verify_fix(st, step, cwd, plan_mode, builder):
         return None
     if plan_mode or builder or st.edits_made <= 0 or not _verify_on_final_enabled():
         return None
+    if _small_and_tested(st, cwd):
+        yield {"type": "thought", "role": "system",
+               "text": "✓ small change, its own tests passed after the last edit — "
+                       "skipping the full suite"}
+        return None
     if st.verify_rounds >= _verify_max_rounds():
         # Out of fix rounds: no more send-backs, but the answer still says
         # what the checks show (a run improving 9 → 5 → 2 used all its rounds
@@ -323,6 +339,87 @@ def _verify_fix(st, step, cwd, plan_mode, builder):
     # 1 passed". The harness ran the checks itself, so it says what it saw.
     step["text"] = still_failing_note(_fails, _vout) + (step.get("text") or "")
     return None
+
+
+#: A change this size or smaller, tested green after its last edit, skips the
+#: end-of-turn suite (``AIFORGE_CHAT_SMALL_SKIP=0`` turns that off).
+_SMALL_FILES, _SMALL_LINES = 3, 120
+
+
+def _no_pipe(name, args) -> bool:
+    """The run's exit code is the test runner's (no pipe, ``;`` or ``||``)."""
+    if name == "run_tests":
+        return True
+    cmd = str((args or {}).get("cmd") or (args or {}).get("command") or "")
+    cmd = re.sub(r"^\s*cd\s+\S+\s*&&\s*", "", cmd)    # a leading cd is fine
+    return not re.search(r"[|;&\n`]|\$\(", cmd)
+
+
+def _run_covers(cmd: str, changed: list) -> bool:
+    """The green run's command names a changed test file, or a test file named
+    after a changed module (``helper.py`` -> ``test_helper.py``): it tested
+    this change, not some unrelated part of the suite."""
+    words = str(cmd or "")
+    for f in changed:
+        base = os.path.basename(f)
+        stem = os.path.splitext(base)[0]
+        if base.startswith("test_") or base.endswith("_test.py"):
+            if base in words:
+                return True
+        elif stem and (f"test_{stem}" in words or f"{stem}_test" in words):
+            return True
+    return False
+
+
+def _small_and_tested(st, cwd) -> bool:
+    """The turn changed at most ``_SMALL_FILES`` files and ``_SMALL_LINES``
+    lines since the work began, and a test run with passing tests ran on the
+    code exactly as it is now, with no red whole-suite run on record.
+
+    uc-feature (11-08): of an 89-s turn, 43 s were this end check running
+    the whole sqlglot suite after the model's own test file had passed on
+    the final code; OpenCode answers the same task in 32-53 s. A bigger
+    change keeps the full check: there it is a small share of the turn and
+    catches breakage elsewhere."""
+    if os.environ.get("AIFORGE_CHAT_SMALL_SKIP", "1").strip().lower() in ("0", "false", "no", "off"):
+        return False
+    fp = getattr(st, "narrow_green_fp", None)
+    if not fp or getattr(st, "last_full_green", None) is False \
+            or getattr(st, "tests_green", True) is not True:
+        return False
+    try:
+        if content_fingerprint(cwd) != fp:
+            return False
+        import subprocess
+        from ._contract_gate import work_base
+        base = work_base(st)
+        if not base:
+            return False
+        r = subprocess.run(["git", "--no-optional-locks", "-C", str(cwd), "diff",
+                            "--numstat", base], capture_output=True, text=True, timeout=20)
+        if r.returncode != 0:
+            return False
+        rows = [ln.split("\t") for ln in r.stdout.splitlines() if ln.strip()]
+        new = subprocess.run(["git", "--no-optional-locks", "-C", str(cwd), "ls-files",
+                              "--others", "--exclude-standard"],
+                             capture_output=True, text=True, timeout=20).stdout.split()
+        changed = 0
+        for row in rows:
+            if len(row) < 3 or row[0] == "-":
+                return False                  # a binary change: not small
+            changed += int(row[0]) + int(row[1])
+        for f in new:
+            try:
+                with open(os.path.join(str(cwd), f), encoding="utf-8", errors="replace") as fh:
+                    changed += sum(1 for _ in fh)
+            except OSError:
+                return False
+        if not (0 < len(rows) + len(new) <= _SMALL_FILES and changed <= _SMALL_LINES):
+            return False
+        return _run_covers(getattr(st, "narrow_green_cmd", ""),
+                           [row[2] for row in rows] + new)
+    except Exception:  # noqa: BLE001 — unsure: run the full check
+        return False
 
 
 def _project_python(st, cwd) -> "str | None":

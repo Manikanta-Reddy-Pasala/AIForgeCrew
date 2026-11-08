@@ -39,6 +39,9 @@ def _t_read_lines(args: dict, cwd: str) -> dict:
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
     n = len(lines)
+    ranges = _ranges(args.get("ranges"))
+    if ranges:
+        return _read_ranges(path, lines, ranges)
     s, e = _line_range(args, n)
     if s > n:
         return {"ok": True, "path": path, "total_lines": n, "text": ""}
@@ -49,6 +52,45 @@ def _t_read_lines(args: dict, cwd: str) -> dict:
         out["note"] = (f"widened to lines {s}-{e} of {n}: read a file once, "
                        "not in many small pieces")
     return out
+
+
+#: The most ranges one call reads, and the most text it returns.
+_MAX_RANGES, _RANGES_CHARS = 8, 60000
+
+
+def _ranges(raw) -> "list[tuple[int, int]]":
+    """``[(start, end), …]`` from ``[[s, e], …]`` or ``[{"start", "end"}, …]``
+    (offset/limit accepted too); [] when nothing usable was given."""
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for r in raw[:_MAX_RANGES]:
+        if isinstance(r, (list, tuple)) and len(r) == 2:
+            r = {"start": r[0], "end": r[1]}
+        if isinstance(r, dict):
+            s, e = _line_range(r, 10 ** 9)
+            if e != 10 ** 9 and e >= s:
+                out.append((s, e))
+    return out
+
+
+def _read_ranges(path: str, lines: list, ranges: list) -> dict:
+    """Several parts of one file in one call. Bench (attrs-inspect, 11-08):
+    77 of 151 reads came right after another read of the same file, about 30
+    lines each — a model call per slice."""
+    n, parts, used = len(lines), [], 0
+    for s, e in sorted(set(ranges)):
+        if s > n:
+            continue
+        e = min(e, n)
+        text = "".join(lines[s - 1:e])
+        if used + len(text) > _RANGES_CHARS:
+            text = text[:max(0, _RANGES_CHARS - used)]
+        used += len(text)
+        parts.append({"start": s, "end": e, "text": text})
+        if used >= _RANGES_CHARS:
+            break
+    return {"ok": True, "path": path, "total_lines": n, "parts": parts}
 
 
 def _num(v):

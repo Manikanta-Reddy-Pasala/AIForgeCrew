@@ -41,6 +41,15 @@ def render_read(result: dict, cap: int) -> str:
     note = str(result.get("note") or "")
     if result.get("outline") and not result.get("content"):
         return "\n".join(p for p in (path, note, str(result["outline"])) if p)[:cap]
+    if isinstance(result.get("parts"), list) and result.get("content") is None \
+            and result.get("text") is None:
+        # read_lines with ``ranges``: each part numbered from its own start
+        blocks = [render_read({"start": part.get("start"), "text": part.get("text") or ""}, cap)
+                  for part in result["parts"] if isinstance(part, dict)]
+        text = "\n".join(p for p in (path, note, "\n…\n".join(b for b in blocks if b)) if p)
+        if not blocks and result.get("total_lines") is not None:
+            text += f"\n(no lines there — the file has {result['total_lines']} lines)"
+        return text if len(text) <= cap else text[:cap] + "\n…(truncated)"
     # read_lines (and a file_read of one symbol) carry ``text`` from ``start``
     content = result.get("content")
     if content is None:

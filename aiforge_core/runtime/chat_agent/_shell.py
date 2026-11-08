@@ -443,6 +443,10 @@ def _t_file_patch(args: dict, cwd: str) -> dict:
         return syntax_refusal(str(p), new_body, bad)
     p.write_text(new_body, encoding="utf-8")
     out = {"ok": True, "path": str(p)}
+    from ._tools._edit_view import view
+    now = view(body, new_body)
+    if now:
+        out["now_reads"] = now               # no read needed to see the result
     if hit["how"] != "exact":
         out["matched"] = hit["how"]          # what was forgiven, for the model
     return attach_oversize(out, str(p), new_body)

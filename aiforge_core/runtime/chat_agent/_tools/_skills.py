@@ -224,6 +224,15 @@ def _t_multi_edit(args: dict, cwd: str) -> dict:
         attach_oversize(out, batch.rel_of.get(ap, ap), content)
         if out.get("warning"):
             break
+    from ._edit_view import view
+    views = {}
+    for ap, content in list(batch.pending.items())[:3]:
+        now = view(batch.original.get(ap, ""), content)
+        if now:
+            views[batch.rel_of.get(ap, ap)] = now
+    if views:
+        # last, so a cut of a long result drops these lines, not the warning
+        out["now_reads"] = views             # no read needed to see the result
     return out
 
 

@@ -5,8 +5,8 @@ a long task most of the prompt is reads the model finished with many steps ago.
 Once an observation is more than a few messages old, its full text is saved
 (``runtime.context_offload``) and the history keeps a head, a tail and the id:
 ``memory_lookup {"id": ...}`` or a fresh read brings it back. Reads,
-searches and command output age (a command keeps its error lines); edit
-results stay as they are.
+searches and command output age (a command keeps its error lines); so do
+edit results, which carry the changed lines (their errors are kept too).
 
 It runs when the history reaches the condense point, as the first and cheap
 stage (``force``): one rewrite, then the prompt only grows again, so a local
@@ -27,7 +27,10 @@ _AGEABLE = frozenset({"file_read", "read_files", "read_lines", "grep", "find",
 #: Output of these ages too, but its errors stay: the failing lines are what the
 #: next step needs, and they are kept in full.
 _AGEABLE_CMD = frozenset({"run_command", "run_tests", "run_shell", "typecheck",
-                          "format", "command_output"})
+                          "format", "command_output",
+                          # an edit's result now carries the lines it changed
+                          # (``now_reads``): re-readable, its errors kept
+                          "file_patch", "multi_edit"})
 _MARK = "[aged:"
 #: Calls whose arguments are spent once they ran or applied: a script that
 #: ran, a file that was written, an edit that landed. Their long string
