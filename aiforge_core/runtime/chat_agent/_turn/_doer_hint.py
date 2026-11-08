@@ -17,12 +17,11 @@ not split into doers).
 Not asked: a doer itself, plan / analyze / builder / strict runs, the Plan
 pipeline's Doer and scheduled jobs (work runs, see ``quiet``), a chat with
 approvals on (doers would skip them), or too little turn time for doers.
-Off by default (``AIFORGE_CHAT_DOER_HINT=1`` turns it on): doers pay off only
-where they are faster. Measured on a local model server (shopkit, five
-features): two doers at once made each call ~1.5x slower and re-read the
-code, so the run took 90 min against ~51 min alone, for the same accuracy
-(46/60 vs 44/60). Turn it on for a model server that serves requests in
-parallel. ``AIFORGE_DOERS=0`` turns doers off altogether.
+``AIFORGE_CHAT_DOER_HINT=0`` turns it off; ``AIFORGE_DOERS=0`` also does.
+On by default: same accuracy (shopkit 46/60 vs 44/60 alone). On one local
+model server it is slower (90 min vs ~51 min: parallel calls slow each
+other); on hardware that serves requests in parallel it is expected to be
+faster.
 """
 from __future__ import annotations
 
@@ -62,7 +61,7 @@ def quiet(gen):
 
 def enabled() -> bool:
     off = ("0", "false", "no", "off")
-    return (os.environ.get("AIFORGE_CHAT_DOER_HINT", "0").strip().lower() not in off
+    return (os.environ.get("AIFORGE_CHAT_DOER_HINT", "1").strip().lower() not in off
             and os.environ.get("AIFORGE_DOERS", "1").strip().lower() not in off)
 
 

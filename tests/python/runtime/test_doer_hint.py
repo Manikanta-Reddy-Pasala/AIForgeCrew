@@ -15,7 +15,7 @@ def _clean(monkeypatch):
     toks = [(v, v.set(d)) for v, d in ((D.LEAD_DEADLINE, None), (D.IN_DOER, False))]
     monkeypatch.setattr(D, "_approvals_on", lambda sid: False)
     monkeypatch.delenv("AIFORGE_DOER_DEADLINE_S", raising=False)
-    monkeypatch.setenv("AIFORGE_CHAT_DOER_HINT", "1")
+    monkeypatch.delenv("AIFORGE_CHAT_DOER_HINT", raising=False)
     yield
     for v, t in reversed(toks):
         v.reset(t)
@@ -97,8 +97,3 @@ def test_the_hint_runs_before_the_plan_first_gate():
     src = inspect.getsource(_loop._gated_action)
     assert src.index("_doer_hint.gate") < src.index("_plan_first.gate")
     assert "next to your call" in H.HINT
-
-
-def test_off_unless_turned_on(monkeypatch):
-    monkeypatch.delenv("AIFORGE_CHAT_DOER_HINT", raising=False)
-    assert not H.enabled() and _run(_st()) == (None, [])

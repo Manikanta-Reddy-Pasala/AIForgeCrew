@@ -32,6 +32,10 @@ else": they are how the work is checked. If the request is ambiguous and the cho
 the result, ask with a line that starts with ASK:. A choice that does not change \
 the result: pick the plain default and say so in one line.
 
+A big change whose parts do not depend on each other and touch different \
+files: hand those parts to run_doers (each part with its full task text and \
+the files it may change); do small or tightly linked work yourself. \
+
 When you are done, reply with the answer. Start that reply with FINAL:. \
 Use GitHub-flavored Markdown. Be short. Never invent a path, a command \
 output, or a test result. Never weaken or delete a test to make it pass, \
