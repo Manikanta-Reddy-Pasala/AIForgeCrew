@@ -44,9 +44,9 @@ def post_edit_format(st, files, cwd):
         if fmt:
             yield {"type": "thought", "role": "system",
                    "text": f"Formatted {shown} with {fmt}"}
-            st.convo.append({"role": "user", "content":
-                f"[automated formatter — not the user] {fmt} reformatted {shown} "
-                "after your edit. Read the lines again before you patch this file."})
+            from ._notes import hold
+            hold(st, f"[automated formatter — not the user] {fmt} reformatted {shown} "
+                     "after your edit. Read the lines again before you patch this file.")
 
 
 def post_edit_diagnostics(st, files, cwd):
@@ -83,10 +83,12 @@ def post_edit_diagnostics(st, files, cwd):
         yield {"type": "thought", "role": "system",
                "text": f"⚠ {len(errs)} error(s) in {shown} — fix them now: {errs[0][:160]}"}
         hints = _quiet(_where_defined, errs, full) or []
-        st.convo.append({"role": "user", "content":
-            "[automated error check — not the user] The file you just wrote has "
-            f"these errors; fix them before continuing:\n" + "\n".join(errs)[:1500]
-            + ("\n" + "\n".join(hints) if hints else "")})
+        # held until the edit's result is written: appended before it, the
+        # note made the edit call look "not run" (see _turn/_notes.py)
+        from ._notes import hold
+        hold(st, "[automated error check — not the user] The file you just wrote has "
+                 f"these errors; fix them before continuing:\n" + "\n".join(errs)[:1500]
+                 + ("\n" + "\n".join(hints) if hints else ""))
 
 
 _UNDEFINED = re.compile(r"F821 Undefined name [`'\"]?(\w+)")
@@ -376,8 +378,8 @@ def stale_errors(st, cwd, n=None):
                "text": f"⚠ {shown} still has {len(errs)} error(s) from {now - since} steps ago — "
                        "fixing them first"}
         hints = _quiet(_where_defined, errs, full) or []
-        from ._limits import _ride
-        _ride(st, "[automated error check — not the user] " + shown + " still has the "
+        from ._notes import send
+        send(st, "[automated error check — not the user] " + shown + " still has the "
                   f"errors named {now - since} steps ago. Until they are fixed the module "
                   "cannot be imported or run, so every test that touches it fails. Fix "
                   "them now, before anything else — define the missing name, import it, "

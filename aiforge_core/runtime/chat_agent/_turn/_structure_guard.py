@@ -173,13 +173,13 @@ def check(st, name, files, args, cwd=""):
         more = f" (+{len(lost) - _MAX_SHOWN} more)" if len(lost) > _MAX_SHOWN else ""
         yield {"type": "thought", "role": "system",
                "text": f"⚠ edit to {shown} moved code it did not name: {said[0]}{more}"}
-        st.convo.append({"role": "user", "content":
-            "[automated structure check — not the user] Your last edit to "
-            f"{shown} changed more than its old text covered:\n- "
-            + "\n- ".join(said) + more + "\nYour new text's end or indentation "
-            "most likely swallowed the code after it. Fix this edit now — "
-            "`git diff` on the file shows exactly what changed — before "
-            "anything else; do not debug the tests first."})
+        from ._notes import hold
+        hold(st, "[automated structure check — not the user] Your last edit to "
+                 f"{shown} changed more than its old text covered:\n- "
+                 + "\n- ".join(said) + more + "\nYour new text's end or indentation "
+                 "most likely swallowed the code after it. Fix this edit now — "
+                 "`git diff` on the file shows exactly what changed — before "
+                 "anything else; do not debug the tests first.")
 
 
 __all__ = ["check", "lost_names", "snapshot"]

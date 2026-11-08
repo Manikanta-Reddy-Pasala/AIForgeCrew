@@ -207,6 +207,12 @@ def _step_prologue(st, n, _cwd, role, complete_fn, session_id, builder):
         yield {"type": "done"}
         return None, "return"
     _builder_nudge(st, builder, n)
+    # notes held by a step that ended without writing its result the usual way
+    try:
+        from ._turn._notes import flush
+        flush(st)
+    except Exception:  # noqa: BLE001
+        pass
     # an error the post-edit check named, still in the file steps later
     try:
         from ._turn._post_edit import stale_errors

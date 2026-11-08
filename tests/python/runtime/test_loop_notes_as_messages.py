@@ -68,8 +68,11 @@ def test_run_tests_and_real_test_commands_reset_the_streak_but_grep_pytest_does_
 def test_the_note_goes_after_the_observation_only_in_native_mode():
     import inspect
     from aiforge_core.runtime.chat_agent._turn import _action
-    src = inspect.getsource(_action)
-    assert 'if _notes and not getattr(st, "native_on", False):' in src
+    src = inspect.getsource(_action._post_tool)
+    # the result first, then the held notes and the loop notes via _notes.send
+    # (native: own message; text: on the observation - see test_notes_and_trace_hint)
+    at = src.index('st.convo.append({"role": "user", "content": f"OBSERVATION: {obs}{_tail}"})')
+    assert src.index("flush(st)", at) > at and src.index("send(st, _n)", at) > at
 
 
 # ── long-running jobs: waiting is never probing ──────────────────────────

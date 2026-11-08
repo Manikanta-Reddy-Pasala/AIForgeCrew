@@ -835,9 +835,9 @@ def _record_edit(st, name, args, result, cwd):
                 yield {"type": "thought", "role": "system",
                        "text": f"⚠ syntax error in the file you just edited "
                                f"— fix it now: {_pe[:160]}"}
-                st.convo.append({"role": "user", "content":
-                    "[automated syntax check — not the user] The file you just "
-                    f"wrote has a syntax error; fix it before continuing:\n{_pe[:600]}"})
+                from ._notes import hold
+                hold(st, "[automated syntax check — not the user] The file you just "
+                         f"wrote has a syntax error; fix it before continuing:\n{_pe[:600]}")
             else:
                 yield from post_edit_diagnostics(st, files, cwd)
                 from . import _structure_guard
@@ -941,7 +941,13 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
         from aiforge_core.runtime import hooks as _hooks
         _post = _hooks.fire("PostToolUse",
                             {"tool": name, "args": args, "result": result}, cwd)
-        _hooks.note_into(st.convo, "PostToolUse", _post)
+        # held until this call's result is written (_turn/_notes.py); the
+        # store side of note_into still runs
+        _hook_note = _hooks.context_note(_post)
+        if _hook_note:
+            from ._notes import hold
+            hold(st, f"[hook PostToolUse — not the user]\n{_hook_note}")
+        _hooks.note_into(None, "PostToolUse", _post)
     except Exception:  # noqa: BLE001 — hooks must never break the turn
         pass
     yield {"type": "tool", "name": name, "args": args, "result": result,
@@ -1028,6 +1034,8 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     seen = seen or idle
     if seen and seen[0] == "stop":
         st.convo.append({"role": "user", "content": f"OBSERVATION: {obs}"})
+        from ._notes import flush as _flush
+        _flush(st)
         _r = yield from finish_stuck(
             st, "No progress after the warning: " + str(seen[1])[:300],
             Pause(seen[1], "⛔ no progress after the warning — pausing"))
@@ -1073,15 +1081,21 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
         from ._probe_guard import FORCE_AT
         st.shell_streak = FORCE_AT - 1
     st.want_force_write = False
-    if _notes and not getattr(st, "native_on", False):
-        # text protocol: two user turns in a row break some providers, so the
-        # note stays on the observation there
-        _tail += "\n" + "\n".join(_notes)
-        _notes = []
+    if _test_run:
+        # the same tests failed again after a fix: which added lines ran
+        from ._trace_hint import after_test
+        _trace = _safely(after_test, st, name, args, result, cwd)
+        if _trace:
+            yield {"type": "thought", "role": "system",
+                   "text": "🔎 same tests still failing — traced which of the new lines ran"}
+            _notes.append(_trace)
     st.convo.append({"role": "user", "content": f"OBSERVATION: {obs}{_tail}"})
-    if _notes:
-        # native: the observation becomes a tool result, the note a user turn
-        st.convo.append({"role": "user", "content": "\n".join(_notes)})
+    # notes held during this step (the post-edit error check) and the loop
+    # notes: after the result, its own message in native mode (_turn/_notes.py)
+    from ._notes import flush, send
+    flush(st)
+    for _n in _notes:
+        send(st, _n)
     return None
 
 

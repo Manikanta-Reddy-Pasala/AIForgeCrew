@@ -104,7 +104,7 @@ def test_the_check_runs_on_the_landed_edit_and_tells_the_model(tmp_path):
     f.write_text(SWALLOWED)
     ev = list(G.check(st, "file_patch", [("core.py", str(f))], args, str(tmp_path)))
     assert ev and "Multi.invoke" in ev[0]["text"]
-    assert "structure check" in st.convo[-1]["content"]
+    assert "structure check" in st.held_notes[-1]               # held until the result
     assert st.pre_edit == {}
 
 

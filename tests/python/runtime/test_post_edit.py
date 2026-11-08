@@ -125,22 +125,23 @@ def test_edited_files_follow_the_progress_paths(tmp_path):
 def test_turn_says_the_same_errors_once(monkeypatch, tmp_path):
     errs = [["m.py:2:5: F821 Undefined name `x`"]]
     monkeypatch.setattr(PE, "diagnostics", lambda path, cwd: errs[0])
+    # notes are held until the edit's result is written (_turn/_notes.py)
     st = SimpleNamespace(convo=[])
     files = [("m.py", str(tmp_path / "m.py"))]
     ev = list(T.post_edit_diagnostics(st, files, str(tmp_path)))
-    assert ev and "F821" in st.convo[-1]["content"] and len(st.convo) == 1
+    assert ev and "F821" in st.held_notes[-1] and len(st.held_notes) == 1 and st.convo == []
     assert list(T.post_edit_diagnostics(st, files, str(tmp_path))) == []
     errs[0] = ["m.py:9:5: F821 Undefined name `x`"]       # lines moved: same error
     assert list(T.post_edit_diagnostics(st, files, str(tmp_path))) == []
     errs[0] = None                                        # checker timed out: not "fixed"
     list(T.post_edit_diagnostics(st, files, str(tmp_path)))
     errs[0] = ["m.py:9:5: F821 Undefined name `x`"]
-    assert list(T.post_edit_diagnostics(st, files, str(tmp_path))) == [] and len(st.convo) == 1
+    assert list(T.post_edit_diagnostics(st, files, str(tmp_path))) == [] and len(st.held_notes) == 1
     errs[0] = []                                          # fixed
     list(T.post_edit_diagnostics(st, files, str(tmp_path)))
     errs[0] = ["m.py:2:5: F821 Undefined name `x`"]       # broken again: said again
     list(T.post_edit_diagnostics(st, files, str(tmp_path)))
-    assert len(st.convo) == 2
+    assert len(st.held_notes) == 2
 
 
 def test_turn_notes_a_reformat_and_a_broken_checker_is_quiet(monkeypatch, tmp_path):
@@ -149,7 +150,7 @@ def test_turn_notes_a_reformat_and_a_broken_checker_is_quiet(monkeypatch, tmp_pa
     files = [("m.py", str(tmp_path / "m.py"))]
     ev = list(T.post_edit_format(st, files, str(tmp_path)))
     assert ev[0]["text"] == "Formatted m.py with ruff"
-    assert "Read the lines again" in st.convo[-1]["content"]
+    assert "Read the lines again" in st.held_notes[-1]          # held until the result
 
     def boom(*_a):
         raise RuntimeError("x")
