@@ -285,7 +285,7 @@ def test_probe_guard_counts_python_probes_across_edits():
         st.edits_made += 1                      # an edit between every probe
         P.note(st, "file_write", {"path": "a.py"})
     assert [i for i, s in enumerate(said) if s] == [7, 15]
-    assert "grep tool" in said[7]
+    assert "use grep" in said[7] and "run the tests" in said[7]
     assert not P.note(st, "run_command", {"cmd": "python3 -m pytest -q"})   # tests are not probes
 
 

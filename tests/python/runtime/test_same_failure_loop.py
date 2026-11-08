@@ -97,7 +97,10 @@ def test_a_different_fix_each_round_with_the_same_failure_stops(tmp_path):
     assert evs[-1]["type"] == "done"
 
 
-def test_the_nudge_rides_on_the_observation(tmp_path):
+def test_the_nudge_rides_on_the_observation_in_text_mode(tmp_path):
+    # text protocol (a complete_fn): two user turns in a row break some
+    # providers, so the note stays on the observation; native mode sends it as
+    # its own message (test_loop_notes_as_messages)
     steps = []
     for i in range(1, 4):
         steps += _fix_and_test(i)

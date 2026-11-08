@@ -1032,8 +1032,13 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
              "APPLICABLE SKILL above specifies an output format, reproduce "
              "it EXACTLY — no extra prose, headers, or table it does not "
              "specify.") if _bundle.skills_md else ""
+    # A loop note goes to the model as its own message after the result, not
+    # inside it. Replays of a recorded sqlglot run (11-08): the same note
+    # appended to the tool result moved 1 of 8 samples off a read streak; as
+    # its own message, 8 of 8 ran the tests.
+    _notes = []
     if seen:
-        _tail += "\n" + seen[1]
+        _notes.append(seen[1])
     try:
         from ._probe_guard import note as _probe_note
         _probe = _probe_note(st, name, args)
@@ -1041,8 +1046,10 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
         _probe = ""
     if _probe and not seen:          # one nudge per observation
         yield {"type": "thought", "role": "system",
-               "text": "↺ many shell commands and no edit — asking the agent to write the change"}
-        _tail += "\n" + _probe
+               "text": ("↺ many reads and no edit or test — asking the agent to run the tests"
+                        if " reads in a row" in _probe else
+                        "↺ many shell commands and no edit — asking the agent to write the change")}
+        _notes.append(_probe)
         if getattr(st, "want_force_write", False):
             # armed only with its explanation in the observation
             from .._native import force_write_next
@@ -1052,7 +1059,15 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
         from ._probe_guard import FORCE_AT
         st.shell_streak = FORCE_AT - 1
     st.want_force_write = False
+    if _notes and not getattr(st, "native_on", False):
+        # text protocol: two user turns in a row break some providers, so the
+        # note stays on the observation there
+        _tail += "\n" + "\n".join(_notes)
+        _notes = []
     st.convo.append({"role": "user", "content": f"OBSERVATION: {obs}{_tail}"})
+    if _notes:
+        # native: the observation becomes a tool result, the note a user turn
+        st.convo.append({"role": "user", "content": "\n".join(_notes)})
     return None
 
 

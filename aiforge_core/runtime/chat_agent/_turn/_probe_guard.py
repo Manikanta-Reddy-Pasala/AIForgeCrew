@@ -26,6 +26,11 @@ PROBES_EVERY = 8
 #: the next click run made 281 commands and 253 reads, 615 calls, against
 #: 196 and 85 with it on — the step is what ends a probing streak.)
 FORCE_AT = 20
+#: Reads in a row (no landed edit, no test run between) before each note:
+#: a recorded sqlglot run read 52 times in a row; replayed 12 reads in, a
+#: "run the tests now" message sent the model to the tests 8 of 8 times.
+READS_EVERY = 12
+_READS = frozenset({"read_lines", "file_read", "read_files", "grep", "find", "list_dir"})
 
 
 def _force_on() -> bool:
@@ -56,6 +61,57 @@ def _is_probe(args) -> bool:
     return bool(_PROBE.search(cmd)) and "pytest" not in cmd
 
 
+def _test_cmd(st) -> str:
+    """The turn's own last test command, to name in a note ("" if none)."""
+    last = getattr(st, "last_test_cmd", None)
+    if not last:
+        return ""
+    if last[0] == "run_tests":
+        return "run_tests"
+    try:
+        from aiforge_core.runtime.shell_writes import command_of
+        return (command_of(last[1]) or "").strip()[:300]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _run_tests_now(st) -> str:
+    cmd = _test_cmd(st)
+    return (f"run the tests now ({cmd})" if cmd else
+            "run the tests that cover your change now") + " and fix the first failure they show"
+
+
+_RUNNERS = frozenset({"pytest", "py.test", "tox", "nox", "npm", "yarn", "pnpm", "jest",
+                      "vitest", "mocha", "mvn", "gradle", "gradlew", "go", "cargo",
+                      "dotnet", "make", "ctest", "tsc", "eslint", "ruff", "mypy", "pyright"})
+_PY_MODULES = frozenset({"pytest", "unittest", "tox", "nox", "mypy", "ruff"})
+
+
+def _is_test(name, args) -> bool:
+    """A test, build or check run: the shell's own definition, and the
+    program that runs is a test runner (``grep -rn pytest .`` names pytest
+    but runs grep)."""
+    try:
+        import os.path
+        import shlex
+        from .._shell import is_test_command
+        if not is_test_command(name, args):
+            return False
+        if name in ("run_tests", "typecheck"):
+            return True
+        cmd = str((args or {}).get("cmd") or (args or {}).get("command") or "")
+        cmd = re.sub(r"^\s*cd\s+\S+\s*&&\s*", "", cmd)
+        words = [w for w in shlex.split(cmd) if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w)]
+        if not words:
+            return False
+        prog = os.path.basename(words[0])
+        if prog.startswith("python"):
+            return len(words) > 2 and words[1] == "-m" and words[2] in _PY_MODULES
+        return prog in _RUNNERS
+    except Exception:  # noqa: BLE001 — unsure: not a test run
+        return False
+
+
 def note(st, name: str, args) -> str:
     """The line to add to this observation, or ""."""
     if os.environ.get("AIFORGE_CHAT_PROBE_GUARD", "1").strip().lower() in ("0", "false", "no", "off"):
@@ -67,6 +123,18 @@ def note(st, name: str, args) -> str:
         # an edit LANDED since the last step (a refused one does not count)
         st.probe_edits_seen = edits
         st.shell_streak = 0
+        st.read_streak = 0
+    if _is_test(name, args):
+        st.read_streak = 0             # a test run is progress, whatever tool ran it
+        st.shell_streak = 0
+        return ""
+    if name in _READS:
+        st.read_streak = getattr(st, "read_streak", 0) + 1
+        if edits and st.read_streak % READS_EVERY == 0:
+            return (f"[harness — not the user] {st.read_streak} reads in a row and no "
+                    f"edit or test run. Stop reading for now: {_run_tests_now(st)}; read "
+                    "only what that failure points at.")
+        return ""
     if name not in _shell_tools():
         return ""
     if _writes_through_shell(args, getattr(st, "cwd", None)):
@@ -76,10 +144,8 @@ def note(st, name: str, args) -> str:
         st.probe_count = getattr(st, "probe_count", 0) + 1
         if st.probe_count % PROBES_EVERY == 0:
             return (f"[harness — not the user] {st.probe_count} throwaway python "
-                    "scripts this turn to check the code. To see whether a name, "
-                    "method or parameter exists, use the grep tool or read the "
-                    "file; to see whether it works, write a test in the repo's "
-                    "test files and run the tests.")
+                    f"scripts this turn to check the code. Stop probing: {_run_tests_now(st)}. "
+                    "To see whether a name exists, use grep or read the file.")
     st.shell_streak = getattr(st, "shell_streak", 0) + 1
     if st.shell_streak % EVERY:
         return ""
