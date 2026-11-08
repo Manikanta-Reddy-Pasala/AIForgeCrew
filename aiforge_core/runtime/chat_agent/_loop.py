@@ -185,19 +185,6 @@ def _compact_on_request(st, role, complete_fn, session_id):
                     f"{got['messages_after']} messages) — continuing the task")}
 
 
-def _lead_stopped() -> bool:
-    """A doer (no chat session of its own): its lead's chat was stopped."""
-    try:
-        from ._tools._doers import LEAD_SID
-        sid = LEAD_SID.get()
-        if sid is None:
-            return False
-        from aiforge_core.runtime import chat_cancel
-        return bool(chat_cancel.is_cancelled(sid))
-    except Exception:  # noqa: BLE001
-        return False
-
-
 def _step_prologue(st, n, _cwd, role, complete_fn, session_id, builder):
     """Per-step prologue up to a parsed reply: cap/deadline/cancel guards, builder
     nudge, steering drain, condense+usage, the model completion, and the stuck-
@@ -215,8 +202,7 @@ def _step_prologue(st, n, _cwd, role, complete_fn, session_id, builder):
     except Exception:  # noqa: BLE001
         _job_stopped = False
     if _job_stopped or (
-            session_id is not None and chat_cancel.is_cancelled(session_id)) or (
-            session_id is None and _lead_stopped()):
+            session_id is not None and chat_cancel.is_cancelled(session_id)):
         yield {"type": "error", "text": "stopped by user"}
         yield {"type": "done"}
         return None, "return"
@@ -378,10 +364,6 @@ def _gated_action(st, step, name, args, sig, n, cwd, session_id):
         return "repeat" if repeat else "continue"
     from ._turn import _plan_first, _steer_reply
     _sig = yield from _steer_reply.gate(st, step, name, args)
-    if _sig == "continue":
-        return "continue"
-    from ._turn import _doer_hint
-    _sig = yield from _doer_hint.gate(st, step, name, args)
     if _sig == "continue":
         return "continue"
     _sig = yield from _plan_first.gate(st, step, name, args)
