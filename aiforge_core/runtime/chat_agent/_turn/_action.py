@@ -142,6 +142,16 @@ def _forget_after_failed_edit(st, name, args, result) -> None:
             st.read_sigs_seen.discard(sig)
 
 
+def _log_read(st, name, args) -> bool:
+    """A read of a log or a job's output file: it grows while a job runs, so
+    reading it again is not a duplicate."""
+    try:
+        from ._probe_guard import _READS, _watching
+        return name in _READS and _watching(st, name, args)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _action_stall_guard(st, name, args, sig, _long_chain_help):
     """Stall guard for an action: short-circuit a duplicate read with a progress
     recap, and on the same tool+args repeated too often first recover with a
@@ -157,6 +167,9 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
     # strikes — and the stall guard would never fire on the very runaway
     # this table exists to catch. move_to_end on each touch makes the
     # eviction least-recently-SEEN instead.
+    from ._waiting import waiting
+    if waiting(st, name, args):
+        return None                   # a check on a job still running: not a repeat
     key = count_key(name, sig)
     st.action_counts[key] = st.action_counts.get(key, 0) + 1
     st.action_counts.move_to_end(key)
@@ -172,7 +185,8 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
     # read counts only toward the lifetime backstop, so a model that keeps
     # re-asking between new reads is still stopped eventually.
     duplicate = (_long_chain_help and name in _READ_OBS_TOOLS
-                 and (sig in st.read_sigs_seen or _covered(st, name, args)))
+                 and (sig in st.read_sigs_seen or _covered(st, name, args))
+                 and not _log_read(st, name, args))
     signal = detect("action", st, sig, strike(st, sig, per_state=not duplicate),
                     duplicate)
     looping = signal.detail if signal else ""

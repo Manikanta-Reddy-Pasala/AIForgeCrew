@@ -216,11 +216,19 @@ def test_waiting_on_a_build_that_keeps_working_is_progress():
                      {"ok": True, "running": True, "output_growing": True}) == ""
 
 
-def test_waiting_on_a_job_that_does_nothing_trips():
+def test_waiting_on_a_quiet_job_is_waiting_until_the_cap(monkeypatch):
+    # a quiet job (a remote rollout: no output, no CPU for minutes) is still
+    # running: checking on it is waiting, not idling (owner runs long jobs;
+    # an unattended job that pauses is reported as stopped) ...
     st = _st()
-    got = [_feed(st, "command_wait", {"id": "j1"},
-                 {"ok": True, "running": True, "output_growing": False,
-                  "cpu_active": False}) for _ in range(6)]
+    quiet = {"ok": True, "running": True, "output_growing": False, "cpu_active": False}
+    assert all(_feed(st, "command_wait", {"id": "j1"}, quiet) == "" for _ in range(30))
+    # ... until AIFORGE_CHAT_JOB_WAIT_MAX_S: a job that never ends trips again
+    monkeypatch.setenv("AIFORGE_CHAT_JOB_WAIT_MAX_S", "0")
+    st = _st()
+    import time
+    st.job_waits = {"j1": time.monotonic() - 5}
+    got = [_feed(st, "command_wait", {"id": "j1"}, quiet) for _ in range(6)]
     assert got[-1] == "nudge"
 
 

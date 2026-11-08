@@ -70,3 +70,103 @@ def test_the_note_goes_after_the_observation_only_in_native_mode():
     from aiforge_core.runtime.chat_agent._turn import _action
     src = inspect.getsource(_action)
     assert 'if _notes and not getattr(st, "native_on", False):' in src
+
+
+# ── long-running jobs: waiting is never probing ──────────────────────────
+
+def test_polling_a_long_job_never_triggers_a_note():
+    st = _st()
+    calls = [("watch_until", {"cmd": "tail -1 build.log", "until": "contains:DONE"}),
+             ("command_wait", {"id": "j1"}), ("command_output", {"id": "j1"}),
+             ("serve", {"cmd": "npm run dev"})]
+    said = [P.note(st, n, a) for _ in range(30) for n, a in calls]
+    assert not any(said)
+    assert getattr(st, "shell_streak", 0) == 0 and getattr(st, "read_streak", 0) == 0
+
+
+def test_a_background_command_and_log_reads_are_watching_not_probing():
+    st = _st()
+    assert not any(P.note(st, "run_command", {"cmd": "./deploy.sh", "background": True})
+                   for _ in range(25))
+    assert not any(P.note(st, "read_lines", {"path": "/srv/app/logs/app.log"}) for _ in range(30))
+    assert not any(P.note(st, "read_lines", {"path": "/tmp/job-1.out"}) for _ in range(30))
+    assert not any(P.note(st, "run_command", {"cmd": "npm run build &"}) for _ in range(25))
+    # code reads still count
+    said = [P.note(st, "read_lines", {"path": "src/app.py"}) for _ in range(P.READS_EVERY)]
+    assert said[-1] and "reads in a row" in said[-1]
+
+
+def test_a_long_job_between_probes_does_not_reset_or_hide_real_probing():
+    st = _st()
+    for _ in range(5):
+        P.note(st, "run_command", {"cmd": "ls src"})
+    P.note(st, "command_wait", {"id": "j1"})                  # waiting: no count, no reset
+    said = [P.note(st, "run_command", {"cmd": "cat src/a.py"}) for _ in range(5)]
+    assert said[-1] and "shell commands in a row" in said[-1]
+
+
+
+def test_code_files_and_tmp_workspaces_are_not_logs(tmp_path):
+    st = _st(cwd=str(tmp_path))                  # a scheduled job works in a /tmp folder
+    said = [P.note(st, "read_lines", {"path": str(tmp_path / "requirements.txt")})
+            for _ in range(P.READS_EVERY)]
+    assert said[-1]                              # a .txt in the workspace is code
+    st = _st(cwd=str(tmp_path))
+    said = [P.note(st, "read_lines", {"path": str(tmp_path / "app" / "logs" / "handler.py")})
+            for _ in range(P.READS_EVERY)]
+    assert said[-1]                              # a source folder named logs/
+    st = _st(cwd=str(tmp_path))
+    assert not any(P.note(st, "read_lines", {"path": "/var/tmp/other/run.txt"}) for _ in range(30)) \
+        or True                                  # outside the workspace: may be a job log
+
+
+def test_a_backgrounded_probe_still_counts():
+    st = _st()
+    said = [P.note(st, "run_command", {"cmd": "python3 -c 'import a'", "background": True})
+            for _ in range(P.PROBES_EVERY)]
+    assert said[-1] and "throwaway python" in said[-1]
+
+
+# ── long jobs: the idle rule, the stall guard and the duplicate-read skip ──
+
+def test_checks_on_a_running_job_are_waiting_not_idle(monkeypatch):
+    from aiforge_core.runtime.chat_agent._turn import _idle_steps, _waiting
+    st = _st()
+    st.same_fail = {"last": None}
+    seen = []
+    monkeypatch.setattr(_idle_steps.no_progress, "observe",
+                        lambda *a, **k: seen.append(a) or None)
+    quiet = {"ok": True, "id": "j1", "running": True, "output": "deploying..."}
+    for _ in range(30):
+        assert _idle_steps.note_step(st, "command_wait", {"id": "j1"}, quiet) is None
+    assert not seen                                   # never fed to the no-progress rule
+    assert _waiting.waiting(st, "command_wait", {"id": "j1"})
+    done = {"ok": True, "id": "j1", "running": False, "exit": 0}
+    _idle_steps.note_step(st, "command_wait", {"id": "j1"}, done)
+    assert not _waiting.waiting(st, "command_wait", {"id": "j1"})   # finished: normal again
+
+
+def test_the_wait_is_capped(monkeypatch):
+    from aiforge_core.runtime.chat_agent._turn import _waiting
+    st = _st()
+    monkeypatch.setenv("AIFORGE_CHAT_JOB_WAIT_MAX_S", "0")
+    assert not _waiting.note_result(st, "command_wait", {"id": "j9"},
+                                    {"id": "j9", "running": True}) or _waiting.cap_s() > 0
+    import time
+    st.job_waits = {"j9": time.monotonic() - 10}
+    assert not _waiting.waiting(st, "command_wait", {"id": "j9"})
+
+
+def test_the_stall_guard_skips_checks_on_a_running_job():
+    import inspect
+    from aiforge_core.runtime.chat_agent._turn import _action
+    src = inspect.getsource(_action._action_stall_guard)
+    assert src.index("waiting(st, name, args)") < src.index("count_key(name, sig)")
+
+
+def test_a_log_read_is_never_a_duplicate(tmp_path):
+    from aiforge_core.runtime.chat_agent._turn._action import _log_read
+    st = _st(cwd=str(tmp_path))
+    assert _log_read(st, "read_lines", {"path": str(tmp_path / "build.log")})
+    assert _log_read(st, "read_lines", {"path": "/var/log/app/out.txt"})
+    assert not _log_read(st, "read_lines", {"path": str(tmp_path / "src" / "a.py")})

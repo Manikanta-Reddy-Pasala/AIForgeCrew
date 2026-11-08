@@ -31,6 +31,52 @@ FORCE_AT = 20
 #: "run the tests now" message sent the model to the tests 8 of 8 times.
 READS_EVERY = 12
 _READS = frozenset({"read_lines", "file_read", "read_files", "grep", "find", "list_dir"})
+#: Waiting on or watching long-running work: never probing. A turn that runs a
+#: long job (a suite, a build, a deploy) polls it with these; counting them
+#: pushed it to "write the change" in the middle of the wait.
+_WAITING = frozenset({"watch_until", "serve", "command_wait", "command_output",
+                      "command_kill"})
+#: Reading a log or a job's output file is watching a job, not reading code.
+_LOG_NAME = re.compile(r"\.(?:log|out|err|jsonl)$", re.I)
+
+
+def _outside(path: str, cwd) -> bool:
+    """``path`` lies outside the turn's workspace (a job's output elsewhere)."""
+    import os.path
+    if not cwd or not os.path.isabs(path):
+        return False
+    try:
+        return os.path.commonpath([os.path.realpath(path), os.path.realpath(str(cwd))]) \
+            != os.path.realpath(str(cwd))
+    except ValueError:
+        return True
+
+
+def _watching(st, name, args) -> bool:
+    """The call waits on, polls or watches running work: a job tool, a
+    command started in the background (not a probe), or a read of a log /
+    output file. A ``.txt`` or a /tmp file counts only outside the workspace:
+    scheduled jobs work in a /tmp folder, and requirements.txt is code."""
+    if name in _WAITING:
+        return True
+    a = args if isinstance(args, dict) else {}
+    if name not in _READS:
+        try:
+            from aiforge_core.runtime.shell_writes import command_of
+            cmd = (command_of(a) or "").rstrip()
+        except Exception:  # noqa: BLE001
+            cmd = str(a.get("cmd") or "").rstrip()
+        backgrounded = bool(a.get("background")) or (cmd.endswith("&") and not cmd.endswith("&&"))
+        return backgrounded and not _is_probe(a)
+    cwd = getattr(st, "cwd", None)
+    for p in [a.get("path"), a.get("file"), *(a.get("paths") or [])]:
+        if not isinstance(p, str):
+            continue
+        if _LOG_NAME.search(p):
+            return True
+        if _outside(p, cwd) and (p.lower().endswith(".txt") or "/tmp/" in p or "/logs/" in p):
+            return True
+    return False
 
 
 def _force_on() -> bool:
@@ -128,6 +174,8 @@ def note(st, name: str, args) -> str:
         st.read_streak = 0             # a test run is progress, whatever tool ran it
         st.shell_streak = 0
         return ""
+    if _watching(st, name, args):
+        return ""                      # waiting on a long job: not probing, no count
     if name in _READS:
         st.read_streak = getattr(st, "read_streak", 0) + 1
         if edits and st.read_streak % READS_EVERY == 0:
