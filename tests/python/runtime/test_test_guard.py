@@ -122,8 +122,9 @@ def test_the_marshmallow_edit_gets_one_note(tmp_path, monkeypatch):
     events, held = _run(st, f, tmp_path, monkeypatch)
     assert events and len(held) == 1
     assert "Put the assertion back" in held[0] and "test_fields.py" in held[0]
-    events, held = _run(st, f, tmp_path, monkeypatch)       # said once per line
-    assert not events and not held
+    events, held = _run(st, f, tmp_path, monkeypatch)       # still gone: one reminder
+    assert not events and len(held) == 1 and "still not back" in held[0]
+    assert _run(st, f, tmp_path, monkeypatch) == ([], [])  # then quiet
 
 
 def test_new_test_files_and_source_files_are_never_checked(tmp_path, monkeypatch):
@@ -176,3 +177,46 @@ def test_an_allowed_change_gets_the_soft_note(tmp_path, monkeypatch):
     f.write_text("def test_a():\n    assert f() == 2\n")
     _, held = _run(st, f, tmp_path, monkeypatch)
     assert held and "allows some existing tests to change" in held[0]
+
+
+def test_a_looser_rewrite_gets_one_firmer_reminder(tmp_path, monkeypatch):
+    f, head = _repo(tmp_path, "tests/test_a.py",
+                    'def test_r():\n    assert repr(x) == "<X(a=1)>"\n')
+    st = SimpleNamespace(cwd=str(tmp_path), head0=head, goal="Add b to X.")
+    f.write_text('def test_r():\n    assert repr(x) == "<X(a=1, b=2)>"\n')
+    _, held = _run(st, f, tmp_path, monkeypatch)
+    assert len(held) == 1
+    f.write_text('def test_r():\n    assert "a=1" in repr(x)\n')
+    _, held = _run(st, f, tmp_path, monkeypatch)
+    assert len(held) == 1 and "still not back" in held[0]
+    _, held = _run(st, f, tmp_path, monkeypatch)
+    assert held == []                                     # once
+
+
+def _gate(st):
+    g = G.gate(st, {"text": ""})
+    try:
+        while True:
+            next(g)
+    except StopIteration as stop:
+        return stop.value
+
+
+def test_the_finish_gate_sends_a_weakened_test_back_once(tmp_path):
+    f, head = _repo(tmp_path, "tests/test_a.py", "def test_a():\n    assert f() == 1\n")
+    st = SimpleNamespace(cwd=str(tmp_path), head0=head, goal="Add g().", edits_made=2, convo=[])
+    f.write_text("def test_a():\n    assert f() in (1, 2)\n")
+    assert _gate(st) == "continue"
+    assert "Restore them exactly" in st.convo[-1]["content"]
+    assert _gate(st) is None                              # once per turn
+
+
+def test_the_finish_gate_lets_allowed_or_restored_tests_through(tmp_path):
+    f, head = _repo(tmp_path, "tests/test_a.py", "def test_a():\n    assert f() == 1\n")
+    st = SimpleNamespace(cwd=str(tmp_path), head0=head, edits_made=1, convo=[],
+                         goal="Change f to return 2 and update the tests.")
+    f.write_text("def test_a():\n    assert f() == 2\n")
+    assert _gate(st) is None
+    st.goal = "Add g()."
+    f.write_text("def test_a():\n    assert f() == 1\n\ndef test_g():\n    assert g()\n")
+    assert _gate(st) is None

@@ -193,8 +193,24 @@ def check(st, name, files, args, cwd=""):
                 after = fh.read()
         except OSError:
             continue
-        lost = [ln for ln in lost_assertions(before, after) if (rel, ln) not in said]
+        all_lost = lost_assertions(before, after)
+        lost = [ln for ln in all_lost if (rel, ln) not in said]
         if not lost:
+            # Still gone after the note, and this edit touched the file again
+            # (marshmallow tg1a: the exact repr check became eight loose
+            # `in` checks): one firmer reminder, then the finish gate.
+            again = getattr(st, "test_guard_again", None)
+            if again is None:
+                again = st.test_guard_again = set()
+            if all_lost and rel not in again and not allows_test_changes(
+                    str(getattr(st, "goal", "") or ""), rel):
+                again.add(rel)
+                from ._notes import hold
+                hold(st, "[harness — not the user] The old assertion in "
+                         f"`{rel}` is still not back:\n    {all_lost[0][:200]}\n"
+                         "Rewriting it as looser checks is the same as removing it. "
+                         "Restore the original line exactly and change the code until "
+                         "it passes.")
             continue
         said.update((rel, ln) for ln in lost)
         shown_lines = "\n".join(f"    {ln[:200]}" for ln in lost[:_MAX_SHOWN])
@@ -216,4 +232,63 @@ def check(st, name, files, args, cwd=""):
                      "change.")
 
 
-__all__ = ["allows_test_changes", "check", "lost_assertions"]
+def still_lost(st) -> list:
+    """(rel, line) for every assertion a tracked test file had at the turn's
+    base that it no longer has."""
+    cwd = getattr(st, "cwd", None)
+    try:
+        from ._contract_gate import work_base
+        base = work_base(st)
+    except Exception:  # noqa: BLE001
+        base = None
+    if not cwd or not base:
+        return []
+    top = (_git(cwd, "rev-parse", "--show-toplevel") or "").strip()
+    changed = _git(top, "diff", "--name-only", base) if top else None
+    out = []
+    for rel in (changed or "").splitlines():
+        if not _TEST_FILE.search(rel):
+            continue
+        before = _git(top, "show", f"{base}:{rel}")
+        full = os.path.join(top, rel)
+        if before is None:
+            continue
+        try:
+            with open(full, encoding="utf-8", errors="replace") as fh:
+                after = fh.read()
+        except OSError:
+            after = ""                  # the whole file deleted
+        out += [(rel, ln) for ln in lost_assertions(before, after)]
+    return out
+
+
+def gate(st, step, builder=None, strict_finish=False):
+    """Once per turn, before the answer: an existing assertion still changed
+    or removed, in a request that did not allow test changes -> continue."""
+    if (builder or not _on() or getattr(st, "test_guard_gate_sent", False)
+            or getattr(st, "edits_made", 0) <= 0
+            or allows_test_changes(str(getattr(st, "goal", "") or ""))):
+        return None
+    try:
+        lost = still_lost(st)
+    except Exception:  # noqa: BLE001 — never block an answer on this
+        return None
+    if not lost:
+        return None
+    st.test_guard_gate_sent = True
+    if step.get("text"):
+        yield {"type": "thought", "text": step["text"]}
+    yield {"type": "thought", "role": "system",
+           "text": f"▶ {len(lost)} existing test assertion(s) changed — continuing"}
+    shown = "\n".join(f"    {rel}: {ln[:180]}" for rel, ln in lost[:_MAX_SHOWN])
+    st.convo.append({"role": "user", "content":
+        "[harness — not the user] Before you answer: these assertions were in the "
+        f"repo's tests before this request and are changed or gone now:\n{shown}\n"
+        "The request did not ask for existing tests to change. Restore them exactly "
+        "(`git diff` shows the old lines) and change the code so they pass. If the "
+        "request really cannot be done without changing them, say so in the answer "
+        "and name each one."})
+    return "continue"
+
+
+__all__ = ["allows_test_changes", "check", "gate", "lost_assertions", "still_lost"]
