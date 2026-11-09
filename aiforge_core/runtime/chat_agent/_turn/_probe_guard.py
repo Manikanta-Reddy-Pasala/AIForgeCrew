@@ -96,6 +96,47 @@ def _shell_tools() -> frozenset:
     return SHELL_TOOLS
 
 
+_SHELL_READS = frozenset({
+    "awk", "gawk", "sed", "head", "tail", "cat", "nl",
+    "grep", "egrep", "fgrep",
+})
+
+
+def is_shell_read(args) -> bool:
+    """A shell command that only prints a file (awk, sed -n, grep, head).
+
+    sqlglot qw1 re-read parser.py through awk a hundred times. Those calls
+    are not read_lines, so the duplicate-read guard never saw them.
+    """
+    try:
+        import shlex
+
+        from aiforge_core.runtime.shell_writes import command_of
+        cmd = command_of(args) or ""
+        cmd = re.sub(r"^\s*cd\s+\S+\s*&&\s*", "", cmd)
+        bare = re.sub(r"'[^']*'|" + r'"[^"]*"', "", cmd)
+        if ">>" in bare or ">" in bare:
+            return False
+        words = [w for w in shlex.split(cmd) if w]
+        if words[:1] == ["cd"] and "&&" in words:
+            words = words[words.index("&&") + 1:]
+        progs = []
+        take = True
+        for w in words:
+            if w in ("&&", ";", "||", "|"):
+                take = True
+                continue
+            if take:
+                progs.append(os.path.basename(w))
+                take = False
+        if not progs or ("sed" in progs and "-i" in words):
+            return False
+        return all(prog in _SHELL_READS for prog in progs)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+
 def _writes_through_shell(args, cwd) -> bool:
     try:
         from aiforge_core.runtime.shell_writes import command_of, shell_write_targets
@@ -182,8 +223,17 @@ def note(st, name: str, args) -> str:
         st.shell_streak = 0
         st.read_streak = 0
     if _is_test(name, args):
-        st.read_streak = 0             # a test run is progress, whatever tool ran it
-        st.shell_streak = 0
+        # The same test on the same code is not progress. sqlglot qw1 ran
+        # awk, then pytest, then the same awk: every pytest zeroed the
+        # streak, so 200 shell calls never reached the forced edit.
+        cmd = " ".join(str((args or {}).get("cmd") or (args or {}).get("command") or "").split())
+        same = (cmd and cmd == getattr(st, "probe_last_test", None)
+                and getattr(st, "edits_made", 0) == getattr(st, "probe_test_edits", -1))
+        if not same:
+            st.probe_last_test = cmd
+            st.probe_test_edits = getattr(st, "edits_made", 0)
+            st.read_streak = 0
+            st.shell_streak = 0
         return ""
     if _watching(st, name, args):
         return ""                      # waiting on a long job: not probing, no count

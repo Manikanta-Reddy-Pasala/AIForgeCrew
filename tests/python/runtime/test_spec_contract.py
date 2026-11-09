@@ -815,3 +815,52 @@ def test_fenced_or_read_only_listed_files_are_not_to_change():
            "Files: `pkg/core.py`, `pkg/ref.py` (read only), `pkg/opt.py` (optional).\n"
            "Files:\n\nDo not touch `legacy.py`.\n")
     assert S.listed_files(req) == ["pkg/core.py"]
+
+
+def test_a_repeated_test_does_not_wipe_the_shell_streak():
+    """sqlglot qw1: awk, pytest, the same awk. Each pytest zeroed the streak,
+    so two hundred shell calls never forced an edit."""
+    from aiforge_core.runtime.chat_agent._turn import _probe_guard as P
+    st = SimpleNamespace(edits_made=1, probe_edits_seen=1, cwd="/srv/work",
+                         session_id=5, native_on=True)
+    awk = {"cmd": "awk 'NR>=10 && NR<=20' parser.py"}
+    pytest = {"cmd": "python -m pytest tests/test_postgres.py -q"}
+    for _ in range(15):
+        P.note(st, "run_command", awk)
+    P.note(st, "run_command", pytest)          # first test: a real check
+    assert st.shell_streak == 0
+    for _ in range(15):
+        P.note(st, "run_command", awk)
+    assert st.shell_streak == 15
+    P.note(st, "run_command", pytest)          # the same test, same code
+    assert st.shell_streak == 15
+    said = [P.note(st, "run_command", awk) for _ in range(5)]
+    assert st.want_force_write and "can only edit files" in said[-1]
+
+
+def test_the_same_awk_read_is_skipped(monkeypatch):
+    from collections import OrderedDict
+    from aiforge_core.runtime.chat_agent._turn import _action as A
+    st = SimpleNamespace(action_counts=OrderedDict(), read_sigs_seen=set(), read_sigs_ever=OrderedDict(), reads_new=0,
+                         convo=[], long_chain_help=True, edits_made=1,
+                         dup_skip_streak=0, cwd="/srv/work")
+    args = {"cmd": "awk 'NR>=10 && NR<=20' parser.py"}
+    sig = ("run_command", args["cmd"])
+    monkeypatch.setattr(A, "detect", lambda *a, **k: None)
+    monkeypatch.setattr(A, "strike", lambda *a, **k: 0)
+    monkeypatch.setattr(A, "count_key", lambda name, sig: (name, sig))
+
+    def once(st):
+        g = A._action_stall_guard(st, "run_command", args, sig, True)
+        out = []
+        try:
+            while True:
+                out.append(next(g))
+        except StopIteration as stop:
+            return stop.value, out
+
+    assert once(st)[0] is None
+    A._record_read(st, "run_command", sig, {"ok": True, "stdout": "line"}, True, args)
+    kind, events = once(st)
+    assert kind == "continue"
+    assert any("duplicate" in (e.get("text") or "") for e in events)

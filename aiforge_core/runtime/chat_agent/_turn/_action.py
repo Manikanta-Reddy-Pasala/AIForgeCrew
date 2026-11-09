@@ -184,9 +184,13 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
     # (AIFORGE_CHAT_STUCK_RECOVERIES=0 → full legacy behaviour). A skipped
     # read counts only toward the lifetime backstop, so a model that keeps
     # re-asking between new reads is still stopped eventually.
-    duplicate = (_long_chain_help and name in _READ_OBS_TOOLS
-                 and (sig in st.read_sigs_seen or _covered(st, name, args))
-                 and not _log_read(st, name, args))
+    from ._probe_guard import is_shell_read
+    shell_read = is_shell_read(args) and name not in _READ_OBS_TOOLS
+    duplicate = (_long_chain_help and (
+        (name in _READ_OBS_TOOLS
+         and (sig in st.read_sigs_seen or _covered(st, name, args))
+         and not _log_read(st, name, args))
+        or (shell_read and sig in st.read_sigs_seen)))
     signal = detect("action", st, sig, strike(st, sig, per_state=not duplicate),
                     duplicate)
     looping = signal.detail if signal else ""
@@ -855,7 +859,8 @@ def _git_target_after(st, name, args, result, cwd) -> str:
 def _record_read(st, name, sig, result, _long_chain_help, args=None):
     """Count a landed READ as new progress the first time its signature is seen
     (feeds the extension budget), and remember it for the duplicate-read guard."""
-    if (name in _READ_OBS_TOOLS and not (
+    from ._probe_guard import is_shell_read as _shell_read
+    if ((name in _READ_OBS_TOOLS or _shell_read(args)) and not (
             isinstance(result, dict) and result.get("ok") is False)):
         # F2: counted OUTSIDE the _long_chain_help gate —
         # AIFORGE_CHAT_STUCK_RECOVERIES=0 turns off the duplicate-read
