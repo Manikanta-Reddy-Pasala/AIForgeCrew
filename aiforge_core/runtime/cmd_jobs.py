@@ -312,6 +312,8 @@ def live_same(cmd: str, cwd: str | None = None) -> "Job | None":
             continue
         if not _visible(job, caller):
             continue
+        if caller[0] is not None and str(job.session_id) != str(caller[0]):
+            continue                    # reuse stays inside one chat
         if " ".join((job.cmd or "").split()) != norm:
             continue
         if want is not None:
