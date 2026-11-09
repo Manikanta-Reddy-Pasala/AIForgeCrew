@@ -712,6 +712,7 @@ def wait(job: Job, max_s: float | None = None, session_id=None) -> dict:
                 return res
         elif job.clock.last != last:
             job.stuck_reported = False
+            job.hung_reported = False   # new output: a later hang is new too
         if time.monotonic() >= end:
             job.streak += 1
             return look(job, f"waited {int(limit)}s; still working")

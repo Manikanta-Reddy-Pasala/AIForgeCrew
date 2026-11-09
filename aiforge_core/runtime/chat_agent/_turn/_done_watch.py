@@ -261,7 +261,7 @@ def _large_change_now(st) -> bool:
              "--others", "--exclude-standard"],
             capture_output=True, text=True, timeout=20)
         if others.returncode == 0:
-            for rel in others.stdout.split():
+            for rel in others.stdout.splitlines():
                 files += 1
                 try:
                     with open(os.path.join(cwd, rel), encoding="utf-8", errors="replace") as fh:

@@ -864,3 +864,16 @@ def test_the_same_awk_read_is_skipped(monkeypatch):
     kind, events = once(st)
     assert kind == "continue"
     assert any("duplicate" in (e.get("text") or "") for e in events)
+
+
+def test_a_log_tail_is_not_a_shell_read():
+    """Watching a job's log through the shell repeats the same command while
+    the file grows: never a duplicate read."""
+    from aiforge_core.runtime.chat_agent._turn._probe_guard import is_shell_read
+    assert is_shell_read({"cmd": "awk 'NR>=10 && NR<=20' parser.py"})
+    assert is_shell_read({"cmd": "cd /srv/work && grep -n BEFORE sqlglot/tokens.py | head -20"})
+    assert not is_shell_read({"cmd": "tail -n 50 deploy.log"})
+    assert not is_shell_read({"cmd": "cd /srv/work && tail -n 80 /tmp/build/output.txt"})
+    assert not is_shell_read({"cmd": "tail -f app.txt"})
+    assert not is_shell_read({"cmd": "grep ERROR /var/log/syslog"})
+    assert not is_shell_read({"cmd": "sed -i 's/a/b/' x.py"})

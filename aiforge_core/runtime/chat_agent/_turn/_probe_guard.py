@@ -131,7 +131,13 @@ def is_shell_read(args) -> bool:
                 take = False
         if not progs or ("sed" in progs and "-i" in words):
             return False
-        return all(prog in _SHELL_READS for prog in progs)
+        if not all(prog in _SHELL_READS for prog in progs):
+            return False
+        # `tail -n 50 deploy.log` looks at a job: the file grows, so the same
+        # command is not the same read (the read_lines rule, _log_read).
+        return not any(_LOG_NAME.search(w) or w.startswith(("/tmp/", "/var/log/"))
+                       or w in ("-f", "-F", "--follow")
+                       for w in words)
     except Exception:  # noqa: BLE001
         return False
 
