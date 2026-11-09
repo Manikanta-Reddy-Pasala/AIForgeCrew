@@ -207,8 +207,14 @@ def test_the_finish_gate_sends_a_weakened_test_back_once(tmp_path):
     st = SimpleNamespace(cwd=str(tmp_path), head0=head, goal="Add g().", edits_made=2, convo=[])
     f.write_text("def test_a():\n    assert f() in (1, 2)\n")
     assert _gate(st) == "continue"
-    assert "Restore them exactly" in st.convo[-1]["content"]
-    assert _gate(st) is None                              # once per turn
+    msg = st.convo[-1]["content"]
+    assert "-    assert f() == 1" in msg and "+    assert f() in (1, 2)" in msg
+    assert _gate(st) is None                              # no new edit: not again
+    st.edits_made = 3
+    f.write_text("def test_a():\n    assert f() >= 1\n")
+    assert _gate(st) == "continue" and "second time" in st.convo[-1]["content"]
+    st.edits_made = 4
+    assert _gate(st) is None                              # two at most
 
 
 def test_the_finish_gate_lets_allowed_or_restored_tests_through(tmp_path):

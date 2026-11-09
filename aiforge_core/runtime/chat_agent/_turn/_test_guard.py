@@ -262,11 +262,30 @@ def still_lost(st) -> list:
     return out
 
 
+def _hunks(top, base, rels, cap=40) -> str:
+    """The real old and new lines (``git diff``), not a normalised form: a
+    model told to "restore" a line it cannot see rewrote it again."""
+    out = []
+    for rel in dict.fromkeys(rels):
+        diff = _git(top, "diff", "-U2", base, "--", rel) or ""
+        body = [ln for ln in diff.splitlines()
+                if not ln.startswith(("diff ", "index ", "--- ", "+++ "))]
+        out.append(f"{rel}:\n" + "\n".join(body[:cap])
+                   + ("\n..." if len(body) > cap else ""))
+    return "\n".join(out)
+
+
+_GATE_MAX = 2
+
+
 def gate(st, step, builder=None, strict_finish=False):
-    """Once per turn, before the answer: an existing assertion still changed
-    or removed, in a request that did not allow test changes -> continue."""
-    if (builder or not _on() or getattr(st, "test_guard_gate_sent", False)
-            or getattr(st, "edits_made", 0) <= 0
+    """Before the answer: an existing assertion still changed or removed, in
+    a request that did not allow test changes -> continue with the real diff.
+    Twice at most, the second only after more edits."""
+    sent = getattr(st, "test_guard_gate_sent", 0) or 0
+    edits = getattr(st, "edits_made", 0)
+    if (builder or not _on() or edits <= 0 or sent >= _GATE_MAX
+            or (sent and edits == getattr(st, "test_guard_gate_edits", -1))
             or allows_test_changes(str(getattr(st, "goal", "") or ""))):
         return None
     try:
@@ -275,19 +294,29 @@ def gate(st, step, builder=None, strict_finish=False):
         return None
     if not lost:
         return None
-    st.test_guard_gate_sent = True
+    st.test_guard_gate_sent = sent + 1
+    st.test_guard_gate_edits = edits
     if step.get("text"):
         yield {"type": "thought", "text": step["text"]}
     yield {"type": "thought", "role": "system",
            "text": f"▶ {len(lost)} existing test assertion(s) changed — continuing"}
-    shown = "\n".join(f"    {rel}: {ln[:180]}" for rel, ln in lost[:_MAX_SHOWN])
+    try:
+        from ._contract_gate import work_base
+        top = (_git(st.cwd, "rev-parse", "--show-toplevel") or "").strip()
+        diff = _hunks(top, work_base(st), [rel for rel, _ in lost])
+    except Exception:  # noqa: BLE001
+        diff = "\n".join(f"    {rel}: {ln[:180]}" for rel, ln in lost[:_MAX_SHOWN])
+    again = " (second time: the earlier restore did not bring them back)" if sent else ""
     st.convo.append({"role": "user", "content":
-        "[harness — not the user] Before you answer: these assertions were in the "
-        f"repo's tests before this request and are changed or gone now:\n{shown}\n"
-        "The request did not ask for existing tests to change. Restore them exactly "
-        "(`git diff` shows the old lines) and change the code so they pass. If the "
-        "request really cannot be done without changing them, say so in the answer "
-        "and name each one."})
+        f"[harness — not the user] Before you answer{again}: existing tests were "
+        "changed, and the request did not ask for that. This is the change "
+        "(`-` = the line as it was before this request):\n"
+        f"```diff\n{diff}\n```\n"
+        "Put every `-` line back exactly as shown (file_patch with the `+` lines as "
+        "old text). Then the old test fails again: change the CODE you wrote "
+        "(not the test) so it passes, keeping what the request asked for. If the "
+        "request cannot be done without changing that test, leave the test as it "
+        "was and say so in the answer."})
     return "continue"
 
 
