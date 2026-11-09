@@ -236,9 +236,15 @@ def board_done(st) -> bool:
         return False
     if not getattr(st, "board_touched", False):
         return False                    # the model did not work this board this turn
+    # The end-of-turn verify records last_full_green and does not record
+    # last_full_test. A later narrow green run sets tests_green True, and
+    # the board then asks for the summary in the middle of a fix round
+    # (click: 1 failure, 27 min left; sqlglot: 69 failures). A red suite
+    # owns the turn until a full run is green.
+    if getattr(st, "last_full_green", None) is False:
+        return False
     if getattr(st, "last_full_test", None) and (
-            getattr(st, "tests_green", None) is not True
-            or getattr(st, "last_full_green", None) is False):
+            getattr(st, "tests_green", None) is not True):
         return False                    # a full test ran this turn: it must be green
     items = [it for it in board.values() if isinstance(it, dict)]
     if len(items) != len(board):
