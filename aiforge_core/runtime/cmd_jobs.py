@@ -290,10 +290,12 @@ def _register(job: Job) -> Job:
 
 
 def live_same(cmd: str, cwd: str | None = None) -> "Job | None":
-    """A live explicit job in this chat already running this command.
+    """A live explicit job in this chat already running this command, that
+    a wait has already reported quiet (or stuck).
 
-    A second start of a long quiet job used to kill the first and begin
-    again. The caller reuses this one and waits on it.
+    The quiet report made the model start the same deploy again. The caller
+    reuses this one and waits on it. Two starts with no report between are
+    two runs on purpose.
     """
     norm = " ".join((cmd or "").split())
     if not norm:
@@ -316,6 +318,8 @@ def live_same(cmd: str, cwd: str | None = None) -> "Job | None":
             continue                    # reuse stays inside one chat
         if " ".join((job.cmd or "").split()) != norm:
             continue
+        if not (getattr(job, "quiet_reported", False) or job.stuck_reported):
+            continue                    # only a job we called quiet: two plain starts are two runs
         if want is not None:
             if not getattr(job, "cwd", None):
                 continue                # a service has no folder: not this start

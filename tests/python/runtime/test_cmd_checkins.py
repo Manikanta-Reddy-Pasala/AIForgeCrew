@@ -91,6 +91,7 @@ def test_a_stuck_command_is_reported_not_killed(env, monkeypatch):
 def test_a_second_start_reuses_the_running_job(env):
     first = _run("sleep 30", env, background=True)
     assert first.get("id")
+    cmd_jobs.find(first["id"]).quiet_reported = True    # a wait called it quiet
     again = _run("sleep 30", env, background=True)
     assert again.get("already_running") is True
     assert again["id"] == first["id"]
@@ -203,6 +204,7 @@ def test_a_rerun_after_an_edit_starts_a_new_job(env):
     import subprocess as sp
     sp.run(["git", "init", "-q", str(env)], check=True)
     first = _run("sleep 30", env, background=True)
+    cmd_jobs.find(first["id"]).quiet_reported = True
     time.sleep(1.1)
     (env / "fix.py").write_text("x = 1\n")
     again = _run("sleep 30", env, background=True)
