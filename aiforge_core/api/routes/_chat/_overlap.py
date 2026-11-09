@@ -153,6 +153,16 @@ def start(pc, _pp) -> "EarlyEnhance | None":
         return None
     if not _enhance_will_run(pc.prompt, pc.history) or not _slots_allow():
         return None
+    # Lean Simple chat discards the restatement and sends the user's words.
+    # Starting it anyway fills the one model slot: triage then times out at
+    # 15s ("the server already has this request") and the agent waits behind
+    # a call whose result is thrown away.
+    try:
+        from aiforge_core.runtime.chat_agent import lean
+        if lean.on():
+            return None
+    except Exception:  # noqa: BLE001 — unsure: keep the usual overlap
+        pass
     if _reads_as_answer(pc.prompt):
         return None
     from aiforge_core.runtime import chat_cancel
