@@ -221,6 +221,68 @@ def review_gate(st, step, builder=None, strict_finish=False):
     return "continue"
 
 
+
+def _large_change(st) -> bool:
+    """The turn's diff is past the small-change cutoff (``_SMALL_FILES`` /
+    ``_SMALL_LINES``). No repo, or git failing, is not large: a board with
+    nothing to measure can still close."""
+    edits = getattr(st, "edits_made", 0)
+    hit = getattr(st, "dw_large", None)
+    if hit and hit[0] == edits:
+        return hit[1]
+    big = _large_change_now(st)
+    try:
+        st.dw_large = (edits, big)
+    except Exception:  # noqa: BLE001
+        pass
+    return big
+
+
+def _large_change_now(st) -> bool:
+    cwd = str(getattr(st, "cwd", "") or "")
+    if not cwd:
+        return False
+    try:
+        import subprocess
+
+        from ._contract_gate import work_base
+        from ._outcomes import _SMALL_FILES, _SMALL_LINES
+        base = work_base(st)
+        if not base:
+            return False
+        r = subprocess.run(
+            ["git", "--no-optional-locks", "-C", cwd, "diff", "--numstat", base],
+            capture_output=True, text=True, timeout=20)
+        if r.returncode != 0:
+            return False
+        changed = files = 0
+        others = subprocess.run(
+            ["git", "--no-optional-locks", "-C", cwd, "ls-files",
+             "--others", "--exclude-standard"],
+            capture_output=True, text=True, timeout=20)
+        if others.returncode == 0:
+            for rel in others.stdout.splitlines():
+                files += 1
+                if files > _SMALL_FILES or changed > _SMALL_LINES:
+                    return True         # past the cutoff: no need to open the rest
+                try:
+                    with open(os.path.join(cwd, rel), encoding="utf-8", errors="replace") as fh:
+                        changed += sum(1 for _ in fh)
+                except OSError:
+                    continue            # a dangling link is not a large change
+        for ln in r.stdout.splitlines():
+            row = ln.split("\t")
+            if len(row) < 3:
+                continue
+            if row[0] == "-" or row[1] == "-":
+                return True
+            changed += int(row[0]) + int(row[1])
+            files += 1
+        return files > _SMALL_FILES or changed > _SMALL_LINES
+    except Exception:  # noqa: BLE001 — unknown size must not trap the turn
+        return False
+
+
 def board_done(st) -> bool:
     """Every item of a real task list (2+ items, at least one closed this turn)
     is done or skipped, the turn's last test run is not red, and no user
@@ -236,9 +298,23 @@ def board_done(st) -> bool:
         return False
     if not getattr(st, "board_touched", False):
         return False                    # the model did not work this board this turn
+    # The end-of-turn verify records last_full_green and does not record
+    # last_full_test. A later narrow green run sets tests_green True, and
+    # the board then asks for the summary in the middle of a fix round
+    # (click: 1 failure, 27 min left; sqlglot: 69 failures). A red suite
+    # owns the turn until a full run is green.
+    if getattr(st, "last_full_green", None) is False:
+        return False
+    # A large change is not done on a narrow pass, or on no test at all.
+    # click closed the board on its own file tests with one failure and 27
+    # minutes left; sqlglot marked every item done before the suite ran and
+    # the hour ended at 4/25. A small change keeps the fast close.
+    if (getattr(st, "edits_made", 0) > 0
+            and getattr(st, "last_full_green", None) is not True
+            and _large_change(st)):
+        return False
     if getattr(st, "last_full_test", None) and (
-            getattr(st, "tests_green", None) is not True
-            or getattr(st, "last_full_green", None) is False):
+            getattr(st, "tests_green", None) is not True):
         return False                    # a full test ran this turn: it must be green
     items = [it for it in board.values() if isinstance(it, dict)]
     if len(items) != len(board):

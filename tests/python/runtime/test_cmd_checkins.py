@@ -81,9 +81,21 @@ def test_a_stuck_command_is_reported_not_killed(env, monkeypatch):
     t0 = time.monotonic()
     got = T._t_command_wait({"id": res["id"], "max_s": 60}, str(env))
     assert time.monotonic() - t0 < 10
-    assert got["stuck"] is True and got["running"] is True
-    assert "looks stuck" in got["returned_because"]
+    assert got.get("stuck") is None and got.get("quiet") is True
+    assert got["running"] is True
+    assert "quiet" in got["returned_because"]
+    assert "Do not start the command again" in got["hint"]
     T._t_command_kill({"id": res["id"]}, str(env))
+
+
+def test_a_second_start_reuses_the_running_job(env):
+    first = _run("sleep 30", env, background=True)
+    assert first.get("id")
+    cmd_jobs.find(first["id"]).quiet_reported = True    # a wait called it quiet
+    again = _run("sleep 30", env, background=True)
+    assert again.get("already_running") is True
+    assert again["id"] == first["id"]
+    T._t_command_kill({"id": first["id"]}, str(env))
 
 
 def test_a_silent_cpu_busy_command_is_not_called_stuck(env, monkeypatch):
@@ -186,3 +198,17 @@ def test_signals():
     assert sig.waiting_for_input("Proceed? ")
     assert sig.waiting_for_input("Proceed?\n") is None
     assert sig.waiting_for_input("Compiling 3/10") is None
+
+
+def test_a_rerun_after_an_edit_starts_a_new_job(env):
+    import subprocess as sp
+    sp.run(["git", "init", "-q", str(env)], check=True)
+    first = _run("sleep 30", env, background=True)
+    cmd_jobs.find(first["id"]).quiet_reported = True
+    time.sleep(1.1)
+    (env / "fix.py").write_text("x = 1\n")
+    again = _run("sleep 30", env, background=True)
+    assert not again.get("already_running")
+    assert again["id"] != first["id"]
+    T._t_command_kill({"id": first["id"]}, str(env))
+    T._t_command_kill({"id": again["id"]}, str(env))

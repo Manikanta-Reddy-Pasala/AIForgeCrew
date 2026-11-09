@@ -209,7 +209,8 @@ def test_real_stuck_command_is_reported_by_command_wait(real, monkeypatch):
     assert res["running"] is True
     t0 = time.monotonic()
     out = _cmd_tools._t_command_wait({"id": res["id"], "max_s": 30}, "")
-    assert out.get("stuck") is True, out
+    assert out.get("stuck") is None and out.get("quiet") is True, out
+    assert "quiet" in out.get("returned_because", "")
     assert time.monotonic() - t0 < 10
     _cmd_tools._t_command_kill({"id": res["id"]}, "")
 

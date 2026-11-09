@@ -168,3 +168,15 @@ def test_stop_while_waiting_returns_the_raw_prompt(monkeypatch):
     monkeypatch.setattr(run_interrupt, "reason", lambda _sid: "stop")
     assert _overlap.take(early, 7) == "raw ask"
     assert early.cancel.is_set()
+
+
+def test_lean_simple_chat_does_not_start_the_enhancer(monkeypatch, tmp_path):
+    """The restatement is discarded in lean mode. Starting it anyway queues
+    triage behind it on a one-slot server (the 15s timeout)."""
+    monkeypatch.setenv("AIFORGE_LLM_PARALLEL", "4")
+    monkeypatch.setenv("AIFORGE_CHAT_LEAN", "1")
+    rec = _Rec(overlap=False)
+    monkeypatch.setattr(parallel_subtasks, "_enhance", rec.enhance)
+    pc = _pc(tmp_path)
+    assert _overlap.start(pc, parallel_subtasks) is None
+    assert rec.enhance_calls == 0

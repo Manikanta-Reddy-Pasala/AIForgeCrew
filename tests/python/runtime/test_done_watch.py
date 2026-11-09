@@ -407,6 +407,44 @@ def test_a_narrow_green_run_after_a_red_full_suite_does_not_close_the_board(monk
     assert DW.board_done(st)
 
 
+def test_a_red_harness_suite_blocks_the_board_without_a_recorded_command(monkeypatch):
+    """click qw1 / sqlglot qw1: verify set last_full_green False and left
+    last_full_test unset. A later narrow green run set tests_green True,
+    and the board asked for the summary during the fix round."""
+    from types import SimpleNamespace
+    monkeypatch.setenv("AIFORGE_CHAT_DONE_WATCH", "1")
+    st = SimpleNamespace(board={"a": {"title": "A", "status": "done"},
+                                "b": {"title": "B", "status": "done"}},
+                         board_touched=True, tests_green=True, last_full_green=False,
+                         last_full_test=None, edits_made=3, dw_blocked_at=None,
+                         dw_board_gaps=(3, False))
+    assert not W.board_done(st)
+    st.last_full_green = True
+    assert W.board_done(st)
+
+
+
+def test_a_large_change_stays_open_until_the_full_suite_is_green(monkeypatch):
+    """click / sqlglot: the board closed before a full green suite."""
+    from types import SimpleNamespace
+    monkeypatch.setenv("AIFORGE_CHAT_DONE_WATCH", "1")
+    monkeypatch.setattr(W, "_large_change", lambda st: True)
+    two = {"a": {"title": "a", "status": "done"}, "b": {"title": "b", "status": "done"}}
+    st = SimpleNamespace(goal="x", cwd="/tmp", edits_made=4, steers=[],
+                         board_touched=True, board=two, tests_green=True,
+                         last_full_green=None, dw_blocked_at=None,
+                         dw_board_gaps=(4, False))
+    assert not W.board_done(st)
+    st.tests_green = None
+    assert not W.board_done(st)
+    st.last_full_green = True
+    assert W.board_done(st)
+    monkeypatch.setattr(W, "_large_change", lambda st: False)
+    st.last_full_green = None
+    st.tests_green = True
+    assert W.board_done(st)
+
+
 def test_a_red_check_on_final_marks_the_full_suite_red(monkeypatch):
     from types import SimpleNamespace
     from aiforge_core.runtime.chat_agent._turn import _outcomes as O

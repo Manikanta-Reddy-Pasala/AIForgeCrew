@@ -288,6 +288,84 @@ def _register(job: Job) -> Job:
     return job
 
 
+
+def live_same(cmd: str, cwd: str | None = None) -> "Job | None":
+    """A live explicit job in this chat already running this command, that
+    a wait has already reported quiet (or stuck).
+
+    The quiet report made the model start the same deploy again. The caller
+    reuses this one and waits on it. Two starts with no report between are
+    two runs on purpose.
+    """
+    norm = " ".join((cmd or "").split())
+    if not norm:
+        return None
+    want = None
+    if cwd:
+        try:
+            want = os.path.realpath(cwd)
+        except OSError:
+            want = cwd
+    caller = _caller()
+    with _LOCK:
+        jobs = list(_JOBS.values())
+    for job in jobs:
+        if not job.explicit or not job.alive():
+            continue
+        if not _visible(job, caller):
+            continue
+        if caller[0] is not None and str(job.session_id) != str(caller[0]):
+            continue                    # reuse stays inside one chat
+        if " ".join((job.cmd or "").split()) != norm:
+            continue
+        if not (getattr(job, "quiet_reported", False) or job.stuck_reported):
+            continue                    # only a job we called quiet: two plain starts are two runs
+        if want is not None:
+            if not getattr(job, "cwd", None):
+                continue                # a service has no folder: not this start
+            try:
+                have = os.path.realpath(job.cwd)
+            except OSError:
+                have = job.cwd
+            if have != want:
+                continue
+        if _edited_since(job):
+            continue                    # a rerun after an edit tests the new code
+        return job
+    return None
+
+
+def _edited_since(job: Job) -> bool:
+    """A changed or new file in the job's repo is newer than the job: the
+    old run is testing code from before that edit."""
+    cwd = getattr(job, "cwd", None)
+    if not cwd:
+        return False
+    began = time.time() - (time.monotonic() - job.started)
+    try:
+        import subprocess
+        r = subprocess.run(
+            ["git", "--no-optional-locks", "-C", cwd, "status", "--porcelain",
+             "-z", "--untracked-files=all"],
+            capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            return False
+        top = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=10).stdout.strip() or cwd
+        for row in r.stdout.split("\0"):
+            rel = row[3:] if len(row) > 3 else ""
+            if not rel:
+                continue
+            try:
+                if os.path.getmtime(os.path.join(top, rel)) > began:
+                    return True
+            except OSError:
+                continue
+    except Exception:  # noqa: BLE001 — unsure: keep the running job
+        return False
+    return False
+
+
 def adopt_spooled(proc, spool, cmd: str, cwd: str, *, explicit: bool,
                   session_id=None, idle_s: float = 0.0,
                   deadline: float | None = None,
@@ -647,22 +725,44 @@ def wait(job: Job, max_s: float | None = None, session_id=None) -> dict:
             return look(job, found)
         last = job.clock.last
         if job.clock.stalled():
-            if not job.stuck_reported:
+            # A few quiet seconds are not a hang: a deploy that prints
+            # nothing for minutes is still the job, and calling it stuck made
+            # the model kill it and start another. Past the long idle limit
+            # it is reported stuck. Nothing here kills the process. A prompt
+            # still returns on its own, and Stop or command_kill still ends it.
+            from aiforge_core.runtime.cmd_idle import idle_limit_s
+            long = idle_limit_s()
+            hung = bool(long) and job.clock.quiet_for() >= long
+            if hung and not getattr(job, "hung_reported", False):
+                job.hung_reported = True
                 job.stuck_reported, job.streak = True, 0
                 res = look(job, f"looks stuck: no output and no CPU for "
-                                f"{int(job.clock.idle_s)}s (waiting for input? "
+                                f"{int(long)}s (waiting for input? "
                                 "a network call? a lock?)")
                 res["stuck"] = True
                 return res
+            if not job.stuck_reported and not getattr(job, "quiet_reported", False):
+                # once per job: a heartbeat every minute must not end each wait
+                job.quiet_reported = True
+                job.stuck_reported, job.streak = True, 0
+                res = look(job, "quiet: no new output yet, and the command "
+                                "is still running")
+                res["quiet"] = True
+                res["hint"] = (
+                    f"It is quiet, not finished. Keep waiting with "
+                    f"command_wait id={job.key}. Do not start the command "
+                    f"again and do not kill it unless it is waiting for input.")
+                return res
         elif job.clock.last != last:
             job.stuck_reported = False
+            job.hung_reported = False   # new output: a later hang is new too
         if time.monotonic() >= end:
             job.streak += 1
             return look(job, f"waited {int(limit)}s; still working")
         time.sleep(_POLL_S)
 
 
-__all__ = ["Job", "adopt_service", "adopt_spooled", "begin_turn",
+__all__ = ["Job", "adopt_service", "adopt_spooled", "begin_turn", "live_same",
            "checkin_s", "current_owner", "default_wait_s", "end_owner",
            "end_turn", "find", "look", "progress_suffix", "reset_owner",
            "reset_task", "running", "set_label", "set_owner", "set_task",

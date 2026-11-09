@@ -84,7 +84,9 @@ def render_job(result: dict, cap: int) -> str:
     took = f" after {secs}s" if secs is not None else ""
     if result.get("running") is True:
         state = [f"STILL RUNNING (job {key}){took} — not finished, no exit code yet"]
-        if result.get("stuck"):
+        if result.get("quiet"):
+            state.append("quiet so far — still running; do not start it again")
+        elif result.get("stuck"):
             state.append("looks stuck: no new output and no CPU")
         elif "cpu_active" in result:
             state.append("output growing" if result.get("output_growing")

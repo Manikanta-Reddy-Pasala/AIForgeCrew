@@ -815,3 +815,103 @@ def test_fenced_or_read_only_listed_files_are_not_to_change():
            "Files: `pkg/core.py`, `pkg/ref.py` (read only), `pkg/opt.py` (optional).\n"
            "Files:\n\nDo not touch `legacy.py`.\n")
     assert S.listed_files(req) == ["pkg/core.py"]
+
+
+def test_a_repeated_test_does_not_wipe_the_shell_streak():
+    """sqlglot qw1: awk, pytest, the same awk. Each pytest zeroed the streak,
+    so two hundred shell calls never forced an edit."""
+    from aiforge_core.runtime.chat_agent._turn import _probe_guard as P
+    st = SimpleNamespace(edits_made=1, probe_edits_seen=1, cwd="/srv/work",
+                         session_id=5, native_on=True)
+    awk = {"cmd": "awk 'NR>=10 && NR<=20' parser.py"}
+    pytest = {"cmd": "python -m pytest tests/test_postgres.py -q"}
+    for _ in range(15):
+        P.note(st, "run_command", awk)
+    P.note(st, "run_command", pytest)          # first test: a real check
+    assert st.shell_streak == 0
+    for _ in range(15):
+        P.note(st, "run_command", awk)
+    assert st.shell_streak == 15
+    P.note(st, "run_command", pytest)          # the same test, same code
+    assert st.shell_streak == 15
+    said = [P.note(st, "run_command", awk) for _ in range(5)]
+    assert st.want_force_write and "can only edit files" in said[-1]
+
+
+def test_the_same_awk_read_is_skipped(monkeypatch):
+    from collections import OrderedDict
+    from aiforge_core.runtime.chat_agent._turn import _action as A
+    st = SimpleNamespace(action_counts=OrderedDict(), read_sigs_seen=set(), read_sigs_ever=OrderedDict(), reads_new=0,
+                         convo=[], long_chain_help=True, edits_made=1,
+                         dup_skip_streak=0, cwd="/srv/work")
+    args = {"cmd": "awk 'NR>=10 && NR<=20' parser.py"}
+    sig = ("run_command", args["cmd"])
+    monkeypatch.setattr(A, "detect", lambda *a, **k: None)
+    monkeypatch.setattr(A, "strike", lambda *a, **k: 0)
+    monkeypatch.setattr(A, "count_key", lambda name, sig: (name, sig))
+
+    def once(st):
+        g = A._action_stall_guard(st, "run_command", args, sig, True)
+        out = []
+        try:
+            while True:
+                out.append(next(g))
+        except StopIteration as stop:
+            return stop.value, out
+
+    assert once(st)[0] is None
+    A._record_read(st, "run_command", sig, {"ok": True, "stdout": "line"}, True, args)
+    kind, events = once(st)
+    assert kind == "continue"
+    assert any("duplicate" in (e.get("text") or "") for e in events)
+
+
+def test_a_log_tail_is_not_a_shell_read():
+    """Watching a job's log through the shell repeats the same command while
+    the file grows: never a duplicate read."""
+    from aiforge_core.runtime.chat_agent._turn._probe_guard import is_shell_read
+    assert is_shell_read({"cmd": "awk 'NR>=10 && NR<=20' parser.py"})
+    assert is_shell_read({"cmd": "cd /srv/work && grep -n BEFORE sqlglot/tokens.py | head -20"})
+    assert not is_shell_read({"cmd": "tail -n 50 deploy.log"})
+    assert not is_shell_read({"cmd": "cd /srv/work && tail -n 80 /tmp/build/output.txt"})
+    assert not is_shell_read({"cmd": "tail -f app.txt"})
+    assert not is_shell_read({"cmd": "grep ERROR /var/log/syslog"})
+    assert not is_shell_read({"cmd": "sed -i 's/a/b/' x.py"})
+
+
+def test_more_job_looks_and_writes_are_not_shell_reads():
+    from aiforge_core.runtime.chat_agent._turn._probe_guard import is_shell_read
+    assert not is_shell_read({"cmd": "tail -n 5 progress.txt; sleep 30"})
+    assert not is_shell_read({"cmd": "cd /tmp/job && cat status.txt"})
+    assert not is_shell_read({"command": "grep -c done status.txt"}, "watch_until")
+    assert not is_shell_read({"cmd": "sed -i.bak 's/a/b/' x.py"})
+    assert not is_shell_read({"cmd": "sed --in-place 's/a/b/' x.py"})
+    assert not is_shell_read({"cmd": "awk '{print > \"out.py\"}' x.py"})
+    assert is_shell_read({"cmd": "cat a.py; head -5 b.py"}, "run_command")
+
+
+def test_a_shell_edit_makes_the_same_cat_valid_again(monkeypatch):
+    from collections import OrderedDict
+    from aiforge_core.runtime.chat_agent._turn import _action as A
+    st = SimpleNamespace(action_counts=OrderedDict(), read_sigs_seen=set(),
+                         read_sigs_ever=OrderedDict(), reads_new=0, convo=[],
+                         long_chain_help=True, edits_made=1, dup_skip_streak=0,
+                         cwd="/srv/work")
+    monkeypatch.setattr(A, "detect", lambda *a, **k: None)
+    monkeypatch.setattr(A, "strike", lambda *a, **k: 0)
+    monkeypatch.setattr(A, "count_key", lambda name, sig: (name, sig))
+
+    def kind(args):
+        g = A._action_stall_guard(st, "run_command", args, ("run_command", args["cmd"]), True)
+        try:
+            while True:
+                next(g)
+        except StopIteration as stop:
+            return stop.value
+
+    cat = {"cmd": "cat a.py"}
+    assert kind(cat) is None
+    A._record_read(st, "run_command", ("run_command", cat["cmd"]), {"ok": True, "stdout": "x"}, True, cat)
+    assert kind(cat) == "continue"                      # same read, nothing changed
+    assert kind({"cmd": "sed -i 's/x/y/' a.py"}) is None
+    assert kind(cat) is None                            # the file changed: read again

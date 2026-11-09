@@ -96,6 +96,61 @@ def _shell_tools() -> frozenset:
     return SHELL_TOOLS
 
 
+_SHELL_READS = frozenset({
+    "awk", "gawk", "sed", "head", "cat", "nl",
+    "grep", "egrep", "fgrep",
+})
+
+
+def is_shell_read(args, name: str | None = None) -> bool:
+    """A shell command that only prints a file (awk, sed -n, grep, head).
+
+    sqlglot qw1 re-read parser.py through awk a hundred times. Those calls
+    are not read_lines, so the duplicate-read guard never saw them. Looking at
+    a job (tail, a log, a /tmp folder, a watch tool) is never one: the file
+    grows while the job runs.
+    """
+    try:
+        import shlex
+
+        if name is not None and (name not in _shell_tools() or name in _WAITING):
+            return False
+        from aiforge_core.runtime.shell_writes import command_of
+        cmd = command_of(args) or ""
+        if re.match(r"^\s*cd\s+(?:/tmp/|/var/)", cmd):
+            return False                # a job's folder, not the code
+        cmd = re.sub(r"^\s*cd\s+\S+\s*&&\s*", "", cmd)
+        bare = re.sub(r"'[^']*'|" + r'"[^"]*"', "", cmd)
+        if ">>" in bare or ">" in bare:
+            return False
+        if re.search(r"\bawk\b", cmd) and re.search(
+                r"\bprintf?\b[^;}]*>|\bsystem\s*\(", cmd):
+            return False                # awk writing a file from inside its script
+        # `tail x.txt; sleep 30` -> separators as words of their own
+        spaced = re.sub(r"\s*(\|\||&&|;|\|)\s*", r" \1 ", bare)
+        words = [w for w in shlex.split(spaced) if w]
+        progs = []
+        take = True
+        for w in words:
+            if w in ("&&", ";", "||", "|"):
+                take = True
+                continue
+            if take:
+                progs.append(os.path.basename(w))
+                take = False
+        if not progs or "tail" in progs:
+            return False
+        if "sed" in progs and any(w.startswith(("-i", "--in-place")) for w in words):
+            return False
+        if not all(prog in _SHELL_READS for prog in progs):
+            return False
+        return not any(_LOG_NAME.search(w) or w.startswith(("/tmp/", "/var/log/"))
+                       for w in shlex.split(cmd))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+
 def _writes_through_shell(args, cwd) -> bool:
     try:
         from aiforge_core.runtime.shell_writes import command_of, shell_write_targets
@@ -182,14 +237,35 @@ def note(st, name: str, args) -> str:
         st.shell_streak = 0
         st.read_streak = 0
     if _is_test(name, args):
-        st.read_streak = 0             # a test run is progress, whatever tool ran it
-        st.shell_streak = 0
+        # The same test on the same code is not progress. sqlglot qw1 ran
+        # awk, then pytest, then the same awk: every pytest zeroed the
+        # streak, so 200 shell calls never reached the forced edit.
+        cmd = " ".join(str((args or {}).get("cmd") or (args or {}).get("command") or "").split())
+        same = (cmd and cmd == getattr(st, "probe_last_test", None)
+                and getattr(st, "edits_made", 0) == getattr(st, "probe_test_edits", -1))
+        if not same:
+            st.probe_last_test = cmd
+            st.probe_test_edits = getattr(st, "edits_made", 0)
+            st.read_streak = 0
+            st.shell_streak = 0
         return ""
     if _watching(st, name, args):
         return ""                      # waiting on a long job: not probing, no count
     if name in _READS:
         st.read_streak = getattr(st, "read_streak", 0) + 1
         if edits and st.read_streak % READS_EVERY == 0:
+            # sqlglot acc1: 117 reads between edits. The note said "run the
+            # tests", the tests were already red, and the model read again.
+            # Once a test has failed, the next step can only edit.
+            if (getattr(st, "tests_green", None) is False and _force_on()
+                    and getattr(st, "native_on", False)):
+                st.want_force_write = True
+                st.read_streak = 0
+                return ("[harness — not the user] The tests already failed and "
+                        "these reads are not changing the code. Your next step "
+                        "can only edit files: change the file the failure names "
+                        "(file_patch / multi_edit). Do not read again and do not "
+                        "re-run the tests until that edit is saved.")
             return (f"[harness — not the user] {st.read_streak} reads in a row and no "
                     f"edit or test run. Stop reading for now: {_run_tests_now(st)}; read "
                     "only what that failure points at.")
