@@ -81,9 +81,20 @@ def test_a_stuck_command_is_reported_not_killed(env, monkeypatch):
     t0 = time.monotonic()
     got = T._t_command_wait({"id": res["id"], "max_s": 60}, str(env))
     assert time.monotonic() - t0 < 10
-    assert got["stuck"] is True and got["running"] is True
-    assert "looks stuck" in got["returned_because"]
+    assert got.get("stuck") is None and got.get("quiet") is True
+    assert got["running"] is True
+    assert "quiet" in got["returned_because"]
+    assert "Do not start the command again" in got["hint"]
     T._t_command_kill({"id": res["id"]}, str(env))
+
+
+def test_a_second_start_reuses_the_running_job(env):
+    first = _run("sleep 30", env, background=True)
+    assert first.get("id")
+    again = _run("sleep 30", env, background=True)
+    assert again.get("already_running") is True
+    assert again["id"] == first["id"]
+    T._t_command_kill({"id": first["id"]}, str(env))
 
 
 def test_a_silent_cpu_busy_command_is_not_called_stuck(env, monkeypatch):

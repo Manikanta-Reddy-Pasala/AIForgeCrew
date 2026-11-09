@@ -546,6 +546,14 @@ def _start_background(cmd: str, base: str, deadline: float | None = None,
     ``announce=False``: no chat line when it ends)."""
     from aiforge_core.runtime import chat_cancel
     cmd = _without_trailing_amp(cmd)
+    from aiforge_core.runtime import cmd_jobs
+    existing = cmd_jobs.live_same(cmd, base)
+    if existing is not None:
+        return {"ok": True, "background": True, "id": existing.key,
+                "already_running": True, "pid": existing.proc.pid,
+                "note": (f"Already running as {existing.key}. Do not start "
+                         f"it again. command_wait(id='{existing.key}') until "
+                         f"it finishes; command_kill only to stop it.")}
     spool = Spool()
     try:
         proc = subprocess.Popen(

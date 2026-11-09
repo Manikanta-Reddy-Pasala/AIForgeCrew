@@ -288,6 +288,43 @@ def _register(job: Job) -> Job:
     return job
 
 
+
+def live_same(cmd: str, cwd: str | None = None) -> "Job | None":
+    """A live explicit job in this chat already running this command.
+
+    A second start of a long quiet job used to kill the first and begin
+    again. The caller reuses this one and waits on it.
+    """
+    norm = " ".join((cmd or "").split())
+    if not norm:
+        return None
+    want = None
+    if cwd:
+        try:
+            want = os.path.realpath(cwd)
+        except OSError:
+            want = cwd
+    caller = _caller()
+    with _LOCK:
+        jobs = list(_JOBS.values())
+    for job in jobs:
+        if not job.explicit or not job.alive():
+            continue
+        if not _visible(job, caller):
+            continue
+        if " ".join((job.cmd or "").split()) != norm:
+            continue
+        if want is not None and getattr(job, "cwd", None):
+            try:
+                have = os.path.realpath(job.cwd)
+            except OSError:
+                have = job.cwd
+            if have != want:
+                continue
+        return job
+    return None
+
+
 def adopt_spooled(proc, spool, cmd: str, cwd: str, *, explicit: bool,
                   session_id=None, idle_s: float = 0.0,
                   deadline: float | None = None,
@@ -647,12 +684,31 @@ def wait(job: Job, max_s: float | None = None, session_id=None) -> dict:
             return look(job, found)
         last = job.clock.last
         if job.clock.stalled():
-            if not job.stuck_reported:
+            # A few quiet seconds are not a hang: a deploy that prints
+            # nothing for minutes is still the job, and calling it stuck made
+            # the model kill it and start another. Past the long idle limit
+            # it is reported stuck. Nothing here kills the process. A prompt
+            # still returns on its own, and Stop or command_kill still ends it.
+            from aiforge_core.runtime.cmd_idle import idle_limit_s
+            long = idle_limit_s()
+            hung = bool(long) and job.clock.quiet_for() >= long
+            if hung and not getattr(job, "hung_reported", False):
+                job.hung_reported = True
                 job.stuck_reported, job.streak = True, 0
                 res = look(job, f"looks stuck: no output and no CPU for "
-                                f"{int(job.clock.idle_s)}s (waiting for input? "
+                                f"{int(long)}s (waiting for input? "
                                 "a network call? a lock?)")
                 res["stuck"] = True
+                return res
+            if not job.stuck_reported:
+                job.stuck_reported, job.streak = True, 0
+                res = look(job, "quiet: no new output yet, and the command "
+                                "is still running")
+                res["quiet"] = True
+                res["hint"] = (
+                    f"It is quiet, not finished. Keep waiting with "
+                    f"command_wait id={job.key}. Do not start the command "
+                    f"again and do not kill it unless it is waiting for input.")
                 return res
         elif job.clock.last != last:
             job.stuck_reported = False
@@ -662,7 +718,7 @@ def wait(job: Job, max_s: float | None = None, session_id=None) -> dict:
         time.sleep(_POLL_S)
 
 
-__all__ = ["Job", "adopt_service", "adopt_spooled", "begin_turn",
+__all__ = ["Job", "adopt_service", "adopt_spooled", "begin_turn", "live_same",
            "checkin_s", "current_owner", "default_wait_s", "end_owner",
            "end_turn", "find", "look", "progress_suffix", "reset_owner",
            "reset_task", "running", "set_label", "set_owner", "set_task",
