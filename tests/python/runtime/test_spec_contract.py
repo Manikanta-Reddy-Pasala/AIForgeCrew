@@ -877,3 +877,41 @@ def test_a_log_tail_is_not_a_shell_read():
     assert not is_shell_read({"cmd": "tail -f app.txt"})
     assert not is_shell_read({"cmd": "grep ERROR /var/log/syslog"})
     assert not is_shell_read({"cmd": "sed -i 's/a/b/' x.py"})
+
+
+def test_more_job_looks_and_writes_are_not_shell_reads():
+    from aiforge_core.runtime.chat_agent._turn._probe_guard import is_shell_read
+    assert not is_shell_read({"cmd": "tail -n 5 progress.txt; sleep 30"})
+    assert not is_shell_read({"cmd": "cd /tmp/job && cat status.txt"})
+    assert not is_shell_read({"command": "grep -c done status.txt"}, "watch_until")
+    assert not is_shell_read({"cmd": "sed -i.bak 's/a/b/' x.py"})
+    assert not is_shell_read({"cmd": "sed --in-place 's/a/b/' x.py"})
+    assert not is_shell_read({"cmd": "awk '{print > \"out.py\"}' x.py"})
+    assert is_shell_read({"cmd": "cat a.py; head -5 b.py"}, "run_command")
+
+
+def test_a_shell_edit_makes_the_same_cat_valid_again(monkeypatch):
+    from collections import OrderedDict
+    from aiforge_core.runtime.chat_agent._turn import _action as A
+    st = SimpleNamespace(action_counts=OrderedDict(), read_sigs_seen=set(),
+                         read_sigs_ever=OrderedDict(), reads_new=0, convo=[],
+                         long_chain_help=True, edits_made=1, dup_skip_streak=0,
+                         cwd="/srv/work")
+    monkeypatch.setattr(A, "detect", lambda *a, **k: None)
+    monkeypatch.setattr(A, "strike", lambda *a, **k: 0)
+    monkeypatch.setattr(A, "count_key", lambda name, sig: (name, sig))
+
+    def kind(args):
+        g = A._action_stall_guard(st, "run_command", args, ("run_command", args["cmd"]), True)
+        try:
+            while True:
+                next(g)
+        except StopIteration as stop:
+            return stop.value
+
+    cat = {"cmd": "cat a.py"}
+    assert kind(cat) is None
+    A._record_read(st, "run_command", ("run_command", cat["cmd"]), {"ok": True, "stdout": "x"}, True, cat)
+    assert kind(cat) == "continue"                      # same read, nothing changed
+    assert kind({"cmd": "sed -i 's/x/y/' a.py"}) is None
+    assert kind(cat) is None                            # the file changed: read again

@@ -263,11 +263,13 @@ def _large_change_now(st) -> bool:
         if others.returncode == 0:
             for rel in others.stdout.splitlines():
                 files += 1
+                if files > _SMALL_FILES or changed > _SMALL_LINES:
+                    return True         # past the cutoff: no need to open the rest
                 try:
                     with open(os.path.join(cwd, rel), encoding="utf-8", errors="replace") as fh:
                         changed += sum(1 for _ in fh)
                 except OSError:
-                    return True
+                    continue            # a dangling link is not a large change
         for ln in r.stdout.splitlines():
             row = ln.split("\t")
             if len(row) < 3:

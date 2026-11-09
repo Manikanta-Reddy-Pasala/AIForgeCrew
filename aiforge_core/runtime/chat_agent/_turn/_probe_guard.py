@@ -97,29 +97,38 @@ def _shell_tools() -> frozenset:
 
 
 _SHELL_READS = frozenset({
-    "awk", "gawk", "sed", "head", "tail", "cat", "nl",
+    "awk", "gawk", "sed", "head", "cat", "nl",
     "grep", "egrep", "fgrep",
 })
 
 
-def is_shell_read(args) -> bool:
+def is_shell_read(args, name: str | None = None) -> bool:
     """A shell command that only prints a file (awk, sed -n, grep, head).
 
     sqlglot qw1 re-read parser.py through awk a hundred times. Those calls
-    are not read_lines, so the duplicate-read guard never saw them.
+    are not read_lines, so the duplicate-read guard never saw them. Looking at
+    a job (tail, a log, a /tmp folder, a watch tool) is never one: the file
+    grows while the job runs.
     """
     try:
         import shlex
 
+        if name is not None and (name not in _shell_tools() or name in _WAITING):
+            return False
         from aiforge_core.runtime.shell_writes import command_of
         cmd = command_of(args) or ""
+        if re.match(r"^\s*cd\s+(?:/tmp/|/var/)", cmd):
+            return False                # a job's folder, not the code
         cmd = re.sub(r"^\s*cd\s+\S+\s*&&\s*", "", cmd)
         bare = re.sub(r"'[^']*'|" + r'"[^"]*"', "", cmd)
         if ">>" in bare or ">" in bare:
             return False
-        words = [w for w in shlex.split(cmd) if w]
-        if words[:1] == ["cd"] and "&&" in words:
-            words = words[words.index("&&") + 1:]
+        if re.search(r"\bawk\b", cmd) and re.search(
+                r"\bprintf?\b[^;}]*>|\bsystem\s*\(", cmd):
+            return False                # awk writing a file from inside its script
+        # `tail x.txt; sleep 30` -> separators as words of their own
+        spaced = re.sub(r"\s*(\|\||&&|;|\|)\s*", r" \1 ", bare)
+        words = [w for w in shlex.split(spaced) if w]
         progs = []
         take = True
         for w in words:
@@ -129,15 +138,14 @@ def is_shell_read(args) -> bool:
             if take:
                 progs.append(os.path.basename(w))
                 take = False
-        if not progs or ("sed" in progs and "-i" in words):
+        if not progs or "tail" in progs:
+            return False
+        if "sed" in progs and any(w.startswith(("-i", "--in-place")) for w in words):
             return False
         if not all(prog in _SHELL_READS for prog in progs):
             return False
-        # `tail -n 50 deploy.log` looks at a job: the file grows, so the same
-        # command is not the same read (the read_lines rule, _log_read).
         return not any(_LOG_NAME.search(w) or w.startswith(("/tmp/", "/var/log/"))
-                       or w in ("-f", "-F", "--follow")
-                       for w in words)
+                       for w in shlex.split(cmd))
     except Exception:  # noqa: BLE001
         return False
 

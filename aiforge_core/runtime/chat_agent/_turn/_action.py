@@ -184,13 +184,18 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
     # (AIFORGE_CHAT_STUCK_RECOVERIES=0 → full legacy behaviour). A skipped
     # read counts only toward the lifetime backstop, so a model that keeps
     # re-asking between new reads is still stopped eventually.
-    from ._probe_guard import is_shell_read
-    shell_read = is_shell_read(args) and name not in _READ_OBS_TOOLS
+    from ._probe_guard import _shell_tools, is_shell_read
+    shell_read = is_shell_read(args, name)
+    shell_seen = getattr(st, "shell_read_sigs", None) or set()
+    if name in _shell_tools() and not shell_read and shell_seen:
+        # any other shell command may have changed files (sed -i, git
+        # checkout, a codegen script): earlier shell reads are stale
+        shell_seen.clear()
     duplicate = (_long_chain_help and (
         (name in _READ_OBS_TOOLS
          and (sig in st.read_sigs_seen or _covered(st, name, args))
          and not _log_read(st, name, args))
-        or (shell_read and sig in st.read_sigs_seen)))
+        or (shell_read and sig in shell_seen)))
     signal = detect("action", st, sig, strike(st, sig, per_state=not duplicate),
                     duplicate)
     looping = signal.detail if signal else ""
@@ -825,6 +830,8 @@ def _record_edit(st, name, args, result, cwd):
     if _safely(note_write, st, name, args, result, cwd):
         st.edits_made += 1
         st.read_sigs_seen.clear()   # a file just changed → re-reads are valid again
+        if getattr(st, "shell_read_sigs", None):
+            st.shell_read_sigs.clear()
         if name == "file_write" and isinstance(args, dict) and args.get("path"):
             # earlier whole-file writes to this file are replaced text: cut them
             from .._context._aging import trim_superseded_writes
@@ -860,7 +867,8 @@ def _record_read(st, name, sig, result, _long_chain_help, args=None):
     """Count a landed READ as new progress the first time its signature is seen
     (feeds the extension budget), and remember it for the duplicate-read guard."""
     from ._probe_guard import is_shell_read as _shell_read
-    if ((name in _READ_OBS_TOOLS or _shell_read(args)) and not (
+    shell_read = name not in _READ_OBS_TOOLS and _shell_read(args, name)
+    if ((name in _READ_OBS_TOOLS or shell_read) and not (
             isinstance(result, dict) and result.get("ok") is False)):
         # F2: counted OUTSIDE the _long_chain_help gate —
         # AIFORGE_CHAT_STUCK_RECOVERIES=0 turns off the duplicate-read
@@ -875,7 +883,12 @@ def _record_read(st, name, sig, result, _long_chain_help, args=None):
             st.read_sigs_ever[sig] = True
             while len(st.read_sigs_ever) > _ACTION_SIG_MAX:
                 st.read_sigs_ever.popitem(last=False)
-        if _long_chain_help:
+        if _long_chain_help and shell_read:
+            seen = getattr(st, "shell_read_sigs", None)
+            if seen is None:
+                seen = st.shell_read_sigs = set()
+            seen.add(sig)               # cleared by any other shell command
+        elif _long_chain_help:
             st.read_sigs_seen.add(sig)
             # the lines the result HOLDS, not the ones asked for (a long range
             # is cut at 5000 lines / 60k chars)

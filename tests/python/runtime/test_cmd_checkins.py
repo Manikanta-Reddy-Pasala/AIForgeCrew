@@ -197,3 +197,16 @@ def test_signals():
     assert sig.waiting_for_input("Proceed? ")
     assert sig.waiting_for_input("Proceed?\n") is None
     assert sig.waiting_for_input("Compiling 3/10") is None
+
+
+def test_a_rerun_after_an_edit_starts_a_new_job(env):
+    import subprocess as sp
+    sp.run(["git", "init", "-q", str(env)], check=True)
+    first = _run("sleep 30", env, background=True)
+    time.sleep(1.1)
+    (env / "fix.py").write_text("x = 1\n")
+    again = _run("sleep 30", env, background=True)
+    assert not again.get("already_running")
+    assert again["id"] != first["id"]
+    T._t_command_kill({"id": first["id"]}, str(env))
+    T._t_command_kill({"id": again["id"]}, str(env))

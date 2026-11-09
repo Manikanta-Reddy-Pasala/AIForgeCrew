@@ -314,15 +314,50 @@ def live_same(cmd: str, cwd: str | None = None) -> "Job | None":
             continue
         if " ".join((job.cmd or "").split()) != norm:
             continue
-        if want is not None and getattr(job, "cwd", None):
+        if want is not None:
+            if not getattr(job, "cwd", None):
+                continue                # a service has no folder: not this start
             try:
                 have = os.path.realpath(job.cwd)
             except OSError:
                 have = job.cwd
             if have != want:
                 continue
+        if _edited_since(job):
+            continue                    # a rerun after an edit tests the new code
         return job
     return None
+
+
+def _edited_since(job: Job) -> bool:
+    """A changed or new file in the job's repo is newer than the job: the
+    old run is testing code from before that edit."""
+    cwd = getattr(job, "cwd", None)
+    if not cwd:
+        return False
+    began = time.time() - (time.monotonic() - job.started)
+    try:
+        import subprocess
+        r = subprocess.run(
+            ["git", "--no-optional-locks", "-C", cwd, "status", "--porcelain",
+             "-z", "--untracked-files=all"],
+            capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            return False
+        top = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=10).stdout.strip() or cwd
+        for row in r.stdout.split("\0"):
+            rel = row[3:] if len(row) > 3 else ""
+            if not rel:
+                continue
+            try:
+                if os.path.getmtime(os.path.join(top, rel)) > began:
+                    return True
+            except OSError:
+                continue
+    except Exception:  # noqa: BLE001 — unsure: keep the running job
+        return False
+    return False
 
 
 def adopt_spooled(proc, spool, cmd: str, cwd: str, *, explicit: bool,
@@ -700,7 +735,9 @@ def wait(job: Job, max_s: float | None = None, session_id=None) -> dict:
                                 "a network call? a lock?)")
                 res["stuck"] = True
                 return res
-            if not job.stuck_reported:
+            if not job.stuck_reported and not getattr(job, "quiet_reported", False):
+                # once per job: a heartbeat every minute must not end each wait
+                job.quiet_reported = True
                 job.stuck_reported, job.streak = True, 0
                 res = look(job, "quiet: no new output yet, and the command "
                                 "is still running")
