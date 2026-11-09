@@ -217,3 +217,16 @@ def test_a_same_named_file_elsewhere_is_not_trimmed():
     convo = [w("src/a.py"), w("a.py")]
     assert trim_superseded_writes(convo, "a.py", "/repo") == 0     # /repo/a.py is not /repo/src/a.py
     assert len(convo[0]["content"]) > 10000
+
+
+
+def test_looking_at_a_background_job_of_this_turn_is_waiting():
+    from aiforge_core.runtime.chat_agent._turn import _waiting
+    st = _st()
+    look = {"cmd": "ps aux | grep deploy.sh | grep -v grep"}
+    assert not _waiting.waiting(st, "run_command", look)        # nothing started: a probe
+    P.note(st, "run_command", {"cmd": "cd /r && ./deploy.sh &"})
+    assert _waiting.waiting(st, "run_command", look)
+    assert all(not P.note(st, "run_command", look) for _ in range(30))
+    assert not _waiting.waiting(st, "run_command", {"cmd": "python3 -c 'print(1)'"})
+    assert not _waiting.waiting(st, "run_command", {"cmd": "ps aux; rm -rf x"})

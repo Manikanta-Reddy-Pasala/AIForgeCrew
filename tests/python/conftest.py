@@ -41,6 +41,9 @@ os.environ.setdefault("AIFORGE_OKR_SCOPE_LLM", "0")
 # server-imposed HOLD applies even at rpm=0, lives in module state, and outlives
 # the test that armed it by up to 60 real seconds.
 os.environ.setdefault("AIFORGE_LLM_MAX_RPM", "0")
+# The suite tests the full flow (each step's own tests); lean mode is tested
+# on its own (test_chat_lean.py).
+os.environ.setdefault("AIFORGE_CHAT_LEAN", "0")
 
 # Production waits FOREVER for a model that is down (llm/model_wait,
 # AIFORGE_LLM_WAIT_MAX_S=0). The suite points the model at a dead port on

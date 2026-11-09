@@ -101,6 +101,11 @@ if not any(getattr(h, "_aiforge_diag", False) for h in _af_log.handlers):
     _af_log.addHandler(_h)
     _af_log.propagate = False
 
+# Lean Simple chat by default (runtime/chat_agent/lean.py; AIFORGE_CHAT_LEAN=0 = full flow)
+from aiforge_core.runtime.chat_agent import lean as _lean  # noqa: E402
+
+_lean.apply()
+
 app = FastAPI(title="AIForge API")
 
 # Domain route modules split out of this file (see aiforge_core/api/routes/).

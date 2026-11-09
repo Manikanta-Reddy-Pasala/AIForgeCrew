@@ -68,17 +68,37 @@ def shell_poll(st, name, args) -> bool:
     if name not in _SHELL_TOOLS:
         return False
     a = args if isinstance(args, dict) else {}
-    m = _SHELL_POLL.search(str(a.get("cmd") or a.get("command") or ""))
-    if not m or float(m.group(1)) < _MIN_SLEEP_S:
+    cmd = str(a.get("cmd") or a.get("command") or "")
+    m = _SHELL_POLL.search(cmd)
+    if m and float(m.group(1)) >= _MIN_SLEEP_S:
+        look = m.group(2)                     # `sleep 15 && tail log`
+    elif getattr(st, "bg_started", None) is not None:
+        # a background job of this turn is running: looking at it
+        # (`ps aux | grep deploy`) with no sleep is waiting too (lean
+        # quietjob check: 8 such looks drew loop notes)
+        look = re.sub(r"^\s*cd\s+\S+\s*&&\s*", "", cmd)
+    else:
         return False
-    # every command after the sleep only looks (tail, cat, ls, kubectl get ...)
-    for part in re.split(r"\s*(?:;|&&|\|\||\|)\s*", m.group(2).strip()):
+    # every command only looks (tail, cat, ls, ps, kubectl get ...)
+    for part in re.split(r"\s*(?:;|&&|\|\||\|)\s*", look.strip()):
         word = (part.split() or [""])[0]
-        if word and word.rsplit("/", 1)[-1] not in _LOOKERS:
+        if not word or word.rsplit("/", 1)[-1] not in _LOOKERS:
             return False
     first = st.__dict__.setdefault("shell_poll_since", time.monotonic()) \
         if hasattr(st, "__dict__") else time.monotonic()
     return time.monotonic() - first <= cap_s()
+
+
+def note_background(st, name, args) -> None:
+    """A command started in the background this turn: later looks at it are
+    waiting (see :func:`shell_poll`)."""
+    if name not in _SHELL_TOOLS:
+        return
+    a = args if isinstance(args, dict) else {}
+    cmd = str(a.get("cmd") or a.get("command") or "").rstrip()
+    if a.get("background") or (cmd.endswith("&") and not cmd.endswith("&&")):
+        if hasattr(st, "__dict__") and getattr(st, "bg_started", None) is None:
+            st.bg_started = time.monotonic()
 
 
 def waiting(st, name, args) -> bool:

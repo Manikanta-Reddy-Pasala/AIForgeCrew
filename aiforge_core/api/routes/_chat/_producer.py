@@ -416,6 +416,9 @@ def _single_agent_route(pc, _rd, _pp, rctx, cwd, _doc_task, _is_build_task,
     # restatement would bring the old request back.
     if getattr(pc, "_goals_redirected", False):
         _skip_enhance = True
+    from aiforge_core.runtime.chat_agent import lean as _lean
+    if _lean.on():
+        _skip_enhance = True          # lean Simple chat: the user's words go through
     if rctx.get("spec") is not None:
         # The build route already enhanced this exact prompt (same history,
         # cwd and repo scope) before it found a single task: reuse that spec.

@@ -213,6 +213,9 @@ def _enhance_prompt(_pp, prompt, history, cwd, skip_enhance, session_id=None):
     this spec)."""
     if skip_enhance:
         return prompt
+    from aiforge_core.runtime.chat_agent import lean
+    if lean.on():
+        return prompt                 # lean: the user's words, not a restatement
     from aiforge_core.runtime import chat_cancel
     if session_id is not None and chat_cancel.is_cancelled(session_id):
         return prompt

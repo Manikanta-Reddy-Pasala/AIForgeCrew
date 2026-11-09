@@ -170,6 +170,11 @@ def note(st, name: str, args) -> str:
         return ""
     if any(getattr(st, k, False) for k in ("readonly_mode", "plan_mode", "analyze_mode")):
         return ""
+    try:
+        from ._waiting import note_background
+        note_background(st, name, args)
+    except Exception:  # noqa: BLE001
+        pass
     edits = getattr(st, "edits_made", 0)
     if edits != getattr(st, "probe_edits_seen", 0):
         # an edit LANDED since the last step (a refused one does not count)
