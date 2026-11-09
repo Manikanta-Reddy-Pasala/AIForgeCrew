@@ -42,7 +42,6 @@ services:
   aiforge:
     build:
       context: .
-      network: host
       args:
         BASE_REGISTRY: ${AIFORGE_BASE_REGISTRY:-}
         APT_MIRROR: ${AIFORGE_APT_MIRROR:-}

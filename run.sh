@@ -510,6 +510,32 @@ fi
 
 # AIForge listens on plain HTTP; the banner must say https when the operator
 # fronts it with TLS, or they copy a URL that will not connect.
+# The image is built on Docker's default build network: a build that asks for the
+# host's network needs the "network.host" entitlement, which newer Docker
+# (BuildKit / Bake) refuses without --allow=network.host. On a machine whose
+# resolver is a local stub (systemd-resolved's 127.0.0.53) build containers
+# cannot use it, so Docker falls back to public DNS, which some networks block:
+# the build then fails on name resolution. Say how to fix that, once, instead
+# of a bare "compose failed".
+_build_dns_hint() {
+  local log="$1" up=""
+  grep -qiE "Temporary failure in name resolution|Could not resolve host|Name or service not known|getaddrinfo|no such host" "$log" 2>/dev/null || return 0
+  if command -v resolvectl >/dev/null 2>&1; then
+    up="$(resolvectl dns 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1)"
+  fi
+  if [[ -z "$up" && -r /run/systemd/resolve/resolv.conf ]]; then
+    up="$(awk '/^nameserver/ && $2 !~ /^127\./ {print $2; exit}' /run/systemd/resolve/resolv.conf)"
+  fi
+  echo ""
+  echo "  The image build could not resolve host names. Docker's build containers"
+  echo "  cannot use this machine's local DNS stub, and the public DNS Docker falls"
+  echo "  back to looks blocked here. Fix it once, then run ./run.sh again:"
+  echo "    1. put  {\"dns\": [\"${up:-<the DNS server of this network>}\"]}  in /etc/docker/daemon.json"
+  echo "       (merge it with anything already in that file)"
+  echo "    2. sudo systemctl restart docker"
+  echo ""
+}
+
 _ui_scheme() {
   if   [[ -n "${AIFORGE_PUBLIC_SCHEME:-}" ]]; then printf '%s' "${AIFORGE_PUBLIC_SCHEME}"
   elif [[ -n "${AIFORGE_TLS:-}" ]]; then           printf 'https'
@@ -1093,15 +1119,20 @@ EOF_SEED
     "${DC[@]}" run --rm --no-deps --user 0 --cap-add CHOWN --entrypoint chown egress-ctl -R 65534:65534 /policy \
       >/dev/null 2>&1 || true
   fi
-  if ! "${DC[@]}" up -d --build; then
+  _build_log="$(mktemp "${TMPDIR:-/tmp}/aiforge-build.XXXXXX")"
+  # tee keeps the output on screen; pipefail keeps compose's exit status
+  if ! ( set -o pipefail; "${DC[@]}" up -d --build 2>&1 | tee "$_build_log" ); then
+    _build_dns_hint "$_build_log"
     # Guarded: the box waits for a healthy guard; a guard that never gets there
     # (no cgroup matching on this kernel) fails `up` — that is the fallback case.
     if [[ "${GUARDED:-0}" == 1 && \
           "$(docker inspect aiforge-egress-guard --format '{{.State.Health.Status}}' 2>/dev/null)" == unhealthy ]]; then
       _guard_fallback "the firewall keeper (aiforge-egress-guard) never became healthy"
     fi
+    rm -f "$_build_log"
     _fatal "docker compose up failed (see the output above)."
   fi
+  rm -f "$_build_log"
   [[ "${ISOLATED:-0}" == 1 ]] && _verify_isolated
   [[ "${GUARDED:-0}" == 1 ]] && _verify_guarded
   _start_awake_bridge
