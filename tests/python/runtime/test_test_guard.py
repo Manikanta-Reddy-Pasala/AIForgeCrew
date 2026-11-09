@@ -193,6 +193,11 @@ def test_a_looser_rewrite_gets_one_firmer_reminder(tmp_path, monkeypatch):
     assert held == []                                     # once
 
 
+@pytest.fixture(autouse=True)
+def _gate_on(monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_TEST_GUARD_GATE", "1")
+
+
 def _gate(st):
     g = G.gate(st, {"text": ""})
     try:
@@ -226,3 +231,21 @@ def test_the_finish_gate_lets_allowed_or_restored_tests_through(tmp_path):
     st.goal = "Add g()."
     f.write_text("def test_a():\n    assert f() == 1\n\ndef test_g():\n    assert g()\n")
     assert _gate(st) is None
+
+
+def test_the_finish_gate_is_off_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("AIFORGE_CHAT_TEST_GUARD_GATE", raising=False)
+    f, head = _repo(tmp_path, "tests/test_a.py", "def test_a():\n    assert f() == 1\n")
+    st = SimpleNamespace(cwd=str(tmp_path), head0=head, goal="Add g().", edits_made=2, convo=[])
+    f.write_text("def test_a():\n    assert f() == 2\n")
+    assert _gate(st) is None
+
+
+def test_the_answer_facts_name_the_changed_test(tmp_path):
+    from aiforge_core.runtime import turn_facts_line as F
+    f, head = _repo(tmp_path, "tests/test_a.py", "def test_a():\n    assert f() == 1\n")
+    f.write_text("def test_a():\n    assert f() == 2\n")
+    assert F._weakened_tests(str(tmp_path), head) == \
+        "existing test assertions changed: `tests/test_a.py` (1)"
+    f.write_text("def test_a():\n    assert f() == 1\n\ndef test_b():\n    assert 2\n")
+    assert F._weakened_tests(str(tmp_path), head) == ""

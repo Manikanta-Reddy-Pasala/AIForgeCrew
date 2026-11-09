@@ -10,6 +10,12 @@ An assertion line present in the test file at the turn's base commit and gone
 from it now is reported once: restore it and change the code, unless the user
 asked for that behaviour to change. Only tracked test files are checked; new
 tests are never reported. Off switch: ``AIFORGE_CHAT_TEST_GUARD=0``.
+
+Before the answer, a send-back with the real diff (:func:`gate`) is OFF by
+default (``AIFORGE_CHAT_TEST_GUARD_GATE=1``): on marshmallow it did get the
+code fixed so the old test passed again, but cost 2 of 11 hidden tests and
+2.5x the time in that run. What always happens: the answer's harness facts
+name the test files whose old assertions changed (turn_facts_line).
 Soft-fail throughout.
 """
 from __future__ import annotations
@@ -235,12 +241,16 @@ def check(st, name, files, args, cwd=""):
 def still_lost(st) -> list:
     """(rel, line) for every assertion a tracked test file had at the turn's
     base that it no longer has."""
-    cwd = getattr(st, "cwd", None)
     try:
         from ._contract_gate import work_base
         base = work_base(st)
     except Exception:  # noqa: BLE001
         base = None
+    return lost_in(getattr(st, "cwd", None), base)
+
+
+def lost_in(cwd, base) -> list:
+    """(rel, line): assertions the test files had at ``base`` and lack now."""
     if not cwd or not base:
         return []
     top = (_git(cwd, "rev-parse", "--show-toplevel") or "").strip()
@@ -282,6 +292,9 @@ def gate(st, step, builder=None, strict_finish=False):
     """Before the answer: an existing assertion still changed or removed, in
     a request that did not allow test changes -> continue with the real diff.
     Twice at most, the second only after more edits."""
+    if os.environ.get("AIFORGE_CHAT_TEST_GUARD_GATE", "0").strip().lower() in (
+            "0", "false", "no", "off", ""):
+        return None                     # off by default: see the module note
     sent = getattr(st, "test_guard_gate_sent", 0) or 0
     edits = getattr(st, "edits_made", 0)
     if (builder or not _on() or edits <= 0 or sent >= _GATE_MAX
@@ -320,4 +333,5 @@ def gate(st, step, builder=None, strict_finish=False):
     return "continue"
 
 
-__all__ = ["allows_test_changes", "check", "gate", "lost_assertions", "still_lost"]
+__all__ = ["allows_test_changes", "check", "gate", "lost_assertions", "lost_in",
+           "still_lost"]

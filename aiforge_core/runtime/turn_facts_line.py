@@ -171,6 +171,27 @@ def _landed(session_id) -> str:
                                    for (repo, branch), sha in got.items())
 
 
+def _weakened_tests(cwd, head0) -> str:
+    """Test files whose assertions from before the turn are changed or gone:
+    a green suite says nothing when the old test was rewritten to match."""
+    if not head0:
+        return ""
+    try:
+        from aiforge_core.runtime.chat_agent._turn._test_guard import _on, lost_in
+        if not _on():
+            return ""
+        lost = lost_in(cwd, head0)
+    except Exception:  # noqa: BLE001 — the facts never block an answer
+        return ""
+    if not lost:
+        return ""
+    per: dict = {}
+    for rel, _ in lost:
+        per[rel] = per.get(rel, 0) + 1
+    shown = _names(list(per))
+    return f"existing test assertions changed: {shown} ({len(lost)})"
+
+
 def parts(session_id, cwd, head0, dirty0: str = "") -> list:
     """The facts as short phrases, in reading order. Empty: nothing to show.
     ``dirty0``: ``git status --porcelain`` as the turn began."""
@@ -182,6 +203,9 @@ def parts(session_id, cwd, head0, dirty0: str = "") -> list:
     worked, failed, last = _commands(session_id)
     if changed:
         out.append(f"files changed in this turn: {_names(sorted(changed))}")
+        weakened = _weakened_tests(cwd, head0)
+        if weakened:
+            out.append(weakened)
     elif changed is not None:
         out.append("no file changed in this turn")
     commits = _commits(cwd, head0)
