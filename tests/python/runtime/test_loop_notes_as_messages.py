@@ -230,3 +230,16 @@ def test_looking_at_a_background_job_of_this_turn_is_waiting():
     assert all(not P.note(st, "run_command", look) for _ in range(30))
     assert not _waiting.waiting(st, "run_command", {"cmd": "python3 -c 'print(1)'"})
     assert not _waiting.waiting(st, "run_command", {"cmd": "ps aux; rm -rf x"})
+
+
+def test_a_red_suite_turns_the_read_streak_into_an_edit():
+    """sqlglot acc1 read 117 times between edits while the suite was red.
+    The note told it to run the tests again."""
+    st = _st(tests_green=False)
+    said = [P.note(st, "read_lines", {"path": "parser.py", "start": i, "end": i + 20})
+            for i in range(P.READS_EVERY)]
+    assert said[-1]
+    assert "can only edit" in said[-1]
+    assert "pytest" not in said[-1]
+    assert st.want_force_write
+    assert st.read_streak == 0

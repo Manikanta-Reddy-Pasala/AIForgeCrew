@@ -240,6 +240,18 @@ def note(st, name: str, args) -> str:
     if name in _READS:
         st.read_streak = getattr(st, "read_streak", 0) + 1
         if edits and st.read_streak % READS_EVERY == 0:
+            # sqlglot acc1: 117 reads between edits. The note said "run the
+            # tests", the tests were already red, and the model read again.
+            # Once a test has failed, the next step can only edit.
+            if (getattr(st, "tests_green", None) is False and _force_on()
+                    and getattr(st, "native_on", False)):
+                st.want_force_write = True
+                st.read_streak = 0
+                return ("[harness — not the user] The tests already failed and "
+                        "these reads are not changing the code. Your next step "
+                        "can only edit files: change the file the failure names "
+                        "(file_patch / multi_edit). Do not read again and do not "
+                        "re-run the tests until that edit is saved.")
             return (f"[harness — not the user] {st.read_streak} reads in a row and no "
                     f"edit or test run. Stop reading for now: {_run_tests_now(st)}; read "
                     "only what that failure points at.")
