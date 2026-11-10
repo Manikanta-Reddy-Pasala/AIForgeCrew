@@ -244,6 +244,13 @@ def missing_tests_gate(st, step, builder=None, strict_finish=False):
     checks in the MySQL / Oracle / SQLite / T-SQL dialect tests" -> no test
     written, the fall-back the tests would have caught broken (1/5 on that
     part; OpenCode wrote 14-17 test lines and got 5/5)."""
+    # OFF by default (AIFORGE_CHAT_MISSING_TESTS_GATE=1 turns it on). Live:
+    # sqlglot 15 -> 17/25, but attrs was 13/18 when it fired and the extra
+    # round broke the import: 0/18. Extra work after a working answer needs
+    # a way back before this can be on.
+    if os.environ.get("AIFORGE_CHAT_MISSING_TESTS_GATE", "0").strip().lower() in (
+            "0", "false", "no", "off", ""):
+        return None
     if (builder or strict_finish or not _on() or getattr(st, "missing_tests_sent", False)
             or getattr(st, "edits_made", 0) <= 0
             or any(getattr(st, k, False) for k in ("readonly_mode", "plan_mode"))):
