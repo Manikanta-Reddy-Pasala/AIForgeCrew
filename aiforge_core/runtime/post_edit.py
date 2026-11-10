@@ -285,6 +285,52 @@ def _missing_self_methods(path: str) -> list:
     return out
 
 
+def _self_attrs(text: str) -> "tuple[set, dict] | None":
+    """(names the file sets or defines, {attr: [lines that read self.attr]})."""
+    import ast
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError, RecursionError):
+        return None
+    defined, reads = set(), {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            defined.add(node.name)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            defined.add(node.id)
+        elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) \
+                and node.value.id == "self":
+            if isinstance(node.ctx, (ast.Store, ast.Del)):
+                defined.add(node.attr)
+            else:
+                reads.setdefault(node.attr, []).append(node.lineno)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                and node.value.isidentifier():
+            defined.add(node.value)        # setattr(self, "name", ...), __slots__
+    return defined, reads
+
+
+def dropped_assignments(path: str, before: str, now: str) -> list:
+    """``self.x`` set in ``before``, set nowhere in ``now``, still read there.
+
+    marshmallow fx2a: adding two parameters to ``Field.__init__`` the model
+    dropped ``self.validators = ...``; ``self.validators.insert(...)`` then
+    failed for every field and the package no longer imported (0/11).
+    """
+    old, new = _self_attrs(before), _self_attrs(now)
+    if not old or not new:
+        return []
+    out = []
+    for attr in sorted((old[0] - new[0]) & set(new[1])):
+        lines = new[1][attr]
+        if attr.startswith("__"):
+            continue
+        out.append(f"{path}:{lines[0]}:1: AF002 `self.{attr} = ...` was removed, but "
+                   f"`self.{attr}` is still read (line(s) {', '.join(map(str, lines[:5]))}): "
+                   "put the assignment back or change those reads")
+    return out
+
+
 def _py_errors(path: str, cwd: str) -> "list | None":
     missing = _missing_self_methods(path)
     r = _ruff()
