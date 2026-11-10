@@ -27,6 +27,12 @@ def _t_codegraph_explore(args: dict, cwd: str) -> dict:
     return codegraph.codegraph_explore(args, cwd)
 
 
+def _t_code_search(args: dict, cwd: str) -> dict:
+    """Natural-language code search — embed+keyword, no codegraph binary."""
+    from aiforge_core.runtime.tools import code_search as _cs
+    return _cs.code_search(args, cwd)
+
+
 def _t_read_lines(args: dict, cwd: str) -> dict:
     import os as _os
     path = str(args.get("path") or "")

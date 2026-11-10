@@ -1058,7 +1058,9 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     idle = _safely(note_step, st, name, args, result)
     seen = seen or idle
     if seen and seen[0] == "stop":
-        st.convo.append({"role": "user", "content": f"OBSERVATION: {obs}"})
+        from .._obs_vision import observation_content as _obs_content
+        st.convo.append({"role": "user",
+                         "content": _obs_content(obs, model_result)})
         from ._notes import flush as _flush
         _flush(st)
         _r = yield from finish_stuck(
@@ -1114,7 +1116,9 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
             yield {"type": "thought", "role": "system",
                    "text": "🔎 same tests still failing — traced which of the new lines ran"}
             _notes.append(_trace)
-    st.convo.append({"role": "user", "content": f"OBSERVATION: {obs}{_tail}"})
+    from .._obs_vision import observation_content as _obs_content
+    st.convo.append({"role": "user",
+                     "content": _obs_content(f"{obs}{_tail}", model_result)})
     # notes held during this step (the post-edit error check) and the loop
     # notes: after the result, its own message in native mode (_turn/_notes.py)
     from ._notes import flush, send

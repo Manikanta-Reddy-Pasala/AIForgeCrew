@@ -24,14 +24,20 @@ def _describe_screenshot(result: dict, args: dict,
                          run_id: str | None = None) -> dict:
     """Replace a screenshot's base64 payload with something the model can USE.
 
-    ``browse`` returns ``png_b64`` because its own contract is byte-level, but
-    the chat model is text-only: the base64 arrives as an unreadable 340KB
-    observation that crowds out the rest of the turn and tells it nothing. Here
-    the image is stored (so it can be re-asked about) and read by a vision
-    model instead. Pass ``audit=false`` to skip the vision call and keep only
-    the stored path.
+    ``browse`` returns ``png_b64`` because its own contract is byte-level — raw
+    base64 is an unreadable 340KB observation. The image is stored, then:
+
+    * when the chat model is multimodal, the next OBSERVATION carries the
+      pixels on the same turn (no second vision call by default);
+    * otherwise a separate vision model captions it (text-only path).
+
+    Pass ``audit=false`` to skip the caption call; pass ``audit=true`` to
+    force a caption even when the chat model can already see the pixels.
     """
     from aiforge_core.runtime import visual
+    from aiforge_core.runtime.chat_agent._obs_vision import (
+        chat_can_see, mark_pixels,
+    )
 
     png_b64 = result.pop("png_b64", None)
     if not result.get("ok") or not png_b64:
@@ -60,7 +66,14 @@ def _describe_screenshot(result: dict, args: dict,
         return result
     result["capture_id"] = capture_id
     result["screenshot"] = path
-    if str(args.get("audit", "true")).lower() in ("0", "false", "no"):
+    can_see = chat_can_see(role="chat")
+    if can_see:
+        mark_pixels(result, path, role="chat")
+        result["see"] = True
+        # Default: attach pixels, skip the second-model caption.
+        if str(args.get("audit", "false")).lower() not in ("1", "true", "yes"):
+            return result
+    elif str(args.get("audit", "true")).lower() in ("0", "false", "no"):
         return result
     audit = visual.audit_image(path, role="chat")
     if audit.get("ok"):

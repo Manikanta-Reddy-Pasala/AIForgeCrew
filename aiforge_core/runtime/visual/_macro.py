@@ -336,32 +336,48 @@ def ui_check(args: dict, cwd: str | None = None,
                 "service": service}
 
     capture_id, path = save_capture(png, args.get("label") or "ui")
-    audit = (audit_image(path, role=str(args.get("role") or "chat"))
-             if path else {"ok": False, "error": "capture_not_stored",
-                           "hint": ("the screenshot could not be written to the "
-                                    "captures directory — check permissions on "
-                                    "$AIFORGE_CONFIG_DIR/captures")})
+    role = str(args.get("role") or "chat")
     errors = _trim_console(errors)
 
     # KEY ORDER MATTERS: the observation is capped (6k chars) and serialized in
-    # insertion order, so the audit — the reason this tool exists — goes first.
-    # Put it last and a page throwing a dozen stack traces pushes it out
-    # entirely, leaving the model with truncated JSON and no idea it lost the
-    # answer.
+    # insertion order, so the audit — the reason this tool exists — goes first
+    # when the chat model cannot see pixels. When it can, attach the image on
+    # the same turn instead of a second-model caption.
     out: dict[str, Any] = {"ok": True}
-    if audit.get("ok"):
-        out["audit"] = audit["text"]
-        out["vision_role"] = audit.get("vision_role")
-    else:
-        # The capture and the console errors are still real — a missing or
-        # failing VLM downgrades the answer, it does not fail the check. The
-        # hint always names the ACTUAL error, never a guessed diagnosis.
+    try:
+        from aiforge_core.runtime.chat_agent._obs_vision import (
+            chat_can_see, mark_pixels,
+        )
+        can_see = bool(path) and chat_can_see(role=role)
+    except Exception:  # noqa: BLE001
+        can_see = False
+    force_audit = str(args.get("audit", "")).lower() in ("1", "true", "yes")
+    skip_audit = can_see and not force_audit
+    if path and skip_audit:
+        out["see"] = True
         out["audit"] = ""
-        out["audit_error"] = audit.get("error")
-        out["audit_hint"] = (audit.get("hint") or audit.get("detail")
-                             or str(audit.get("error") or "audit failed"))
-        out["audit_note"] = ("NOTHING READ THIS SCREEN — do not report it as "
-                             "correct: " + str(out["audit_hint"]))
+        mark_pixels(out, path, role=role)
+    else:
+        audit = (audit_image(path, role=role)
+                 if path else {"ok": False, "error": "capture_not_stored",
+                               "hint": ("the screenshot could not be written to the "
+                                        "captures directory — check permissions on "
+                                        "$AIFORGE_CONFIG_DIR/captures")})
+        if audit.get("ok"):
+            out["audit"] = audit["text"]
+            out["vision_role"] = audit.get("vision_role")
+        else:
+            # The capture and the console errors are still real — a missing or
+            # failing VLM downgrades the answer, it does not fail the check.
+            out["audit"] = ""
+            out["audit_error"] = audit.get("error")
+            out["audit_hint"] = (audit.get("hint") or audit.get("detail")
+                                 or str(audit.get("error") or "audit failed"))
+            out["audit_note"] = ("NOTHING READ THIS SCREEN — do not report it as "
+                                 "correct: " + str(out["audit_hint"]))
+        if can_see and path:
+            mark_pixels(out, path, role=role)
+            out["see"] = True
     out.update({
         "url": url, "capture_id": capture_id or "", "screenshot": path or "",
         "console_errors": errors,

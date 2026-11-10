@@ -112,6 +112,7 @@ from ._code import (
     _t_codegraph_callees,
     _t_codegraph_impact,
     _t_codegraph_explore,
+    _t_code_search,
     _t_read_lines,
     _t_rename_symbol,
     _t_summarize_doc,

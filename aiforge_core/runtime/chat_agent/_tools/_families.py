@@ -54,7 +54,8 @@ FAMILY_CUE = (
     ("ui", re.compile(r"\bui_check\b|\bscreenshot\b", re.I)),
     ("codegraph", re.compile(
         r"\bcodegraph\b|\bcallers\b|\bcallees\b|\bcall graph\b|\bwho calls\b|"
-        r"\bblast radius\b", re.I)),
+        r"\bblast radius\b|\bcode_search\b|\bsemantic search\b|"
+        r"\bwhere (?:is|does|lives)\b", re.I)),
 )
 
 FAMILY_TOOLS = {
@@ -65,7 +66,7 @@ FAMILY_TOOLS = {
     "ui": ("ui_check", "ui_ask"),
     "codegraph": (
         "codegraph_query", "codegraph_callers", "codegraph_callees",
-        "codegraph_impact", "codegraph_explore",
+        "codegraph_impact", "codegraph_explore", "code_search",
     ),
 }
 FAMILY_PREFIX = {
@@ -92,7 +93,7 @@ FAMILY_BLURB = {
     "services": "start, list and stop a background app",
     "logs": "show a command's or a file's live log to the user",
     "ui": "screenshot a running page and check it",
-    "codegraph": "symbol callers, callees and impact",
+    "codegraph": "symbol callers, callees, impact, and semantic code_search",
 }
 FAMILIES = tuple(name for name, _ in FAMILY_CUE)
 

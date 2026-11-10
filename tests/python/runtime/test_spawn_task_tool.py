@@ -1,4 +1,4 @@
-"""spawn_task starts a side agent for an independent part; it never nests."""
+"""spawn_task: wait=true (default) returns nested answer; wait=false side chat."""
 import pytest
 
 from aiforge_core.runtime import request_context
@@ -27,23 +27,53 @@ def wired(monkeypatch):
     return created
 
 
-def test_it_starts_a_side_task_under_the_current_chat(wired):
-    out = _spawn._t_spawn_task({"task": "Summarise how the retry layer works"}, ".")
+def test_wait_false_starts_a_side_task(wired):
+    out = _spawn._t_spawn_task(
+        {"task": "Summarise how the retry layer works", "wait": False}, ".")
     assert out["ok"] and out["task_id"] == 99 and out["state"] == "running"
+    assert out.get("waited") is False
     assert wired == [(7, "Summarise how the retry layer works", "simple")]
     assert "continue with your own part" in out["note"]
 
 
+def test_wait_true_returns_nested_answer(monkeypatch, wired):
+    def _fake_run(messages, **kw):
+        yield {"type": "thought", "text": "…"}
+        yield {"type": "message", "text": "Retry uses exponential backoff."}
+        yield {"type": "done"}
+
+    monkeypatch.setattr(
+        "aiforge_core.runtime.chat_agent.run_chat_agent", _fake_run)
+    out = _spawn._t_spawn_task(
+        {"task": "Summarise how the retry layer works"}, ".")
+    assert out["ok"] and out["waited"] is True
+    assert "exponential backoff" in out["answer"]
+    assert wired == []  # no side chat when waiting
+
+
+def test_nested_spawn_is_refused(wired):
+    tok = _spawn._SPAWN_DEPTH.set(1)
+    try:
+        out = _spawn._t_spawn_task(
+            {"task": "Summarise how the retry layer works"}, ".")
+        assert not out["ok"] and "already inside" in out["error"]
+        assert wired == []
+    finally:
+        _spawn._SPAWN_DEPTH.reset(tok)
+
+
 def test_a_side_task_does_not_start_more(wired):
     _Store.sessions = {7: {"id": 7, "parent_id": 3}}
-    out = _spawn._t_spawn_task({"task": "Summarise how the retry layer works"}, ".")
+    out = _spawn._t_spawn_task(
+        {"task": "Summarise how the retry layer works", "wait": False}, ".")
     assert not out["ok"] and wired == []
 
 
 def test_no_session_or_a_tiny_task_is_refused(monkeypatch, wired):
     assert not _spawn._t_spawn_task({"task": "x"}, ".")["ok"]
     monkeypatch.setattr(request_context, "get_session_id", lambda: None)
-    assert not _spawn._t_spawn_task({"task": "Summarise how the retry layer works"}, ".")["ok"]
+    assert not _spawn._t_spawn_task(
+        {"task": "Summarise how the retry layer works", "wait": False}, ".")["ok"]
 
 
 def test_it_is_a_registered_core_act_tool():

@@ -149,10 +149,11 @@ CATALOG: dict = {
          "timeout_s": "i", "cmd_timeout": "i"}, ("cmd",)),
     "spawn_task": (
         "Start a SECOND agent on a part of the request that does not depend on "
-        "your own part (research, analysis, a separate question). It runs in its "
-        "own chat and its answer is posted here when it finishes: do not wait, "
-        "continue with your part. Give it the full task text.",
-        {"task": "s", "mode": "s"}, ("task",)),
+        "your own part (research, analysis, a separate question). Default "
+        "wait:true — it runs now and this tool returns its FINAL answer in "
+        "THIS turn. wait:false starts a side chat and posts the answer later "
+        "(do not wait; continue with your part). Give it the full task text.",
+        {"task": "s", "mode": "s", "wait": "b"}, ("task",)),
     "schedule_task": (
         "Run an instruction LATER and REPEATEDLY. action: create | list | "
         "cancel. kind 'agent' runs the instruction itself in this chat "
@@ -267,6 +268,12 @@ CATALOG: dict = {
                          {"symbol": "s", "path": "s"}, ()),
     "codegraph_explore": ("Explore the code graph around a symbol/topic.",
                           {"query": "s", "symbol": "s"}, ()),
+    "code_search": (
+        "Semantic / hybrid code search by natural language — ranks files by "
+        "embedding similarity plus keyword overlap. No codegraph binary "
+        "needed. Prefer this when looking for WHERE something lives by meaning "
+        "('retry backoff', 'invoice tax calc'); use grep for an exact string.",
+        {"query": "s", "top_k": "i", "path": "s"}, ("query",)),
     # ── Jira ─────────────────────────────────────────────────────────────
     "jira_search": ("READ: find/list Jira issues (text query or jql). Use this for 'get/show/list my tickets'.",
                     {"query": "s", "jql": "s", "limit": "s", "time": "b"}, ()),
@@ -534,7 +541,7 @@ _CORE_ACT = frozenset({
 _CORE_READ = frozenset({
     "plan_progress", "tool_help",
     "file_read", "read_files", "read_lines", "list_dir", "find", "grep",
-    "memory_lookup", "git_status", "git_diff", "repo_map",
+    "memory_lookup", "git_status", "git_diff", "repo_map", "code_search",
     "search_chat_sessions", "session_actions",
 })
 _TOOL_HELP = {"type": "function", "function": {
