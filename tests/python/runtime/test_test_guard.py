@@ -290,3 +290,43 @@ def test_asked_for_tests_or_an_existing_test_file_is_quiet(tmp_path, monkeypatch
     f.write_text("def test_a():\n    assert 1\n\ndef test_b():\n    assert 2\n")
     st = SimpleNamespace(cwd=str(tmp_path / "b"), head0=head, goal="Rename a to b.")
     assert list(G.unasked_new_tests(st, [(str(f), str(f))], str(tmp_path / "b"))) == []
+
+
+def _mt_gate(st):
+    g = G.missing_tests_gate(st, {"text": ""})
+    try:
+        while True:
+            next(g)
+    except StopIteration as stop:
+        return stop.value
+
+
+SQLGLOT_ASK = ("Add CREATE TRIGGER parsing. Keep the existing tests working, and add your own "
+               "tests (a test_create_trigger method plus fall-back checks in the MySQL tests).")
+
+
+def test_asked_for_tests_and_none_written_is_sent_back_once(tmp_path):
+    f, head = _repo(tmp_path, "tests/test_p.py", "def test_a():\n    assert 1\n")
+    (tmp_path / "parser.py").write_text("def parse():\n    return 1\n")
+    st = SimpleNamespace(cwd=str(tmp_path), head0=head, goal=SQLGLOT_ASK, edits_made=3, convo=[])
+    assert _mt_gate(st) == "continue"
+    assert "existing behaviour must stay" in st.convo[-1]["content"]
+    assert _mt_gate(st) is None                                   # once
+
+
+def test_tests_written_in_a_tracked_or_new_file_pass(tmp_path):
+    f, head = _repo(tmp_path, "tests/test_p.py", "def test_a():\n    assert 1\n")
+    st = SimpleNamespace(cwd=str(tmp_path), head0=head, goal=SQLGLOT_ASK, edits_made=3, convo=[])
+    f.write_text("def test_a():\n    assert 1\n\ndef test_trigger():\n    assert parse()\n")
+    assert _mt_gate(st) is None
+    f.write_text("def test_a():\n    assert 1\n")
+    (tmp_path / "tests" / "test_new.py").write_text("def test_n():\n    assert 1\n")
+    assert _mt_gate(st) is None
+
+
+def test_not_asked_or_nothing_edited_is_quiet(tmp_path):
+    f, head = _repo(tmp_path, "tests/test_p.py", "def test_a():\n    assert 1\n")
+    st = SimpleNamespace(cwd=str(tmp_path), head0=head, goal="Add a --json flag.", edits_made=3, convo=[])
+    assert _mt_gate(st) is None
+    st = SimpleNamespace(cwd=str(tmp_path), head0=head, goal=SQLGLOT_ASK, edits_made=0, convo=[])
+    assert _mt_gate(st) is None

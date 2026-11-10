@@ -211,6 +211,67 @@ def unasked_new_tests(st, files, cwd=""):
              "examples, and name the tests you would add under \"Suggested, not done\".")
 
 
+_NEW_TEST = re.compile(r"\s*(?:async\s+)?(?:def\s+test|it\s*\(|test\s*\(|func\s+Test|@Test)")
+
+
+def _tests_written(cwd, base) -> "bool | None":
+    """The turn added a test since ``base``: a new test function/assertion in
+    a tracked test file, or a new (untracked or added) test file. None: git
+    cannot tell."""
+    top = (_git(cwd, "rev-parse", "--show-toplevel") or "").strip()
+    if not top or not base:
+        return None
+    diff = _git(top, "diff", "-U0", base)
+    if diff is None:
+        return None
+    current = ""
+    for ln in diff.splitlines():
+        if ln.startswith("+++ "):
+            current = ln[6:] if ln.startswith("+++ b/") else ""
+            continue
+        if not (ln.startswith("+") and current and _TEST_FILE.search(current)):
+            continue
+        body = ln[1:]
+        if _ASSERTION.search(body) or _NEW_TEST.match(body):
+            return True
+    others = _git(top, "ls-files", "--others", "--exclude-standard") or ""
+    return any(_TEST_FILE.search(p) for p in others.splitlines())
+
+
+def missing_tests_gate(st, step, builder=None, strict_finish=False):
+    """Before the answer, once: the request asks for tests and the turn wrote
+    none. sqlglot-trigger, 3 runs: "add your own tests ... plus fall-back
+    checks in the MySQL / Oracle / SQLite / T-SQL dialect tests" -> no test
+    written, the fall-back the tests would have caught broken (1/5 on that
+    part; OpenCode wrote 14-17 test lines and got 5/5)."""
+    if (builder or strict_finish or not _on() or getattr(st, "missing_tests_sent", False)
+            or getattr(st, "edits_made", 0) <= 0
+            or any(getattr(st, k, False) for k in ("readonly_mode", "plan_mode"))):
+        return None
+    goal = str(getattr(st, "goal", "") or "")
+    if not asks_for_tests(goal):
+        return None
+    try:
+        from ._contract_gate import work_base
+        written = _tests_written(getattr(st, "cwd", None) or ".", work_base(st))
+    except Exception:  # noqa: BLE001 — never block an answer on this
+        return None
+    if written is not False:
+        return None
+    st.missing_tests_sent = True
+    if step.get("text"):
+        yield {"type": "thought", "text": step["text"]}
+    yield {"type": "thought", "role": "system",
+           "text": "▶ the request asks for tests and none were written — continuing"}
+    st.convo.append({"role": "user", "content":
+        "[harness — not the user] Before you answer: the request asks for tests, and "
+        "this turn has not added any. Add them now in the repo's test files: one per "
+        "requirement, example and error case the request states, including every "
+        "place where it says existing behaviour must stay as it is (those are the "
+        "easiest to break). Run them and fix the code where they fail."})
+    return "continue"
+
+
 def check(st, name, files, args, cwd=""):
     """Events + a held note when the edit just landed changed or removed an
     assertion a tracked test file had at the turn's base."""
@@ -378,5 +439,5 @@ def gate(st, step, builder=None, strict_finish=False):
     return "continue"
 
 
-__all__ = ["allows_test_changes", "asks_for_tests", "check", "gate", "lost_assertions",
+__all__ = ["allows_test_changes", "asks_for_tests", "missing_tests_gate", "check", "gate", "lost_assertions",
            "lost_in", "still_lost", "unasked_new_tests"]
