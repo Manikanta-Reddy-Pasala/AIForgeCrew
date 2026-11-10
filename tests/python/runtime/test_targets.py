@@ -306,3 +306,14 @@ def test_a_hedged_long_cue_line_is_still_not_a_target():
     msg = ("it prints exactly the same thing apart from the timestamp, roughly like this:\n"
            "```\n{\"a\": 1}\n```")
     assert T.capture(5, msg) == []
+
+
+def test_an_earlier_requests_target_is_not_a_todo_for_a_new_request():
+    """Owner 11-10: "it goes on implementing based on a previous goal"."""
+    T.capture(5, "match this output:\n```\n" + JSON + "\n```", turn=1)
+    assert list(T.board_items(5, turn=1, goal="match this output")) == ["target-1"]
+    assert T.board_items(5, turn=3, goal="Rename low_stock to below_threshold.") == {}
+    assert list(T.board_items(5, turn=3, goal="the output still differs from target-1")) \
+        == ["target-1"]
+    assert list(T.board_items(5, turn=3, goal="", resuming=True)) == ["target-1"]
+    assert list(T.board_items(5)) == ["target-1"]          # no turn known: as before

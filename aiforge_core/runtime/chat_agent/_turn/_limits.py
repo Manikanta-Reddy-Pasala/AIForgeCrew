@@ -477,7 +477,11 @@ def _board_new_targets(st, session_id, steers=()) -> bool:
             for text in steers:
                 _targets.capture(session_id, text,
                                  turn=getattr(st, "turn_no", None))
-        items = _targets.board_items(session_id)
+        from aiforge_core.runtime import chat_goals as _cg
+        turn = getattr(st, "turn_no", None)
+        items = _targets.board_items(
+            session_id, turn=turn if turn is not None else _cg._user_turns(session_id),
+            goal=" ".join([str(getattr(st, "goal", "") or ""), *map(str, steers)]))
     except Exception:  # noqa: BLE001 — a target store miss never blocks the turn
         return False
     if not items:

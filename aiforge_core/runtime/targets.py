@@ -492,11 +492,28 @@ def block(session_id) -> str:
     return "\n".join(lines)
 
 
-def board_items(session_id) -> dict:
-    """Enforced board items for unverified targets (slug → item)."""
+def _belongs(r: dict, turn, goal: str, resuming: bool) -> bool:
+    """The target is this request's work: captured in this turn, named by the
+    message (its id, label or file name), or the message resumes the earlier
+    work. A target an earlier request set is not a to-do for every later
+    message (owner, 11-10: "it goes on implementing based on a previous goal")."""
+    if resuming or turn is None:
+        return True
+    if r.get("turn") == turn:
+        return True
+    low = (goal or "").lower()
+    names = {str(r.get("id") or ""), str(r.get("label") or ""),
+             os.path.basename(str(r.get("path") or "")).split(".")[0]}
+    return any(n and len(n) > 2 and n.lower() in low for n in names)
+
+
+def board_items(session_id, turn=None, goal: str = "", resuming: bool = False) -> dict:
+    """Enforced board items for unverified targets (slug → item), only the
+    ones that belong to this turn's request (``_belongs``); with no ``turn``
+    given, every unverified target (the old behaviour)."""
     out = {}
     for r in list(session_id):
-        if r.get("verified"):
+        if r.get("verified") or not _belongs(r, turn, goal, resuming):
             continue
         tid = str(r.get("id"))
         out[tid] = {"title": f"{r.get('label', 'output')} matches {tid} — check: "

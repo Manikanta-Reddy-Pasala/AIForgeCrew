@@ -343,7 +343,14 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     try:
         from aiforge_core.runtime import targets as _targets
         if session_id is not None:
-            for slug, item in _targets.board_items(session_id).items():
+            from aiforge_core.runtime import chat_goals as _cg
+            from aiforge_core.runtime.chat_resume import quoted_request as _qr
+            _last = next((m for m in reversed(messages or [])
+                          if isinstance(m, dict) and m.get("role") == "user"), None)
+            _resuming = bool(_last and _qr(_text_of(_last)))
+            for slug, item in _targets.board_items(
+                    session_id, turn=_cg._user_turns(session_id),
+                    goal=st.goal, resuming=_resuming).items():
                 st.board.setdefault(slug, item)
             if st.board and any(it.get("enforced") for it in st.board.values()):
                 st.board_used = True
