@@ -181,10 +181,115 @@ def format_file(path: str, cwd: str) -> "str | None":
 _RUFF_LINE = re.compile(r"^.+:\d+:\d+: [A-Z]+\d+ ")
 
 
+#: Bases that add no methods a class would call on itself.
+_PLAIN_BASES = frozenset({"object", "Generic", "Protocol", "ABC", "Exception",
+                          "BaseException"})
+
+
+def _missing_self_methods(path: str) -> list:
+    """``self.name(...)`` calls to a method the class never defines.
+
+    tomlkit (fresh-repo bench): an edit called ``self._can_extend_table(...)``
+    in ``Parser``, which has no such method; ruff cannot see attributes, 49
+    tests failed with AttributeError and the last 40 calls of the hour went to
+    grepping for ``def _can_extend_table``. Only classes whose bases are all in
+    this file (or plain) are checked, and not ones with ``__getattr__`` or a
+    metaclass: there an inherited or dynamic method is possible.
+    """
+    import ast
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            tree = ast.parse(fh.read())
+    except (OSError, SyntaxError, ValueError, RecursionError):
+        return []
+    classes = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
+
+    def own(cls) -> set:
+        names = set()
+        for node in ast.walk(cls):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.add(node.name)
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                names.add(node.id)
+            elif (isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store)
+                  and isinstance(node.value, ast.Name) and node.value.id in ("self", "cls")):
+                names.add(node.attr)
+        return names
+
+    def known(cls, seen=()) -> "set | None":
+        if cls.name in seen or any(k.arg == "metaclass" for k in cls.keywords):
+            return None
+        names = own(cls)
+        if names & {"__getattr__", "__getattribute__"}:
+            return None
+        for b in cls.bases:
+            bname = b.id if isinstance(b, ast.Name) else (
+                b.value.id if isinstance(b, ast.Subscript) and isinstance(b.value, ast.Name)
+                else None)
+            if bname in _PLAIN_BASES:
+                continue
+            if bname not in classes:
+                return None             # inherits from elsewhere: anything may exist
+            more = known(classes[bname], (*seen, cls.name))
+            if more is None:
+                return None
+            names |= more
+        return names
+
+    def base_names(cls) -> set:
+        return {b.id if isinstance(b, ast.Name) else getattr(getattr(b, "value", None), "id", "")
+                for b in cls.bases}
+
+    def below(name, seen=()) -> set:
+        """Names the classes deriving from ``name`` in this file define: a
+        base may call a method only its subclasses have (click
+        ``Parameter._parse_decls``)."""
+        out = set()
+        for c in classes.values():
+            if name in base_names(c) and c.name not in seen:
+                out |= own(c) | below(c.name, (*seen, c.name))
+        return out
+
+    def mixed_in(name) -> bool:
+        """A mixin: named so, or combined with other bases in this file
+        (``class T(PeekableMixinTests, TestCase)``) — its methods come from the
+        class it is mixed into."""
+        return "Mixin" in name or any(
+            name in base_names(c) and len(c.bases) > 1 for c in classes.values())
+
+    out = []
+    for cls in classes.values():
+        if mixed_in(cls.name):
+            continue
+        names = known(cls)
+        if names is None:
+            continue
+        names |= below(cls.name)
+        for fn in cls.body:
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or not fn.args.args:
+                continue
+            if any(getattr(d, "id", None) == "staticmethod" for d in fn.decorator_list):
+                continue
+            me = fn.args.args[0].arg
+            if me not in ("self", "cls"):
+                continue
+            for node in ast.walk(fn):
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and isinstance(node.func.value, ast.Name) and node.func.value.id == me
+                        and not node.func.attr.startswith("__")
+                        and node.func.attr not in names):
+                    out.append(f"{path}:{node.lineno}:{node.col_offset + 1}: AF001 "
+                               f"`{cls.name}` has no method `{node.func.attr}` "
+                               f"(called as `{me}.{node.func.attr}(...)`): define it or "
+                               "call a method that exists")
+    return out
+
+
 def _py_errors(path: str, cwd: str) -> "list | None":
+    missing = _missing_self_methods(path)
     r = _ruff()
     if not r:
-        return None
+        return missing or None
     # Errors only: syntax, undefined/unused-before names, bad comparisons —
     # the classic flake8 "will crash" set, never style.
     # The project's config stays in (its builtins, per-file ignores);
@@ -192,9 +297,9 @@ def _py_errors(path: str, cwd: str) -> "list | None":
     p = _run([*r, "check", "--no-cache", "--force-exclude", "--output-format", "concise",
               "--select", "E9,F63,F7,F82", path], cwd)
     if p is None or p.returncode not in (0, 1):
-        return None          # a broken ruff config: not checked, not "clean"
+        return missing or None   # a broken ruff config: not checked, not "clean"
     # "path:line:col: F821 Undefined name `x`" — the summary lines go.
-    return [ln for ln in p.stdout.splitlines() if _RUFF_LINE.match(ln)]
+    return [ln for ln in p.stdout.splitlines() if _RUFF_LINE.match(ln)] + missing
 
 
 _TSC_LINE = re.compile(r"^[^\s(][^(]*\(\d+,\d+\): error TS")
