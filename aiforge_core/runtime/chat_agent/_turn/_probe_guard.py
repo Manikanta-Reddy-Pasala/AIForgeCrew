@@ -21,6 +21,14 @@ EVERY = 10
 #: before each note: a later run made 56 `python -c "...hasattr(...)"` checks
 #: between edits, which the in-a-row count never saw.
 PROBES_EVERY = 8
+#: Throwaway python probes in a code-changing turn after which further ones
+#: are refused (three notes ignored), until the tests run again; each test
+#: run frees PROBES_AFTER_TEST more. tomlkit (fresh-repo bench): 97 of 261
+#: calls were `python -c` probes in runs of 8-10 while the notes went
+#: unheeded; OpenCode used 18 of 145. OFF by default until measured:
+#: AIFORGE_CHAT_PROBE_BLOCK=1 turns it on.
+PROBE_BLOCK_AT = 24
+PROBES_AFTER_TEST = 2
 #: Shell commands in a row (two notes ignored) before the next call may only
 #: edit files. Off switch: ``AIFORGE_CHAT_FORCE_WRITE=0``. (Turned off once:
 #: the next click run made 281 commands and 253 reads, 615 calls, against
@@ -243,6 +251,7 @@ def note(st, name: str, args) -> str:
         cmd = " ".join(str((args or {}).get("cmd") or (args or {}).get("command") or "").split())
         same = (cmd and cmd == getattr(st, "probe_last_test", None)
                 and getattr(st, "edits_made", 0) == getattr(st, "probe_test_edits", -1))
+        st.probe_free = PROBES_AFTER_TEST
         if not same:
             st.probe_last_test = cmd
             st.probe_test_edits = getattr(st, "edits_made", 0)
@@ -277,6 +286,8 @@ def note(st, name: str, args) -> str:
         return ""
     if _is_probe(args):
         st.probe_count = getattr(st, "probe_count", 0) + 1
+        if st.probe_count > PROBE_BLOCK_AT and getattr(st, "probe_free", 0) > 0:
+            st.probe_free -= 1
         if st.probe_count % PROBES_EVERY == 0:
             return (f"[harness — not the user] {st.probe_count} throwaway python "
                     f"scripts this turn to check the code. Stop probing: {_run_tests_now(st)}. "
@@ -302,4 +313,32 @@ def note(st, name: str, args) -> str:
             "the repo's tests.")
 
 
-__all__ = ["EVERY", "note"]
+def _block_on() -> bool:
+    return os.environ.get("AIFORGE_CHAT_PROBE_BLOCK", "0").strip().lower() not in (
+        "0", "false", "no", "off", "")
+
+
+def probe_refusal(st, name: str, args) -> "dict | None":
+    """Before a call: a throwaway python probe past PROBE_BLOCK_AT in a turn
+    that writes code, with no free probe left since the last test run, is
+    refused with the way forward. Never in read-only/plan/analyze turns, a
+    turn with no edit yet (ops and questions run python freely), or for
+    anything that is not a probe."""
+    if not _block_on() or name not in _shell_tools() or not _is_probe(args):
+        return None
+    if any(getattr(st, k, False) for k in ("readonly_mode", "plan_mode", "analyze_mode")):
+        return None
+    if getattr(st, "edits_made", 0) <= 0 or not getattr(st, "native_on", False):
+        return None
+    if getattr(st, "probe_count", 0) < PROBE_BLOCK_AT or getattr(st, "probe_free", 0) > 0:
+        return None
+    return {"ok": False, "error": "probe_limit",
+            "hint": (f"{st.probe_count} throwaway python scripts this turn and the "
+                     "notes did not change course, so this one was not run. Put the "
+                     "check you wanted in the repo's tests (file_patch the test file, "
+                     "an assert per case) and " + _run_tests_now(st) + ", or read "
+                     "the code that the last failure names. After a test run, "
+                     f"{PROBES_AFTER_TEST} quick scripts are allowed again.")}
+
+
+__all__ = ["EVERY", "PROBE_BLOCK_AT", "note", "probe_refusal"]
