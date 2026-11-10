@@ -384,8 +384,142 @@ def _go_errors(path: str, cwd: str) -> "list | None":
     return [ln for ln in p.stderr.splitlines() if mine.search(ln)]
 
 
+_FENCE = re.compile(r"^(\s*)(```|~~~)\s*([\w+-]*)")
+_SHELL_LANGS = frozenset({"bash", "sh", "shell", "console", "zsh", "shell-session", "terminal"})
+_SPLIT = re.compile(r"\s*(?:&&|\|\||;|\|)\s*")
+
+
+def _repo_top(path: str) -> str:
+    d = os.path.dirname(os.path.abspath(path))
+    while d and d != os.path.dirname(d):
+        if os.path.isdir(os.path.join(d, ".git")):
+            return d
+        d = os.path.dirname(d)
+    return os.path.dirname(os.path.abspath(path))
+
+
+def _declared_commands(top: str) -> set:
+    """Commands the project installs: pyproject/setup.cfg/setup.py console
+    scripts, package.json bin (and its name), Cargo package/bin names."""
+    names = set()
+    def read(rel):
+        try:
+            with open(os.path.join(top, rel), encoding="utf-8", errors="replace") as fh:
+                return fh.read()
+        except OSError:
+            return ""
+    py = read("pyproject.toml")
+    for sect in re.findall(r"\[(?:project\.scripts|project\.gui-scripts|tool\.poetry\.scripts)\]([^\[]*)", py):
+        names |= set(re.findall(r'^\s*["\']?([\w.-]+)["\']?\s*=', sect, re.M))
+    for text in (read("setup.cfg"), read("setup.py")):
+        names |= set(re.findall(r"([\w.-]+)\s*=\s*[\w.]+:\w+", text))
+    pj = read("package.json")
+    if pj:
+        try:
+            import json
+            d = json.loads(pj)
+            b = d.get("bin")
+            if isinstance(b, dict):
+                names |= set(b)
+            elif isinstance(b, str) and d.get("name"):
+                names.add(str(d["name"]).split("/")[-1])
+        except ValueError:
+            pass
+    cargo = read("Cargo.toml")
+    names |= set(re.findall(r'^\s*name\s*=\s*"([\w-]+)"', cargo, re.M))
+    return names
+
+
+def _project_names(top: str) -> set:
+    """Names a reader would take for the project's own command: the repo
+    folder and its top-level packages/modules."""
+    names = {os.path.basename(top).lower()}
+    for base in (top, os.path.join(top, "src")):
+        try:
+            for e in os.listdir(base):
+                full = os.path.join(base, e)
+                if os.path.isdir(full) and os.path.isfile(os.path.join(full, "__init__.py")):
+                    names.add(e.lower())
+        except OSError:
+            pass
+    return names
+
+
+def _module_exists(mod: str, top: str) -> bool:
+    rel = mod.replace(".", os.sep)
+    for base in (top, os.path.join(top, "src")):
+        if (os.path.isfile(os.path.join(base, rel + ".py"))
+                or os.path.isfile(os.path.join(base, rel, "__main__.py"))
+                or os.path.isfile(os.path.join(base, rel, "__init__.py"))):
+            return True
+    try:
+        import importlib.util
+        return importlib.util.find_spec(mod.split(".")[0]) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _doc_commands(text: str):
+    """(line number, command) for each command in a shell code block, or a
+    `$ ` line in any block."""
+    lang, fence = None, None
+    for n, ln in enumerate(text.splitlines(), 1):
+        m = _FENCE.match(ln)
+        if m:
+            if fence is None:
+                fence, lang = m.group(2), m.group(3).lower()
+            elif m.group(2) == fence:
+                fence, lang = None, None
+            continue
+        if fence is None:
+            continue
+        s = ln.strip()
+        if s.startswith("$ "):
+            yield n, s[2:]
+        elif lang in _SHELL_LANGS and s and not s.startswith("#") and lang != "console":
+            yield n, s
+
+
+def _doc_errors(path: str, cwd: str) -> "list | None":
+    """Commands in a docs file that run the project's own name or module,
+    where the project has no such command (use-case bench: a README said
+    `invtool --low 10 file.csv`; invtool has no console script, the way to
+    run it is `python -m invtool.cli`). Other tools are never judged."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    top = _repo_top(path)
+    declared = _declared_commands(top)
+    own = _project_names(top)
+    out = []
+    for n, cmd in _doc_commands(text):
+        for part in _SPLIT.split(cmd):
+            words = [w for w in part.split() if not re.match(r"^[A-Z_][A-Z0-9_]*=", w)]
+            if words[:1] == ["sudo"]:
+                words = words[1:]
+            if not words:
+                continue
+            prog = words[0]
+            if re.match(r"^python[0-9.]*$", prog) and len(words) > 2 and words[1] == "-m":
+                mod = words[2]
+                # only the project's own modules are judged: `python -m pip`
+                # or a module a tutorial builds is not this repo's to check
+                if mod.split(".")[0].lower() in own and not _module_exists(mod, top):
+                    out.append(f"{path}:{n}:1: AF003 the docs run `python -m {mod}`, but there "
+                               f"is no module `{mod}` here: name a module that exists")
+            elif (prog.lower() in own or prog.lower().replace("-", "_") in own) \
+                    and prog not in declared and not prog.startswith(("./", "/")):
+                out.append(f"{path}:{n}:1: AF003 the docs run `{prog}` as a command, but this "
+                           f"project declares no `{prog}` command (no console script / bin "
+                           "entry): show the way it really runs, e.g. `python -m <module>`, or "
+                           "add the entry point")
+    return out
+
+
 _CHECKERS = {".py": _py_errors, ".pyi": _py_errors, ".ts": _ts_errors, ".tsx": _ts_errors,
-             ".go": _go_errors}
+             ".go": _go_errors, ".md": _doc_errors, ".rst": _doc_errors}
 
 
 def diagnostics(path: str, cwd: str) -> "list | None":
