@@ -249,3 +249,44 @@ def test_the_answer_facts_name_the_changed_test(tmp_path):
         "existing test assertions changed: `tests/test_a.py` (1)"
     f.write_text("def test_a():\n    assert f() == 1\n\ndef test_b():\n    assert 2\n")
     assert F._weakened_tests(str(tmp_path), head) == ""
+
+
+@pytest.mark.parametrize("goal,asks", [
+    ("Add a --json flag to the CLI.", False),
+    ("Fix the crash in load_csv when qty is missing.", False),
+    ("Rename low_stock to below_threshold everywhere.", False),
+    ("Add a --json flag and write tests for it.", True),
+    ("Add pytest tests for Inventory.find.", True),
+    ("Add the flag, with unit tests.", True),
+    ("Add the flag; do not write tests.", False),
+])
+def test_asks_for_tests(goal, asks):
+    assert G.asks_for_tests(goal) is asks
+
+
+def _new_test_run(tmp_path, monkeypatch, goal):
+    f, head = _repo(tmp_path, "src/app.py", "x = 1\n")
+    new = tmp_path / "tests" / "test_app.py"
+    new.parent.mkdir()
+    new.write_text("def test_x():\n    assert True\n")
+    st = SimpleNamespace(cwd=str(tmp_path), head0=head, goal=goal)
+    held = []
+    from aiforge_core.runtime.chat_agent._turn import _notes
+    monkeypatch.setattr(_notes, "hold", lambda st, text: held.append(text))
+    events = list(G.unasked_new_tests(st, [(str(new), str(new))], str(tmp_path)))
+    return st, events, held, new
+
+
+def test_a_new_test_file_nobody_asked_for_gets_one_note(tmp_path, monkeypatch):
+    st, events, held, new = _new_test_run(tmp_path, monkeypatch, "Add a --json flag to the CLI.")
+    assert events and len(held) == 1 and "did not ask for tests" in held[0]
+    assert list(G.unasked_new_tests(st, [(str(new), str(new))], str(tmp_path))) == []
+
+
+def test_asked_for_tests_or_an_existing_test_file_is_quiet(tmp_path, monkeypatch):
+    _, events, held, _ = _new_test_run(tmp_path, monkeypatch, "Add a flag and write tests for it.")
+    assert not events and not held
+    f, head = _repo(tmp_path / "b", "tests/test_a.py", "def test_a():\n    assert 1\n")
+    f.write_text("def test_a():\n    assert 1\n\ndef test_b():\n    assert 2\n")
+    st = SimpleNamespace(cwd=str(tmp_path / "b"), head0=head, goal="Rename a to b.")
+    assert list(G.unasked_new_tests(st, [(str(f), str(f))], str(tmp_path / "b"))) == []

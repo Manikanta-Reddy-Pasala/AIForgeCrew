@@ -166,6 +166,51 @@ def allows_test_changes(goal: str, rel: str = "") -> bool:
     return bool(_ALLOWS.search(goal))
 
 
+def asks_for_tests(goal: str) -> bool:
+    """The request asks for tests (the example gate's own reading)."""
+    from ._example_gate import _ASKS_TESTS, _NO_TESTS
+    return bool(_ASKS_TESTS.search(goal or "")) and not _NO_TESTS.search(goal or "")
+
+
+def unasked_new_tests(st, files, cwd=""):
+    """A NEW test file in a turn whose request asks for no tests: one note.
+    Owner, 11-10: "sometimes it writes test cases without me even asking".
+    Updating a test the change touches (a rename) is not new and is fine."""
+    if not _on() or getattr(st, "test_guard_unasked_said", False) or not files:
+        return
+    goal = str(getattr(st, "goal", "") or "")
+    if not goal or asks_for_tests(goal):
+        return
+    try:
+        from ._contract_gate import work_base
+        base = work_base(st)
+    except Exception:  # noqa: BLE001
+        base = None
+    top = (_git(cwd or getattr(st, "cwd", "") or ".", "rev-parse", "--show-toplevel") or "").strip()
+    if not base or not top:
+        return
+    new = []
+    for shown, full in files:
+        try:
+            rel = os.path.relpath(os.path.realpath(full), os.path.realpath(top))
+        except ValueError:
+            continue
+        if rel.startswith("..") or not _TEST_FILE.search(rel.replace(os.sep, "/")):
+            continue
+        if _git(top, "cat-file", "-e", f"{base}:{rel}") is None:
+            new.append(rel)
+    if not new:
+        return
+    st.test_guard_unasked_said = True
+    yield {"type": "thought", "role": "system",
+           "text": f"⚠ {new[0]} is a new test file; the request did not ask for tests"}
+    from ._notes import hold
+    hold(st, "[harness — not the user] You created a new test file (" + ", ".join(new[:3])
+             + ") but the request did not ask for tests. Keep to what was asked: remove "
+             "it, check the change by running the existing tests and the request's own "
+             "examples, and name the tests you would add under \"Suggested, not done\".")
+
+
 def check(st, name, files, args, cwd=""):
     """Events + a held note when the edit just landed changed or removed an
     assertion a tracked test file had at the turn's base."""
@@ -333,5 +378,5 @@ def gate(st, step, builder=None, strict_finish=False):
     return "continue"
 
 
-__all__ = ["allows_test_changes", "check", "gate", "lost_assertions", "lost_in",
-           "still_lost"]
+__all__ = ["allows_test_changes", "asks_for_tests", "check", "gate", "lost_assertions",
+           "lost_in", "still_lost", "unasked_new_tests"]

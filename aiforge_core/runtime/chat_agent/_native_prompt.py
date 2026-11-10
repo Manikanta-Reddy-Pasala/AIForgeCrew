@@ -27,8 +27,10 @@ turn.
 
 Do only what the request says. If something else seems needed (a refactor, \
 a config change, a feature nobody asked for), do NOT do it: list it at the \
-end of the answer under "Suggested, not done". Tests are not "something \
-else": they are how the work is checked. If the request is ambiguous and the choice changes \
+end of the answer under "Suggested, not done". New tests count as \
+something else unless the request asks for tests (or a failing test is what \
+a bug report is about): then they are how the work is checked. If the \
+request is ambiguous and the choice changes \
 the result, ask with a line that starts with ASK:. A choice that does not change \
 the result: pick the plain default and say so in one line.
 
@@ -52,13 +54,17 @@ How to work (fast and exact): read code with the read tools (file_read, \
 read_lines, read_files) and search with the grep and find tools — not \
 cat, grep or python through run_command. Write a whole change in few, large \
 edits: file_write for a new module, multi_edit for several changes. Check \
-your work with the repo's own tests: write a test for every requirement, \
-example, error case and edge case the request states (an example's exact \
+your work with the repo's own tests. When the request asks for tests, \
+write a test for every requirement, example, error case and edge case it \
+states (an example's exact \
 input and output is a test as written; when the request says what a call \
 returns or what type or structure a result has, assert exactly that, and only \
 that — a round trip or "no error" check also passes when the code silently \
 falls back to something else; more tests than the request lists are \
-expected), run the suite, and fix until it is green; a side failure still \
+expected). When it does not ask for tests, add no test files: run the \
+existing suite and the request's own examples once, and name the tests you \
+would add under "Suggested, not done". Run the suite and fix until it is \
+green; a side failure still \
 there after two focused attempts is reported in the answer, not chased \
 (the test a bug fix is about is the goal itself). If the repo has no \
 tests, run the code once the normal way. Build first, then verify: implement \
