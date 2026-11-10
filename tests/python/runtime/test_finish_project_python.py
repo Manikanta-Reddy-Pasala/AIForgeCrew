@@ -41,3 +41,20 @@ def test_the_turns_interpreter_is_the_project_python(monkeypatch, tmp_path):
     st3 = SimpleNamespace(last_test_cmd=(1, {"cmd": "/r/.aiforge-venv/bin/python -m pytest"}),
                           last_full_test=None)
     assert O._project_python(st3, str(tmp_path)) is None
+
+
+def test_the_repos_own_venv_is_used_when_the_turn_named_none(monkeypatch, tmp_path):
+    """tomlkit: the turn made .venv with the test deps; the finish check ran
+    another python and reported a collection error."""
+    from aiforge_core.runtime import repo_ident
+    monkeypatch.setattr(repo_ident, "git_toplevel", lambda cwd: str(tmp_path))
+    py = tmp_path / ".venv" / "bin" / "python"
+    py.parent.mkdir(parents=True)
+    py.write_text("#!/bin/sh\n")
+    py.chmod(0o755)
+    st = SimpleNamespace(last_test_cmd=None, last_full_test=None)
+    assert O._project_python(st, str(tmp_path)) == str(py)
+    from aiforge_core.runtime import shell_writes
+    monkeypatch.setattr(shell_writes, "command_of", lambda x: x.get("cmd"))
+    st.last_test_cmd = (1, {"cmd": f"{sys.executable} -m pytest -q"})
+    assert O._project_python(st, str(tmp_path)) == sys.executable   # the turn's own wins

@@ -436,6 +436,16 @@ def _project_python(st, cwd) -> "str | None":
                 py = _interpreter(command_of(last[1]) or "")
                 if py and os.path.isabs(py) and os.path.exists(py) and _AIFORGE_VENV not in py:
                     return py
+        # The project's own environment, by the usual names: tomlkit's tests
+        # need pyyaml, the box blocks system pip, the turn made a .venv with
+        # it; the finish check still ran another python and said "1 error".
+        from aiforge_core.runtime import repo_ident
+        top = repo_ident.git_toplevel(cwd) or cwd
+        for env in (".venv", "venv", "env"):
+            for py in (os.path.join(top, env, "bin", "python"),
+                       os.path.join(top, env, "Scripts", "python.exe")):
+                if os.path.isfile(py) and os.access(py, os.X_OK):
+                    return py
     except Exception:  # noqa: BLE001 — the runner builds its own
         return None
     return None
