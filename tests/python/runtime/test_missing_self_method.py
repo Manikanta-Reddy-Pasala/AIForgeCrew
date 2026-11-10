@@ -113,3 +113,35 @@ def test_mixins_are_skipped(tmp_path):
             def go(self):
                 self._record_spend()
     """) == []
+
+
+def test_a_removed_assignment_still_read_is_reported():
+    before = textwrap.dedent("""
+        class Field(FieldABC):
+            def __init__(self, validate=None):
+                self.validate = validate
+                self.validators = [validate] if validate else []
+            def _validate(self, value):
+                for v in self.validators:
+                    v(value)
+        class Url(Field):
+            def __init__(self):
+                super().__init__()
+                self.validators.insert(0, 1)
+    """)
+    now = before.replace("        self.validators = [validate] if validate else []\n",
+                         "        self.pre_load = []\n")
+    out = P.dropped_assignments("fields.py", before, now)
+    assert len(out) == 1 and "`self.validators = ...` was removed" in out[0]
+    assert P.dropped_assignments("fields.py", before, before) == []
+
+
+def test_a_rename_or_a_setattr_is_not_a_drop():
+    before = "class A:\n    def __init__(self):\n        self.items = []\n    def n(self):\n        return len(self.items)\n"
+    renamed = before.replace("self.items", "self.entries")
+    assert P.dropped_assignments("a.py", before, renamed) == []
+    via_setattr = before.replace("self.items = []", "setattr(self, 'items', [])")
+    assert P.dropped_assignments("a.py", before, via_setattr) == []
+    as_property = before.replace("        self.items = []\n", "        pass\n") + \
+        "    @property\n    def items(self):\n        return []\n"
+    assert P.dropped_assignments("a.py", before, as_property) == []

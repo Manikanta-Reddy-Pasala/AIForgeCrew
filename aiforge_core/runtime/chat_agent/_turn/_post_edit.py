@@ -59,6 +59,9 @@ def post_edit_diagnostics(st, files, cwd):
         said = st.post_edit_said = {}
     for shown, full in files:
         errs = _quiet(post_edit.diagnostics, full, cwd)
+        dropped = _quiet(_dropped, st, full) or []
+        if dropped:
+            errs = [*(errs or []), *dropped]
         if not errs:
             # the file is clean on its own: does its package still import?
             imp = _quiet(import_error, st, full)
@@ -89,6 +92,30 @@ def post_edit_diagnostics(st, files, cwd):
         hold(st, "[automated error check — not the user] The file you just wrote has "
                  f"these errors; fix them before continuing:\n" + "\n".join(errs)[:1500]
                  + ("\n" + "\n".join(hints) if hints else ""))
+
+
+def _dropped(st, full) -> list:
+    """Assignments the file had at the work's base commit that this turn
+    removed while the attribute is still read (post_edit.dropped_assignments)."""
+    import os
+    import subprocess
+    if not str(full).endswith(".py"):
+        return []
+    from aiforge_core.runtime import post_edit
+    from ._contract_gate import work_base
+    base = work_base(st)
+    top = subprocess.run(["git", "-C", os.path.dirname(full), "rev-parse", "--show-toplevel"],
+                         capture_output=True, text=True, timeout=4)
+    if not base or top.returncode != 0:
+        return []
+    rel = os.path.relpath(os.path.realpath(full), os.path.realpath(top.stdout.strip()))
+    old = subprocess.run(["git", "-C", top.stdout.strip(), "show", f"{base}:{rel}"],
+                         capture_output=True, text=True, timeout=4)
+    if old.returncode != 0:
+        return []
+    with open(full, encoding="utf-8", errors="replace") as fh:
+        now = fh.read()
+    return post_edit.dropped_assignments(full, old.stdout, now)
 
 
 _UNDEFINED = re.compile(r"F821 Undefined name [`'\"]?(\w+)")
