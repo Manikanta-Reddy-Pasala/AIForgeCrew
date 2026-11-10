@@ -90,3 +90,46 @@ def test_a_function_already_removed_by_an_edit_is_not_counted(tmp_path):
     new = OLD.replace("def helper_5(x):\n    return x + 5\n\n", "")
     assert R.refusal(st, "file_write", {"path": "strutils.py", "content": new},
                      str(tmp_path)) is None
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("ext,src,names", [
+    (".ts", "export function parseDate(s) {\n}\nexport default class Store {\n}\n"
+     "const toKey = (a, b) => a + b;\nexport async function load() {}\ninterface Props {}\n",
+     {"parseDate", "Store", "toKey", "load", "Props"}),
+    (".go", "func Parse(s string) error {\n}\nfunc (p *Parser) next() byte {\n}\n", {"Parse", "next"}),
+    (".java", "public class Calc {\n    public int add(int a, int b) {\n        return a + b;\n    }\n"
+     "    private static String name() {\n}\n", {"Calc", "add", "name"}),
+    (".kt", "class Repo {\n    suspend fun load(id: Int): User {\n    }\n}\ndata class User(val id: Int)\n",
+     {"Repo", "load", "User"}),
+    (".rs", "pub fn parse(s: &str) -> Value {\n}\nstruct Parser {\n}\nimpl Parser {\n    fn next(&mut self) {}\n}\n",
+     {"parse", "Parser", "next"}),
+    (".rb", "module Util\n  def self.slug(s)\n  end\n  class Cache\n  end\nend\n", {"Util", "Cache"}),
+    (".php", "<?php\nfunction slugify($s) {\n}\nclass Cart {\n    public function total() {\n    }\n}\n",
+     {"slugify", "Cart", "total"}),
+    (".c", "static int add(int a, int b)\n{\n    if (a) {\n        return a;\n    }\n}\n", {"add"}),
+])
+def test_definitions_are_found_in_every_language(ext, src, names):
+    assert names <= R._defs(src, "f" + ext)
+    assert not ({"if", "for", "while", "return"} & R._defs(src, "f" + ext))
+
+
+def test_calls_are_not_definitions_and_unknown_files_are_not_checked():
+    py = "def run():\n    print(x)\n    return helper(1)\n"
+    assert R._defs(py, "a.py") == {"run"}
+    c = "int main(void)\n{\n    return helper(1);\n    printf(\"x\");\n}\n"
+    assert R._defs(c, "a.c") == {"main"}
+    assert R._defs("def a():\n  pass\n", "notes.md") == set()
+
+
+def test_a_go_rewrite_that_drops_functions_is_refused(tmp_path):
+    old = "".join(f"func Helper{i}(x int) int {{\n\treturn x + {i}\n}}\n\n" for i in range(8))
+    (tmp_path / "util.go").write_text(old)
+    for c in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "s"]):
+        subprocess.run(["git", "-C", str(tmp_path), *c], check=True, capture_output=True, env=ENV)
+    new = "func Helper0(x int) int {\n\treturn x\n}\n\nfunc Ellipsize(s string) string {\n\treturn s\n}\n"
+    res = R.refusal(SimpleNamespace(file_hashes={}), "file_write",
+                    {"path": "util.go", "content": new}, str(tmp_path))
+    assert res and res["error"] == "rewrite_drops_existing_code" and "Helper7" in res["lost_defs"]

@@ -30,7 +30,40 @@ import subprocess
 from collections import Counter
 
 _WRITE_TOOLS = ("file_write", "file_create")
-_DEF = re.compile(r"^\s*(?:async\s+)?(?:def|class)\s+(\w+)")
+#: A top-level-ish definition line, in the common languages: the name is the
+#: last group that matched. Python def/class; JS/TS function/class/const f =
+#: (...) =>; Go func (incl. methods); Java/Kotlin/C#/Scala/Swift classes and
+#: methods; Rust fn/struct/enum/trait/impl; Ruby def/class/module; PHP
+#: function/class; C/C++ function definitions.
+_P = {
+    "py": r"^\s*(?:async\s+)?(?:def|class)\s+(\w+)",
+    "js_fn": r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\*?\s+(\w+)",
+    "js_cls": r"^\s*(?:export\s+)?(?:default\s+)?(?:abstract\s+)?(?:class|interface|enum|type)\s+(\w+)",
+    "js_arrow": r"^\s*(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*=>",
+    "go": r"^func\s+(?:\([^)]*\)\s*)?(\w+)",
+    "go_type": r"^type\s+(\w+)\s+(?:struct|interface)",
+    "rs": r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?(?:fn|struct|enum|trait|mod)\s+(\w+)",
+    "rb": r"^\s*(?:def\s+(?:self\.)?|class\s+|module\s+)(\w+)",
+    "jvm_type": (r"^\s*(?:(?:public|private|protected|internal|static|final|abstract|override|"
+                 r"virtual|sealed|open|suspend|async|synchronized|inline|data|partial)\s+)*"
+                 r"(?:class|interface|enum|record|struct|object|fun)\s+(\w+)"),
+    "jvm_method": (r"^\s*(?:(?:public|private|protected|internal|static|final|abstract|"
+                   r"override|virtual|synchronized|async)\s+)+[\w<>\[\],.?]+\s+(\w+)\s*\([^;]*$"),
+    "php": r"^\s*(?:(?:public|private|protected|static|abstract|final)\s+)*(?:function|class|interface|trait)\s+(\w+)",
+    "c": r"^(?!\s)(?!(?:return|else|if|for|while|switch|do|case|goto)\b)[A-Za-z_][\w\*&:<>, ]*?[\s\*&]\**(\w+)\s*\([^;]*\)\s*(?:const\s*)?\{?\s*$",
+}
+#: Definition patterns by file extension; an unknown extension is not checked.
+_BY_EXT = {
+    ".py": ("py",), ".pyi": ("py",),
+    **{e: ("js_fn", "js_cls", "js_arrow") for e in (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx")},
+    ".go": ("go", "go_type"), ".rs": ("rs",), ".rb": ("rb",),
+    **{e: ("jvm_type", "jvm_method") for e in (".java", ".kt", ".kts", ".cs", ".scala", ".swift")},
+    ".php": ("php",),
+    **{e: ("c",) for e in (".c", ".h", ".cc", ".cpp", ".hpp", ".cxx")},
+}
+_DEFS_BY_EXT = {e: [re.compile(_P[k]) for k in ks] for e, ks in _BY_EXT.items()}
+_NOT_NAMES = frozenset({"if", "for", "while", "switch", "return", "catch", "else",
+                        "sizeof", "new", "delete", "throw", "case", "do"})
 
 
 def _on() -> bool:
@@ -65,19 +98,29 @@ def lost_lines(before: str, now: str, new: str) -> list:
     return list((gained - _lines(new)).elements())
 
 
-def _defs(text: str) -> set:
-    return {m.group(1) for m in map(_DEF.match, (text or "").splitlines()) if m}
+def _defs(text: str, path: str = "x.py") -> set:
+    rxs = _DEFS_BY_EXT.get(os.path.splitext(path)[1].lower())
+    if not rxs:
+        return set()
+    out = set()
+    for ln in (text or "").splitlines():
+        for rx in rxs:
+            m = rx.match(ln)
+            if m and m.group(1) not in _NOT_NAMES:
+                out.add(m.group(1))
+                break
+    return out
 
 
-def lost_defs(before: str, now: str, new: str) -> list:
+def lost_defs(before: str, now: str, new: str, path: str = "x.py") -> list:
     """Functions/classes ``now`` gained over ``before`` that ``new`` lacks."""
-    return sorted((_defs(now) - _defs(before)) - _defs(new))
+    return sorted((_defs(now, path) - _defs(before, path)) - _defs(new, path))
 
 
-def lost_existing_defs(before: str, now: str, new: str) -> list:
+def lost_existing_defs(before: str, now: str, new: str, path: str = "x.py") -> list:
     """Functions/classes the committed file has, still there now, that the
     whole-file write ``new`` no longer defines."""
-    return sorted((_defs(before) & _defs(now)) - _defs(new))
+    return sorted((_defs(before, path) & _defs(now, path)) - _defs(new, path))
 
 
 def refusal(st, name: str, args: dict, cwd) -> "dict | None":
@@ -105,7 +148,7 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     # strutils.py from memory to add one function; a dozen functions the
     # file had for years were gone, 10 old tests failed and the score fell
     # from 9/9 to 6/9 when the hour ran out.
-    kept = lost_existing_defs(before, now, content)
+    kept = lost_existing_defs(before, now, content, full)
     if kept:
         return {"ok": False, "error": "rewrite_drops_existing_code",
                 "lost_defs": kept[:10],
@@ -118,7 +161,7 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     edited = {os.path.realpath(p) for p in (getattr(st, "file_hashes", None) or {})}
     if full not in edited:
         return None
-    gone = lost_defs(before, now, content)
+    gone = lost_defs(before, now, content, full)
     if not gone:
         return None
     return {"ok": False, "error": "rewrite_drops_your_edits",
