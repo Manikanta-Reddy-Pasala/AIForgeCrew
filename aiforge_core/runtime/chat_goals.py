@@ -432,10 +432,16 @@ def _apply(data: dict, reply: dict, message: str, turn,
         if gid in by_id and by_id[gid]["status"] == OPEN and gid not in now:
             now.append(gid)
     now += [g for g in new_ids if g not in now]
+    stale = _restates_a_goal(reply.get("current"), data["goals"])
+    if not now and stale and not mid_run and _is_question(message):
+        reply = {**reply, "now": [], "current": ""}      # a question: no work
     if not now and (reply.get("now") or str(reply.get("current") or "").strip()):
         # The reply named work it did not list as a goal: the message is that
-        # work (never lose it to an empty "now").
-        text = _flat(reply.get("current") or message, _GOAL_CHARS)
+        # work (never lose it to an empty "now"). A "current" that only
+        # repeats an existing goal is not this message's work: after a
+        # stopped turn the model answered "Rename low_stock …" with now []
+        # and the OLD goal's text as current, and the turn went back to it.
+        text = _flat(message if stale else (reply.get("current") or message), _GOAL_CHARS)
         gid = _new_id(data)
         g = {"id": gid, "text": text, "status": OPEN, "turn": turn,
              "at": int(time.time())}
@@ -454,10 +460,38 @@ def _apply(data: dict, reply: dict, message: str, turn,
     # then closes nothing.
     data["now"] = now
     cur = _flat(reply.get("current"), _CURRENT_CHARS)
-    if kept or not cur:
+    if kept or not cur or (stale and not any(
+            _restates_a_goal(reply.get("current"), [by_id[g]]) for g in now if g in by_id)):
         cur = _flat(" / ".join(by_id[g]["text"] for g in now), _CURRENT_CHARS)
     data["current"] = cur if now else ""     # no goal in hand: no goal statement
     return data, changes
+
+
+def _norm_text(t) -> str:
+    return re.sub(r"\W+", " ", str(t or "").lower()).strip()
+
+
+def _restates_a_goal(current, goals) -> bool:
+    """``current`` is (nearly) the text of a goal the chat already has."""
+    cur = _norm_text(current)
+    if len(cur) < 12:
+        return False
+    import difflib
+    for g in goals or []:
+        txt = _norm_text(g.get("text"))
+        if txt and (cur == txt or difflib.SequenceMatcher(None, cur, txt).ratio() >= 0.85):
+            return True
+    return False
+
+
+_QUESTION_START = re.compile(
+    r"^\s*(?:what|why|how|where|when|which|who|whose|is|are|was|were|can|could|"
+    r"does|do|did|should|would|will|has|have)\b", re.I)
+
+
+def _is_question(message: str) -> bool:
+    m = str(message or "").strip()
+    return m.endswith("?") or bool(_QUESTION_START.match(m))
 
 
 #: The user's words for giving work up as a whole. A reply that leaves no

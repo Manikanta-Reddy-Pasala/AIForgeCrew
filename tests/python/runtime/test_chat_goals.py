@@ -536,3 +536,43 @@ def test_the_turn_note_is_not_read_as_the_users_words_for_tools():
     from aiforge_core.runtime.chat_agent._native_select import _cue_body
     note = G.turn_note({"called": True, "changes": ["dropped g1: push to GitHub"], "current": ""})
     assert "GitHub" not in _cue_body("thanks" + note)
+
+
+OLD_TOML = "Update the tomlkit parser to accept TOML v1.1.0: inline tables, optional seconds"
+
+
+def _stopped_turn():
+    """g1 set, its turn stopped before finishing (still open, in "now")."""
+    G.on_message(1, OLD_TOML, turn=1)
+
+
+def test_a_new_request_after_a_stopped_turn_is_not_the_old_goal(monkeypatch):
+    """Probe on the live model: 2 of 3 replies gave now [] and the OLD goal's
+    text as current; the turn then went back to the old work."""
+    _stopped_turn()
+    _model(monkeypatch, {"goals": [{"id": "g1", "status": "open", "text": OLD_TOML}],
+                         "now": [], "current": OLD_TOML, "question": ""})
+    out = G.on_message(1, "Rename low_stock to below_threshold in invtool.", turn=2)
+    assert "below_threshold" in out["current"] and "tomlkit" not in out["current"]
+    data = G.goals(1)
+    assert [g["text"] for g in data["goals"]].count(OLD_TOML) == 1     # no duplicate
+    assert data["now"] and data["now"] != ["g1"]
+    blk = G.block(1)
+    assert "GOAL NOW: Rename low_stock" in blk and "g1 (open, not this turn)" in blk
+
+
+def test_a_question_after_a_stopped_turn_starts_no_work(monkeypatch):
+    _stopped_turn()
+    _model(monkeypatch, {"goals": [{"id": "g1", "status": "open", "text": OLD_TOML}],
+                         "now": [], "current": OLD_TOML, "question": ""})
+    out = G.on_message(1, "what does load_csv return?", turn=2)
+    assert not out.get("current") and G.goals(1)["now"] == []
+
+
+def test_new_listed_but_not_added_becomes_the_message(monkeypatch):
+    _stopped_turn()
+    _model(monkeypatch, {"goals": [{"id": "g1", "status": "open", "text": OLD_TOML}],
+                         "now": ["new"], "current": "Rename low_stock to below_threshold in invtool.",
+                         "question": ""})
+    out = G.on_message(1, "Rename low_stock to below_threshold in invtool.", turn=2)
+    assert "below_threshold" in out["current"]
