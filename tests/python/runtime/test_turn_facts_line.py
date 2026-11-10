@@ -137,3 +137,17 @@ def test_a_file_left_uncommitted_before_the_turn_is_not_this_turns_change(repo, 
     log["live"] = [_step("file_write", path="old.py")]      # written again
     out = facts.suffix(1, str(cwd), head, dirty0)
     assert "files changed in this turn: `calc.py`, `old.py`" in out
+
+
+def test_a_venv_the_turn_made_is_not_listed_as_changed_files(repo, log):
+    """tomlkit fx2a: a .venv made to install pyyaml showed as 1044 changed files."""
+    cwd, head = repo
+    (cwd / "calc.py").write_text("x = 2\n")
+    for d in (".venv/bin", "node_modules/pkg"):
+        (cwd / d).mkdir(parents=True)
+        (cwd / d / "f").write_text("x")
+    log["live"] = [_step("file_write", path="calc.py")]
+    out = facts.suffix(1, str(cwd), head)
+    assert "files changed in this turn: `calc.py`." in out or \
+        "files changed in this turn: `calc.py` ·" in out
+    assert ".venv" not in out and "node_modules" not in out

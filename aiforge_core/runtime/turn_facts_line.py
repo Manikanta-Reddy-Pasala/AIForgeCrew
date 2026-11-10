@@ -37,8 +37,12 @@ def _names(paths, limit: int = _MAX_NAMES) -> str:
     return shown + (f" (+{len(paths) - limit} more)" if len(paths) > limit else "")
 
 
-#: What the harness itself writes into a workspace: never the turn's work.
-_OWN = (".codegraph/", ".aiforge", ".pytest_cache/", "__pycache__/")
+#: What the harness itself writes into a workspace, and environments a turn
+#: installs to run the tests (tomlkit fx2a: a .venv in the repo listed as
+#: "1044 more" changed files): never the turn's work.
+_OWN = (".codegraph/", ".aiforge", ".pytest_cache/", "__pycache__/",
+        ".venv/", "venv/", ".tox/", ".nox/", "node_modules/", ".mypy_cache/",
+        ".ruff_cache/")
 
 
 def _own(path: str) -> bool:
