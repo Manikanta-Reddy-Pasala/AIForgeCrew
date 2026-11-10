@@ -1137,20 +1137,6 @@ def _rewrite_gate(st, name, args, cwd):
     return "continue"
 
 
-def _probe_gate(st, name, args):
-    """A throwaway python probe past the turn's limit is refused
-    (``_probe_guard.probe_refusal``). Returns "continue" when refused."""
-    from ._probe_guard import probe_refusal
-    res = probe_refusal(st, name, args)
-    if res is None:
-        return None
-    yield {"type": "thought", "role": "system",
-           "text": "⛔ refused another throwaway script — write it as a test instead"}
-    yield {"type": "tool", "name": name, "args": args, "result": res}
-    st.convo.append({"role": "user", "content": f"OBSERVATION: {json.dumps(res)}"})
-    return "continue"
-
-
 def _discard_gate(st, name, args, cwd):
     """A shell command that would throw away this turn's own edits (an
     `rm core.py` / `git checkout .` reset mid-run) is refused before any

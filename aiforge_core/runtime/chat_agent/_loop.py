@@ -385,10 +385,7 @@ def _gated_action(st, step, name, args, sig, n, cwd, session_id):
     _sig = yield from _git_target_gate(st, name, args, cwd)
     if _sig == "continue":
         return "continue"
-    from ._turn._action import _discard_gate, _probe_gate, _rewrite_gate
-    _sig = yield from _probe_gate(st, name, args)
-    if _sig == "continue":
-        return "continue"
+    from ._turn._action import _discard_gate, _rewrite_gate
     _sig = yield from _discard_gate(st, name, args, cwd)
     if _sig == "continue":
         return "continue"
