@@ -17,6 +17,10 @@ is normal. The model can make the change with file_patch / multi_edit, or send
 the same write again with ``"drop_edits": true`` when dropping them is what it
 means (its own key: file_write's ``force`` also skips the syntax check). Off
 switch: ``AIFORGE_CHAT_REWRITE_GUARD=0``.
+
+The same holds for the repo's own code: a whole-file write of a committed
+file that drops a function or class the file has is refused
+(``rewrite_drops_existing_code``), whether or not the turn wrote it before.
 """
 from __future__ import annotations
 
@@ -70,6 +74,12 @@ def lost_defs(before: str, now: str, new: str) -> list:
     return sorted((_defs(now) - _defs(before)) - _defs(new))
 
 
+def lost_existing_defs(before: str, now: str, new: str) -> list:
+    """Functions/classes the committed file has, still there now, that the
+    whole-file write ``new`` no longer defines."""
+    return sorted((_defs(before) & _defs(now)) - _defs(new))
+
+
 def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     if name not in _WRITE_TOOLS or not _on() or not isinstance(args, dict):
         return None
@@ -81,8 +91,7 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
         return None
     path = os.path.expanduser(path)
     full = os.path.realpath(path if os.path.isabs(path) else os.path.join(cwd or ".", path))
-    edited = {os.path.realpath(p) for p in (getattr(st, "file_hashes", None) or {})}
-    if full not in edited or not os.path.isfile(full):
+    if not os.path.isfile(full):
         return None
     try:
         with open(full, encoding="utf-8", errors="replace") as fh:
@@ -92,6 +101,23 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     before = _committed(full)
     if not before:
         return None                   # outside git, or new this turn: a draft
+    # The repo's own code: boltons fr1a, 6 minutes in, wrote all of
+    # strutils.py from memory to add one function; a dozen functions the
+    # file had for years were gone, 10 old tests failed and the score fell
+    # from 9/9 to 6/9 when the hour ran out.
+    kept = lost_existing_defs(before, now, content)
+    if kept:
+        return {"ok": False, "error": "rewrite_drops_existing_code",
+                "lost_defs": kept[:10],
+                "hint": (f"this whole-file write would delete {len(kept)} function(s)/"
+                         f"class(es) {path} already has: {', '.join(kept[:6])}"
+                         f"{' ...' if len(kept) > 6 else ''}. To add or change code in an "
+                         "existing file use file_patch or multi_edit. Send the same write "
+                         "with \"drop_edits\": true only if deleting them is what the "
+                         "request asks for.")}
+    edited = {os.path.realpath(p) for p in (getattr(st, "file_hashes", None) or {})}
+    if full not in edited:
+        return None
     gone = lost_defs(before, now, content)
     if not gone:
         return None
