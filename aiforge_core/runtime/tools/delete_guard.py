@@ -140,6 +140,134 @@ def is_destructive_delete(cmd: str, cwd: "str | None" = None) -> bool:
     return True
 
 
+# ── deleting a repository's version history ─────────────────────────────────
+# `rm -rf .git` (or .hg/.svn/.jj/.bzr/_darcs) throws away every commit, branch
+# and stash, and no edit can bring it back. It is never a step towards a coding
+# goal: an agent reaches for it to "start clean", to dodge a git refusal, or to
+# re-fetch the project from upstream over its own work. So it is a floor of its
+# own: approvals being off, the sandbox, or an allow-delete opt-in do not run it
+# — only a human who sees this exact command can.
+_VCS_DIRS = (".git", ".hg", ".svn", ".jj", ".bzr", "_darcs")
+_VCS_ALT = "|".join(re.escape(d) for d in _VCS_DIRS)
+# A path naming the metadata folder itself: `.git`, `./.git/`, `repo/.git`,
+# `"/abs/.git"` — never something inside it (`.git/index.lock` is routine) and
+# never a sibling name (`.gitignore`, `.github`, `.svnignore`).
+_VCS_PATH = re.compile(r"""^(?:.*[/\\])?(?:""" + _VCS_ALT + r""")[/\\]?$""")
+# Globs that also expand to the metadata folder: `.*`, `.[!.]*`, `.git*`.
+_VCS_GLOB = re.compile(r"""^(?:.*[/\\])?(?:\.\*|\.\[!?\^?\.\]\*|(?:""" + _VCS_ALT
+                       + r""")\*)$""")
+_SEGMENT_SPLIT = re.compile(r"&&|\|\||[;|&\n]|\$\(|`|\(|\)")
+# Shell verbs that remove (or move away) what they are given.
+_REMOVE_VERBS = frozenset({"rm", "rmdir", "rd", "del", "erase", "unlink",
+                           "remove-item", "ri", "rimraf", "trash", "mv",
+                           "move", "move-item", "shred", "srm"})
+_WRAPPERS = frozenset({"sudo", "doas", "command", "builtin", "env", "nice",
+                       "nohup", "time", "xargs", "busybox", "exec", "npx",
+                       "pnpx", "bunx", "yarn", "pnpm", "call", "cmd", "/c"})
+# In-language removals: shutil.rmtree('.git'), fs.rmSync(".git"), os.RemoveAll,
+# FileUtils.rm_rf, Directory.Delete, std::fs::remove_dir_all, unlink(...).
+_CODE_REMOVE = re.compile(
+    r"""(?:rmtree|rmSync|rmdirSync|rm_rf|rm_r|remove_dir_all|RemoveAll|"""
+    r"""deleteDirectory|Delete|rmdir|remove|unlink|rm)\s*\(\s*[^)]*?['"]"""
+    r"""(?:[^'"]*[/\\])?(?:""" + _VCS_ALT + r""")[/\\]?['"]""")
+# find . -name .git -exec rm -rf {} + / -delete
+_FIND_REMOVE = re.compile(
+    r"""\bfind\b[^;&|\n]*-(?:i?name|path)\s+['"]?(?:\*/)?(?:""" + _VCS_ALT
+    + r""")['"]?[^;&|\n]*(?:-delete\b|-exec\s+(?:rm|rmdir)\b)""")
+
+
+def _words(segment: str) -> list[str]:
+    import shlex
+    try:
+        return shlex.split(segment, posix=True)
+    except ValueError:           # unbalanced quote: fall back to plain words
+        return segment.split()
+
+
+def _segment_removes_vcs(segment: str, copies: frozenset = frozenset()) -> bool:
+    words = _words(segment)
+    # Skip `sudo`, `env X=1`, `time` … and their own options to reach the verb.
+    while words and (words[0].lower() in _WRAPPERS
+                     or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0])
+                     or (words[0].startswith("-") and len(words) > 1)):
+        words = words[1:]
+    if not words:
+        return False
+    verb = os.path.basename(words[0]).lower()
+    if verb.endswith(".exe"):
+        verb = verb[:-4]
+    if verb not in _REMOVE_VERBS:
+        return False
+    args = [w.strip() for w in words[1:]]
+    if verb == "mv" or verb in ("move", "move-item"):
+        # Moving the history folder away loses it from the repo just the same;
+        # only the SOURCE operands count (the last one is the destination).
+        args = [a for a in args if not a.startswith("-")][:-1]
+    for a in args:
+        if a.startswith("-") or (a.startswith("/") and len(a) <= 3
+                                 and a[1:].isalpha()):
+            continue             # an option (`-rf`, Windows `/s`, `/q`)
+        if (_VCS_PATH.match(a) or _VCS_GLOB.match(a)) \
+                and _parent(a) not in copies:
+            return True
+    return False
+
+
+_COPY_VERBS = frozenset({"cp", "rsync", "robocopy", "xcopy", "copy-item",
+                         "ditto"})
+
+
+def _fresh_copies(cmd: str) -> set[str]:
+    """Folders this same command creates as a COPY (`cp -r a b`, `rsync a/ b`):
+    dropping the history of a scratch copy just made loses nothing."""
+    out: set[str] = set()
+    for seg in _SEGMENT_SPLIT.split(cmd):
+        words = _words(seg)
+        if not words or os.path.basename(words[0]).lower() not in _COPY_VERBS:
+            continue
+        operands = [w for w in words[1:] if not w.startswith("-")]
+        if len(operands) >= 2:
+            out.add(os.path.normpath(operands[-1].rstrip("/\\")))
+    return out
+
+
+def _parent(path: str) -> str:
+    p = re.sub(r"[/\\]+$", "", path)
+    return os.path.normpath(os.path.dirname(p) or ".")
+
+
+def removes_vcs_history(cmd: str) -> bool:
+    """Whether ``cmd`` deletes (or moves away) a repository's version-control
+    folder — `.git`, `.hg`, `.svn`, `.jj`, `.bzr`, `_darcs` — in any shell
+    (POSIX, PowerShell, cmd.exe) or as an inline script (Python, Node, Ruby,
+    Go, Rust, .NET). Deleting something INSIDE it (a stale `index.lock`) and
+    sibling files (`.gitignore`, `.github/`) do not count."""
+    if not cmd:
+        return False
+    if _CODE_REMOVE.search(cmd) or _FIND_REMOVE.search(cmd):
+        return True
+    copies = frozenset(_fresh_copies(cmd))
+    return any(_segment_removes_vcs(seg, copies)
+               for seg in _SEGMENT_SPLIT.split(cmd) if seg.strip())
+
+
+VCS_HISTORY_REFUSAL = (
+    "Refused: this command deletes the repository's version history (the "
+    "{dir} folder) — every commit, branch and stash, with no way back. That is "
+    "never needed to finish a coding task, and it is not run even with "
+    "approvals off. Keep the existing repository: to see the original code use "
+    "`git show HEAD:<path>` or `git diff`; to undo one file use "
+    "`git checkout -- <path>`. If the user really wants the history gone, ask "
+    "them to do it themselves."
+)
+
+
+def vcs_history_refusal(cmd: str) -> str:
+    low = (cmd or "").lower()
+    found = next((d for d in _VCS_DIRS if d in low), ".git")
+    return VCS_HISTORY_REFUSAL.format(dir=found)
+
+
 def allow_delete(env_keys: tuple[str, ...] = ("AIFORGE_ALLOW_DELETE",)) -> bool:
     for k in env_keys:
         if os.environ.get(k, "").strip().lower() in ("1", "true", "yes", "on"):

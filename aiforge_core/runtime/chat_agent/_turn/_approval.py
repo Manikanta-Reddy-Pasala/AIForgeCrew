@@ -31,6 +31,21 @@ def _is_destructive_delete(cmd: str, cwd: str | None = None) -> bool:
         return False
 
 
+def _removes_vcs_history(name, args) -> str:
+    """The refusal text when a shell-family call deletes the repository's
+    version history (``.git`` and friends), else ""."""
+    if name not in _SHELL_TOOLS:
+        return ""
+    cmd = args.get("cmd") or args.get("command") or ""
+    try:
+        from aiforge_core.runtime.tools import delete_guard
+        if delete_guard.removes_vcs_history(cmd):
+            return delete_guard.vcs_history_refusal(cmd)
+    except Exception:  # noqa: BLE001 — unreadable: the other gates stand
+        pass
+    return ""
+
+
 def _commit_auto_approved(cmd: str, repo: str, session_id) -> bool:
     """The scoped, revocable, audited "commit directly" opt-in.
 
@@ -101,6 +116,10 @@ def _command_gate_flags(name, args, cwd, session_id, _mode_approvals):
     repo = _repo_name(cwd)
     destructive_del = _is_destructive_delete(cmd, cwd)
     auto_commit = _commit_auto_approved(cmd, repo, session_id)
+    if _removes_vcs_history(name, args):
+        # Only a human who sees this exact command may delete the history:
+        # no pre-confirmation, no sandbox or allow-delete exemption.
+        return True, False
     if destructive_del and _delete_pre_confirmed(cmd, repo, session_id,
                                                  _mode_approvals):
         destructive_del = False
@@ -352,6 +371,20 @@ def _approval_gate(name, args, cwd, session_id, convo):
         seen = {"next_step": GUIDANCE[kind], **result}
         convo.append({"role": "user",
                       "content": f"OBSERVATION: {json.dumps(seen)}"})
+        return "continue"
+    # Deleting the repository's history (.git, .hg, ...) is asked of a human
+    # who sees the command, or refused: with approvals off, or with no human
+    # attached, nobody would see it, so it does not run.
+    from aiforge_core.runtime import chat_approve
+    _vcs = _removes_vcs_history(name, args)
+    if _vcs and (session_id is None
+                 or not chat_approve.approvals_required(session_id)):
+        result = {"ok": False, "blocked": "vcs_history", "error": _vcs}
+        _log.warning("chat.vcs_history_refused session=%s cmd=%s", session_id,
+                     (args.get("cmd") or args.get("command") or "")[:200])
+        yield {"type": "tool", "name": name, "args": args, "result": result}
+        convo.append({"role": "user",
+                      "content": f"OBSERVATION: {json.dumps(result)}"})
         return "continue"
     _gate, _destructive_del, _force_review, _bypass = _compute_gate_decision(
         name, args, cwd, session_id, verdict)

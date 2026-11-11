@@ -373,6 +373,10 @@ def bash(
         return _err_result(command or "", "empty_command")
     # Delete policy: autonomous for everything else, ask before deleting.
     from aiforge_core.runtime.tools import delete_guard
+    if delete_guard.removes_vcs_history(command):
+        # No human here to see it: the repository's history is never deleted.
+        return _err_result(command, delete_guard.vcs_history_refusal(command),
+                           blocked="vcs_history")
     if not delete_guard.allow_delete() \
             and delete_guard.is_destructive_delete(command):
         return _err_result(command, delete_guard.REFUSAL, blocked="delete")
