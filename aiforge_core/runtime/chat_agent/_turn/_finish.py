@@ -433,7 +433,23 @@ def _handle_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
 
 def _finish_checks(st, step, builder, strict_finish, plan_mode, readonly_mode,
                    cwd, _asks, _wt_fp0):
-    """The checks a FINAL must pass; "continue" when one sends it back."""
+    """The checks a FINAL must pass; "continue" when one sends it back. The
+    first send-back keeps the answer's code (``_checkpoint``) so the extra
+    round can be undone when it makes the tests worse."""
+    _sig = yield from _finish_checks_inner(st, step, builder, strict_finish, plan_mode,
+                                           readonly_mode, cwd, _asks, _wt_fp0)
+    if _sig == "continue" and not (builder or plan_mode or readonly_mode):
+        try:
+            from . import _checkpoint
+            _checkpoint.save(st, cwd, "the harness asked for more work on a finished answer")
+        except Exception:  # noqa: BLE001 — a checkpoint never blocks a turn
+            pass
+    return _sig
+
+
+def _finish_checks_inner(st, step, builder, strict_finish, plan_mode, readonly_mode,
+                         cwd, _asks, _wt_fp0):
+    """The checks themselves (see ``_finish_checks``)."""
     _sig = yield from _final_nudges(st, step, builder, strict_finish, _asks)
     if _sig == "continue":
         return "continue"
@@ -510,6 +526,16 @@ def _accept_final(st, step, builder, strict_finish, plan_mode, readonly_mode,
     from aiforge_core.runtime import cmd_jobs_promote as _promote
     _promoted = _promote.promote_turn_jobs()
     step["text"] = _strip_own_notes(step.get("text") or "")
+    # The extra round after a send-back made the tests worse: its code goes,
+    # the answer's code comes back (before the facts below are measured).
+    if not (builder or plan_mode or readonly_mode):
+        try:
+            from . import _checkpoint
+            _back = _checkpoint.restore_if_worse(st, cwd)
+            if _back:
+                step["text"] = _back + (step.get("text") or "")
+        except Exception:  # noqa: BLE001 — never blocks the answer
+            pass
     _bg_note = (_unfinished + _open_items_note(st, builder, step["text"])
                 + _promote.answer_suffix(_promoted))
     # One factual line about what this turn leaves behind (commands still
