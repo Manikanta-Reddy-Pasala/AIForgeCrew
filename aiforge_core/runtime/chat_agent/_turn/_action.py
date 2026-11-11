@@ -860,6 +860,8 @@ def _record_edit(st, name, args, result, cwd):
                 from . import _test_guard
                 yield from _test_guard.check(st, name, files, args, cwd)
                 yield from _test_guard.unasked_new_tests(st, files, cwd)
+                from . import _stub_note
+                yield from _stub_note.check(st, files, cwd)
 
 def _git_target_after(st, name, args, result, cwd) -> str:
     from aiforge_core.runtime import git_target

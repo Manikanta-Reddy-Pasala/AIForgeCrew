@@ -196,6 +196,15 @@ def _weakened_tests(cwd, head0) -> str:
     return f"existing test assertions changed: {shown} ({len(lost)})"
 
 
+def _stubs_left(cwd, head0) -> str:
+    """Functions this turn left as not-implemented stubs (any language)."""
+    try:
+        from aiforge_core.runtime.chat_agent._turn._stub_note import stubs_left
+        return stubs_left(cwd, head0)
+    except Exception:  # noqa: BLE001 — the facts never block an answer
+        return ""
+
+
 def parts(session_id, cwd, head0, dirty0: str = "") -> list:
     """The facts as short phrases, in reading order. Empty: nothing to show.
     ``dirty0``: ``git status --porcelain`` as the turn began."""
@@ -210,6 +219,9 @@ def parts(session_id, cwd, head0, dirty0: str = "") -> list:
         weakened = _weakened_tests(cwd, head0)
         if weakened:
             out.append(weakened)
+        stubs = _stubs_left(cwd, head0)
+        if stubs:
+            out.append(stubs)
     elif changed is not None:
         out.append("no file changed in this turn")
     commits = _commits(cwd, head0)
