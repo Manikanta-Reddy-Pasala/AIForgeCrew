@@ -83,3 +83,13 @@ def test_not_without_edits_a_test_command_or_when_off(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_CHAT_SPEC_RUN", "0")
     st.edits_made = 1
     assert list(S.gate(st, {}, None, False)) == []
+
+
+def test_an_example_that_never_finishes_is_reported_as_a_hang(tmp_path, monkeypatch):
+    """sqlglot ck1a: a late edit made the parser loop forever on one input;
+    a run cut off by its time limit used to count as nothing found."""
+    monkeypatch.setattr(S, "_TIMEOUT_S", 3)
+    st = _repo(tmp_path, "def split(text):\n    while True:\n        pass\n")
+    fails = S.run(st, str(tmp_path))
+    assert fails and fails[0]["kind"] == "hang" and 'split(' in fails[0]["what"]
+    assert "did not finish in 3 s" in S.message(fails) and "loops forever" in S.message(fails)

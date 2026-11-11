@@ -412,6 +412,12 @@ def _failure_signature(output: str) -> str:
     return signature(output)
 
 
+#: A run that never finished: the whole-run time limit, or pytest-timeout's
+#: per-test cut ("Timeout >20.0s", "+++ Timeout +++").
+_HUNG = re.compile(r"did not finish in \d+\s*s|a test hangs|\btimed out after\b|"
+                   r"\+{3,} Timeout \+{3,}|^E\s+Failed: Timeout >", re.I | re.M)
+
+
 def _fail_count(output: str) -> int:
     """Number of unhealthy tests from the build/test output (for the regression
     guard + reconcile progress signal). Sums pytest FAILED **and** ERRORS — a
@@ -420,6 +426,10 @@ def _fail_count(output: str) -> int:
     'failed' made the loop stop early thinking it was nearly done. 999 =
     couldn't-run/collection-error (worst); 0 = all green."""
     out = output or ""
+    if _HUNG.search(out):
+        # a run cut off by its time limit counted 0: no counts, no error word
+        # ("the test run did not finish in 300 s — a test hangs")
+        return 999
     failed_n = _count_before(out, ("failed",))
     errored_n = _count_before(out, ("error", "errors"))
     n = (failed_n or 0) + (errored_n or 0)

@@ -199,7 +199,11 @@ def run(st, cwd) -> list:
             except OSError:
                 proc.kill()
             proc.communicate()
-            return []
+            st.spec_run_done = True
+            # A run that never ends is the worst result, not "nothing ran":
+            # a loop that never stops on one of the request's inputs.
+            return [{"kind": "hang", "what": ", ".join(
+                [e["call"] for e in runnable][:4] + [f"import {m}" for m in imports][:2])}]
     st.spec_run_done = True                   # used up only once something ran
     try:
         return json.loads((out or "").strip().splitlines()[-1])
@@ -210,7 +214,11 @@ def run(st, cwd) -> list:
 def message(fails: list) -> str:
     rows = []
     for f in fails[:12]:
-        if f["kind"] == "import":
+        if f["kind"] == "hang":
+            rows.append(f"- running {f['what']} did not finish in {_TIMEOUT_S} s: the code "
+                        "probably loops forever on one of these inputs (a `while` that "
+                        "never moves on, a retry with no end)")
+        elif f["kind"] == "import":
             rows.append(f"- `import {f['what']}` fails: {f['error'][:200]}")
         else:
             rows.append(f"- `{f['what']}` should give `{f['want']}` but gives {f['got']}")
