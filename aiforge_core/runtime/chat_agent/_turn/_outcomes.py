@@ -119,6 +119,16 @@ def _note_green_tests(st, name, args, result, cwd) -> None:
     if stale:
         return                        # tested the code as it was before the edits
     st.last_test_cmd = (name, dict(args or {}))      # any test run: its interpreter
+    if result.get("ok") is not True:
+        # tests that never started for a missing dependency (tomlkit: yaml)
+        try:
+            from . import _env_guard
+            from ._notes import hold
+            _env = _env_guard.note(st, name, args, result_text(result), cwd)
+            if _env:
+                hold(st, _env)
+        except Exception:  # noqa: BLE001 — a hint never breaks a step
+            pass
     known = _only_known_failures(st, result)
     _gaming.note_test_result(st, True if known else result.get("ok"))
     if result.get("ok") is not True and not known:
