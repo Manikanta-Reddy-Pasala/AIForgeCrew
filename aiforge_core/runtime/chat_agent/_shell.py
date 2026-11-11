@@ -497,6 +497,10 @@ def _run_refusal(cmd: str, args: dict, base: str, *,
     from aiforge_core.runtime.tools import delete_guard
     allow_delete = delete_guard.allow_delete(
         ("AIFORGE_CHAT_ALLOW_DELETE", "AIFORGE_ALLOW_DELETE"))
+    if not args.get(delete_guard.VCS_APPROVED_KEY) \
+            and delete_guard.removes_vcs_history(cmd, base):
+        return {"ok": False, "blocked": "vcs_history",
+                "error": delete_guard.vcs_history_refusal(cmd)}
     if not allow_delete and not args.get("confirm_delete") \
             and delete_guard.is_destructive_delete(cmd, base):
         return {"ok": False, "blocked": "delete",

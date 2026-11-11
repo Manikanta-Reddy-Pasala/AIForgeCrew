@@ -150,30 +150,101 @@ def is_destructive_delete(cmd: str, cwd: "str | None" = None) -> bool:
 _VCS_DIRS = (".git", ".hg", ".svn", ".jj", ".bzr", "_darcs")
 _VCS_ALT = "|".join(re.escape(d) for d in _VCS_DIRS)
 # A path naming the metadata folder itself: `.git`, `./.git/`, `repo/.git`,
-# `"/abs/.git"` — never something inside it (`.git/index.lock` is routine) and
-# never a sibling name (`.gitignore`, `.github`, `.svnignore`).
-_VCS_PATH = re.compile(r"""^(?:.*[/\\])?(?:""" + _VCS_ALT + r""")[/\\]?$""")
-# Globs that also expand to the metadata folder: `.*`, `.[!.]*`, `.git*`.
-_VCS_GLOB = re.compile(r"""^(?:.*[/\\])?(?:\.\*|\.\[!?\^?\.\]\*|(?:""" + _VCS_ALT
-                       + r""")\*)$""")
-_SEGMENT_SPLIT = re.compile(r"&&|\|\||[;|&\n]|\$\(|`|\(|\)")
+# `"/abs/.git"`, `"$(git rev-parse --show-toplevel)/.git"` — never a sibling
+# name (`.gitignore`, `.github`, `.svnignore`).
+_VCS_PATH = re.compile(r"^(?:.*[/\\])?(?:" + _VCS_ALT + r")[/\\]?$")
+# Emptying it is the same loss: `.git/*`, `.git/objects`, `.git/refs/...`.
+# Routine files inside it (`index.lock`, `MERGE_HEAD`, hooks) stay free.
+_VCS_GUTS = re.compile(r"^(?:.*[/\\])?(?:" + _VCS_ALT
+                       + r")[/\\](?:\*|objects|refs|store|data|db|wc\.db"
+                       r"|logs)(?:[/\\].*)?$")
+# Globs that also expand to the metadata folder: `.*`, `.??*`, `.[!.]*`,
+# `.g*`, `.git*`.
+_VCS_GLOB = re.compile(r"^(?:.*[/\\])?(?:\.\*|\.\?+\*|\.\[[^\]]*\]\*|\.[a-z]{1,3}\*"
+                       r"|(?:" + _VCS_ALT + r")\*)$")
+_GIT_DIR_SUBST = re.compile(r"rev-parse\s+--(?:absolute-)?git-(?:common-)?dir")
 # Shell verbs that remove (or move away) what they are given.
 _REMOVE_VERBS = frozenset({"rm", "rmdir", "rd", "del", "erase", "unlink",
-                           "remove-item", "ri", "rimraf", "trash", "mv",
-                           "move", "move-item", "shred", "srm"})
+                           "remove-item", "ri", "rimraf", "trash", "trash-put",
+                           "gio", "mv", "move", "move-item", "shred", "srm"})
+# Words that come before the real verb: shell keywords, runners, privilege.
 _WRAPPERS = frozenset({"sudo", "doas", "command", "builtin", "env", "nice",
-                       "nohup", "time", "xargs", "busybox", "exec", "npx",
-                       "pnpx", "bunx", "yarn", "pnpm", "call", "cmd", "/c"})
-# In-language removals: shutil.rmtree('.git'), fs.rmSync(".git"), os.RemoveAll,
-# FileUtils.rm_rf, Directory.Delete, std::fs::remove_dir_all, unlink(...).
+                       "ionice", "nohup", "time", "timeout", "xargs", "busybox",
+                       "exec", "npx", "pnpx", "bunx", "call", "then", "do",
+                       "else", "elif", "{", "!", "if", "while", "until"})
+# Wrapper options that take a value (`sudo -u bob`, `nice -n 10`).
+_VALUE_OPTS = frozenset({"-u", "-g", "-C", "-D", "-h", "-p", "-U", "-n", "-c",
+                         "-s", "-k", "-S", "-I", "-L", "-P", "-d", "-a", "-E"})
+# Interpreters whose inline code can delete: only then is code text read.
+_INTERP = re.compile(r"(?:^|[\s;&|(])(?:python[0-9.]*|py|node|deno|bun|ruby|"
+                     r"perl|php|pwsh|powershell|yaegi|gorun|go\s+run|cargo|"
+                     r"rust-script|dotnet|dotnet-script|scala|kotlinc?|groovy|"
+                     r"jshell|ts-node|tsx|irb)\b")
+# In-language removals through a filesystem API.
 _CODE_REMOVE = re.compile(
-    r"""(?:rmtree|rmSync|rmdirSync|rm_rf|rm_r|remove_dir_all|RemoveAll|"""
-    r"""deleteDirectory|Delete|rmdir|remove|unlink|rm)\s*\(\s*[^)]*?['"]"""
-    r"""(?:[^'"]*[/\\])?(?:""" + _VCS_ALT + r""")[/\\]?['"]""")
-# find . -name .git -exec rm -rf {} + / -delete
-_FIND_REMOVE = re.compile(
-    r"""\bfind\b[^;&|\n]*-(?:i?name|path)\s+['"]?(?:\*/)?(?:""" + _VCS_ALT
-    + r""")['"]?[^;&|\n]*(?:-delete\b|-exec\s+(?:rm|rmdir)\b)""")
+    r"(?:\bshutil\.rmtree|\bos\.(?:remove|unlink|rmdir|removedirs|RemoveAll)"
+    r"|\bfs(?:\.promises)?\.(?:rm|rmSync|rmdir|rmdirSync|unlink|unlinkSync)"
+    r"|\bFileUtils\.(?:rm_rf|rm_r|rm|remove_dir|remove_entry(?:_secure)?)"
+    r"|\bDirectory\]?(?:\.|::)Delete|\bremove_dir_all|\brimraf(?:\.sync)?"
+    r"|\.(?:rmSync|rmdirSync)|\brequire\(\s*['\"](?:node:)?fs(?:/promises)?['\"]\s*\)\.(?:rm|rmdir)"
+    r"|\bFile\.delete|\bFiles\.delete(?:IfExists)?|\bdeleteDirectory"
+    r"|\bRemove-Item)\s*\(?\s*[^)\n]*?['\"](?:[^'\"]*[/\\])?(?:" + _VCS_ALT
+    + r")[/\\]?['\"]")
+# find . -name .git ... -delete / -exec rm   (not `-prune`, not `.gitkeep`)
+_FIND_VCS = re.compile(r"-(?:i?name|path)\s+['\"]?(?:\*/)?(?:" + _VCS_ALT
+                       + r")['\"]?(?=\s|$)")
+# git commands that destroy history beyond the reflog.
+_GIT_PURGE = re.compile(
+    r"\bgit\b[^\n;&|]*\breflog\s+expire\b[^\n;&|]*--expire(?:-unreachable)?="
+    r"(?:now|all|0)\b")
+_TMP_ROOTS = ("/tmp/", "/var/tmp/", "/private/tmp/", "/var/folders/",
+              "/dev/shm/")
+
+
+def _strip_heredocs(cmd: str) -> str:
+    """Drop heredoc BODIES: text written into a file (a Dockerfile, a script)
+    is not run by this command."""
+    out, lines, i = [], cmd.split("\n"), 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        m = re.search(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?", line)
+        if m:
+            end = m.group(1)
+            i += 1
+            while i < len(lines) and lines[i].strip() != end:
+                i += 1
+        i += 1
+    return "\n".join(out)
+
+
+def _split_segments(cmd: str) -> list[str]:
+    """Split on ; && || | & newline ( ) and backticks, but only OUTSIDE quotes
+    — `echo "a && rm -rf .git"` is one echo. `$( … )` stays inside its word."""
+    segs, buf, quote, depth, i = [], [], "", 0, 0
+    while i < len(cmd):
+        c = cmd[i]
+        if quote:
+            buf.append(c)
+            if c == "\\" and quote == '"' and i + 1 < len(cmd):
+                buf.append(cmd[i + 1]); i += 2; continue
+            if c == quote:
+                quote = ""
+        elif c in "'\"":
+            quote = c; buf.append(c)
+        elif c == "\\" and i + 1 < len(cmd):
+            buf.append(c); buf.append(cmd[i + 1]); i += 2; continue
+        elif cmd.startswith("$(", i):
+            depth += 1; buf.append("$("); i += 2; continue
+        elif c == ")" and depth:
+            depth -= 1; buf.append(c)
+        elif depth == 0 and (c in ";|&\n`()"):
+            segs.append("".join(buf)); buf = []
+        else:
+            buf.append(c)
+        i += 1
+    segs.append("".join(buf))
+    return [x for x in segs if x.strip()]
 
 
 def _words(segment: str) -> list[str]:
@@ -184,51 +255,40 @@ def _words(segment: str) -> list[str]:
         return segment.split()
 
 
-def _segment_removes_vcs(segment: str, copies: frozenset = frozenset()) -> bool:
-    words = _words(segment)
-    # Skip `sudo`, `env X=1`, `time` … and their own options to reach the verb.
-    while words and (words[0].lower() in _WRAPPERS
-                     or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0])
-                     or (words[0].startswith("-") and len(words) > 1)):
-        words = words[1:]
+def _verb_and_args(words: list[str]) -> tuple[str, list[str]]:
+    """Skip `sudo -u bob`, `env X=1`, `timeout 60`, `then`, `!` … to the verb."""
+    while words:
+        w = words[0]
+        low = os.path.basename(w).lower()
+        if low in _WRAPPERS or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w):
+            words = words[1:]
+            # the wrapper's own options, and a value after options that take one
+            while words and words[0].startswith("-") and len(words) > 1:
+                opt = words[0]
+                words = words[1:]
+                if opt in _VALUE_OPTS and words and not words[0].startswith("-"):
+                    words = words[1:]
+            if low in ("timeout", "nice") and words and re.match(
+                    r"^[0-9][0-9.]*[smhd]?$", words[0]):
+                words = words[1:]
+            continue
+        break
     if not words:
-        return False
+        return "", []
     verb = os.path.basename(words[0]).lower()
     if verb.endswith(".exe"):
         verb = verb[:-4]
-    if verb not in _REMOVE_VERBS:
-        return False
-    args = [w.strip() for w in words[1:]]
-    if verb == "mv" or verb in ("move", "move-item"):
-        # Moving the history folder away loses it from the repo just the same;
-        # only the SOURCE operands count (the last one is the destination).
-        args = [a for a in args if not a.startswith("-")][:-1]
-    for a in args:
-        if a.startswith("-") or (a.startswith("/") and len(a) <= 3
-                                 and a[1:].isalpha()):
-            continue             # an option (`-rf`, Windows `/s`, `/q`)
-        if (_VCS_PATH.match(a) or _VCS_GLOB.match(a)) \
-                and _parent(a) not in copies:
-            return True
-    return False
+    return verb, [w.strip() for w in words[1:]]
 
 
-_COPY_VERBS = frozenset({"cp", "rsync", "robocopy", "xcopy", "copy-item",
-                         "ditto"})
+def _is_option(a: str) -> bool:
+    return a.startswith("-") or (a.startswith("/") and len(a) <= 3
+                                 and a[1:].isalpha())
 
 
-def _fresh_copies(cmd: str) -> set[str]:
-    """Folders this same command creates as a COPY (`cp -r a b`, `rsync a/ b`):
-    dropping the history of a scratch copy just made loses nothing."""
-    out: set[str] = set()
-    for seg in _SEGMENT_SPLIT.split(cmd):
-        words = _words(seg)
-        if not words or os.path.basename(words[0]).lower() not in _COPY_VERBS:
-            continue
-        operands = [w for w in words[1:] if not w.startswith("-")]
-        if len(operands) >= 2:
-            out.add(os.path.normpath(operands[-1].rstrip("/\\")))
-    return out
+def _names_vcs(a: str) -> bool:
+    return bool(_VCS_PATH.match(a) or _VCS_GUTS.match(a) or _VCS_GLOB.match(a)
+                or _GIT_DIR_SUBST.search(a))
 
 
 def _parent(path: str) -> str:
@@ -236,20 +296,146 @@ def _parent(path: str) -> str:
     return os.path.normpath(os.path.dirname(p) or ".")
 
 
-def removes_vcs_history(cmd: str) -> bool:
-    """Whether ``cmd`` deletes (or moves away) a repository's version-control
-    folder — `.git`, `.hg`, `.svn`, `.jj`, `.bzr`, `_darcs` — in any shell
-    (POSIX, PowerShell, cmd.exe) or as an inline script (Python, Node, Ruby,
-    Go, Rust, .NET). Deleting something INSIDE it (a stale `index.lock`) and
-    sibling files (`.gitignore`, `.github/`) do not count."""
+def _is_repo_root(path: str, base: "str | None") -> bool:
+    """Whether `path` (a folder an rm removes) holds a repository's history —
+    `rm -rf proj` after `cd ..` loses it as surely as `rm -rf proj/.git`.
+    Scratch repos under a temp folder are the agent's own and stay free."""
+    if base is None or not path or "*" in path or "$" in path:
+        return False
+    full = os.path.normpath(os.path.join(base, os.path.expanduser(path)))
+    if any((full + "/").startswith(t) for t in _TMP_ROOTS) or full in ("/", ""):
+        return False
+    return any(os.path.isdir(os.path.join(full, d)) for d in _VCS_DIRS)
+
+
+def _copy_dest(verb: str, args: list[str], base: "str | None") -> list[str]:
+    """Folders a copy/clone in this same command creates (never `.` or the
+    folder the command runs in): dropping the history of such a scratch copy
+    loses nothing."""
+    ops = [a for a in args if not _is_option(a)]
+    if verb == "git":
+        if not ops or ops[0] not in ("clone", "worktree"):
+            return []
+        ops = ops[1:]
+        if ops and ops[0] == "add":                 # git worktree add <path>
+            return [ops[1]] if len(ops) > 1 else []
+        urls = [o for o in ops if re.search(r"://|^git@|\.git$", o)]
+        after = ops[ops.index(urls[0]) + 1:] if urls else ops[1:]
+        if after:                                   # git clone [opts] URL DIR
+            return [after[-1]]
+        src = urls[0] if urls else (ops[0] if ops else "")
+        name = re.sub(r"\.git$", "", src.rstrip("/").split("/")[-1])
+        return [name] if name else []
+    if len(ops) < 2:
+        return []
+    dest = ops[-1]
+    out = [dest]
+    if dest.endswith(("/", "\\")):                  # cp -r src dir/ -> dir/src
+        out += [os.path.join(dest, os.path.basename(s.rstrip("/\\")))
+                for s in ops[:-1]]
+    return out
+
+
+_COPY_VERBS = frozenset({"cp", "rsync", "robocopy", "xcopy", "copy-item",
+                         "ditto", "git", "degit"})
+
+
+def removes_vcs_history(cmd: str, cwd: "str | None" = None) -> bool:
+    """Whether ``cmd`` deletes, empties or moves away a repository's
+    version-control folder (`.git`, `.hg`, `.svn`, `.jj`, `.bzr`, `_darcs`) or
+    a whole repository, in any shell (POSIX, PowerShell, cmd.exe, through
+    `bash -c` / `cmd /c`) or as inline code (Python, Node, Ruby, Go, Rust,
+    .NET, Java), or purges the reflog. Routine files inside it (a stale
+    `index.lock`), siblings (`.gitignore`, `.github/`), text written by a
+    heredoc, and the history of a scratch copy made earlier in the same
+    command do not count. ``cwd``, when given, also catches `rm -rf <repo>`."""
     if not cmd:
         return False
-    if _CODE_REMOVE.search(cmd) or _FIND_REMOVE.search(cmd):
+    if _GIT_PURGE.search(cmd):
         return True
-    copies = frozenset(_fresh_copies(cmd))
-    return any(_segment_removes_vcs(seg, copies)
-               for seg in _SEGMENT_SPLIT.split(cmd) if seg.strip())
+    if _INTERP.search(cmd) and _CODE_REMOVE.search(cmd):
+        return True
+    body = _strip_heredocs(cmd)
+    segs = _split_segments(body)
+    base = cwd
+    copies: set[str] = set()
+    prev_names_vcs = False
+    for seg in segs:
+        words = _words(seg)
+        verb, args = _verb_and_args(words)
+        if not verb:
+            prev_names_vcs = False
+            continue
+        # a nested shell: judge its script the same way
+        if verb in ("bash", "sh", "zsh", "dash", "ksh", "fish") and "-c" in args:
+            inner = args[args.index("-c") + 1] if args.index("-c") + 1 < len(args) else ""
+            if removes_vcs_history(inner, base):
+                return True
+        if verb == "cmd" and any(a.lower() in ("/c", "/k") for a in args):
+            k = next(i for i, a in enumerate(args) if a.lower() in ("/c", "/k"))
+            if removes_vcs_history(" ".join(args[k + 1:]), base):
+                return True
+        if verb in ("docker", "podman", "kubectl", "ssh"):
+            prev_names_vcs = False
+            continue             # runs elsewhere, not on this repository
+        if verb == "cd" and args and base is not None:
+            base = os.path.normpath(os.path.join(base, os.path.expanduser(args[0])))
+            prev_names_vcs = False
+            continue
+        if verb == "find":
+            joined = " ".join(args)
+            m = _FIND_VCS.search(joined)
+            if m and "-prune" not in joined[m.end():m.end() + 12]:
+                if re.search(r"-delete\b|-exec(?:dir)?\s+(?:rm|rmdir|mv)\b", joined):
+                    return True
+                prev_names_vcs = True
+                continue
+        if verb in ("get-childitem", "gci", "ls", "dir", "echo", "printf") \
+                and any(_VCS_PATH.match(a) for a in args):
+            prev_names_vcs = True
+            continue
+        if verb in _COPY_VERBS:
+            copies.update(os.path.normpath(d.rstrip("/\\"))
+                          for d in _copy_dest(verb, args, base)
+                          if d.rstrip("/\\") not in ("", ".", "./"))
+            prev_names_vcs = False
+            continue
+        if verb in _REMOVE_VERBS:
+            if verb == "gio" and (not args or args[0] not in ("trash", "remove")):
+                prev_names_vcs = False
+                continue
+            ops = [a for a in args if not _is_option(a)]
+            if verb in ("mv", "move", "move-item"):
+                if "-t" in args or any(a.startswith("--target-directory") for a in args):
+                    t = args.index("-t") + 1 if "-t" in args else -1
+                    ops = [a for a in ops if t < 0 or a != args[t]]
+                else:
+                    ops = ops[:-1]          # the last operand is the destination
+            if not ops and prev_names_vcs:  # find … .git | xargs rm -rf
+                return True
+            if _GIT_DIR_SUBST.search(seg):  # rm -rf $(git rev-parse --git-dir)
+                return True
+            for a in ops:
+                if _names_vcs(a) and _parent(a) not in copies:
+                    return True
+                if verb not in ("mv", "move", "move-item", "unlink") \
+                        and os.path.normpath(a.rstrip("/\\")) not in copies \
+                        and _is_repo_root(a, base):
+                    return True
+        prev_names_vcs = False
+    return False
 
+
+def code_removes_vcs_history(code: str) -> bool:
+    """Whether notebook/script CODE deletes a version-control folder through a
+    filesystem API (`shutil.rmtree('.git')`, `fs.rmSync('.git')` …)."""
+    return bool(code and _CODE_REMOVE.search(code))
+
+
+# Set by the chat approval gate ONLY after a human approved this exact call
+# (and stripped from whatever the model sent), so the shell's own floor can
+# tell a seen-and-approved history delete from one the model "confirmed".
+VCS_APPROVED_KEY = "_vcs_history_approved"
 
 VCS_HISTORY_REFUSAL = (
     "Refused: this command deletes the repository's version history (the "

@@ -123,6 +123,9 @@ def run_cmd(cmd: str, timeout: int = 60) -> dict:
     # helper must not be a bypass for the confirm-before-delete guard.
     try:
         from aiforge_core.runtime.tools import delete_guard
+        if delete_guard.removes_vcs_history(cmd, str(_repo_root())):
+            return {"ok": False, "blocked": "vcs_history",
+                    "error": delete_guard.vcs_history_refusal(cmd)}
         if not delete_guard.allow_delete() \
                 and delete_guard.is_destructive_delete(cmd):
             return {"ok": False, "blocked": "delete", "error": delete_guard.REFUSAL}

@@ -133,6 +133,10 @@ def _delete_refusal(cmd: str, args: dict) -> dict | None:
     any destructive form) smuggled in as a "server" command runs with no
     confirmation. Normal dev-server commands (npm run dev, etc) pass."""
     from aiforge_core.runtime.tools import delete_guard
+    if not args.get(delete_guard.VCS_APPROVED_KEY) \
+            and delete_guard.removes_vcs_history(cmd):
+        return {"ok": False, "blocked": "vcs_history",
+                "error": delete_guard.vcs_history_refusal(cmd)}
     confirmed = bool(args.get("confirm_delete")) or delete_guard.allow_delete(
         ("AIFORGE_CHAT_ALLOW_DELETE", "AIFORGE_ALLOW_DELETE"))
     if not confirmed and delete_guard.is_destructive_delete(cmd):

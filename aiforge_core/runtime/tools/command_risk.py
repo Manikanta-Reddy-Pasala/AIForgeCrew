@@ -177,6 +177,9 @@ def assess(cmd: str) -> dict:
     for rx, why in _DANGEROUS_C:
         if any(rx.search(f) for f in forms) and not (sandbox and why in _BOX_LOCAL_DANGEROUS):
             return {"level": DANGEROUS, "reason": why}
+    if any(delete_guard.removes_vcs_history(f) for f in forms):
+        return {"level": DANGEROUS,
+                "reason": "deletes the repository's version history"}
     if any(delete_guard.is_destructive_delete(f) for f in forms):
         return {"level": DANGEROUS, "reason": "deletes files/data"}
     return _caution_verdict(forms)
@@ -259,6 +262,9 @@ def assess_code(code: str) -> dict:
     if not code or _disabled():
         return {"level": SAFE, "reason": ""}
     worst = {"level": SAFE, "reason": ""}
+    if delete_guard.code_removes_vcs_history(code):
+        return {"level": DANGEROUS,
+                "reason": "the cell deletes the repository's version history"}
     for cmd in shell_strings_in_code(code):
         verdict = assess(cmd)
         if verdict["level"] == DANGEROUS:

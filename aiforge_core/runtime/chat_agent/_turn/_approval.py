@@ -31,16 +31,26 @@ def _is_destructive_delete(cmd: str, cwd: str | None = None) -> bool:
         return False
 
 
-def _removes_vcs_history(name, args) -> str:
-    """The refusal text when a shell-family call deletes the repository's
-    version history (``.git`` and friends), else ""."""
-    if name not in _SHELL_TOOLS:
-        return ""
-    cmd = args.get("cmd") or args.get("command") or ""
+def _removes_vcs_history(name, args, cwd=None) -> str:
+    """The refusal text when a call deletes the repository's version history
+    (``.git`` and friends) — a shell command, a notebook cell, or a scheduled
+    job script — else ""."""
     try:
-        from aiforge_core.runtime.tools import delete_guard
-        if delete_guard.removes_vcs_history(cmd):
-            return delete_guard.vcs_history_refusal(cmd)
+        from aiforge_core.runtime.tools import command_risk, delete_guard, tool_policy
+        if name in _SHELL_TOOLS:
+            cmds = [args.get("cmd") or args.get("command") or ""]
+        elif name in tool_policy._CODE_TOOLS:
+            code = tool_policy._code_from_args(args)
+            if delete_guard.code_removes_vcs_history(code):
+                return delete_guard.vcs_history_refusal(code)
+            cmds = command_risk.shell_strings_in_code(code)
+        elif name in tool_policy._SCRIPT_TOOLS:
+            cmds = tool_policy._script_lines(args)
+        else:
+            return ""
+        for cmd in cmds:
+            if delete_guard.removes_vcs_history(cmd, cwd):
+                return delete_guard.vcs_history_refusal(cmd)
     except Exception:  # noqa: BLE001 — unreadable: the other gates stand
         pass
     return ""
@@ -116,7 +126,7 @@ def _command_gate_flags(name, args, cwd, session_id, _mode_approvals):
     repo = _repo_name(cwd)
     destructive_del = _is_destructive_delete(cmd, cwd)
     auto_commit = _commit_auto_approved(cmd, repo, session_id)
-    if _removes_vcs_history(name, args):
+    if _removes_vcs_history(name, args, cwd):
         # Only a human who sees this exact command may delete the history:
         # no pre-confirmation, no sandbox or allow-delete exemption.
         return True, False
@@ -344,6 +354,9 @@ def _run_approval(name, args, cwd, session_id, convo, verdict, _destructive_del)
     # re-refuses and the model loops asking the user again).
     if _destructive_del:
         args["confirm_delete"] = True
+        if _removes_vcs_history(name, args, cwd):
+            from aiforge_core.runtime.tools import delete_guard as _dg
+            args[_dg.VCS_APPROVED_KEY] = True
     # A Stop that landed WHILE the approval gate was open must not still
     # write the file — the file tools have no subprocess for cancel() to
     # kill, so re-check here before dispatching the (now-approved) tool.
@@ -376,7 +389,9 @@ def _approval_gate(name, args, cwd, session_id, convo):
     # who sees the command, or refused: with approvals off, or with no human
     # attached, nobody would see it, so it does not run.
     from aiforge_core.runtime import chat_approve
-    _vcs = _removes_vcs_history(name, args)
+    from aiforge_core.runtime.tools import delete_guard as _dg
+    args.pop(_dg.VCS_APPROVED_KEY, None)     # only a human's Approve sets it
+    _vcs = _removes_vcs_history(name, args, cwd)
     if _vcs and (session_id is None
                  or not chat_approve.approvals_required(session_id)):
         result = {"ok": False, "blocked": "vcs_history", "error": _vcs}
