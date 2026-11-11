@@ -93,7 +93,7 @@ FAMILY_BLURB = {
     "services": "start, list and stop a background app",
     "logs": "show a command's or a file's live log to the user",
     "ui": "screenshot a running page and check it",
-    "codegraph": "symbol callers, callees, impact, and semantic code_search",
+    "codegraph": "symbol callers, callees, impact, and semantic code search",
 }
 FAMILIES = tuple(name for name, _ in FAMILY_CUE)
 

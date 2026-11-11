@@ -71,7 +71,8 @@ def test_the_note_goes_after_the_observation_only_in_native_mode():
     src = inspect.getsource(_action._post_tool)
     # the result first, then the held notes and the loop notes via _notes.send
     # (native: own message; text: on the observation - see test_notes_and_trace_hint)
-    at = src.index('st.convo.append({"role": "user", "content": f"OBSERVATION: {obs}{_tail}"})')
+    # the observation (text, or text + screenshot pixels: _obs_vision)
+    at = src.index('"content": _obs_content(f"{obs}{_tail}", model_result)})')
     assert src.index("flush(st)", at) > at and src.index("send(st, _n)", at) > at
 
 
