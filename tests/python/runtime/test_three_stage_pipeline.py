@@ -1,10 +1,9 @@
-"""Unit tests for the Enhance → Doer → Validate
-pattern, wired through proper ADK LlmAgents (2026-05-23 refactor).
+"""Unit tests for the lean Enhance-free pipeline + full-pipeline escape.
 
 Covers:
-* pipeline.build_pipeline — Enhancer at index 0, Validator at end
-* lm_health.check_lm_health — both endpoints OK / fail / restart
-* failure_memory.record_failure + after-callback shape
+* pipeline.build_pipeline — lean default (planner→doer→feedback→validator)
+* AIFORGE_FORCE_FULL_PIPELINE=1 restores enhancer/context/verifier/refiner
+* lm_health / failure_memory helpers still import-clean
 """
 from __future__ import annotations
 
@@ -22,60 +21,65 @@ def _edge_set(p):
     return {(e.from_node.name, e.to_node.name, e.route) for e in p.graph.edges}
 
 
-def test_pipeline_is_workflow_graph_with_core_nodes() -> None:
-    p = pipeline.build_pipeline(skip_researcher=True)
+def test_lean_pipeline_is_default(monkeypatch) -> None:
+    monkeypatch.delenv("AIFORGE_FORCE_FULL_PIPELINE", raising=False)
+    assert pipeline.lean_pipeline_enabled() is True
+    p = pipeline.build_pipeline()
     from google.adk.workflow import Workflow
     assert isinstance(p, Workflow)
     names = {n.name for n in p.graph.nodes}
-    # core agents + routers + joins present
-    for n in ("triage", "enhancer", "planner", "doer", "validator", "learner",
-              "verifier", "triage_gate", "loop_gate", "validator_gate",
-              "context_join", "merge_context"):
+    for n in ("triage", "planner", "doer", "feedback", "validator", "learner",
+              "triage_gate", "loop_gate", "validator_gate", "plan_promote"):
         assert n in names, (n, names)
-    # 3-axis verify fan-out collapsed to ONE verifier call (token win) —
-    # the parallel join/merge nodes are gone from the live DAG.
-    assert "verifier_join" not in names
-    assert "merge_verdicts" not in names
-    # live_verifier runs standalone post-PR, not in the graph
-    assert "live_verifier" not in names
+    for gone in ("enhancer", "researcher", "refiner", "verifier",
+                 "ctx_repomap", "ctx_conventions", "gap_eval", "live_verifier"):
+        assert gone not in names, gone
 
 
-def test_pipeline_routing_edges() -> None:
-    p = pipeline.build_pipeline(skip_researcher=True)
+def test_lean_pipeline_routing_edges(monkeypatch) -> None:
+    monkeypatch.delenv("AIFORGE_FORCE_FULL_PIPELINE", raising=False)
+    p = pipeline.build_pipeline()
     edges = _edge_set(p)
-    # triage runs first and feeds the gate (populates triage_verdict)
     assert ("__START__", "triage", None) in edges
     assert ("triage", "triage_gate", None) in edges
-    # fast-path + full-path switch off triage
     assert ("triage_gate", "doer", "trivial") in edges
-    assert ("triage_gate", "enhancer", "full") in edges
-    # doer loop: feedback → loop_gate ⟲ doer, exit → validator
+    assert ("triage_gate", "planner", "small") in edges
+    # lean has no FULL edge (ADK forbids duplicate from→to); hard→SMALL
+    assert ("triage_gate", "planner", "full") not in edges
+    assert ("planner", "plan_promote", None) in edges
+    assert ("plan_promote", "doer", None) in edges
+    assert ("doer", "feedback", None) in edges
     assert ("loop_gate", "doer", "loop") in edges
     assert ("loop_gate", "validator", "exit") in edges
-    # replan edge back to planner; done → learner
     assert ("validator_gate", "planner", "replan") in edges
     assert ("validator_gate", "learner", "done") in edges
 
 
-def test_pipeline_researcher_is_parallel_branch() -> None:
+def test_full_pipeline_escape_hatch(monkeypatch) -> None:
+    monkeypatch.setenv("AIFORGE_FORCE_FULL_PIPELINE", "1")
+    assert pipeline.lean_pipeline_enabled() is False
+    p = pipeline.build_pipeline(skip_researcher=True)
+    names = {n.name for n in p.graph.nodes}
+    for n in ("triage", "enhancer", "planner", "doer", "refiner", "validator",
+              "learner", "verifier", "triage_gate", "loop_gate",
+              "validator_gate", "context_join", "merge_context"):
+        assert n in names, (n, names)
+    assert "researcher" not in names
+    assert {"ctx_repomap", "ctx_conventions"} <= names
+    edges = _edge_set(p)
+    assert ("triage_gate", "enhancer", "full") in edges
+    assert ("doer", "refiner", None) in edges
+
+
+def test_full_pipeline_researcher_is_parallel_branch(monkeypatch) -> None:
+    monkeypatch.setenv("AIFORGE_FORCE_FULL_PIPELINE", "1")
     p = pipeline.build_pipeline(skip_researcher=False)
     edges = _edge_set(p)
     names = {n.name for n in p.graph.nodes}
     assert "researcher" in names
-    # enhancer → research_entry (fan-out node) → researcher → context_join
     assert ("enhancer", "research_entry", None) in edges
     assert ("research_entry", "researcher", None) in edges
     assert ("researcher", "context_join", None) in edges
-
-
-def test_pipeline_skip_researcher_drops_branch() -> None:
-    p = pipeline.build_pipeline(skip_researcher=True)
-    names = {n.name for n in p.graph.nodes}
-    assert "researcher" not in names
-    # the other three gatherers remain
-    assert {"ctx_repomap", "ctx_conventions"} <= names
-    # ctx_memory removed: pre-flight recall seeds memory_brief_md
-    assert "ctx_memory" not in names
 
 
 def test_build_live_verifier_agent_standalone() -> None:

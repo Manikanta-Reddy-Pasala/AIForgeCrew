@@ -53,27 +53,30 @@ def test_the_estimate_is_read_from_the_fenced_json_a_local_model_writes():
     assert _route({"triage_verdict": raw}) == gp.ROUTE_SMALL
 
 
-def test_more_files_a_hard_verdict_or_no_estimate_take_the_full_path():
-    assert _route(_verdict("moderate", 3)) == gp.ROUTE_FULL
-    assert _route(_verdict("hard", 2)) == gp.ROUTE_FULL
-    assert _route({"triage_verdict": {"complexity": "moderate"}}) == gp.ROUTE_FULL
-    assert _route({"triage_verdict": "moderate"}) == gp.ROUTE_FULL
-    assert _route({"complexity": "moderate"}) == gp.ROUTE_FULL
-    assert _route(_verdict("moderate", "many")) == gp.ROUTE_FULL
+def test_lean_sends_hard_or_unestimated_work_to_the_planner_too():
+    # Lean default: every non-trivial request is ROUTE_SMALL → Planner.
+    assert _route(_verdict("moderate", 3)) == gp.ROUTE_SMALL
+    assert _route(_verdict("hard", 2)) == gp.ROUTE_SMALL
+    assert _route({"triage_verdict": {"complexity": "moderate"}}) == gp.ROUTE_SMALL
+    assert _route({"triage_verdict": "moderate"}) == gp.ROUTE_SMALL
+    assert _route({"complexity": "moderate"}) == gp.ROUTE_SMALL
+    assert _route(_verdict("moderate", "many")) == gp.ROUTE_SMALL
 
 
 def test_trivial_still_goes_to_the_doer():
     assert _route(_verdict("trivial", 2)) == gp.ROUTE_TRIVIAL
 
 
-def test_the_small_route_can_be_switched_off_and_resized(monkeypatch):
+def test_the_small_route_size_knob_still_marks_plan_small(monkeypatch):
+    # AIFORGE_SMALL_ROUTE=0 no longer forces the enhancer path on lean —
+    # only FORCE_FULL does. The max-files knob still shapes plan_small.
     monkeypatch.setenv("AIFORGE_SMALL_ROUTE", "0")
-    assert _route(_verdict("moderate", 2)) == gp.ROUTE_FULL
+    assert _route(_verdict("moderate", 2)) == gp.ROUTE_SMALL
     monkeypatch.delenv("AIFORGE_SMALL_ROUTE")
     monkeypatch.setenv("AIFORGE_SMALL_MAX_FILES", "4")
     assert _route(_verdict("moderate", 4)) == gp.ROUTE_SMALL
     monkeypatch.setenv("AIFORGE_SMALL_MAX_FILES", "0")
-    assert _route(_verdict("moderate", 1)) == gp.ROUTE_FULL
+    assert _route(_verdict("moderate", 1)) == gp.ROUTE_SMALL
 
 
 def test_forcing_the_full_pipeline_wins(monkeypatch):
@@ -86,11 +89,15 @@ def test_the_graph_has_an_edge_for_the_small_route():
 
     def edge(**kw):
         return kw
-    nodes = {k: k for k in ("triage", "triage_gate", "doer", "planner",
-                            "enhancer")}
-    edges = _entry_edges(edge, "START", nodes)
+    lean = {k: k for k in ("triage", "triage_gate", "doer", "planner")}
+    lean["enhancer"] = None
+    edges = _entry_edges(edge, "START", lean)
     assert {"from_node": "triage_gate", "to_node": "planner",
             "route": gp.ROUTE_SMALL} in edges
+    assert not any(e.get("route") == gp.ROUTE_FULL for e in edges)
+    full = {k: k for k in ("triage", "triage_gate", "doer", "planner",
+                           "enhancer")}
+    edges = _entry_edges(edge, "START", full)
     assert {"from_node": "triage_gate", "to_node": "enhancer",
             "route": gp.ROUTE_FULL} in edges
 

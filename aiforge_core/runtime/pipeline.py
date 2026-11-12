@@ -6,29 +6,19 @@ explicit nodes wired by ``Edge``s, parallel fan-out + ``JoinNode``, and
 conditional routing where a node emits ``ctx.route`` and the matching edge
 fires. This module wires that graph.
 
-Graph shape::
+Default (lean) graph — quality/time sweet spot; hours → minutes on local
+models::
 
     START → triage → triage_gate ──trivial─────────────────────► doer
-                                ├──small───────────────────────► planner
-                                └──full──► enhancer
-        enhancer ─┬► researcher ──┐
-                  ├► ctx_repomap ─┤ (parallel) → context_join → merge_context
-                  └► ctx_conv? ───┘  (conv skipped when repo rules exist)
-                                                                     │
-                                                                     ▼
-        planner → verifier (1 call: correctness+scope+risk) → verifier_gate
-                 ──pass──► doer    ──replan──► planner
-        doer → refiner → feedback → loop_gate ──loop──► doer
-                                             └──exit──► validator
+                                └──small|full──────────────────► planner
+        planner → plan_promote → doer → feedback → loop_gate ⟲ doer
+                                                      └──exit──► validator
         validator → validator_gate ──replan──► planner   (once)
+                                   └──redo───► doer
                                    └──done────► learner
 
-Parallel fan-outs replace ``ParallelAgent``; the Doer loop's ``loop_gate``
-(iteration counter + LOC-plateau + Feedback verdict) replaces
-``LoopAgent``; ``triage_gate`` / ``validator_gate`` express the fast-path
-and replan edges. Triage complexity may be pre-seeded in state; absent, the
-graph takes the full path. Agents run as ``chat``-mode graph nodes so each
-stage still sees prior stages' output.
+``AIFORGE_FORCE_FULL_PIPELINE=1`` restores the old enhancer + context
+fan-out + verifier + refiner graph for debugging.
 
 Each ``LlmAgent`` is wrapped around an :class:`EscalatingLlm` so the
 local mlx-lm primary auto-falls-over to the operator's cloud chain
@@ -94,6 +84,7 @@ from ._pipeline_graph import (  # noqa: F401  # re-exported
     _set_node_retries,
     _unstall_chat_nodes,
     _workflow_concurrency,
+    lean_pipeline_enabled,
 )
 from .escalating_llm import EscalatingLlm
 from .local_probe import maybe_substitute_primary
@@ -299,24 +290,78 @@ def build_pipeline(*, skip_researcher: bool = False,
     """Construct the v6 ``Workflow`` graph. Returns the root node ready
     for ``Runner(agent=..., session_service=...)``.
 
-    Each archetype is built by its own module under
-    ``aiforge_core.agents.*`` — the call site below is the ONLY place
-    that knows the order in which they run. Adding a new role = drop a
-    module and slot it into the right list here; the per-archetype
-    files stay declarative.
+    Default is the lean graph (triage → planner → doer → feedback →
+    validator → learner). Pass ``AIFORGE_FORCE_FULL_PIPELINE=1`` (or call
+    with the skip_* knobs under that env) for the old enhancer + context
+    + verifier + refiner graph.
 
     Args:
-      skip_researcher: when True, omit Researcher from the pipeline.
-        Caller (typically :mod:`adk_runner`) decides via
-        :func:`researcher_routing.should_skip_researcher`. Saves
-        5+ LM calls on greenfield tickets where the Researcher would
-        find nothing relevant anyway.
-      project: target repo name (``ticket.project``). Drives two
-        things: which ``live_verifier`` recipe gets baked into the
-        prompt baked into the live_verifier stage.
+      skip_researcher: full graph only — omit Researcher when True.
+      skip_conventions / skip_repomap: full graph only — drop those
+        context LLM branches when True.
+      project: unused here (live_verifier recipe is baked elsewhere).
     """
-    # unused, deliberately: the recipe is baked into live_verifier, not the graph build.
     del project
+    if lean_pipeline_enabled():
+        return _build_lean_pipeline()
+    return _build_full_pipeline(
+        skip_researcher=skip_researcher,
+        skip_conventions=skip_conventions,
+        skip_repomap=skip_repomap)
+
+
+def _build_lean_pipeline():
+    """Default Team/Pipeline: six LLM stages, no enhancer/context/verify/refine."""
+    from google.adk.workflow import START, Edge, Workflow
+
+    from .graph_pipeline import (
+        make_loop_gate,
+        make_plan_promote,
+        make_triage_gate,
+        make_validator_gate,
+    )
+
+    triage = _triage_mod.build(build_litellm_model)
+    planner = _planner_mod.build(build_litellm_model)
+    doer = _build_doer()
+    feedback = _feedback_mod.build(build_litellm_model)
+    learner = _learner_mod.build(build_litellm_model)
+    validator = _validator_mod.build(build_litellm_model)
+
+    chat_nodes = [planner, doer, feedback, learner]
+    single_turn = [triage, validator]
+    critical = [triage, planner, doer, validator]
+    _set_node_modes(chat_nodes, single_turn)
+    _set_node_retries((), critical)
+    _attach_agent_callbacks(
+        doer=doer, learner=learner, planner=planner, validator=validator,
+        feedback=feedback)
+
+    nodes = {
+        "triage": triage, "enhancer": None, "planner": planner,
+        "doer": doer, "refiner": None, "feedback": feedback,
+        "learner": learner, "validator": validator, "verifier": None,
+        "gap_eval": None, "context_branches": (),
+        "triage_gate": make_triage_gate(),
+        "context_join": None, "merge_context": None,
+        "loop_gate": make_loop_gate(),
+        "validator_gate": make_validator_gate(),
+        "verifier_gate": None,
+        "plan_promote": make_plan_promote(),
+        "research_entry": None, "gap_gate": None,
+    }
+    edges = (_entry_edges(Edge, START, nodes)
+             + _plan_edges(Edge, nodes)
+             + _loop_edges(Edge, nodes))
+    wf = Workflow(name="aiforge_v6_pipeline", edges=edges,
+                  max_concurrency=_workflow_concurrency())
+    _unstall_chat_nodes(wf)
+    return wf
+
+
+def _build_full_pipeline(*, skip_researcher: bool, skip_conventions: bool,
+                         skip_repomap: bool):
+    """Legacy enhancer + context fan-out + verifier + refiner graph."""
     from google.adk.workflow import START, Edge, Workflow
 
     from .graph_pipeline import (
@@ -334,11 +379,6 @@ def build_pipeline(*, skip_researcher: bool = False,
         make_research_entry_node,
     )
 
-    # ── leaf agents ─────────────────────────────────────────────────────
-    # Triage runs FIRST as a cheap single-turn classifier; its
-    # ``triage_verdict`` (complexity) feeds triage_gate's fast-path
-    # decision. Without this node nothing populates the verdict and the
-    # graph always takes the full path.
     triage = _triage_mod.build(build_litellm_model)
     enhancer = _enhancer_mod.build(build_litellm_model)
     planner = _planner_mod.build(build_litellm_model)
@@ -347,20 +387,11 @@ def build_pipeline(*, skip_researcher: bool = False,
     feedback = _feedback_mod.build(build_litellm_model)
     learner = _learner_mod.build(build_litellm_model)
     validator = _validator_mod.build(build_litellm_model)
-    # Research-gap critic — only meaningful when the Researcher ran.
     gap_eval = _gap_eval_mod.build(build_litellm_model) \
         if not skip_researcher else None
-
-    # Parallel branch agents (researcher + context gatherers; 3 verifiers).
-    # skip_conventions: the runner found glob-scoped repo rules files —
-    # those ARE the conventions, injected free via {rules_md?}, so the
-    # paid ctx_conventions LLM branch is dropped.
     context_branches = build_context_branches(
         build_litellm_model, skip_researcher=skip_researcher,
         skip_conventions=skip_conventions, skip_repomap=skip_repomap)
-    # Single multi-axis plan verifier (one LLM call judging correctness +
-    # scope + risk) — replaced the 3 parallel verify_* branches. They ran
-    # in parallel (no latency win) but cost 3x tokens to judge one plan.
     verifier = _verifier_mod.build(build_litellm_model)
 
     chat_nodes = [enhancer, planner, doer, refiner, feedback, learner,
@@ -372,11 +403,10 @@ def build_pipeline(*, skip_researcher: bool = False,
         critical.append(gap_eval)
     _set_node_modes(chat_nodes, single_turn)
     _set_node_retries((*context_branches, verifier), critical)
-    _attach_agent_callbacks(doer=doer, refiner=refiner, learner=learner,
-                            planner=planner, enhancer=enhancer,
-                            validator=validator)
+    _attach_agent_callbacks(
+        doer=doer, refiner=refiner, learner=learner, planner=planner,
+        enhancer=enhancer, validator=validator, feedback=feedback)
 
-    # ── routing + merge nodes ───────────────────────────────────────────
     nodes = {
         "triage": triage, "enhancer": enhancer, "planner": planner,
         "doer": doer, "refiner": refiner, "feedback": feedback,
@@ -392,11 +422,6 @@ def build_pipeline(*, skip_researcher: bool = False,
         "research_entry": make_research_entry_node(),
         "gap_gate": make_gap_gate() if not skip_researcher else None,
     }
-
-    # ── graph edges ─────────────────────────────────────────────────────
-    # NOTE: live_verifier is intentionally NOT in this graph — it runs
-    # standalone AFTER the runner opens the PR (its deploy recipe merges +
-    # rolls out the PR before testing). See adk_runner._run_live_verifier.
     edges = (_entry_edges(Edge, START, nodes)
              + _context_edges(Edge, nodes)
              + _plan_edges(Edge, nodes)
@@ -448,6 +473,6 @@ def build_live_verifier_agent(project: str | None = None):
 
 __all__ = [
     "build_pipeline", "build_litellm_model", "build_live_verifier_agent",
-    "build_role_agent",
+    "build_role_agent", "lean_pipeline_enabled",
     "set_force_provider", "get_force_provider",
 ]

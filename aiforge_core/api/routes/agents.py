@@ -60,6 +60,19 @@ _ORCHESTRATOR_ROLES = {"enhancer", "architect", "planner"}
 _FANOUT_ROLES = {"ctx_memory", "ctx_repomap", "ctx_conventions",
                  "verify_correctness", "verify_scope", "verify_risk",
                  "gap_eval", "live_verifier"}
+# Dead / unused on the lean default graph — hide so Pipeline is not a wall of
+# agents that never run. FORCE_FULL still builds them; they stay configurable
+# via Settings archetypes, just not listed on the Agents overview.
+_HIDDEN_ALWAYS = frozenset({
+    "verify_correctness", "verify_scope", "verify_risk", "ctx_memory",
+})
+_HIDDEN_WHEN_LEAN = frozenset({
+    "enhancer", "researcher", "refiner", "verifier",
+    "ctx_repomap", "ctx_conventions", "gap_eval",
+})
+_LEAN_PIPELINE_ROLES = frozenset({
+    "triage", "planner", "doer", "feedback", "validator", "learner",
+})
 
 
 def _role_group(role: str) -> str:
@@ -68,6 +81,14 @@ def _role_group(role: str) -> str:
     if role in _ORCHESTRATOR_ROLES:
         return "orchestrator"
     return "fanout" if role in _FANOUT_ROLES else "pipeline"
+
+
+def _lean_agents_ui() -> bool:
+    try:
+        from aiforge_core.runtime.pipeline import lean_pipeline_enabled
+        return lean_pipeline_enabled()
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def _role_activity(_name: str) -> tuple:
@@ -82,15 +103,25 @@ def _role_activity(_name: str) -> tuple:
 
 
 def _visible_roles() -> list[str]:
-    """The REAL archetype list (config.agent_config) — not the 5 legacy env.py
-    ROLES — so the page shows enhancer/architect/planner and every other
-    configured agent. Only the synthetic default is hidden; every real agent
-    (incl. the chat slot + the context/verifier fan-out sub-agents) is shown."""
+    """Roles shown on the Agents page — lean default matches the live graph."""
     try:
         roles = _acfg.archetypes()
     except Exception:  # noqa: BLE001
         roles = list(ROLES.keys())
-    return [r for r in roles if r != "_default"]
+    hide = set(_HIDDEN_ALWAYS)
+    if _lean_agents_ui():
+        hide |= _HIDDEN_WHEN_LEAN
+    out = []
+    for r in roles:
+        if r == "_default" or r in hide:
+            continue
+        # Keep chat / live_verifier / architect / memory always when present;
+        # pipeline group only the lean set when lean.
+        if (_lean_agents_ui() and _role_group(r) == "pipeline"
+                and r not in _LEAN_PIPELINE_ROLES):
+            continue
+        out.append(r)
+    return out
 
 
 def _agent_row(name: str) -> dict:

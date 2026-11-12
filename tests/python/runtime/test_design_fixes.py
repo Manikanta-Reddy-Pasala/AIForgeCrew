@@ -102,7 +102,9 @@ def test_plan_rules_are_read_only_and_short():
     assert "read-only" in text.lower()
     assert "Tool arguments:" not in text
     assert "one ACTION per turn" not in text
-    assert "numbered plan" in text.lower() or "numbered PLAN" in text
+    assert "## Goal" in text
+    assert "## Steps" in text
+    assert "eight tool calls" in text.lower() or "under eight" in text.lower()
 
 
 def test_watch_until_is_added_by_cue_not_always():

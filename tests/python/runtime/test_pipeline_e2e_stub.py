@@ -72,25 +72,36 @@ def _drive(workflow, prompt: str) -> dict:
     return asyncio.run(asyncio.wait_for(_go(), timeout=120))
 
 
-def test_full_graph_executes_every_stage(_stub_pipeline) -> None:
-    """P0 guard: the run must NOT stall after the enhancer."""
+def test_lean_graph_executes_every_stage(_stub_pipeline, monkeypatch) -> None:
+    """P0 guard: lean default must not stall; no enhancer/refiner/verifier."""
+    monkeypatch.delenv("AIFORGE_FORCE_FULL_PIPELINE", raising=False)
+    pl, calls = _stub_pipeline
+    wf = pl.build_pipeline()
+    state = _drive(wf, "# Ticket T-1\nfix the thing")
+    assert calls[0] == "triage"
+    for stage in ("planner", "doer", "feedback", "validator", "learner"):
+        assert stage in calls, f"{stage} never ran — graph stalled. {calls}"
+    for gone in ("enhancer", "refiner", "verifier", "ctx_repomap"):
+        assert gone not in calls
+    assert calls.index("planner") < calls.index("doer")
+    assert calls.index("doer") < calls.index("validator")
+    assert state.get("scope_allowlist_globs") == ["src/a/**"]
+    assert str(state.get("feedback_verdict", "")).startswith("pass")
+
+
+def test_full_graph_executes_every_stage(_stub_pipeline, monkeypatch) -> None:
+    """Escape hatch still runs enhancer → context → verifier → refiner."""
+    monkeypatch.setenv("AIFORGE_FORCE_FULL_PIPELINE", "1")
     pl, calls = _stub_pipeline
     wf = pl.build_pipeline(skip_researcher=True)
     state = _drive(wf, "# Ticket T-1\nfix the thing")
-    # every stage fired, in causal order
     assert calls[0] == "triage"
     for stage in ("enhancer", "ctx_repomap",
                   "ctx_conventions", "planner", "verifier",
                   "doer", "refiner",
                   "feedback", "validator", "learner"):
         assert stage in calls, f"{stage} never ran — graph stalled. {calls}"
-    assert calls.index("planner") < calls.index("doer")
-    assert calls.index("doer") < calls.index("validator")
-    # state flowed: plan_promote pulled globs out of the plan,
-    # the single verifier wrote the verdict shape
     assert state.get("scope_allowlist_globs") == ["src/a/**"]
-    # verifier_verdict is now the single verifier's raw output (a JSON
-    # string the gate parses), not a merge_verdicts-built dict.
     import json as _json
     _vv = state.get("verifier_verdict")
     _vv = _vv if isinstance(_vv, dict) else _json.loads(_vv)
@@ -98,12 +109,13 @@ def test_full_graph_executes_every_stage(_stub_pipeline) -> None:
     assert str(state.get("feedback_verdict", "")).startswith("pass")
 
 
-def test_graph_route_recorded(_stub_pipeline) -> None:
+def test_graph_route_recorded(_stub_pipeline, monkeypatch) -> None:
     """triage's verdict drives triage_gate and the chosen route is
     persisted to state. (The trivial route's topology is covered by the
     FunctionNode tests; the stub triage answers 'moderate'.)"""
+    monkeypatch.delenv("AIFORGE_FORCE_FULL_PIPELINE", raising=False)
     pl, calls = _stub_pipeline
-    wf = pl.build_pipeline(skip_researcher=True)
+    wf = pl.build_pipeline()
     state = _drive(wf, "tiny fix")
     assert "doer" in calls
     assert "learner" in calls

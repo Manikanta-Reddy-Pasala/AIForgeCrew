@@ -18,19 +18,14 @@ with conditional routing where a node emits `ctx.route` and the matching edge
 fires.
 
 ```
+Default (lean — quality/time sweet spot):
 START → triage → triage_gate ──trivial─────────────────────► doer
-                             └──full──► enhancer
-    enhancer ─┬► researcher ──┐
-              ├► ctx_repomap ─┤ (parallel) → context_join → merge_context
-              └► ctx_conv? ───┘  (conventions skipped when repo rules exist)
-                                                                 │
-                                                                 ▼
-    planner → verifier (1 call: correctness+scope+risk) → verifier_gate
-             ──pass──► doer    ──replan──► planner
-    doer → refiner → feedback → loop_gate ──loop──► doer
-                                         └──exit──► validator
-    validator → validator_gate ──replan──► planner   (once)
-                               └──done────► learner
+                             └──small|full─────────────────► planner
+    planner → plan_promote → doer → feedback → loop_gate ⟲ doer
+                                                  └──exit──► validator → learner
+
+AIFORGE_FORCE_FULL_PIPELINE=1 restores enhancer + context fan-out +
+verifier + refiner (the old hour-long path).
 ```
 
 Gates replace the old composite agents: `loop_gate` (iteration count + LOC

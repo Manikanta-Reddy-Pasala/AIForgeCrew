@@ -50,9 +50,12 @@ def _set_node_retries(branches, critical) -> None:
         pass
 
 
-def _attach_agent_callbacks(*, doer, refiner, learner, planner, enhancer,
-                            validator) -> None:
-    """Per-agent callbacks (they fire via agent.run_async inside the node)."""
+def _attach_agent_callbacks(*, doer, learner, planner, validator,
+                            refiner=None, enhancer=None, feedback=None) -> None:
+    """Per-agent callbacks (they fire via agent.run_async inside the node).
+
+    ``refiner`` / ``enhancer`` are optional: the lean default graph drops them.
+    """
     from .learner_persist import make_learner_after_callback
     from .loop_budget import build_loop_budget_callbacks
     from .subtasks_callback import make_planner_subtasks_callback
@@ -68,12 +71,15 @@ def _attach_agent_callbacks(*, doer, refiner, learner, planner, enhancer,
     # escalated-simple paths get in parallel_subtasks._enhance): the enhancer
     # is a single point of failure; a collapsed rewrite or one that dropped
     # every named anchor must never replace the operator's ask.
-    _append_after(enhancer, _make_enhancer_guard())
-    # LOC-plateau watcher on the Refiner — sees each loop turn AFTER the Doer
-    # reported file_diffs. Sets state['loop_budget_kill'] which loop_gate reads
-    # to exit the Doer loop early.
+    if enhancer is not None:
+        _append_after(enhancer, _make_enhancer_guard())
+    # LOC-plateau watcher — after Doer file_diffs land. On the full graph this
+    # sits on the Refiner; on the lean graph (no Refiner) it sits on Feedback
+    # (or the Doer when Feedback is also absent).
     _, plateau_after = build_loop_budget_callbacks()
-    _append_after(refiner, plateau_after)
+    plateau_host = refiner if refiner is not None else (
+        feedback if feedback is not None else doer)
+    _append_after(plateau_host, plateau_after)
 
     # Executor context cleansing — the Doer/Refiner run in chat mode, which
     # replays the planner/enhancer/researcher prologue into them every turn.
@@ -83,13 +89,16 @@ def _attach_agent_callbacks(*, doer, refiner, learner, planner, enhancer,
     #
     # Mid-run steering (Gap A, team mode) is registered AFTER focus-trim so an
     # applied steer (the newest content) can never itself be cut by the trim.
-    # Doer + Refiner are the iterative nodes a team run spends most of its
-    # wall-clock in; see chat_steer_callback.py for why before_model (not a
-    # session state write) is the mechanism.
+    # Doer (+ Refiner when present) are the iterative nodes a team run spends
+    # most of its wall-clock in; see chat_steer_callback.py for why
+    # before_model (not a session state write) is the mechanism.
     #
     # Each attach is isolated: a text-doer FunctionNode rejects before_model,
     # and that must not also skip the refiner's callbacks.
-    for agent, role in ((doer, "doer"), (refiner, "refiner")):
+    agents = [(doer, "doer")]
+    if refiner is not None:
+        agents.append((refiner, "refiner"))
+    for agent, role in agents:
         for module, factory in (
                 (".executor_focus", "make_executor_focus_callback"),
                 (".chat_steer_callback", "make_steer_before_model_callback")):
@@ -117,17 +126,34 @@ def _attach_agent_callbacks(*, doer, refiner, learner, planner, enhancer,
         pass
 
 
+def lean_pipeline_enabled() -> bool:
+    """Default Team/Pipeline graph is lean (planner→doer→critic→learner).
+
+    ``AIFORGE_FORCE_FULL_PIPELINE=1`` restores the old enhancer + context +
+    verifier + refiner graph for debugging.
+    """
+    return str(os.environ.get("AIFORGE_FORCE_FULL_PIPELINE", "")).strip().lower() \
+        not in ("1", "true", "yes", "on")
+
+
 def _entry_edges(edge_cls, start, n) -> list:
-    """Entry + the cheap fast-path switch."""
+    """Entry + the cheap fast-path switch.
+
+    Lean default: trivial → doer; small → planner (no FULL edge — ADK
+    forbids two from→to pairs even with different routes).
+    Full graph: also wires FULL → enhancer.
+    """
     from .graph_pipeline import ROUTE_FULL, ROUTE_SMALL, ROUTE_TRIVIAL
-    return [edge_cls(from_node=start, to_node=n["triage"]),
-            edge_cls(from_node=n["triage"], to_node=n["triage_gate"]),
-            edge_cls(from_node=n["triage_gate"], to_node=n["doer"],
-                     route=ROUTE_TRIVIAL),
-            edge_cls(from_node=n["triage_gate"], to_node=n["planner"],
-                     route=ROUTE_SMALL),
-            edge_cls(from_node=n["triage_gate"], to_node=n["enhancer"],
-                     route=ROUTE_FULL)]
+    edges = [edge_cls(from_node=start, to_node=n["triage"]),
+             edge_cls(from_node=n["triage"], to_node=n["triage_gate"]),
+             edge_cls(from_node=n["triage_gate"], to_node=n["doer"],
+                      route=ROUTE_TRIVIAL),
+             edge_cls(from_node=n["triage_gate"], to_node=n["planner"],
+                      route=ROUTE_SMALL)]
+    if n.get("enhancer") is not None:
+        edges.append(edge_cls(from_node=n["triage_gate"], to_node=n["enhancer"],
+                              route=ROUTE_FULL))
+    return edges
 
 
 def _context_edges(edge_cls, n) -> list:
@@ -164,13 +190,18 @@ def _context_edges(edge_cls, n) -> list:
 
 
 def _plan_edges(edge_cls, n) -> list:
-    """planner → plan_promote (parse plan JSON → scope_allowlist_globs in
-    state) → the single verifier (correctness+scope+risk in one call, writes
-    verifier_verdict) → verifier_gate, which ACTS on the verdict: a rejected
-    plan loops back to the planner once (bounded), a passing plan proceeds."""
+    """planner → plan_promote → (optional verifier) → doer.
+
+    Lean graph has no verifier: plan_promote goes straight to the Doer.
+    Full graph keeps the single multi-axis verifier + replan gate.
+    """
     from .graph_pipeline import ROUTE_VERIFY_PASS, ROUTE_VERIFY_REPLAN
-    return [
-        edge_cls(from_node=n["planner"], to_node=n["plan_promote"]),
+    edges = [edge_cls(from_node=n["planner"], to_node=n["plan_promote"])]
+    if n.get("verifier") is None:
+        return edges + [
+            edge_cls(from_node=n["plan_promote"], to_node=n["doer"]),
+        ]
+    return edges + [
         edge_cls(from_node=n["plan_promote"], to_node=n["verifier"]),
         edge_cls(from_node=n["verifier"], to_node=n["verifier_gate"]),
         edge_cls(from_node=n["verifier_gate"], to_node=n["doer"],
@@ -181,9 +212,8 @@ def _plan_edges(edge_cls, n) -> list:
 
 
 def _loop_edges(edge_cls, n) -> list:
-    """doer → refiner → feedback → loop_gate ⟲, then validator → replan back
-    to the planner (redo: straight back to the doer when the run had no
-    plan), or done → learner."""
+    """doer → (optional refiner) → feedback → loop_gate ⟲, then validator →
+    replan / redo / learner."""
     from .graph_pipeline import (
         ROUTE_DONE,
         ROUTE_EXIT,
@@ -191,9 +221,16 @@ def _loop_edges(edge_cls, n) -> list:
         ROUTE_REDO,
         ROUTE_REPLAN,
     )
-    return [
-        edge_cls(from_node=n["doer"], to_node=n["refiner"]),
-        edge_cls(from_node=n["refiner"], to_node=n["feedback"]),
+    if n.get("refiner") is None:
+        after_doer = [
+            edge_cls(from_node=n["doer"], to_node=n["feedback"]),
+        ]
+    else:
+        after_doer = [
+            edge_cls(from_node=n["doer"], to_node=n["refiner"]),
+            edge_cls(from_node=n["refiner"], to_node=n["feedback"]),
+        ]
+    return after_doer + [
         edge_cls(from_node=n["feedback"], to_node=n["loop_gate"]),
         edge_cls(from_node=n["loop_gate"], to_node=n["doer"], route=ROUTE_LOOP),
         edge_cls(from_node=n["loop_gate"], to_node=n["validator"], route=ROUTE_EXIT),

@@ -201,7 +201,7 @@ function ModeToggle({ chatMode, setChatMode, busy }: Readonly<{
   chatMode: ChatMode; setChatMode: React.Dispatch<React.SetStateAction<ChatMode>>; busy: boolean;
 }>) {
   return (
-    <div className="chat-mode-toggle" title="Simple: single agent · Plan: read-only, proposes a plan first · Team: full ADK planner→doer→learner pipeline">
+    <div className="chat-mode-toggle" title="Simple: single agent · Plan: read-only design/plan first · Team: lean pipeline (planner→doer→learner)">
       <button type="button"
         className={chatMode === 'simple' ? 'active' : ''}
         onClick={() => setChatMode('simple')}
@@ -213,7 +213,7 @@ function ModeToggle({ chatMode, setChatMode, busy }: Readonly<{
         className={chatMode === 'plan' ? 'active' : ''}
         onClick={() => setChatMode('plan')}
         disabled={busy}
-        title="Read-only: the agent inspects the repo and proposes a plan; switch to Simple/Team to execute"
+        title="Design/plan mode: read-only inspect, short structured plan, then Approve & Execute"
       >
         Plan
       </button>
@@ -221,8 +221,9 @@ function ModeToggle({ chatMode, setChatMode, busy }: Readonly<{
         className={chatMode === 'team' ? 'active' : ''}
         onClick={() => setChatMode('team')}
         disabled={busy}
+        title="Lean Team pipeline: triage → planner → doer → feedback → validator → learner"
       >
-        Team (full flow)
+        Team (pipeline)
       </button>
     </div>
   );

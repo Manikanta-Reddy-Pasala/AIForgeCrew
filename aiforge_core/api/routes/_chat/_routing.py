@@ -28,6 +28,32 @@ def _quick_step_cap(quick: bool) -> int | None:
         return 6
 
 
+def _plan_step_cap(quick: bool) -> int:
+    """Hard step cap for Plan/design mode — always bounded so a plan turn
+    cannot wander for an hour. Quick uses the tighter quick cap when set."""
+    import os as _os
+
+    if quick:
+        return _quick_step_cap(True) or 6
+    try:
+        return max(1, int(_os.environ.get("AIFORGE_CHAT_PLAN_STEPS", "8")))
+    except ValueError:
+        return 8
+
+
+def _looks_like_plan(text: str) -> bool:
+    """True when the final message is an approvable plan, not an ASK/error."""
+    t = (text or "").strip()
+    if len(t) < 40:
+        return False
+    low = t.lower()
+    if low.startswith("ask:") or "\nask:" in low[:200]:
+        return False
+    markers = ("final:", "## goal", "## steps", "1.", "1)", "step 1",
+               "files to", "## files")
+    return any(m in low for m in markers)
+
+
 def _first_team_turn(rows, current_msg_id=None) -> bool:
     """True when no earlier turn of this chat ran in Team mode: the user started
     in simple chat and switched this window to Team. The history then holds
@@ -282,7 +308,9 @@ def _plan_mode_route(_pp, _enriched, _enriched_history, cwd, role, session_id,
     that plan back on the same conversation.
 
     No planner model call first. That call ran before any plan text, so a
-    plan turn waited through two models. The agent writes the plan."""
+    plan turn waited through two models. The agent writes the plan. Always
+    step-capped so Plan cannot wander for an hour.
+    """
     from aiforge_core.runtime.chat_agent import run_chat_agent
     # Plan→approve→execute: hand the plan to the UI so the user can
     # one-click approve — which sends that plan on the same conversation.
@@ -295,7 +323,7 @@ def _plan_mode_route(_pp, _enriched, _enriched_history, cwd, role, session_id,
     _plan_text = ""
     for _ev in run_chat_agent(_enriched_history, cwd=cwd, role=role,
                               session_id=session_id, mode="plan",
-                              max_steps=_quick_step_cap(quick)):
+                              max_steps=_plan_step_cap(quick)):
         if _ev.get("type") == "done":
             _pending_done = _ev
             continue
@@ -309,7 +337,7 @@ def _plan_mode_route(_pp, _enriched, _enriched_history, cwd, role, session_id,
                 and not _ev.get("supplementary")):
             _plan_text = _ev.get("text") or ""
         yield _ev
-    if not _no_plan:
+    if not _no_plan and _looks_like_plan(_plan_text):
         yield {"type": "plan_ready", "spec": _enriched, "plan": _plan_text}
     if _pending_done is not None:
         yield _pending_done

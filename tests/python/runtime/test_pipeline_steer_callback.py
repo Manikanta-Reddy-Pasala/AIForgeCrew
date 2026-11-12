@@ -1,18 +1,9 @@
-"""Mid-run steering (Gap A, team mode) — the Doer/Refiner before_model
-callback (chat_steer_callback) must fold a steer pushed via
-chat_interject.push() into the very NEXT executor model call, using the
-REAL ADK graph (not a mock of the callback) so this proves the mechanism
-actually reaches a live invocation — not just that the callback function
-does what it's told in isolation.
+"""Mid-run steering (Gap A, team mode) on the lean graph.
 
-Both doer AND refiner carry the callback (lowest latency to apply a steer —
-whichever runs next picks it up), so with the loop doer1 -> refiner1 ->
-feedback(fail) -> doer2 -> refiner2 -> feedback(pass) -> exit, a steer
-pushed while doer1 is still in flight is drained by refiner1 (the very
-next model call after the push), NOT doer2 — confirmed empirically before
-writing this assertion (an earlier version of this test wrongly expected
-doer2 and failed; instrumenting the real callback showed refiner1 got to
-it first).
+Lean loop: doer1 → feedback(fail) → doer2 → feedback(pass) → exit.
+A steer pushed while doer1 is in flight is drained by doer2 (the next
+executor model call). Full-graph refiner drain is covered under
+AIFORGE_FORCE_FULL_PIPELINE=1.
 """
 from __future__ import annotations
 
@@ -44,6 +35,7 @@ def _make_stub(role: str, calls: list, doer_contents: list,
         "planner": 'PLAN: {"subtickets": '
                    '[{"scope_allowlist_globs": ["src/a/**"]}]}',
         "verifier": '{"verdict": "pass", "rationale": "ok"}',
+        "enhancer": "## Goal\nfix it",
     }
 
     class _Stub(BaseLlm):
@@ -52,17 +44,11 @@ def _make_stub(role: str, calls: list, doer_contents: list,
             if role == "doer":
                 doer_contents.append(_contents_text(llm_request))
                 if len(doer_contents) == 1:
-                    # Deterministic barrier: pause the FIRST doer turn until
-                    # the test has pushed its steer — removes timing
-                    # guesswork (real tool calls give real wall-clock gaps
-                    # between Doer loop iterations; here we force one).
                     barrier["doer1_started"].set()
                     await barrier["steer_pushed"].wait()
             if role == "refiner":
                 refiner_contents.append(_contents_text(llm_request))
             if role == "feedback":
-                # Loop exactly once: fail the first pass (forces a 2nd
-                # doer/refiner round), pass the second (exits the loop).
                 text = "fail\nneeds more" if calls.count("feedback") == 1 \
                     else "pass\nall good"
                 yield LlmResponse(content=gt.Content(
@@ -94,8 +80,46 @@ def _stub_pipeline(monkeypatch):
     chat_interject.clear(SESSION_ID)
 
 
-def test_steer_pushed_mid_run_reaches_next_executor_call(_stub_pipeline, monkeypatch):
-    # This test follows a steer through the refiner on BOTH iterations.
+def test_steer_pushed_mid_run_reaches_next_doer_on_lean(_stub_pipeline, monkeypatch):
+    monkeypatch.delenv("AIFORGE_FORCE_FULL_PIPELINE", raising=False)
+    from aiforge_core.runtime import chat_interject
+    from google.adk.runners import Runner
+    from google.adk.sessions import InMemorySessionService
+
+    pl, calls, doer_contents, refiner_contents, barrier = _stub_pipeline
+    wf = pl.build_pipeline()
+
+    async def push_steer_when_ready():
+        await barrier["doer1_started"].wait()
+        chat_interject.push(SESSION_ID, "focus on error handling")
+        barrier["steer_pushed"].set()
+
+    async def _go():
+        svc = InMemorySessionService()
+        runner = Runner(agent=wf, app_name="t", session_service=svc,
+                        auto_create_session=True)
+        session = await svc.create_session(app_name="t", user_id="u")
+        msg = gt.Content(role="user", parts=[gt.Part(text="# T-1\nfix the thing")])
+        pusher = asyncio.create_task(push_steer_when_ready())
+        async for _ in runner.run_async(user_id="u", session_id=session.id,
+                                        new_message=msg):
+            pass
+        await pusher
+
+    asyncio.run(asyncio.wait_for(_go(), timeout=120))
+
+    assert "refiner" not in calls
+    assert calls.count("doer") == 2, f"expected 2 doer iterations, got: {calls}"
+    STEER_MARK = "focus on error handling"
+    assert STEER_MARK not in " ".join(doer_contents[0])
+    assert STEER_MARK in " ".join(doer_contents[1])
+    assert "sent while you were working" in " ".join(doer_contents[1])
+    assert chat_interject.pending(SESSION_ID) is False
+    assert refiner_contents == []
+
+
+def test_steer_drained_by_refiner_on_full_pipeline(_stub_pipeline, monkeypatch):
+    monkeypatch.setenv("AIFORGE_FORCE_FULL_PIPELINE", "1")
     monkeypatch.setenv("AIFORGE_REFINE_EVERY_ITER", "1")
     from aiforge_core.runtime import chat_interject
     from google.adk.runners import Runner
@@ -123,19 +147,10 @@ def test_steer_pushed_mid_run_reaches_next_executor_call(_stub_pipeline, monkeyp
 
     asyncio.run(asyncio.wait_for(_go(), timeout=120))
 
-    assert calls.count("doer") == 2, f"expected 2 doer iterations, got: {calls}"
-    # Same directive the ReAct loop folds — one wording for every mode.
+    assert calls.count("doer") == 2
     STEER_MARK = "focus on error handling"
-    # doer's FIRST call was already in flight (barrier-held) before the push
-    # — it must never see it.
     assert STEER_MARK not in " ".join(doer_contents[0])
-    assert "sent while you were working" in " ".join(refiner_contents[0])
-    # refiner runs immediately after doer1 completes — the very next model
-    # call after the push — so it's the one that actually drains it.
     assert STEER_MARK in " ".join(refiner_contents[0])
-    # Once drained, it must not double-apply to any later executor call.
     assert STEER_MARK not in " ".join(doer_contents[1])
     assert STEER_MARK not in " ".join(refiner_contents[1])
-
-    # The callback recorded what it applied; nothing left dangling.
     assert chat_interject.pending(SESSION_ID) is False

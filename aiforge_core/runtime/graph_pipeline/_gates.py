@@ -62,12 +62,12 @@ def _force_full_pipeline() -> bool:
 
 def _triage_gate(ctx):  # type: ignore[no-untyped-def]
     complexity = _read_complexity(ctx.state)
-    # Fast-path skips enhancer→research→planner→verifiers straight to the Doer
-    # for a 'trivial' ticket. Set AIFORGE_FORCE_FULL_PIPELINE=1 to always take
-    # the full path (every agent runs/shows) regardless of triage complexity.
-    # Between the two sits 'small': triage's own estimate is a couple of
-    # files, so the run goes straight to the Planner (plan → do → check)
-    # without the enhancer and the context gatherers.
+    # Fast-path: trivial → Doer. Set AIFORGE_FORCE_FULL_PIPELINE=1 to always
+    # take the enhancer/context path regardless of triage complexity.
+    #
+    # Lean default: every non-trivial request uses ROUTE_SMALL → Planner.
+    # ADK rejects two edges with the same from→to even when ``route`` differs,
+    # so lean cannot also wire ROUTE_FULL → planner.
     if _force_full_pipeline():
         route = ROUTE_FULL
     elif _is_trivial(complexity):
@@ -75,7 +75,9 @@ def _triage_gate(ctx):  # type: ignore[no-untyped-def]
     elif _is_small(ctx.state, complexity):
         route = ROUTE_SMALL
     else:
-        route = ROUTE_FULL
+        # Lean: moderate/hard also go to the Planner (no enhancer).
+        # Full-graph builds only happen under FORCE_FULL (branch above).
+        route = ROUTE_SMALL
     ctx.state["graph_route"] = {"complexity": complexity, "route": route}
     ctx.route = route
     _trace(":GraphRoute", {"complexity": complexity, "route": route})
