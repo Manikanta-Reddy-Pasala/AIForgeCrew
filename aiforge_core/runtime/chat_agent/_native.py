@@ -37,24 +37,122 @@ log = logging.getLogger("aiforge.chat.native")
 _NATIVE_CACHE: dict[str, bool] = {}
 #: Chats whose NEXT model call may only edit files (see force_write_next).
 _FORCE_WRITE: set = set()
+#: How many forced-write model calls remain for a chat. Default is one real
+#: edit (a 3-step burst made sqlglot abandon Tokens at 0/12). Counters still
+#: exist so a non-edit (plan_progress) does not spend the step.
+_FORCE_WRITE_LEFT: dict = {}
+#: Default forced-write steps when the probe guard arms one.
+FORCE_WRITE_BURST = 1
 #: The tools a forced write step offers: the one shared list of writing tools.
 from aiforge_core.runtime.tools.mutating import FILE_WRITE_TOOLS as WRITE_TOOLS  # noqa: E402
 
 
-def force_write_next(session_id) -> None:
-    """The next native call of this chat offers only the edit tools, with
+def force_write_next(session_id, steps: int | None = None) -> None:
+    """The next native call(s) of this chat offer only the edit tools, with
     tool_choice="required": a model that ignored two "write the change"
-    notes (20 shell probes, no edit) is made to write. One call only; it
-    costs a prompt re-read (the tool list changes), the loops it ends cost
-    20+ minutes."""
-    if session_id is not None:
-        _FORCE_WRITE.add(session_id)
+    notes (20 shell probes, no edit) is made to write. Default one real
+    edit (see ``_force_write_must_edit``); a longer burst is opt-in via
+    ``steps``. Costs a prompt re-read; the loops it ends cost 20+ minutes."""
+    if session_id is None:
+        return
+    n = FORCE_WRITE_BURST if steps is None else max(1, int(steps))
+    left = _FORCE_WRITE_LEFT.get(session_id, 0)
+    _FORCE_WRITE_LEFT[session_id] = max(left, n)
+    _FORCE_WRITE.add(session_id)
 
 
 def clear_force_write(session_id) -> None:
     """Drop a forced write or final step not yet used (a new turn, a steer)."""
     _FORCE_WRITE.discard(session_id)
+    _FORCE_WRITE_LEFT.pop(session_id, None)
     _FORCE_FINAL.discard(session_id)
+
+
+def _tool_names(msg: dict) -> list[str]:
+    names = []
+    for c in msg.get("tool_calls") or []:
+        if not isinstance(c, dict):
+            continue
+        n = (c.get("function") or {}).get("name") or c.get("name")
+        if n:
+            names.append(str(n))
+    return names
+
+
+def _spend_force_write(session_id) -> None:
+    left = _FORCE_WRITE_LEFT.get(session_id, 1) - 1
+    if left <= 0:
+        _FORCE_WRITE.discard(session_id)
+        _FORCE_WRITE_LEFT.pop(session_id, None)
+    else:
+        _FORCE_WRITE_LEFT[session_id] = left
+        _FORCE_WRITE.add(session_id)
+
+
+def _force_write_must_edit(client, role, msgs, send, msg, session_id) -> dict:
+    """Only a real file edit spends a forced-write step.
+
+    boc4a: the server returned ``plan_progress`` despite edit-only tools, the
+    burst burned on board updates, and zero files changed for 35 minutes.
+    """
+    names = _tool_names(msg)
+    wrote = [n for n in names if n in WRITE_TOOLS]
+    if wrote:
+        _spend_force_write(session_id)
+        return msg
+    log.info("forced write got %s — not an edit; retrying once",
+             names or ["(no tool)"])
+    _FORCE_WRITE.add(session_id)          # keep the burst; nothing spent
+    nudge = {
+        "role": "user",
+        "content": (
+            "[harness — not the user] Your next step can ONLY edit files "
+            "(file_patch / multi_edit / file_write). Do not call "
+            "plan_progress, read tools, or the shell. Write the change for "
+            "the running board item now."),
+    }
+    try:
+        again = client.complete_raw(
+            role, list(msgs) + [nudge], tools=send, tool_choice="required")
+    except Exception as exc:  # noqa: BLE001
+        log.debug("forced write retry failed: %s", exc)
+        out = dict(msg)
+        out["tool_calls"] = []          # never run plan_progress as a "write"
+        return out
+    if _thought_out(again):
+        again = _after_thought_out(client, role, list(msgs) + [nudge],
+                                   send, "required", again, session_id)
+    again_names = _tool_names(again)
+    again_wrote = [n for n in again_names if n in WRITE_TOOLS]
+    if again_wrote:
+        _spend_force_write(session_id)
+        keep = []
+        for c in again.get("tool_calls") or []:
+            n = (c.get("function") or {}).get("name") or c.get("name")
+            if n in WRITE_TOOLS:
+                keep.append(c)
+        out = dict(again)
+        out["tool_calls"] = keep
+        return out
+    # boc5a: read_lines/plan_progress forever → 40 forced steps, never spent
+    # the burst, burned the hour. Drop the non-edit and spend one step so
+    # the burst ends.
+    log.info("forced write retry still %s — dropping and spending one step",
+             again_names or names or ["(no tool)"])
+    _spend_force_write(session_id)
+    # boc7a: clearing tool_calls left empty/scaffolding content → the text
+    # parser emitted "malformed step (protocol scaffolding only)" mid-native
+    # and the model kept calling run_command. Hand the loop a THOUGHT continue
+    # so the next native step stays on edit tools / the board item.
+    return {
+        "role": "assistant",
+        "content": (
+            "THOUGHT: [harness] forced write skipped (got "
+            f"{again_names or names or ['no tool']}) — next step must "
+            "file_patch / multi_edit / file_write the running board item; "
+            "do not run_command or read first."),
+        "tool_calls": [],
+    }
 
 
 #: Chats whose NEXT native call may not call a tool (see force_final_next).
@@ -661,6 +759,7 @@ def make_native_complete_fn(mode: str = "act", builder: str = "",
         model = _model_for(role)
         if _NATIVE_CACHE.get(model) is False:
             _FORCE_WRITE.discard(session_id)     # text protocol: nothing to force
+            _FORCE_WRITE_LEFT.pop(session_id, None)
             _FORCE_FINAL.discard(session_id)
             return client.complete(role, convo)
         if not gated:
@@ -683,14 +782,15 @@ def make_native_complete_fn(mode: str = "act", builder: str = "",
         if session_id in _FORCE_FINAL:
             _FORCE_FINAL.discard(session_id)
             _FORCE_WRITE.discard(session_id)
+            _FORCE_WRITE_LEFT.pop(session_id, None)
             choice = "none"
             log.info("forced final step: no tool call")
         elif session_id in _FORCE_WRITE:
-            _FORCE_WRITE.discard(session_id)
             only = [t for t in tools if (t.get("function") or {}).get("name") in WRITE_TOOLS]
             if only:
                 send, choice = only, "required"
-                log.info("forced write step: %d edit tools only", len(only))
+                log.info("forced write step: %d edit tools only (%d left)",
+                         len(only), _FORCE_WRITE_LEFT.get(session_id, 1))
         try:
             msg = client.complete_raw(role, msgs, tools=send, tool_choice=choice)
         except Exception as exc:  # noqa: BLE001
@@ -702,7 +802,7 @@ def make_native_complete_fn(mode: str = "act", builder: str = "",
                 return client.complete(role, convo)
             if _native_error_transient(exc):
                 if choice == "required":
-                    _FORCE_WRITE.add(session_id)    # the retry is still the forced step
+                    _FORCE_WRITE.add(session_id)    # keep the burst; nothing spent
                 elif choice == "none":
                     _FORCE_FINAL.add(session_id)
                 raise
@@ -714,6 +814,11 @@ def make_native_complete_fn(mode: str = "act", builder: str = "",
             msg = _after_thought_out(client, role, msgs, send, choice, msg, session_id)
         if choice == "none":
             msg = _final_in_prose(client, role, msgs, send, msg)
+        if choice == "required" and session_id is not None:
+            # Some servers honour tool_choice loosely: boc4a burned a 3-step
+            # force burst on plan_progress with zero file edits. Only a real
+            # write spends a burst step; anything else is dropped and re-forced.
+            msg = _force_write_must_edit(client, role, msgs, send, msg, session_id)
         _log_native_step(msg.get("tool_calls") or [])
         step = _synth_step(msg)
         if step == _NATIVE_ARGS_UNRECOVERABLE:

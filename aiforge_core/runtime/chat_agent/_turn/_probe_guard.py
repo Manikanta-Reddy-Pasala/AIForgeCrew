@@ -26,6 +26,11 @@ PROBES_EVERY = 8
 #: the next click run made 281 commands and 253 reads, 615 calls, against
 #: 196 and 85 with it on — the step is what ends a probing streak.)
 FORCE_AT = 20
+#: After this many landed edits, a *different* test command without a new
+#: edit no longer clears the shell streak (late-game plateau: sqlglot g2a
+#: stuck at 15/25 for 30 minutes). Earlier, varied pytest is normal research
+#: for Tokens and must still reset (b1a/boc* forced bad early edits).
+LATE_EDITS = 10
 #: Reads in a row (no landed edit, no test run between) before each note:
 #: a recorded sqlglot run read 52 times in a row; replayed 12 reads in, a
 #: "run the tests now" message sent the model to the tests 8 of 8 times.
@@ -240,15 +245,28 @@ def note(st, name: str, args) -> str:
         # The same test on the same code is not progress. sqlglot qw1 ran
         # awk, then pytest, then the same awk: every pytest zeroed the
         # streak, so 200 shell calls never reached the forced edit.
+        # Early (few edits): a different pytest is research for Tokens —
+        # reset. Late (LATE_EDITS+): varied pytest without a new edit is the
+        # g2a plateau — keep/count the streak so FORCE_AT can fire (boc1a
+        # sat at 3/25 on pytest+reads only).
         cmd = " ".join(str((args or {}).get("cmd") or (args or {}).get("command") or "").split())
         same = (cmd and cmd == getattr(st, "probe_last_test", None)
                 and getattr(st, "edits_made", 0) == getattr(st, "probe_test_edits", -1))
+        late = edits >= LATE_EDITS
         if not same:
             st.probe_last_test = cmd
             st.probe_test_edits = getattr(st, "edits_made", 0)
             st.read_streak = 0
-            st.shell_streak = 0
-        return ""
+            if not late:
+                st.shell_streak = 0
+                return ""
+            if edits != getattr(st, "probe_shell_reset_edits", None):
+                st.shell_streak = 0
+                st.probe_shell_reset_edits = edits
+                return ""
+        elif not late:
+            return ""
+        return _shell_streak_note(st, edits, what="test runs")
     if _watching(st, name, args):
         return ""                      # waiting on a long job: not probing, no count
     if name in _READS:
@@ -266,6 +284,19 @@ def note(st, name: str, args) -> str:
                         "can only edit files: change the file the failure names "
                         "(file_patch / multi_edit). Do not read again and do not "
                         "re-run the tests until that edit is saved.")
+            # boc8a: Tokens/exprs landed, then 45 reads + shell diagnosing
+            # missing _parse_trigger — notes said "run tests", force never
+            # armed (tests never marked red), score stuck 7/25 until SIGTERM.
+            if (st.read_streak >= READS_EVERY * 2 and _force_on()
+                    and getattr(st, "native_on", False)):
+                st.want_force_write = True
+                st.read_streak = 0
+                return ("[harness — not the user] "
+                        f"{READS_EVERY * 2}+ reads since the last edit and the "
+                        "request still has open parts. Your next step can only "
+                        "edit files (file_patch / multi_edit / file_write) for "
+                        "the running board item — implement the missing code "
+                        "now; do not read again first.")
             return (f"[harness — not the user] {st.read_streak} reads in a row and no "
                     f"edit or test run. Stop reading for now: {_run_tests_now(st)}; read "
                     "only what that failure points at.")
@@ -281,6 +312,11 @@ def note(st, name: str, args) -> str:
             return (f"[harness — not the user] {st.probe_count} throwaway python "
                     f"scripts this turn to check the code. Stop probing: {_run_tests_now(st)}. "
                     "To see whether a name exists, use grep or read the file.")
+    return _shell_streak_note(st, edits, what="shell commands")
+
+
+def _shell_streak_note(st, edits: int, *, what: str) -> str:
+    """Count one no-edit step toward FORCE_AT; note or arm a forced write."""
     st.shell_streak = getattr(st, "shell_streak", 0) + 1
     if st.shell_streak % EVERY:
         return ""
@@ -291,10 +327,14 @@ def note(st, name: str, args) -> str:
         # call site arms it once this note is really in the observation.
         st.want_force_write = True
         st.shell_streak = 0
-        return (f"[harness — not the user] {FORCE_AT}+ shell commands and no change "
+        return (f"[harness — not the user] {FORCE_AT}+ {what} and no change "
                 "to the files after two notes. Your next step can only edit files: "
                 "write the change you have been investigating now (file_patch / "
                 "multi_edit), then run the tests.")
+    if what == "test runs":
+        return (f"[harness — not the user] {st.shell_streak} test runs in a row "
+                "and no change to the files. The suite is not moving: edit the "
+                "code the failures name (file_patch / multi_edit), then re-run.")
     return (f"[harness — not the user] {st.shell_streak} shell commands in a row "
             "and no change to the files. If the task needs a code change, stop "
             "probing with throwaway scripts and cat/grep: read what you need with "
@@ -302,4 +342,4 @@ def note(st, name: str, args) -> str:
             "the repo's tests.")
 
 
-__all__ = ["EVERY", "note"]
+__all__ = ["EVERY", "LATE_EDITS", "FORCE_AT", "note"]

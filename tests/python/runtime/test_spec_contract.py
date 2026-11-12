@@ -627,6 +627,17 @@ def test_probe_guard_forces_a_write_step_after_two_ignored_notes(monkeypatch):
     assert not getattr(st2, "want_force_write", False) and "can only edit" not in said[19]
 
 
+def test_probe_guard_forces_a_write_after_long_read_stall(monkeypatch):
+    """boc8a: 45 reads after Tokens, never forced, _parse_trigger never written."""
+    from aiforge_core.runtime.chat_agent._turn import _probe_guard as P
+    st = SimpleNamespace(edits_made=2, probe_edits_seen=2, cwd="/srv/work",
+                         session_id=11, native_on=True, tests_green=None)
+    said = [P.note(st, "read_lines", {"path": "sqlglot/parser.py"})
+            for _ in range(P.READS_EVERY * 2)]
+    assert st.want_force_write and "can only edit files" in said[-1]
+    assert "open parts" in said[-1] or "running board item" in said[-1]
+
+
 def test_a_forced_write_never_reaches_the_next_turn_or_a_steer():
     from aiforge_core.runtime.chat_agent import _native
     _native.force_write_next(9)
@@ -832,10 +843,76 @@ def test_a_repeated_test_does_not_wipe_the_shell_streak():
     for _ in range(15):
         P.note(st, "run_command", awk)
     assert st.shell_streak == 15
-    P.note(st, "run_command", pytest)          # the same test, same code
+    P.note(st, "run_command", pytest)          # same test early: no reset, no count
     assert st.shell_streak == 15
     said = [P.note(st, "run_command", awk) for _ in range(5)]
     assert st.want_force_write and "can only edit files" in said[-1]
+
+
+def test_early_different_tests_still_reset_the_shell_streak():
+    """Before LATE_EDITS, varied pytest is Tokens research — must reset."""
+    from aiforge_core.runtime.chat_agent._turn import _probe_guard as P
+    st = SimpleNamespace(edits_made=1, probe_edits_seen=1, cwd="/srv/work",
+                         session_id=5, native_on=True)
+    awk = {"cmd": "awk 'NR>=10 && NR<=20' parser.py"}
+    t1 = {"cmd": "python -m pytest tests/test_postgres.py -q"}
+    t2 = {"cmd": "python -m pytest tests/dialects/test_sqlite.py -q"}
+    for _ in range(15):
+        P.note(st, "run_command", awk)
+    P.note(st, "run_command", t1)
+    assert st.shell_streak == 0
+    for _ in range(15):
+        P.note(st, "run_command", awk)
+    assert st.shell_streak == 15
+    P.note(st, "run_command", t2)
+    assert st.shell_streak == 0
+
+
+def test_late_different_tests_do_not_wipe_the_shell_streak():
+    """After LATE_EDITS, varied pytest without a new edit is the g2a plateau."""
+    from aiforge_core.runtime.chat_agent._turn import _probe_guard as P
+    st = SimpleNamespace(edits_made=P.LATE_EDITS, probe_edits_seen=P.LATE_EDITS,
+                         cwd="/srv/work", session_id=5, native_on=True)
+    awk = {"cmd": "awk 'NR>=10 && NR<=20' parser.py"}
+    t1 = {"cmd": "python -m pytest tests/test_postgres.py -q"}
+    t2 = {"cmd": "python -m pytest tests/dialects/test_sqlite.py -q"}
+    for _ in range(15):
+        P.note(st, "run_command", awk)
+    P.note(st, "run_command", t1)
+    assert st.shell_streak == 0
+    for _ in range(15):
+        P.note(st, "run_command", awk)
+    assert st.shell_streak == 15
+    P.note(st, "run_command", t2)              # counts toward FORCE_AT
+    assert st.shell_streak == 16
+    said = [P.note(st, "run_command", awk) for _ in range(4)]
+    assert st.want_force_write and "can only edit files" in said[-1]
+
+
+def test_a_late_test_only_loop_forces_a_write():
+    """boc1a late phase: pytest only, FORCE_AT must still fire after LATE_EDITS."""
+    from aiforge_core.runtime.chat_agent._turn import _probe_guard as P
+    st = SimpleNamespace(edits_made=P.LATE_EDITS, probe_edits_seen=P.LATE_EDITS,
+                         cwd="/srv/work", session_id=5, native_on=True)
+    first = {"cmd": "python -m pytest tests/test_parser.py -q"}
+    P.note(st, "run_command", first)
+    assert st.shell_streak == 0
+    said = []
+    for i in range(20):
+        said.append(P.note(st, "run_command",
+                           {"cmd": f"python -m pytest tests/t{i}.py -q"}))
+    assert st.want_force_write and "can only edit files" in said[-1]
+
+
+def test_forced_write_defaults_to_one_real_edit():
+    from aiforge_core.runtime.chat_agent import _native
+    _native.clear_force_write(42)
+    _native.force_write_next(42)
+    assert 42 in _native._FORCE_WRITE
+    assert _native._FORCE_WRITE_LEFT[42] == 1
+    _native.clear_force_write(42)
+    assert 42 not in _native._FORCE_WRITE
+    assert 42 not in _native._FORCE_WRITE_LEFT
 
 
 def test_the_same_awk_read_is_skipped(monkeypatch):

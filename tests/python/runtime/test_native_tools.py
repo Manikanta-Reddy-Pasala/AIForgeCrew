@@ -216,7 +216,9 @@ def test_narration_written_as_text_protocol_keeps_only_the_prose():
 
 
 def test_a_forced_write_step_offers_only_edit_tools_once(monkeypatch):
-    """click af6: 135 shell commands, two "write the change" notes ignored."""
+    """click af6: 135 shell commands, two "write the change" notes ignored.
+    A short burst keeps edit-only for FORCE_WRITE_BURST calls, then restores
+    the full tool list (one micro-edit used to unlock another shell loop)."""
     _native.reset_native_cache()
     monkeypatch.setattr(_native, "_model_for", lambda role: "m-fw")
     from aiforge_core.llm import client
@@ -224,15 +226,83 @@ def test_a_forced_write_step_offers_only_edit_tools_once(monkeypatch):
 
     def raw(role, msgs, tools=None, tool_choice=None):
         seen.append(({(t.get("function") or {}).get("name") for t in tools}, tool_choice))
-        return {"role": "assistant", "content": "ok"}
+        # a real edit spends the burst step (content-only would not)
+        return {"role": "assistant", "content": "",
+                "tool_calls": [{"id": "1", "type": "function",
+                                "function": {"name": "file_patch",
+                                             "arguments": "{}"}}]}
     monkeypatch.setattr(client, "complete_raw", raw)
     fn = _native.make_native_complete_fn(session_id=77)
     _native.force_write_next(77)
+    for _ in range(_native.FORCE_WRITE_BURST):
+        fn("chat", [{"role": "user", "content": "fix the bug in a.py"}])
     fn("chat", [{"role": "user", "content": "fix the bug in a.py"}])
-    fn("chat", [{"role": "user", "content": "fix the bug in a.py"}])
-    (first, c1), (second, c2) = seen
-    assert c1 == "required" and first and first <= _native.WRITE_TOOLS
-    assert c2 == "auto" and "run_command" in second
+    assert len(seen) == _native.FORCE_WRITE_BURST + 1
+    for tools, choice in seen[:-1]:
+        assert choice == "required" and tools and tools <= _native.WRITE_TOOLS
+    last_tools, last_choice = seen[-1]
+    assert last_choice == "auto" and "run_command" in last_tools
+
+
+def test_forced_write_does_not_spend_burst_on_plan_progress(monkeypatch):
+    """boc4a: plan_progress came back on a forced step; zero files changed."""
+    _native.reset_native_cache()
+    monkeypatch.setattr(_native, "_model_for", lambda role: "m-fw2")
+    from aiforge_core.llm import client
+    calls = {"n": 0}
+
+    def raw(role, msgs, tools=None, tool_choice=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"role": "assistant", "content": "",
+                    "tool_calls": [{"id": "1", "type": "function",
+                                    "function": {"name": "plan_progress",
+                                                 "arguments": "{}"}}]}
+        return {"role": "assistant", "content": "",
+                "tool_calls": [{"id": "2", "type": "function",
+                                "function": {"name": "file_patch",
+                                             "arguments": "{}"}}]}
+    monkeypatch.setattr(client, "complete_raw", raw)
+    fn = _native.make_native_complete_fn(session_id=78)
+    _native.force_write_next(78)
+    step = fn("chat", [{"role": "user", "content": "fix it"}])
+    assert calls["n"] == 2                          # retried once
+    # one real edit spent the default burst of 1
+    assert 78 not in _native._FORCE_WRITE
+    assert 78 not in _native._FORCE_WRITE_LEFT
+    assert "file_patch" in str(step)
+    _native.clear_force_write(78)
+
+
+def test_forced_write_spends_burst_after_failed_retry(monkeypatch):
+    """boc5a: read_lines forever never spent the burst → 40 forced steps."""
+    _native.reset_native_cache()
+    monkeypatch.setattr(_native, "_model_for", lambda role: "m-fw3")
+    from aiforge_core.llm import client
+
+    def raw(role, msgs, tools=None, tool_choice=None):
+        return {"role": "assistant", "content": "",
+                "tool_calls": [{"id": "1", "type": "function",
+                                "function": {"name": "read_lines",
+                                             "arguments": "{}"}}]}
+    monkeypatch.setattr(client, "complete_raw", raw)
+    fn = _native.make_native_complete_fn(session_id=79)
+    _native.force_write_next(79)
+    step = fn("chat", [{"role": "user", "content": "fix it"}])
+    # failed retry still spends the default burst of 1 so it cannot loop forever
+    assert 79 not in _native._FORCE_WRITE
+    assert 79 not in _native._FORCE_WRITE_LEFT
+    assert "tool_calls" not in str(step) or "read_lines" not in str(
+        getattr(step, "get", lambda *a: "")("tool_calls") or "")
+    # non-edit calls must not run
+    assert step is not None
+    # boc7a: must not surface as scaffolding-only (text-protocol nudge)
+    assert "protocol scaffolding" not in step
+    assert "forced write skipped" in step or "THOUGHT:" in step
+    from aiforge_core.runtime.chat_agent._prompt import _parse
+    parsed = _parse(step)
+    assert parsed.get("kind") == "continue"
+    _native.clear_force_write(79)
 
 
 def test_a_forced_final_step_allows_no_tool_once(monkeypatch):

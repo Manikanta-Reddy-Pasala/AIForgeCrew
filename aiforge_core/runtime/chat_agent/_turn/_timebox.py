@@ -18,6 +18,12 @@ item loop runs (``_items.active``). The item goes back to pending (never
 closed): the board's FINAL reminder brings it back once the others are done.
 Wall time includes waits between steps (an approval, a model stall): on an
 unattended run there are none worth the bookkeeping.
+
+Do **not** move the board ourselves and do **not** force-edit on the note
+(sqlglot boc*: hard park/kick + force left part-1 Tokens at 0/12 while
+Parser scored; main g2a advisory-only reached 17/25). Also skip the move-on
+note until at least one request part is closed: the first deep dive (Tokens)
+must finish before we push the model off it.
 """
 from __future__ import annotations
 
@@ -65,6 +71,14 @@ def _limit(st, cur: str, now: float) -> float:
     return limit
 
 
+def _request_closed(st) -> bool:
+    """At least one request-seeded board item is done/skipped."""
+    board = getattr(st, "board", None) or {}
+    return any(isinstance(it, dict) and it.get("from_request")
+               and it.get("status") in _CLOSED
+               for it in board.values())
+
+
 def check(st, now: "float | None" = None) -> "str | None":
     """Charge the time since the last step to the item being worked; return
     the move-on note when it is over its limit (once per item)."""
@@ -93,6 +107,10 @@ def check(st, now: "float | None" = None) -> "str | None":
     if getattr(st, "time_warned", False) or getattr(st, "deadline_final", None) is not None \
             or (deadline is not None and deadline - now <= 0):
         return None             # the wrap-up / final-answer note owns the step
+    # First deep dive must finish: sqlglot Tokens stayed 0/12 when we pushed
+    # off part-1 before any request part closed (boc* vs main g2a 8/12).
+    if not _request_closed(st):
+        return None
     # parts not started: never one the model added itself, never one it was
     # already told to leave
     waiting = [s for s in open_items(st.board)
