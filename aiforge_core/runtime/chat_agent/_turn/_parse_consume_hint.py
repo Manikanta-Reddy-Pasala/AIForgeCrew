@@ -31,7 +31,10 @@ _NOTE = (
 _PAT = re.compile(
     r"Command\(this=CREATE.*\bTRIGGER\b|"
     r"is not an instance of <class 'sqlglot\.expressions\.Create'>|"
-    r"CREATE CONSTRAINT TRIGGER",
+    r"CREATE CONSTRAINT TRIGGER|"
+    r"Falling back to parsing as a ['\"]Command['\"]|"
+    r"\bCommand\b.*\bCREATE\b.*\bTRIGGER\b|"
+    r"contains unsupported syntax.*TRIGGER",
     re.I | re.S,
 )
 
@@ -42,20 +45,28 @@ def _on() -> bool:
 
 
 def after_test(st, name, args, result) -> str:
-    """Return the note once when a failed test run shows Command-for-TRIGGER."""
+    """Return the note once when a probe/test shows Command-for-TRIGGER."""
     if not _on() or getattr(st, "readonly_mode", False) or getattr(st, "plan_mode", False):
         return ""
     if getattr(st, "parse_consume_hint_shown", False):
         return ""
-    if not isinstance(result, dict) or result.get("ok") is not False:
+    if not isinstance(result, dict):
         return ""
     cmd = ""
     if isinstance(args, dict):
         cmd = str(args.get("cmd") or args.get("command") or "")
-    if name != "run_tests" and "pytest" not in cmd:
-        return ""
     text = result_text(result)
     if not text or not _PAT.search(text):
+        return ""
+    # pytest / run_tests, or a python probe that printed the Command fallback
+    # (ok may still be True when the agent only prints the type).
+    is_test = name == "run_tests" or "pytest" in cmd
+    is_probe = name in ("run_command", "run_shell", "bash") and (
+        "sqlglot" in text.lower() or "parse_one" in cmd or "TRIGGER" in cmd.upper()
+    )
+    if not is_test and not is_probe:
+        return ""
+    if result.get("ok") is not False and not is_probe:
         return ""
     st.parse_consume_hint_shown = True
     return _NOTE

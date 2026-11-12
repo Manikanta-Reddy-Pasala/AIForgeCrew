@@ -23,3 +23,21 @@ def test_skips_unrelated_failure():
     st = SimpleNamespace()
     result = {"ok": False, "stdout": "AssertionError: 1 != 2"}
     assert after_test(st, "run_command", {"cmd": "pytest -q"}, result) == ""
+
+
+def test_fires_on_ok_python_probe_with_command_fallback():
+    st = SimpleNamespace()
+    result = {
+        "ok": True,
+        "stdout": (
+            "'CREATE CONSTRAINT TRIGGER t AFTER INSERT ON u FOR EACH ROW "
+            "EXECUTE FUNCTION f()' contains unsupported syntax. Falling back "
+            "to parsing as a 'Command'.\nCommand CREATE\n"
+        ),
+    }
+    note = after_test(
+        st, "run_command",
+        {"cmd": "python -c \"import sqlglot; sqlglot.parse_one(...)\""},
+        result,
+    )
+    assert "_match(TokenType.TRIGGER)" in note
