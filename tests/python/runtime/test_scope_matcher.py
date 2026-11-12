@@ -53,6 +53,28 @@ def test_absolute_path_under_workspace_dir_allowed(monkeypatch):
         "/abs/ws/src/app.py", ["src/**"]) is True
 
 
+def test_absolute_path_under_session_cwd_allowed(monkeypatch):
+    """Chat Simple/Team: editor often sends abs paths; env roots may be unset."""
+    monkeypatch.delenv("AIFORGE_REPO_ROOT", raising=False)
+    monkeypatch.delenv("AIFORGE_WORKSPACE_DIR", raising=False)
+    cwd = "/private/tmp/mode-cmp/xhard-team"
+    assert sg._matches_any(
+        f"{cwd}/dialect/tokens.py",
+        ["dialect/tokens.py", "dialect/parser.py"],
+        cwd=cwd,
+    ) is True
+
+
+def test_absolute_path_suffix_matches_without_cwd(monkeypatch):
+    """Even without cwd/env, a concrete allowlist file must not false-block."""
+    monkeypatch.delenv("AIFORGE_REPO_ROOT", raising=False)
+    monkeypatch.delenv("AIFORGE_WORKSPACE_DIR", raising=False)
+    assert sg._matches_any(
+        "/private/tmp/xhard-team/dialect/tokens.py",
+        ["dialect/tokens.py", "tests/test_trigger.py"],
+    ) is True
+
+
 # ── Fix 1: still blocks genuinely out-of-scope, and empty = allow ──
 def test_out_of_scope_still_blocked():
     assert sg._matches_any("secrets.env", ["src/**"]) is False

@@ -192,8 +192,9 @@ def _context_edges(edge_cls, n) -> list:
 def _plan_edges(edge_cls, n) -> list:
     """planner → plan_promote → (optional verifier) → doer.
 
-    Lean graph has no verifier: plan_promote goes straight to the Doer.
-    Full graph keeps the single multi-axis verifier + replan gate.
+    When ``verifier`` is present (lean default and full graph), plan_promote
+    goes through the plan critic + replan gate. Only a build that sets
+    ``verifier=None`` skips straight to the Doer.
     """
     from .graph_pipeline import ROUTE_VERIFY_PASS, ROUTE_VERIFY_REPLAN
     edges = [edge_cls(from_node=n["planner"], to_node=n["plan_promote"])]

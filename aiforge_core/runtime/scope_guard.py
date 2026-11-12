@@ -88,27 +88,40 @@ def _path_from_args(tool_name: str, args: dict) -> list[str]:
     return extractor(args) if extractor else []
 
 
-def _repo_root_prefixes() -> tuple[str, ...]:
+def _repo_root_prefixes(cwd: str | None = None) -> tuple[str, ...]:
     """Repo-root prefixes to strip when normalizing an absolute path to
-    repo-relative — the same env vars the Doer tools resolve their cwd from
-    (workspace first, then repo root)."""
+    repo-relative — workspace / repo env vars, plus the session ``cwd``
+    (chat Simple/Team often edit via absolute paths under the session
+    folder without setting those env vars). Symlinks are resolved so
+    macOS ``/tmp`` vs ``/private/tmp`` still matches."""
     out: list[str] = []
-    for var in ("AIFORGE_WORKSPACE_DIR", "AIFORGE_REPO_ROOT"):
-        v = os.environ.get(var)
-        if v:
-            out.append(v.replace("\\", "/").rstrip("/"))
+    for raw in (cwd, os.environ.get("AIFORGE_WORKSPACE_DIR"),
+                os.environ.get("AIFORGE_REPO_ROOT")):
+        if not raw:
+            continue
+        try:
+            root = os.path.realpath(str(raw)).replace("\\", "/").rstrip("/")
+        except OSError:
+            root = str(raw).replace("\\", "/").rstrip("/")
+        if root and root not in out:
+            out.append(root)
     return tuple(out)
 
 
-def _norm_path(path: str) -> str:
+def _norm_path(path: str, cwd: str | None = None) -> str:
     """Normalize a target path to repo-relative, forward-slashed form.
 
-    Strips a leading ``AIFORGE_WORKSPACE_DIR`` / ``AIFORGE_REPO_ROOT``
-    prefix (so an absolute editor path matches a repo-relative glob), then
-    any leading ``./`` and ``/``.
+    Strips a leading workspace / repo-root / session-cwd prefix (so an
+    absolute editor path matches a repo-relative glob), then any leading
+    ``./`` and ``/``.
     """
     p = str(path or "").replace("\\", "/").strip()
-    for root in _repo_root_prefixes():
+    if p and os.path.isabs(p):
+        try:
+            p = os.path.realpath(p).replace("\\", "/")
+        except OSError:
+            pass
+    for root in _repo_root_prefixes(cwd):
         if root and p.startswith(root + "/"):
             p = p[len(root) + 1:]
             break
@@ -172,20 +185,40 @@ def _one_glob_matches(path: str, glob: str) -> bool:
     return False
 
 
-def _matches_any(path: str, globs) -> bool:
+def _path_candidates(path: str, globs, cwd: str | None = None) -> set[str]:
+    """Repo-relative forms of ``path`` worth matching against ``globs``.
+
+    Includes the cwd-stripped form and, when an absolute path still could
+    not be rooted (env/cwd missing), any trailing segment that equals a
+    concrete allowlist entry — so ``…/dialect/tokens.py`` matches
+    ``dialect/tokens.py`` instead of false-blocking a planned edit.
+    """
+    raw = str(path or "").replace("\\", "/")
+    norm = _norm_path(path, cwd)
+    out = {norm, raw.lstrip("/")}
+    if raw.startswith("./"):
+        out.add(raw[2:])
+    for g in globs or ():
+        gg = _norm_glob(str(g) if g is not None else "")
+        if not gg or any(ch in gg for ch in "*?["):
+            continue
+        for cand in (norm, raw):
+            if cand == gg or cand.endswith("/" + gg):
+                out.add(gg)
+    return {c for c in out if c}
+
+
+def _matches_any(path: str, globs, cwd: str | None = None) -> bool:
     """True if ``path`` matches ANY allowlist glob. Empty/None → allow all.
 
     Robust against the shapes the planner commonly emits: directory globs,
-    ``**`` globs, and absolute paths under the repo root (normalized to
-    repo-relative first). Soft-fail: any internal error → allow (never
-    block the Doer on a matcher bug)."""
+    ``**`` globs, and absolute paths under the repo / session cwd
+    (normalized to repo-relative first). Soft-fail: any internal error →
+    allow (never block the Doer on a matcher bug)."""
     try:
         if not globs:
             return True
-        norm = _norm_path(path)
-        # Match the normalized form and the raw path (back-compat for callers
-        # that already pass a repo-relative path).
-        candidates = {norm, str(path or "").replace("\\", "/").lstrip("/")}
+        candidates = _path_candidates(path, globs, cwd)
         for g in globs:
             for c in candidates:
                 if _one_glob_matches(c, g):
@@ -214,7 +247,10 @@ def make_scope_guard_callback():
                 return None  # no allowlist → no enforcement
             tool_name = getattr(tool, "name", "") or ""
             paths = _path_from_args(tool_name, args or {})
-            offenders = [p for p in paths if not _matches_any(p, globs)]
+            cwd = (state.get("cwd") or state.get("workspace_dir")
+                   or state.get("repo_root") or None)
+            offenders = [p for p in paths
+                         if not _matches_any(p, globs, cwd=cwd)]
             if offenders:
                 log.warning(
                     "scope_guard.block tool=%s paths=%s globs=%s",

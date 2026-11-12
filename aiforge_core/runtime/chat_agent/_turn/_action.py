@@ -797,7 +797,7 @@ def _pre_tool_checks(st, name, args, cwd, _scope_globs):
         try:
             from aiforge_core.runtime import scope_guard as _sg
             _off = [p for p in _sg._path_from_args(name, args or {})
-                    if not _sg._matches_any(p, _scope_globs)]
+                    if not _sg._matches_any(p, _scope_globs, cwd=cwd)]
         except Exception:  # noqa: BLE001 — never break dispatch
             _off = []
         if _off:
@@ -1125,6 +1125,13 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
             yield {"type": "thought", "role": "system",
                    "text": "⚠ CREATE TRIGGER still Command — creatable already ate TRIGGER"}
             _notes.append(_pch)
+    # pytest hung / killed (incl. command_kill on a bg pytest) → infinite loop?
+    from ._hang_test_hint import after_tool as _hang_after
+    _hang = _safely(_hang_after, st, name, args, result)
+    if _hang:
+        yield {"type": "thought", "role": "system",
+               "text": "⚠ tests hung — check for an infinite loop in tokenize/parse"}
+        _notes.append(_hang)
     from .._obs_vision import observation_content as _obs_content
     st.convo.append({"role": "user",
                      "content": _obs_content(f"{obs}{_tail}", model_result)})
