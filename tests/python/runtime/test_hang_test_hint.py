@@ -32,3 +32,14 @@ def test_skips_green_test_run():
         {"cmd": "pytest -q"},
         {"ok": True, "returncode": 0, "stdout": "8 passed"},
     ) == ""
+
+
+def test_skips_command_wait_checkin():
+    st = SimpleNamespace()
+    assert after_tool(
+        st, "command_wait",
+        {"id": "bg-7"},
+        {"ok": True, "running": True,
+         "hint": "waited 15s; poll timeout; still working",
+         "new_output": ""},
+    ) == ""

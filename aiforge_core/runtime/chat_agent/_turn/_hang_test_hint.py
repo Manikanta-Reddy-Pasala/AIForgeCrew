@@ -34,34 +34,45 @@ def _on() -> bool:
     )
 
 
+def _looks_like_test(name, args, result) -> bool:
+    try:
+        from .._shell import is_test_command
+        if is_test_command(name, args or {}):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    cmd = ""
+    if isinstance(args, dict):
+        cmd = str(args.get("cmd") or args.get("command") or "")
+    blob = (cmd + " " + result_text(result)).lower()
+    return "pytest" in blob or "unittest" in blob
+
+
 def after_tool(st, name, args, result) -> str:
     """Return a one-shot note when a test run looks hung; else ``\"\"``."""
     if not _on() or getattr(st, "_hang_test_hint_sent", False):
         return ""
-    try:
-        from .._shell import is_test_command
-        if not is_test_command(name, args or {}):
-            # command_kill / command_wait on a prior pytest bg job
-            cmd = ""
-            if isinstance(args, dict):
-                cmd = str(args.get("cmd") or args.get("command") or "")
-            if name not in ("command_kill", "command_wait", "command_output"):
-                return ""
-            if "pytest" not in cmd.lower() and "unittest" not in cmd.lower():
-                # kill by id only — still allow if result mentions pytest
-                text = result_text(result)
-                if "pytest" not in text.lower():
-                    return ""
-    except Exception:  # noqa: BLE001
-        return ""
     if not isinstance(result, dict):
         return ""
-    text = result_text(result)
+    # Only a stopped/killed test (or an explicit kill of a pytest job).
+    # Do not fire on command_wait check-ins — those often say "timeout"
+    # while the suite is still healthy.
     stopped = bool(result.get("stopped") or result.get("killed"))
+    text = result_text(result)
+    if name == "command_kill":
+        if not _looks_like_test(name, args, result) and "pytest" not in text.lower():
+            return ""
+    elif not stopped:
+        return ""
+    elif not _looks_like_test(name, args, result):
+        return ""
     if not stopped and not _KILL.search(text):
         return ""
     # Growing / finished green runs are not hangs.
     if result.get("ok") and not stopped:
+        return ""
+    out = str(result.get("stdout") or "") + str(result.get("new_output") or "")
+    if len(out.strip()) > 400 and re.search(r"\d+ passed", out):
         return ""
     st._hang_test_hint_sent = True
     return _NOTE

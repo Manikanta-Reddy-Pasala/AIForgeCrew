@@ -249,6 +249,12 @@ def make_scope_guard_callback():
             paths = _path_from_args(tool_name, args or {})
             cwd = (state.get("cwd") or state.get("workspace_dir")
                    or state.get("repo_root") or None)
+            if not cwd:
+                try:
+                    from aiforge_core.runtime import request_context as _rc
+                    cwd = _rc.get_workspace_dir() or _rc.get_repo_root()
+                except Exception:  # noqa: BLE001
+                    cwd = None
             offenders = [p for p in paths
                          if not _matches_any(p, globs, cwd=cwd)]
             if offenders:
