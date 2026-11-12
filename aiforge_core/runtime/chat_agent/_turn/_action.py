@@ -1118,6 +1118,13 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
             yield {"type": "thought", "role": "system",
                    "text": "🔎 same tests still failing — traced which of the new lines ran"}
             _notes.append(_trace)
+        # CREATE … TRIGGER still Command: creatable already consumed TRIGGER
+        from ._parse_consume_hint import after_test as _parse_consume_after
+        _pch = _safely(_parse_consume_after, st, name, args, result)
+        if _pch:
+            yield {"type": "thought", "role": "system",
+                   "text": "⚠ CREATE TRIGGER still Command — creatable already ate TRIGGER"}
+            _notes.append(_pch)
     from .._obs_vision import observation_content as _obs_content
     st.convo.append({"role": "user",
                      "content": _obs_content(f"{obs}{_tail}", model_result)})
