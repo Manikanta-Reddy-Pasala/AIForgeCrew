@@ -498,11 +498,10 @@ function IntegrationsTab() {
   );
 }
 
-// ── Orchestrator model card ──────────────────────────────────────────────────
-// The orchestrator = the layer-1 agents (enhancer + architect + planner) that
-// analyze/enhance a request and split it into subtasks. Picking a model here
-// sets all of them at once via PUT /api/chat/orchestrator-model — letting the
-// splitter run on a stronger reasoning model than the workers.
+// ── Team planner model card ──────────────────────────────────────────────────
+// Sets the model used by Team planning stages (planner and related roles) via
+// PUT /api/chat/orchestrator-model — so planning can use a stronger model than
+// the Doer without configuring each role by hand.
 function OrchestratorModelCard() {
   const [models, setModels] = useState<Array<{ id: string; label: string }>>([]);
   const [current, setCurrent] = useState<string>('');
@@ -530,7 +529,7 @@ function OrchestratorModelCard() {
     try {
       await chatApi.setOrchestratorModel(next);
       setCurrent(next);
-      toast.success(`Orchestrator model → ${next}`);
+      toast.success(`Team planner model → ${next}`);
     } catch (e: any) {
       toast.error(`Switch failed: ${e?.message || 'unknown'}`);
     } finally {
@@ -545,11 +544,10 @@ function OrchestratorModelCard() {
 
   return (
     <div className="card" style={{ marginBottom: 16 }}>
-      <h2 style={{ fontSize: 14 }}>Orchestrator model</h2>
+      <h2 style={{ fontSize: 14 }}>Team planner model</h2>
       <div className="subtitle" style={{ marginTop: 6, marginBottom: 10 }}>
-        Model used by the orchestrator{roles.length ? ` (${roles.join(' + ')})` : ''} —
-        the agents that enhance the request and split it into subtasks. Picks
-        from the same model universe as chat.
+        Model for Team planning{roles.length ? ` (${roles.join(' + ')})` : ''} —
+        the stages that split the request into subtasks. Same model list as chat.
       </div>
       <div className="row" style={{ gap: 10, alignItems: 'center' }}>
         <label className="small muted" htmlFor="orchestrator-model">Model</label>

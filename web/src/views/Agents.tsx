@@ -11,10 +11,11 @@ export default function Agents() {
   });
 
   const GROUPS: { key: string; label: string; blurb: string }[] = [
-    { key: 'orchestrator', label: 'Orchestrator', blurb: 'Architect (external design) + Planner split.' },
-    { key: 'pipeline', label: 'Pipeline', blurb: 'Lean Team path: triage → plan → do → feedback → validate → learn.' },
-    { key: 'fanout', label: 'Fan-out & helpers', blurb: 'Live verify and optional full-pipeline helpers.' },
-    { key: 'chat', label: 'Chat', blurb: 'The chat assistant.' },
+    { key: 'chat', label: 'Chat', blurb: 'Simple / Plan chat assistant.' },
+    { key: 'pipeline', label: 'Team', blurb: 'One Team path: triage → plan → verify → do → refine → feedback → validate → learn (tiny plans skip verify/refine).' },
+    // Only shown when FORCE_FULL restores those groups on the API.
+    { key: 'orchestrator', label: 'Full-pipeline orchestrator', blurb: 'Debug full graph only (enhancer / architect).' },
+    { key: 'fanout', label: 'Full-pipeline helpers', blurb: 'Debug full graph only (context fan-out).' },
   ];
   const byGroup = (g: string) => agents.filter((a: any) => (a.group || 'pipeline') === g);
 
@@ -23,7 +24,7 @@ export default function Agents() {
       <div className="page-header">
         <div>
           <h1>Agents</h1>
-          <div className="subtitle">Every agent in the pipeline — what it does, its model, and current load.</div>
+          <div className="subtitle">Agents that run in Simple chat and Team mode — model and load per role.</div>
         </div>
       </div>
 

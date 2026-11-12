@@ -1,19 +1,19 @@
 """Lean Team/Pipeline graph shape — no live LM.
 
-Locks the default node/edge set and the FORCE_FULL escape hatch so a
-regression that reintroduces enhancer/context/verifier/refiner on the
-default path fails in CI.
+Default includes verifier/refiner (skip on tiny plans). Never includes
+enhancer/context fan-out unless FORCE_FULL.
 """
 from __future__ import annotations
 
 from aiforge_core.runtime import pipeline
 
 _LEAN_REQUIRED = {
-    "triage", "planner", "doer", "feedback", "validator", "learner",
-    "triage_gate", "loop_gate", "validator_gate", "plan_promote",
+    "triage", "planner", "verifier", "doer", "refiner", "feedback",
+    "validator", "learner", "triage_gate", "loop_gate", "validator_gate",
+    "verifier_gate", "plan_promote",
 }
 _LEAN_FORBIDDEN = {
-    "enhancer", "researcher", "refiner", "verifier",
+    "enhancer", "researcher",
     "ctx_repomap", "ctx_conventions", "gap_eval", "live_verifier",
 }
 _FULL_REQUIRED = {
@@ -43,11 +43,11 @@ def test_lean_default_edges(monkeypatch):
     edges = _edges(pipeline.build_pipeline())
     assert ("triage_gate", "doer", "trivial") in edges
     assert ("triage_gate", "planner", "small") in edges
-    assert ("triage_gate", "planner", "full") not in edges
     assert ("triage_gate", "enhancer", "full") not in edges
     assert ("planner", "plan_promote", None) in edges
-    assert ("plan_promote", "doer", None) in edges
-    assert ("doer", "feedback", None) in edges
+    assert ("plan_promote", "verifier", None) in edges
+    assert ("doer", "refiner", None) in edges
+    assert ("refiner", "feedback", None) in edges
 
 
 def test_force_full_restores_heavy_nodes(monkeypatch):
@@ -57,4 +57,3 @@ def test_force_full_restores_heavy_nodes(monkeypatch):
     assert _FULL_REQUIRED <= names
     edges = _edges(pipeline.build_pipeline(skip_researcher=True))
     assert ("triage_gate", "enhancer", "full") in edges
-    assert ("doer", "refiner", None) in edges

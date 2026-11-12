@@ -238,7 +238,7 @@ export default function WorkflowGraph() {
           {TicketPicker}
         </div>
         <div className="small muted">
-          No nodes returned by /api/workflow/topology. Has the orchestrator
+          No nodes returned by /api/workflow/topology. Has the Team pipeline
           ever run? Fire a ticket via /tickets to populate.
         </div>
       </>
@@ -271,18 +271,15 @@ export default function WorkflowGraph() {
       <div className="page-header">
         <div>
           <h1>Workflow</h1>
-          <div className="subtitle">The agent pipeline — how a request becomes a result.</div>
+          <div className="subtitle">One Team path — how a request becomes a result.</div>
         </div>
       </div>
       <div className="small muted" style={{ marginBottom: 6 }}>
         {(topo.nodes?.length ?? 0)} nodes · {(topo.edges?.length ?? 0)} edges · live
       </div>
-      {/* Flow caption — names the stages so the layers (orchestrator, the
-          parallel context fan-out, the build loop) are obvious. */}
       <div className="small" style={{ marginBottom: 10, color: 'var(--fg-2)', lineHeight: 1.5 }}>
-        Triage → <b>Orchestrator</b> (Enhancer → Planner) → <b>parallel Context fan-out</b>
-        {' '}(Researcher + repo-map + conventions) → Verify → <b>Build loop</b>
-        {' '}(Doer → Refiner → Feedback) → Validate → Learn.
+        Triage → Planner → Verifier → <b>Build loop</b> (Doer → Refiner → Feedback)
+        → Validate → Learn. Tiny plans skip verify/refine; hard keeps them.
         <span className="muted"> Hover any node for what it does.</span>
       </div>
 
@@ -294,34 +291,22 @@ export default function WorkflowGraph() {
           <div className="wf-mode-b">
             One agent, full filesystem + shell tools, edits in place. Best for a
             bug fix, an edit, or a question. Analyze/explain queries stay
-            read-only (no build). <b>Auto-escalates to Pipeline</b> when it detects
-            a multi-file build.
+            read-only (no build).
           </div>
         </div>
         <div className="wf-mode">
           <div className="wf-mode-h">📋 Plan</div>
           <div className="wf-mode-b">
             Read-only. Produces a step-by-step plan and changes <b>nothing</b> until
-            you press <b>Approve &amp; Execute</b>. A build request also
-            auto-escalates to the Pipeline.
+            you press <b>Approve &amp; Execute</b>.
           </div>
         </div>
         <div className="wf-mode">
-          <div className="wf-mode-h">🔀 Pipeline <span className="muted">(team)</span></div>
+          <div className="wf-mode-h">🔀 Team</div>
           <div className="wf-mode-b">
-            Decompose → scaffold → <b>parallel Doers</b> (fresh context each) →{' '}
-            <b>reconcile loop</b> (test → repo-map-informed fix → escalate the
-            stuck residual → audit a wrong test) → integration test. Best for
-            building or large multi-file tasks.
-          </div>
-        </div>
-        <div className="wf-mode wf-mode-auto">
-          <div className="wf-mode-h">↗ Auto-transition</div>
-          <div className="wf-mode-b">
-            You don't have to pick. Simple/Plan detect a multi-file build (a build
-            verb + a project noun, or “with tests”/“endpoints”) and route it
-            through the Pipeline automatically — the mode <b>right-sizes itself</b>{' '}
-            to the task.
+            One lean path: plan → verify → do → refine → feedback → validate.
+            Best for multi-file / hard work. No enhancer or context fan-out
+            unless you enable the debug full-pipeline switch.
           </div>
         </div>
       </div>
@@ -450,21 +435,21 @@ function KnowledgeGuide() {
       what: 'Reusable SKILL.md playbooks — a named procedure the agent can follow (e.g. "add a REST endpoint", "write a migration").',
       when: 'Selected by relevance to the ticket title + body (match), or marked always-on (always). Authored/extended at runtime via the learn_skill tool.',
       how: 'The matched skill bodies are prepended to the seed prompt before the agents run.',
-      agents: 'Enhancer, Planner, Doer',
+      agents: 'Planner, Doer',
     },
     {
       title: 'Workflows', color: '#14b8a6',
       what: 'Reusable WORKFLOW.md end-to-end procedures — multi-step recipes spanning several tools/files for a repeatable job.',
       when: 'Selected by relevance to the ticket title + body (match), or always-on (always). Authored at runtime via the learn_workflow tool.',
       how: 'The matched workflow bodies are prepended to the seed prompt alongside skills.',
-      agents: 'Enhancer, Planner, Doer',
+      agents: 'Planner, Doer',
     },
     {
       title: 'Rules', color: '#f59e0b',
       what: 'Repo conventions & guardrails (AGENTS.md / CLAUDE.md / .cursorrules / scoped rule files) the agents must respect.',
       when: 'Matched by the repo path + the ticket scope globs — not by ticket text. The source file is shown so you know where each came from.',
       how: 'The matching rule text is injected into the run context before the build loop.',
-      agents: 'Enhancer, Planner, Doer',
+      agents: 'Planner, Doer',
     },
   ];
   return (
@@ -505,8 +490,8 @@ function KnowledgeGuide() {
       </div>
       <div className="small muted" style={{ marginTop: 10, lineHeight: 1.45 }}>
         🧠 The badge on a node above counts what that stage actually used.
-        Only the <b>Enhancer</b>, <b>Planner</b> and <b>Doer</b> consume this
-        knowledge; gates, context-fan-out and the Validator/Learner do not.
+        Only the <b>Planner</b> and <b>Doer</b> consume this knowledge; gates
+        and the Validator/Learner do not.
       </div>
     </div>
   );
@@ -527,7 +512,7 @@ function ContextPanel({ ctx, ticket }: Readonly<{ ctx?: RunContext; ticket: stri
       <div className="small muted" style={{ marginBottom: 8 }}>
         Skills, workflows and rules the agents pulled into context for{' '}
         <b>{ticket}</b> — <i>always</i> = always-on, <i>match</i> = relevance hit,
-        rules show their source file. Empty until the run reaches the orchestrator.
+        rules show their source file. Empty until the run reaches Team planning.
       </div>
       {total === 0 ? (
         <div className="small muted">No skills, workflows or rules injected yet.</div>

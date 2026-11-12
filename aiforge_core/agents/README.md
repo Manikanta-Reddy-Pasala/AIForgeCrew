@@ -18,14 +18,14 @@ with conditional routing where a node emits `ctx.route` and the matching edge
 fires.
 
 ```
-Default (lean — quality/time sweet spot):
-START → triage → triage_gate ──trivial─────────────────────► doer
-                             └──small|full─────────────────► planner
-    planner → plan_promote → doer → feedback → loop_gate ⟲ doer
-                                                  └──exit──► validator → learner
+Default (lean — no enhancer/context fan-out):
+START → triage → triage_gate ──trivial──► doer
+                             └──else────► planner → plan_promote → verifier
+    → doer → refiner → feedback → loop_gate → validator → learner
+(Tiny plans skip verifier/refiner; hard always keeps them.)
 
-AIFORGE_FORCE_FULL_PIPELINE=1 restores enhancer + context fan-out +
-verifier + refiner (the old hour-long path).
+AIFORGE_FORCE_FULL_PIPELINE=1 restores enhancer + context fan-out
+(the old hour-long path).
 ```
 
 Gates replace the old composite agents: `loop_gate` (iteration count + LOC

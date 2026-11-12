@@ -6,19 +6,16 @@ explicit nodes wired by ``Edge``s, parallel fan-out + ``JoinNode``, and
 conditional routing where a node emits ``ctx.route`` and the matching edge
 fires. This module wires that graph.
 
-Default (lean) graph — quality/time sweet spot; hours → minutes on local
-models::
+Default (lean) graph — no enhancer/context fan-out; verifier + refiner
+run on hard/large plans and skip on tiny ``plan_small`` work::
 
     START → triage → triage_gate ──trivial─────────────────────► doer
-                                └──small|full──────────────────► planner
-        planner → plan_promote → doer → feedback → loop_gate ⟲ doer
-                                                      └──exit──► validator
-        validator → validator_gate ──replan──► planner   (once)
-                                   └──redo───► doer
-                                   └──done────► learner
+                                └──else────────────────────────► planner
+        planner → plan_promote → verifier → doer → refiner → feedback
+             → loop_gate ⟲ doer ──exit──► validator → learner
 
 ``AIFORGE_FORCE_FULL_PIPELINE=1`` restores the old enhancer + context
-fan-out + verifier + refiner graph for debugging.
+fan-out graph for debugging.
 
 Each ``LlmAgent`` is wrapped around an :class:`EscalatingLlm` so the
 local mlx-lm primary auto-falls-over to the operator's cloud chain
@@ -290,10 +287,10 @@ def build_pipeline(*, skip_researcher: bool = False,
     """Construct the v6 ``Workflow`` graph. Returns the root node ready
     for ``Runner(agent=..., session_service=...)``.
 
-    Default is the lean graph (triage → planner → doer → feedback →
-    validator → learner). Pass ``AIFORGE_FORCE_FULL_PIPELINE=1`` (or call
-    with the skip_* knobs under that env) for the old enhancer + context
-    + verifier + refiner graph.
+    Default is the lean graph (triage → planner → verifier → doer →
+    refiner → feedback → validator → learner; no enhancer/context).
+    Pass ``AIFORGE_FORCE_FULL_PIPELINE=1`` for the old enhancer + context
+    fan-out graph.
 
     Args:
       skip_researcher: full graph only — omit Researcher when True.
@@ -311,7 +308,7 @@ def build_pipeline(*, skip_researcher: bool = False,
 
 
 def _build_lean_pipeline():
-    """Default Team/Pipeline: six LLM stages, no enhancer/context/verify/refine."""
+    """Default Team path: no enhancer/context; verifier+refiner for hard plans."""
     from google.adk.workflow import START, Edge, Workflow
 
     from .graph_pipeline import (
@@ -319,34 +316,37 @@ def _build_lean_pipeline():
         make_plan_promote,
         make_triage_gate,
         make_validator_gate,
+        make_verifier_gate,
     )
 
     triage = _triage_mod.build(build_litellm_model)
     planner = _planner_mod.build(build_litellm_model)
     doer = _build_doer()
+    refiner = _refiner_mod.build(build_litellm_model)
     feedback = _feedback_mod.build(build_litellm_model)
     learner = _learner_mod.build(build_litellm_model)
     validator = _validator_mod.build(build_litellm_model)
+    verifier = _verifier_mod.build(build_litellm_model)
 
-    chat_nodes = [planner, doer, feedback, learner]
-    single_turn = [triage, validator]
+    chat_nodes = [planner, doer, refiner, feedback, learner]
+    single_turn = [triage, validator, verifier]
     critical = [triage, planner, doer, validator]
     _set_node_modes(chat_nodes, single_turn)
-    _set_node_retries((), critical)
+    _set_node_retries((verifier,), critical)
     _attach_agent_callbacks(
-        doer=doer, learner=learner, planner=planner, validator=validator,
-        feedback=feedback)
+        doer=doer, refiner=refiner, learner=learner, planner=planner,
+        validator=validator, feedback=feedback)
 
     nodes = {
         "triage": triage, "enhancer": None, "planner": planner,
-        "doer": doer, "refiner": None, "feedback": feedback,
-        "learner": learner, "validator": validator, "verifier": None,
+        "doer": doer, "refiner": refiner, "feedback": feedback,
+        "learner": learner, "validator": validator, "verifier": verifier,
         "gap_eval": None, "context_branches": (),
         "triage_gate": make_triage_gate(),
         "context_join": None, "merge_context": None,
         "loop_gate": make_loop_gate(),
         "validator_gate": make_validator_gate(),
-        "verifier_gate": None,
+        "verifier_gate": make_verifier_gate(),
         "plan_promote": make_plan_promote(),
         "research_entry": None, "gap_gate": None,
     }

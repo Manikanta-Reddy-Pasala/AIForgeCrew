@@ -14,7 +14,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-BANNED = {"enhancer", "researcher", "refiner", "verifier",
+# Still lean if verifier/refiner run — those are part of the default Team path.
+# Fail only when the old hour-cost enhancer/context fan-out appears.
+BANNED = {"enhancer", "researcher",
           "ctx_repomap", "ctx_conventions", "gap_eval"}
 
 

@@ -549,6 +549,15 @@ def _plan_promote(ctx):  # type: ignore[no-untyped-def]
     # gets the plan critic and the polish whatever its size.
     state["plan_small"] = bool(
         _plan_is_small(obj) and not state.get("replan_note"))
+    # Hard triage always keeps the plan critic + polish — even if the Planner
+    # emitted a one-step plan. Tiny/moderate small plans still skip.
+    try:
+        from ._config import _COMPLEX_TOKENS
+        from ._parsers import _read_complexity
+        if _read_complexity(state) in _COMPLEX_TOKENS:
+            state["plan_small"] = False
+    except Exception:  # noqa: BLE001
+        pass
     merged = _usable_scope(_merge_seeded(state, _plan_globs(obj)))
     if merged:
         state["scope_allowlist_globs"] = merged

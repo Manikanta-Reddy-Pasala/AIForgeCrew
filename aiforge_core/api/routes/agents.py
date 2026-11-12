@@ -60,27 +60,22 @@ _ORCHESTRATOR_ROLES = {"enhancer", "architect", "planner"}
 _FANOUT_ROLES = {"ctx_memory", "ctx_repomap", "ctx_conventions",
                  "verify_correctness", "verify_scope", "verify_risk",
                  "gap_eval", "live_verifier"}
-# Dead / unused on the lean default graph — hide so Pipeline is not a wall of
-# agents that never run. FORCE_FULL still builds them; they stay configurable
+# Dead / unused on the lean default graph — hide so Agents is not a wall of
+# roles that never run. FORCE_FULL still builds them; they stay configurable
 # via Settings archetypes, just not listed on the Agents overview.
 _HIDDEN_ALWAYS = frozenset({
     "verify_correctness", "verify_scope", "verify_risk", "ctx_memory",
 })
 _HIDDEN_WHEN_LEAN = frozenset({
-    "enhancer", "researcher", "refiner", "verifier",
+    "enhancer", "architect", "researcher",
     "ctx_repomap", "ctx_conventions", "gap_eval",
 })
+# Live lean Team stages (verifier/refiner skip on tiny plans, run on hard).
 _LEAN_PIPELINE_ROLES = frozenset({
-    "triage", "planner", "doer", "feedback", "validator", "learner",
+    "triage", "planner", "verifier", "doer", "refiner",
+    "feedback", "validator", "learner",
 })
-
-
-def _role_group(role: str) -> str:
-    if role == "chat":
-        return "chat"
-    if role in _ORCHESTRATOR_ROLES:
-        return "orchestrator"
-    return "fanout" if role in _FANOUT_ROLES else "pipeline"
+_LEAN_VISIBLE_GROUPS = frozenset({"chat", "pipeline"})
 
 
 def _lean_agents_ui() -> bool:
@@ -89,6 +84,21 @@ def _lean_agents_ui() -> bool:
         return lean_pipeline_enabled()
     except Exception:  # noqa: BLE001
         return True
+
+
+def _role_group(role: str) -> str:
+    if role == "chat":
+        return "chat"
+    # Lean UI: planner (and verifier/refiner) sit in the single Team group —
+    # no separate Orchestrator / Fan-out strips.
+    if _lean_agents_ui():
+        if role in _LEAN_PIPELINE_ROLES or role == "live_verifier":
+            return "pipeline"
+        if role in _ORCHESTRATOR_ROLES or role in _FANOUT_ROLES:
+            return "pipeline"
+    if role in _ORCHESTRATOR_ROLES:
+        return "orchestrator"
+    return "fanout" if role in _FANOUT_ROLES else "pipeline"
 
 
 def _role_activity(_name: str) -> tuple:
@@ -115,10 +125,9 @@ def _visible_roles() -> list[str]:
     for r in roles:
         if r == "_default" or r in hide:
             continue
-        # Keep chat / live_verifier / architect / memory always when present;
-        # pipeline group only the lean set when lean.
+        # Lean: Chat + Team stages only (live_verifier kept as a post-build helper).
         if (_lean_agents_ui() and _role_group(r) == "pipeline"
-                and r not in _LEAN_PIPELINE_ROLES):
+                and r not in _LEAN_PIPELINE_ROLES and r != "live_verifier"):
             continue
         out.append(r)
     return out

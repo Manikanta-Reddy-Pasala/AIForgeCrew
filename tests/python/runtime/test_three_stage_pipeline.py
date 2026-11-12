@@ -28,10 +28,11 @@ def test_lean_pipeline_is_default(monkeypatch) -> None:
     from google.adk.workflow import Workflow
     assert isinstance(p, Workflow)
     names = {n.name for n in p.graph.nodes}
-    for n in ("triage", "planner", "doer", "feedback", "validator", "learner",
-              "triage_gate", "loop_gate", "validator_gate", "plan_promote"):
+    for n in ("triage", "planner", "verifier", "doer", "refiner", "feedback",
+              "validator", "learner", "triage_gate", "loop_gate",
+              "validator_gate", "verifier_gate", "plan_promote"):
         assert n in names, (n, names)
-    for gone in ("enhancer", "researcher", "refiner", "verifier",
+    for gone in ("enhancer", "researcher",
                  "ctx_repomap", "ctx_conventions", "gap_eval", "live_verifier"):
         assert gone not in names, gone
 
@@ -47,8 +48,9 @@ def test_lean_pipeline_routing_edges(monkeypatch) -> None:
     # lean has no FULL edge (ADK forbids duplicate from→to); hard→SMALL
     assert ("triage_gate", "planner", "full") not in edges
     assert ("planner", "plan_promote", None) in edges
-    assert ("plan_promote", "doer", None) in edges
-    assert ("doer", "feedback", None) in edges
+    assert ("plan_promote", "verifier", None) in edges
+    assert ("doer", "refiner", None) in edges
+    assert ("refiner", "feedback", None) in edges
     assert ("loop_gate", "doer", "loop") in edges
     assert ("loop_gate", "validator", "exit") in edges
     assert ("validator_gate", "planner", "replan") in edges

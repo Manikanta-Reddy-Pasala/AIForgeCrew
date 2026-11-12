@@ -31,8 +31,14 @@ _LEAN_NODES: list[dict] = [
      "desc": "Splits the request into ordered, concrete subtasks."},
     {"id": "plan_promote", "label": "Plan promote", "type": "gate", "stage": _PLAN_VERIFY,
      "desc": "Promotes the plan into session state for the Doer."},
+    {"id": "verifier", "label": "Verifier", "type": "agent", "stage": _PLAN_VERIFY,
+     "desc": "Plan critic before code — skips on tiny plans; always on for hard."},
+    {"id": "verifier_gate", "label": "Verifier gate", "type": "gate", "stage": _PLAN_VERIFY,
+     "desc": "Pass to the Doer, or bounce back to re-plan."},
     {"id": "doer", "label": "Doer", "type": "agent", "stage": _BUILD_LOOP,
      "desc": "Writes the actual code + runs the tools for each subtask."},
+    {"id": "refiner", "label": "Refiner", "type": "agent", "stage": _BUILD_LOOP,
+     "desc": "Polishes the Doer's output — skips on tiny plans; always on for hard."},
     {"id": "feedback", "label": "Feedback", "type": "agent", "stage": _BUILD_LOOP,
      "desc": "In-loop reviewer: checks each pass and feeds corrections back."},
     {"id": "loop_gate", "label": "Loop gate", "type": "gate", "stage": _BUILD_LOOP,
@@ -51,8 +57,12 @@ _LEAN_EDGES: list[dict] = [
     {"from": "triage_gate", "to": "doer", "label": "trivial"},
     {"from": "triage_gate", "to": "planner", "label": "small"},
     {"from": "planner", "to": "plan_promote", "label": ""},
-    {"from": "plan_promote", "to": "doer", "label": ""},
-    {"from": "doer", "to": "feedback", "label": ""},
+    {"from": "plan_promote", "to": "verifier", "label": ""},
+    {"from": "verifier", "to": "verifier_gate", "label": ""},
+    {"from": "verifier_gate", "to": "doer", "label": "pass"},
+    {"from": "verifier_gate", "to": "planner", "label": "replan"},
+    {"from": "doer", "to": "refiner", "label": ""},
+    {"from": "refiner", "to": "feedback", "label": ""},
     {"from": "feedback", "to": "loop_gate", "label": ""},
     {"from": "loop_gate", "to": "doer", "label": "loop"},
     {"from": "loop_gate", "to": "validator", "label": "exit"},
@@ -142,8 +152,9 @@ _FULL_EDGES: list[dict] = [
 ]
 
 _LEAN_NODE_ROLE = {
-    "triage": "triage", "planner": "planner", "doer": "doer",
-    "feedback": "feedback", "validator": "verifier", "learner": "learner",
+    "triage": "triage", "planner": "planner", "verifier": "verifier",
+    "doer": "doer", "refiner": "refiner", "feedback": "feedback",
+    "validator": "verifier", "learner": "learner",
 }
 
 _FULL_NODE_ROLE = {

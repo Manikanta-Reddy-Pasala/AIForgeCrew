@@ -201,7 +201,7 @@ function ModeToggle({ chatMode, setChatMode, busy }: Readonly<{
   chatMode: ChatMode; setChatMode: React.Dispatch<React.SetStateAction<ChatMode>>; busy: boolean;
 }>) {
   return (
-    <div className="chat-mode-toggle" title="Simple: single agent · Plan: read-only design/plan first · Team: lean pipeline (planner→doer→learner)">
+    <div className="chat-mode-toggle" title="Simple: single agent · Plan: read-only design first · Team: one lean path (verify+refine on hard)">
       <button type="button"
         className={chatMode === 'simple' ? 'active' : ''}
         onClick={() => setChatMode('simple')}
@@ -221,9 +221,9 @@ function ModeToggle({ chatMode, setChatMode, busy }: Readonly<{
         className={chatMode === 'team' ? 'active' : ''}
         onClick={() => setChatMode('team')}
         disabled={busy}
-        title="Lean Team pipeline: triage → planner → doer → feedback → validator → learner"
+        title="Team: triage → planner → verifier → doer → refiner → feedback → validator → learner"
       >
-        Team (pipeline)
+        Team
       </button>
     </div>
   );
@@ -445,7 +445,7 @@ function OrchSelect({ chatMode, orchOptions, orchModel, setOrchModel, chatProvid
   if (!(chatMode === 'team' && orchOptions.length > 0)) return null;
   return (
     <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--fs-xs)', color: 'var(--fg-2)' }}
-           title="Model for the orchestrator (enhancer + planner) — the agents that analyze & split the task">
+           title="Model for Team planning stages (planner and related Team roles)">
       Orchestrator{' '}
       <select
         className="chat-model-select"
@@ -503,7 +503,7 @@ function OverflowMenu({ menuRef, menuOpen, setMenuOpen, chatMode, selectedModel,
                    style={menuItem}>
               <input type="checkbox" checked={fullPipeline}
                      onChange={e => toggleFullPipeline(e.target.checked)} disabled={busy} />{' '}
-              Force full pipeline
+              Debug: old full pipeline
             </label>
           )}
           <label className="chat-menu-item" title="Turn off the daily memory-compaction pass (recompact + dedupe + evening fold). Takes effect on next restart."
