@@ -105,6 +105,10 @@ if not any(getattr(h, "_aiforge_diag", False) for h in _af_log.handlers):
 from aiforge_core.runtime.chat_agent import lean as _lean  # noqa: E402
 
 _lean.apply()
+# Core mode (runtime/chat_agent/core.py; opt-in AIFORGE_CHAT_CORE=1 while measured)
+from aiforge_core.runtime.chat_agent import core as _core  # noqa: E402
+
+_core.apply()
 
 app = FastAPI(title="AIForge API")
 
