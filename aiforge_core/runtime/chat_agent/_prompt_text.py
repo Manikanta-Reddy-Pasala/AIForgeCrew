@@ -81,6 +81,16 @@ Tool arguments:
                 has already started. A close keeps the learning and any script
                 and deletes the job. Use watch_until instead when the user
                 wants to WAIT for something now.)
+- spawn_task   {{"task": "Add the --json flag to cli/report.py only; do not touch the other modules or tests", "mode": "simple", "wait": true}}
+                (SECOND AGENT for an independent slice. Default wait:true: it runs NOW in this turn and returns
+                its FINAL answer here; then you continue with your part. wait:false
+                starts a side chat and posts later (keep working; do not block).
+                Use it when the request has 2+ independent layers/files/questions
+                that do not need the same open edits (e.g. two separate modules,
+                research vs code). Give the FULL task text with paths and
+                constraints. mode: simple (may edit) | plan (read-only). Do NOT
+                spawn for tiny one-file edits or when the next step depends on
+                the previous edit. Nested agents cannot spawn again.)
 - ensure_runtime {{"tools": ["java", "mvn"]}}    (install+verify missing tools)
 - project        {{"action": "build"}}    (detect+install+build/test/run:
                   maven, gradle, node/react/next/vite, python, go, rust)
@@ -489,8 +499,7 @@ which branch. Report the repository, branch and result in FINAL.
 it succeeded from the OBSERVATION, then summarize what you did in FINAL."""
 
 
-#: Added to the system prompt only when the run has no step cap and no
-#: deadline (an interactive Act-mode run with the defaults).
+#: Added to the system prompt for big Act-mode requests (capped or unlimited).
 _DECOMPOSE = (
     "BIG TASK = SMALL TASKS, ONE BY ONE: a request with several parts or 3 or "
     "more steps goes on your board first (plan_progress, slug + title, each "
@@ -500,19 +509,31 @@ _DECOMPOSE = (
     "item needs in files. ")
 
 
+#: OpenCode/Claude-Code Task parity: fan out independent slices via spawn_task
+#: on BOTH capped and unlimited runs (bench deadlines used to omit this).
+_MULTI_AGENT = (
+    "MULTI-AGENT (spawn_task): when parts are independent (different files or "
+    "layers that do not share the same open edit), hand a slice to a second "
+    "agent with spawn_task (wait:true default — you get its FINAL in this "
+    "turn). Prefer that over doing every layer yourself when the board has "
+    "2+ independent coding items. Keep dependent edits on your own turn. ")
+
+
 #: Added to the system prompt only when the run has no step cap and no
 #: deadline (an interactive Act-mode run with the defaults).
 LONG_RUN_RULE = (
     "LONG AND MULTI-TASK WORK: this run has no step or time limit. "
-    + _DECOMPOSE +
+    + _DECOMPOSE + _MULTI_AGENT +
     "Keep going until every item is done or failed; stop early only when "
-    "blocked, and say what blocks you. Independent research can go to a second "
-    "agent with spawn_task. After a condense, trust the board and the files on "
-    "disk; re-read rather than guess.")
+    "blocked, and say what blocks you. After a condense, trust the board and "
+    "the files on disk; re-read rather than guess.")
 
 
 #: The same decomposition rule for a big request on a run that has a step cap.
-DECOMPOSE_RULE = _DECOMPOSE.strip()
+DECOMPOSE_RULE = (_DECOMPOSE + _MULTI_AGENT).strip()
+
+#: Alias for tests / call sites that want the multi-agent block alone.
+MULTI_AGENT_RULE = _MULTI_AGENT.strip()
 
 
 #: Added when the message asks to iterate until a goal is met ("loop", "keep

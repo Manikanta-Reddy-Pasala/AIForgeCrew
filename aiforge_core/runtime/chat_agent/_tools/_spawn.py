@@ -7,14 +7,26 @@ Task tools.
 
 ``wait=false`` keeps the older fire-and-forget side chat: a child session runs
 alongside, and its answer is posted when it finishes.
+
+Parents in Simple chat **and** Team/pipeline Doer both call this the same way;
+children always run as a focused Act/Plan agent (not a nested Team pipeline) so
+the fan-out stays OpenCode-like and cheap.
 """
 from __future__ import annotations
 
 import os
+import re
 from contextvars import ContextVar
 
 _SPAWN_DEPTH: ContextVar[int] = ContextVar("aiforge_spawn_depth", default=0)
 _MAX_NEST = 1
+# Coding slices need more steps than a research summary (OpenCode Task budget).
+_DEFAULT_STEPS = 36
+_CODING_HINT = re.compile(
+    r"\b(implement|fix|edit|patch|file_write|file_patch|multi_edit|"
+    r"\.py\b|\.ts\b|\.js\b|\.java\b|tests?/|src/)\b",
+    re.I,
+)
 
 
 def _truthy(val, *, default: bool) -> bool:
@@ -25,14 +37,36 @@ def _truthy(val, *, default: bool) -> bool:
     return str(val).strip().lower() in ("1", "true", "yes", "on", "wait")
 
 
+def _normalize_mode(raw: str) -> str:
+    """Map aliases to side-task modes. ``team``/``act`` → simple Act child."""
+    mode = (raw or "simple").strip().lower()
+    if mode in ("plan", "analyze", "ask"):
+        return "plan"
+    # team/act/coding → focused editable child (never nest the ADK pipeline)
+    return "simple"
+
+
+def _wait_steps(task: str) -> int:
+    try:
+        default = int(os.environ.get("AIFORGE_SPAWN_WAIT_STEPS", str(_DEFAULT_STEPS)))
+    except ValueError:
+        default = _DEFAULT_STEPS
+    steps = max(4, min(default, 80))
+    if _CODING_HINT.search(task or ""):
+        try:
+            coding = int(os.environ.get("AIFORGE_SPAWN_CODING_STEPS", "48"))
+        except ValueError:
+            coding = 48
+        steps = max(steps, max(8, min(coding, 80)))
+    return steps
+
+
 def _t_spawn_task(args: dict, cwd: str) -> dict:
     task = str(args.get("task") or "").strip()
     if len(task) < 12:
         return {"ok": False, "error": "spawn_task needs the full task text "
                 "(what to do, with the paths and names it needs)"}
-    mode = str(args.get("mode") or "simple").lower()
-    if mode not in ("simple", "plan"):
-        mode = "simple"
+    mode = _normalize_mode(str(args.get("mode") or "simple"))
     wait = _truthy(args.get("wait"), default=True)
     if wait:
         return _wait_nested(task, mode, cwd)
@@ -72,11 +106,7 @@ def _wait_nested(task: str, mode: str, cwd: str) -> dict:
     if depth >= _MAX_NEST:
         return {"ok": False, "error": "already inside a spawned agent: do "
                 "this part yourself instead of nesting further"}
-    try:
-        max_steps = int(os.environ.get("AIFORGE_SPAWN_WAIT_STEPS", "24"))
-    except ValueError:
-        max_steps = 24
-    max_steps = max(4, min(max_steps, 60))
+    max_steps = _wait_steps(task)
     token = _SPAWN_DEPTH.set(depth + 1)
     try:
         from aiforge_core.runtime.chat_agent import run_chat_agent
@@ -87,8 +117,10 @@ def _wait_nested(task: str, mode: str, cwd: str) -> dict:
         for ev in run_chat_agent(
                 [{"role": "user", "content": (
                     "You are a SIDE AGENT answering one delegated part of a "
-                    "larger request. Do ONLY what is asked below, then FINAL "
-                    "with a complete answer the parent agent can use.\n\n"
+                    "larger request. Do ONLY what is "
+                    "asked below — edit files in this workspace when needed — "
+                    "then FINAL with a complete answer the parent can use "
+                    "(what changed, how to verify).\n\n"
                     + task)}],
                 cwd=cwd or ".",
                 role="chat",
@@ -104,7 +136,7 @@ def _wait_nested(task: str, mode: str, cwd: str) -> dict:
                 error = (ev.get("text") or error or "").strip()
         if answer:
             return {"ok": True, "answer": answer[:12000], "waited": True,
-                    "mode": mode}
+                    "mode": mode, "max_steps": max_steps}
         if error:
             return {"ok": False, "error": error[:500], "waited": True}
         return {"ok": False, "error": "spawned agent finished with no answer",
