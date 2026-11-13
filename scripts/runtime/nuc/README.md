@@ -26,22 +26,52 @@ cd ~/AIForgeCrew && git pull --ff-only && bash scripts/runtime/nuc/deploy.sh
 
 Idempotent, and the source of truth for what actually gets enabled. It pulls
 both repos (AIForgeCrew and AiForgeMemory), reinstalls the editable packages,
-copies the `%h`-relative units into `~/.config/systemd/user`, restarts the
-services, enables the timers and runs health checks — API :8799, embed :8764,
-rerank :8765, Neo4j :7687, Postgres :5432. It exits non-zero if any check fails.
+then runs `ensure-boot.sh` so the stack survives reboot: linger, `aiforge-api`
+(+ sidecars) enabled, docker enabled, WireGuard `wg-quick@wg0` enabled when
+`/etc/wireguard/wg0.conf` exists. It restarts the services and health-checks
+API :8799, embed :8764, rerank :8765, Neo4j :7687, Postgres :5432. It exits
+non-zero if any check fails.
 
 `aiforge-reindex-daily.timer` ships here but is not in the script's enable list;
 enable it by hand if you want it.
 
+## Survive reboot (boot persistence)
+
+After a NUC reboot, `tickets.oneshell.in` needs: docker up, the `aiforge`
+container on `:8799` (bound `0.0.0.0`), and WireGuard so the reverse proxy at
+`77.42.45.12:9443` can reach `10.66.66.3:8799`.
+
+**One-time setup (password once)** — system unit + NOPASSWD sudo + greeter
+auto-login, so reboot needs nobody at the keyboard:
+
+```bash
+# NUC login is usually `ai`:
+sudo AIFORGE_BOOT_USER=ai bash scripts/runtime/nuc/install-system-boot.sh
+# skip greeter auto-login: AIFORGE_AUTO_LOGIN=0 sudo bash …/install-system-boot.sh
+```
+
+That installs:
+- `/etc/systemd/system/aiforge-api.service` (WantedBy=multi-user.target, TimeoutStartSec=2400)
+- `/etc/systemd/system/aiforge-api.service.d/nuc-registry.conf` — public PyPI/npm
+  for the NUC (Artifactory unreachable without corp VPN). **Reinstall does not
+  overwrite** this drop-in.
+- `/etc/sudoers.d/aiforge-boot` (NOPASSWD only for docker/wg/systemctl/linger)
+- GDM / LightDM / SDDM AutomaticLogin for your user (optional)
+- WireGuard `wg-quick@wg1` (or `wg0` if that conf is present)
+
+Afterwards, any time:
+
+```bash
+bash scripts/runtime/nuc/ensure-boot.sh
+```
+
+Or the full deploy (it calls `ensure-boot.sh`).
+
 ## Manual install
 
 ```bash
-mkdir -p ~/.config/systemd/user
-cp scripts/runtime/nuc/*.service scripts/runtime/nuc/*.timer ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now aiforge-api
-# then enable the timers you want from the table above
-sudo loginctl enable-linger "$(whoami)"   # units run without a login session
+sudo bash scripts/runtime/nuc/install-system-boot.sh
+bash scripts/runtime/nuc/ensure-boot.sh
 ```
 
 ## Cross-host tunnels
