@@ -61,6 +61,14 @@ def force_write_next(session_id, steps: int | None = None) -> None:
     _FORCE_WRITE.add(session_id)
 
 
+def _narrow_forced_tools() -> bool:
+    """``AIFORGE_FORCE_WRITE_NARROW_TOOLS=1``: a forced write step offers only
+    the edit tools (the old behaviour). Off by default — it costs a full
+    prompt re-read on every forced step and servers did not honour it."""
+    return os.environ.get("AIFORGE_FORCE_WRITE_NARROW_TOOLS", "0").lower() in (
+        "1", "true", "yes")
+
+
 def clear_force_write(session_id) -> None:
     """Drop a forced write or final step not yet used (a new turn, a steer)."""
     _FORCE_WRITE.discard(session_id)
@@ -788,8 +796,17 @@ def make_native_complete_fn(mode: str = "act", builder: str = "",
         elif session_id in _FORCE_WRITE:
             only = [t for t in tools if (t.get("function") or {}).get("name") in WRITE_TOOLS]
             if only:
-                send, choice = only, "required"
-                log.info("forced write step: %d edit tools only (%d left)",
+                # The tool list stays the SAME as every other step. The schemas
+                # are the head of the prompt, so a narrowed list made the server
+                # re-read the whole conversation (20-165 s at 150-450k chars, up
+                # to 285 s a run) — and local servers ignored the narrowing
+                # anyway (15 of 18 forced calls came back with read_lines /
+                # run_command). The edit is enforced where it always was:
+                # _force_write_must_edit drops a non-edit and retries once.
+                if _narrow_forced_tools():
+                    send = only
+                choice = "required"
+                log.info("forced write step: %d edit tools required (%d left)",
                          len(only), _FORCE_WRITE_LEFT.get(session_id, 1))
         try:
             msg = client.complete_raw(role, msgs, tools=send, tool_choice=choice)

@@ -215,10 +215,55 @@ def test_narration_written_as_text_protocol_keeps_only_the_prose():
     assert _parse(_native._synth_step(msg))["thought"] == "check the config"
 
 
+def _forced_write_seen(monkeypatch, sid):
+    """``[(tool names, tool_choice), …]`` for one forced step then one normal."""
+    _native.reset_native_cache()
+    monkeypatch.setattr(_native, "_model_for", lambda role: f"m-fwk{sid}")
+    from aiforge_core.llm import client
+    seen = []
+
+    def raw(role, msgs, tools=None, tool_choice=None):
+        seen.append(([(t.get("function") or {}).get("name") for t in tools],
+                     tool_choice))
+        return {"role": "assistant", "content": "",
+                "tool_calls": [{"id": "1", "type": "function",
+                                "function": {"name": "file_patch",
+                                             "arguments": "{}"}}]}
+    monkeypatch.setattr(client, "complete_raw", raw)
+    fn = _native.make_native_complete_fn(session_id=sid)
+    _native.force_write_next(sid)
+    fn("chat", [{"role": "user", "content": "fix the bug in a.py"}])
+    fn("chat", [{"role": "user", "content": "fix the bug in a.py"}])
+    _native.clear_force_write(sid)
+    return seen
+
+
+def test_a_forced_write_keeps_the_tool_list_so_the_prompt_cache_holds(monkeypatch):
+    """pk1a click: an edit-only tool list re-read the whole prompt (20-165 s
+    a step, 285 s a run) and the server still answered read_lines 15 of 18
+    times. The forced step now sends the SAME tools, byte for byte, with
+    tool_choice="required"; the edit is enforced by _force_write_must_edit."""
+    monkeypatch.delenv("AIFORGE_FORCE_WRITE_NARROW_TOOLS", raising=False)
+    seen = _forced_write_seen(monkeypatch, 81)
+    (forced, c1), (normal, c2) = seen
+    assert c1 == "required" and c2 == "auto"
+    assert forced == normal and "run_command" in forced
+
+
+def test_a_forced_write_can_still_narrow_the_tools_by_env(monkeypatch):
+    monkeypatch.setenv("AIFORGE_FORCE_WRITE_NARROW_TOOLS", "1")
+    seen = _forced_write_seen(monkeypatch, 82)
+    (forced, c1), (normal, c2) = seen
+    assert c1 == "required" and set(forced) <= _native.WRITE_TOOLS
+    assert c2 == "auto" and "run_command" in normal
+
+
 def test_a_forced_write_step_offers_only_edit_tools_once(monkeypatch):
     """click af6: 135 shell commands, two "write the change" notes ignored.
     A short burst keeps edit-only for FORCE_WRITE_BURST calls, then restores
-    the full tool list (one micro-edit used to unlock another shell loop)."""
+    the full tool list (one micro-edit used to unlock another shell loop).
+    (Narrowed list = AIFORGE_FORCE_WRITE_NARROW_TOOLS=1.)"""
+    monkeypatch.setenv("AIFORGE_FORCE_WRITE_NARROW_TOOLS", "1")
     _native.reset_native_cache()
     monkeypatch.setattr(_native, "_model_for", lambda role: "m-fw")
     from aiforge_core.llm import client
