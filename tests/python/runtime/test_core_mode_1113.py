@@ -12,7 +12,8 @@ ROOT = pathlib.Path(core.__file__).resolve().parents[2]       # aiforge_core/
 
 def _clear(monkeypatch):
     for k in list(core.CORE_OFF) + ["AIFORGE_CHAT_CORE"]:
-        monkeypatch.delenv(k, raising=False)
+        monkeypatch.setenv(k, "")       # recorded, so core.apply()'s values are undone
+        monkeypatch.delenv(k)
 
 
 def test_off_by_default(monkeypatch):
@@ -82,3 +83,37 @@ def test_a_stuck_trip_in_core_mode_keeps_the_history(monkeypatch):
         list(E.escalate(st, "You keep repeating `x` without progress."))
     assert not called
     assert "[loop guard — not the user]" in st.convo[-1]["content"]
+
+
+def test_core_mode_keeps_task_board_and_evidence(monkeypatch):
+    """Owner rule: core mode must not touch the right-side panel — tasks,
+    their status updates and the evidence under every task."""
+    _clear(monkeypatch)
+    monkeypatch.setenv("AIFORGE_CHAT_CORE", "1")
+    core.apply()
+    from types import SimpleNamespace
+    from aiforge_core.runtime.chat_agent._turn import _evidence as E, _items
+    from aiforge_core.runtime.chat_agent._turn._action import _with_evidence
+    from aiforge_core.runtime.chat_agent._turn._tasks import apply_progress
+
+    board = {f"part-{i}": {"title": f"Part {i}", "status": "pending"} for i in (1, 2, 3)}
+    st = SimpleNamespace(board=board, cwd=None)
+
+    def progress(**args):
+        before = {s: it.get("status") for s, it in st.board.items()}
+        result, events = apply_progress(st.board, args)
+        return result, _with_evidence(st, result, events, before)
+
+    progress(slug="part-1", status="running")
+    E.note(st, "file_patch", {"path": "a.py"}, {"ok": True})
+    E.note(st, "run_command", {"cmd": "pytest -q"},
+           {"ok": True, "code": 0, "stdout": "3 passed\n", "stderr": ""})
+    result, events = progress(slug="part-1", status="done")
+    upd = [e for e in events if e["type"] == "subtask_update"]
+    assert upd and upd[0]["status"] == "done"
+    ev = st.board["part-1"]["evidence"]
+    assert [s["tool"] for s in ev["steps"]] == ["file_patch", "run_command"]
+
+    # the per-item evidence log runs with the done-check off
+    assert not _items.verify_enabled() and not _items.active(st)
+    assert _items.tracking(st)
