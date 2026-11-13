@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import json
-from unittest.mock import MagicMock, patch
+import pytest
 
 from aiforge_core.runtime import resolver
 
@@ -65,9 +64,13 @@ def test_resolve_once_creates_tickets(monkeypatch):
     added: list[dict] = []
     class _FakeStore:
         @staticmethod
-        def add(*, project, title, body, metadata):
-            added.append({"project": project, "title": title,
-                          "body": body, "metadata": metadata})
+        def get(ident):
+            return None
+
+        @staticmethod
+        def create(*, project, title, body, metadata, identifier):
+            added.append({"project": project, "title": title, "body": body,
+                          "metadata": metadata, "identifier": identifier})
 
     _patch_store(monkeypatch, _FakeStore)
     result = resolver.resolve_once(repo="o/r", project="X")
@@ -83,11 +86,13 @@ def test_resolve_once_skips_existing(monkeypatch):
     monkeypatch.setattr(resolver, "list_open_bot_issues", lambda *a, **k: issues)
     class _FakeStore:
         @staticmethod
-        def add(**kw):
+        def create(**kw):
             raise AssertionError("should not be called when existing found")
+
         @staticmethod
-        def find_by_issue_url(url):
-            return {"id": 99}
+        def get(ident):
+            return {"id": 99} if ident == resolver._identifier_for(
+                "https://github.com/o/r/issues/1") else None
     _patch_store(monkeypatch, _FakeStore)
     result = resolver.resolve_once(repo="o/r")
     assert result["ok"]
@@ -100,9 +105,77 @@ def test_resolve_once_handles_add_failure(monkeypatch):
     monkeypatch.setattr(resolver, "list_open_bot_issues", lambda *a, **k: issues)
     class _FakeStore:
         @staticmethod
-        def add(**kw):
+        def get(ident):
+            return None
+
+        @staticmethod
+        def create(**kw):
             raise RuntimeError("db down")
     _patch_store(monkeypatch, _FakeStore)
     result = resolver.resolve_once(repo="o/r")
     assert result["ok"]
     assert result["created"] == 0
+
+
+def test_the_identifier_is_stable_per_issue():
+    url = "https://github.com/octo-org/My.Repo/issues/12"
+    ident = resolver._identifier_for(url)
+    assert ident == resolver._identifier_for(url)
+    assert ident.startswith("GH-octo-org-my-repo-12-")
+
+
+def test_look_alike_repos_get_different_identifiers():
+    a = resolver._identifier_for("https://github.com/a-b/c/issues/1")
+    b = resolver._identifier_for("https://github.com/a/b-c/issues/1")
+    c = resolver._identifier_for("https://ghe.example.com/a-b/c/issues/1")
+    assert len({a, b, c}) == 3
+
+
+def test_an_issue_without_a_url_is_not_imported(monkeypatch):
+    issue = _issue(3, "no url", "b")
+    issue["html_url"] = ""
+    monkeypatch.setattr(resolver, "list_open_bot_issues", lambda *a, **k: [issue])
+
+    class _FakeStore:
+        @staticmethod
+        def get(ident):
+            raise AssertionError("no lookup without a url")
+
+        @staticmethod
+        def create(**kw):
+            raise AssertionError("no import without a url")
+    _patch_store(monkeypatch, _FakeStore)
+    assert resolver.resolve_once(repo="o/r")["created"] == 0
+
+
+@pytest.fixture
+def real_store(monkeypatch, tmp_path):
+    """Hermetic embedded-SQLite store (same recipe as tickets/test_lease)."""
+    import importlib
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("AIFORGE_TICKETS_BACKEND", "sqlite")
+    monkeypatch.setenv("AIFORGE_DB_PATH", str(tmp_path / "t.db"))
+    import aiforge_core.config.env as envmod
+    importlib.reload(envmod)
+    from aiforge_core.tickets import backend_factory
+    importlib.reload(backend_factory)
+    backend_factory.reset_backend_for_tests()
+    from aiforge_core.tickets import store
+    importlib.reload(store)
+    yield store
+    backend_factory.reset_backend_for_tests()
+
+
+def test_a_real_store_imports_an_issue_once(monkeypatch, real_store):
+    """Against the real ticket store: the second poll finds the first import,
+    even after that ticket is done."""
+    store = real_store
+    issues = [_issue(7, "task G", "body G")]
+    monkeypatch.setattr(resolver, "list_open_bot_issues", lambda *a, **k: issues)
+    first = resolver.resolve_once(repo="o/r", project="X")
+    assert first["created"] == 1
+    ticket = store.get(resolver._identifier_for("https://github.com/o/r/issues/7"))
+    assert ticket is not None and ticket.title == "task G"
+    store.update_status(ticket.id, "done")
+    second = resolver.resolve_once(repo="o/r", project="X")
+    assert second["created"] == 0 and second["skipped_existing"] == 1

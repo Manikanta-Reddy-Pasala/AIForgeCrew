@@ -10,7 +10,6 @@ import pytest
 
 from aiforge_core.runtime.tools import email_tool as et
 
-
 # ── config fixtures ───────────────────────────────────────────────────
 
 @pytest.fixture
@@ -40,9 +39,10 @@ class _FakeSMTP:
     """Records calls; captures the EmailMessage handed to send_message."""
     instances: list = []
 
-    def __init__(self, host, port=0, timeout=None):
+    def __init__(self, host, port=0, timeout=None, context=None):
         self.host = host
         self.port = port
+        self.context = context
         self.calls: list[str] = []
         self.sent = None
         self.to_addrs = None
@@ -76,9 +76,11 @@ class _FakeIMAP:
     """Minimal IMAP4_SSL stand-in returning a couple of fake messages."""
     last: "_FakeIMAP | None" = None
 
-    def __init__(self, host, port=0):
+    def __init__(self, host, port=0, timeout=None, ssl_context=None):
         self.host = host
         self.port = port
+        self.timeout = timeout
+        self.ssl_context = ssl_context
         self.selected = None
         self.search_args = None
         _FakeIMAP.last = self
@@ -99,8 +101,9 @@ class _FakeIMAP:
         self.login_creds = (user, pw)
         return ("OK", [b"logged in"])
 
-    def select(self, folder):
+    def select(self, folder, readonly=False):
         self.selected = folder
+        self.readonly = readonly
         return ("OK", [b"3"])
 
     def search(self, charset, *criteria):
@@ -108,6 +111,7 @@ class _FakeIMAP:
         return ("OK", [b"1 2 3"])
 
     def fetch(self, num, spec):
+        self.fetch_spec = spec
         key = num if isinstance(num, bytes) else str(num).encode()
         return ("OK", [(b"%s (RFC822)" % key, self._store[key]), b")"])
 
@@ -326,3 +330,39 @@ def test_email_test_smtp_only_ok(tmp_path, smtp_cfg, monkeypatch):
     assert out["smtp"]["ok"] is True
     assert out["smtp"]["host"] == "smtp.internal"
     assert out["imap"] is None
+
+
+def test_read_connects_with_a_timeout(imap_cfg, monkeypatch):
+    monkeypatch.setattr("imaplib.IMAP4_SSL", _FakeIMAP)
+    assert et.email_read({})["ok"] is True
+    assert _FakeIMAP.last.timeout == et._TIMEOUT_S
+
+
+def test_read_limit_is_capped():
+    assert et._read_limit({"limit": 10_000}) == et._READ_LIMIT_MAX
+    assert et._read_limit({"limit": 0}) == 10
+
+
+def test_read_refuses_a_folder_with_a_line_break(imap_cfg, monkeypatch):
+    monkeypatch.setattr("imaplib.IMAP4_SSL", _FakeIMAP)
+    out = et.email_read({"folder": "INBOX\r\nA1 DELETE INBOX"})
+    assert out["ok"] is False and "line break" in out["error"]
+    assert _FakeIMAP.last.selected is None
+
+
+def test_read_does_not_mark_mail_as_read(imap_cfg, monkeypatch):
+    monkeypatch.setattr("imaplib.IMAP4_SSL", _FakeIMAP)
+    assert et.email_read({"limit": 1})["ok"] is True
+    assert _FakeIMAP.last.readonly is True
+    assert "PEEK" in _FakeIMAP.last.fetch_spec
+
+
+def test_mail_tls_verifies_the_server_certificate(imap_cfg, monkeypatch):
+    """The stdlib mail clients default to an unverified context; the password
+    must only go to a server whose certificate checks out."""
+    import ssl
+    monkeypatch.setattr("imaplib.IMAP4_SSL", _FakeIMAP)
+    assert et.email_read({})["ok"] is True
+    ctx = _FakeIMAP.last.ssl_context
+    assert isinstance(ctx, ssl.SSLContext)
+    assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname

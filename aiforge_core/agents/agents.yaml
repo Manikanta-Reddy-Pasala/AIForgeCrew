@@ -515,9 +515,9 @@ agents:
   # 7. TRIAGE  (extended pipeline — option G)
   # ---------------------------------------------------------------------------
   # Runs FIRST on the parent ticket. Single-turn JSON classifier that tags the
-  # ticket as trivial / moderate / hard. The model_router uses the label to
-  # pick downstream Doer/Researcher tiers; the orchestrator can also short-
-  # circuit trivial tickets straight to Doer (skip Planner+Verifier).
+  # ticket as trivial / moderate / hard. The pipeline's triage gate uses the
+  # label to short-circuit trivial tickets straight to Doer (skip
+  # Planner+Verifier).
   # ---------------------------------------------------------------------------
   triage:
     identity:
@@ -544,7 +544,7 @@ agents:
       write_scope: none
     rule: >
       Triage emits a single JSON verdict on ticket complexity. Uses no tools.
-      Drives downstream model selection via aiforge_core.runtime.model_router.
+      The pipeline's triage gate uses it to send trivial tickets straight to the Doer.
     termination_contract:
       - "complexity ∈ {trivial, moderate, hard} emitted as valid JSON"
       - estimated_files is a non-negative integer

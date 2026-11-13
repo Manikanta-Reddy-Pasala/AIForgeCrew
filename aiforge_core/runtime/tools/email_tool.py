@@ -189,15 +189,28 @@ def _markdown_html(body: str) -> str:
             f'font-size:14px;line-height:1.5">{out}</div>')
 
 
+def _tls(c: dict):
+    """A certificate-verifying TLS context for the mail host. The stdlib mail
+    clients default to an UNVERIFIED context, which sent the mailbox password
+    to whoever answered. Same trust rules as every other https call (custom CA
+    bundle, pinned internal hosts)."""
+    import ssl
+
+    from aiforge_core.net import ssl as _net_ssl
+    return (_net_ssl.context_for(f"https://{c['host']}:{c['port']}")
+            or ssl.create_default_context())
+
+
 def _smtp_open(c: dict):
     """A connected, authenticated SMTP session (STARTTLS or implicit SSL)."""
     if c["starttls"]:
         srv = smtplib.SMTP(c["host"], c["port"], timeout=_TIMEOUT_S)
         srv.ehlo()
-        srv.starttls()
+        srv.starttls(context=_tls(c))
         srv.ehlo()
     else:
-        srv = smtplib.SMTP_SSL(c["host"], c["port"], timeout=_TIMEOUT_S)
+        srv = smtplib.SMTP_SSL(c["host"], c["port"], timeout=_TIMEOUT_S,
+                               context=_tls(c))
     if c["user"]:
         srv.login(c["user"], c["password"])
     return srv
@@ -309,13 +322,20 @@ def _imap_connect(c: dict):
     _ref = _egress.allow("email", str(c.get("host") or ""))
     if _ref is not None:
         raise OSError(f"egress refused IMAP: {_ref.get('error')}")
-    return (imaplib.IMAP4_SSL(c["host"], c["port"]) if c["ssl"]
-            else imaplib.IMAP4(c["host"], c["port"]))
+    return (imaplib.IMAP4_SSL(c["host"], c["port"], timeout=_TIMEOUT_S,
+                              ssl_context=_tls(c)) if c["ssl"]
+            else imaplib.IMAP4(c["host"], c["port"], timeout=_TIMEOUT_S))
+
+
+_READ_LIMIT_MAX = 50
+# A query that matches nothing would otherwise download the whole mailbox, one
+# message at a time, inside a chat turn.
+_SCAN_MAX = 500
 
 
 def _read_limit(args: dict) -> int:
     try:
-        return max(1, int(args.get("limit", 10) or 10))
+        return min(_READ_LIMIT_MAX, max(1, int(args.get("limit", 10) or 10)))
     except (TypeError, ValueError):
         return 10
 
@@ -332,7 +352,7 @@ def _message_row(num, m) -> dict:
 def _fetch_message(srv, num):
     """The parsed message, or None when it cannot be read."""
     try:
-        _typ, msg_data = srv.fetch(num, "(RFC822)")
+        _typ, msg_data = srv.fetch(num, "(BODY.PEEK[])")
     except Exception:  # noqa: BLE001 — skip an unreadable message
         return None
     raw = _first_bytes(msg_data)
@@ -342,9 +362,12 @@ def _fetch_message(srv, num):
 def _collect_messages(srv, folder: str, *, unseen: bool, query: str,
                       limit: int) -> list[dict]:
     """Newest-first messages matching ``query`` (subject + from)."""
-    srv.select(folder)
+    if "\r" in folder or "\n" in folder:
+        raise ValueError("folder name contains a line break")
+    # Read-only + BODY.PEEK: reading must not mark the mailbox as read.
+    srv.select(folder, readonly=True)
     _typ, data = srv.search(None, *(["UNSEEN"] if unseen else ["ALL"]))
-    ids = list(reversed(data[0].split() if data and data[0] else []))
+    ids = list(reversed(data[0].split() if data and data[0] else []))[:_SCAN_MAX]
     out: list[dict] = []
     for num in ids:
         if len(out) >= limit:
@@ -405,7 +428,7 @@ def _smtp_probe(c: dict) -> None:
         srv = smtplib.SMTP(c["host"], c["port"], timeout=_TIMEOUT_S)
         try:
             srv.ehlo()
-            srv.starttls()
+            srv.starttls(context=_tls(c))
             srv.ehlo()
             if c["user"]:
                 srv.login(c["user"], c["password"])
@@ -413,7 +436,8 @@ def _smtp_probe(c: dict) -> None:
             with contextlib.suppress(Exception):
                 srv.quit()
         return
-    srv = smtplib.SMTP_SSL(c["host"], c["port"], timeout=_TIMEOUT_S)
+    srv = smtplib.SMTP_SSL(c["host"], c["port"], timeout=_TIMEOUT_S,
+                               context=_tls(c))
     try:
         if c["user"]:
             srv.login(c["user"], c["password"])

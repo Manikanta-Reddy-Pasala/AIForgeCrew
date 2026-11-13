@@ -145,9 +145,13 @@ def test_arming_a_session_is_a_no_op_without_one():
 
 def test_arming_a_session_makes_it_steerable_and_active():
     from aiforge_core.runtime import chat_cancel, chat_interject
-    st._arm_session(99123)
-    assert chat_interject.pending(99123) == [] or True   # module accepted the id
-    chat_cancel.clear(99123) if hasattr(chat_cancel, "clear") else None
+    try:
+        st._arm_session(99123)
+        assert chat_interject.is_steerable(99123)
+        assert chat_cancel.active() == 99123
+    finally:
+        chat_interject.set_steerable(99123, False)
+        chat_cancel.set_active(None)
 
 
 # ─── steering drain ────────────────────────────────────────────────────

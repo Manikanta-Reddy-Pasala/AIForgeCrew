@@ -377,3 +377,39 @@ def test_a_test_written_this_turn_cannot_fail_correct_code():
     assert "A test you wrote this turn does not count" in _SYSTEM
     assert "Never change the implementation to satisfy" in _SYSTEM
     assert "delete it" in _SYSTEM.lower()
+
+
+# ── the email probe ─────────────────────────────────────────────────────────
+# It once called an email_tool._conf() that does not exist behind a hasattr
+# guard, so email counted as unconfigured on every box and the model never
+# saw the email tools.
+
+@pytest.mark.parametrize("env", ["AIFORGE_SMTP_HOST", "AIFORGE_IMAP_HOST"])
+def test_email_counts_as_configured_when_a_mail_host_is_set(monkeypatch, env):
+    from aiforge_core.runtime.chat_agent import _catalog_gate as cg
+    from aiforge_core.runtime.tools import email_tool
+    monkeypatch.setattr(email_tool, "_stored", dict)
+    for var in ("AIFORGE_SMTP_HOST", "AIFORGE_IMAP_HOST",
+                "AIFORGE_EMAIL_DISABLE", "AIFORGE_EGRESS_OFF"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv(env, "mail.example.test")
+    assert cg._email() is True
+
+
+def test_email_is_unconfigured_without_a_mail_host(monkeypatch):
+    from aiforge_core.runtime.chat_agent import _catalog_gate as cg
+    from aiforge_core.runtime.tools import email_tool
+    monkeypatch.setattr(email_tool, "_stored", dict)
+    for var in ("AIFORGE_SMTP_HOST", "AIFORGE_IMAP_HOST"):
+        monkeypatch.delenv(var, raising=False)
+    assert cg._email() is False
+
+
+@pytest.mark.parametrize("switch", ["AIFORGE_EMAIL_DISABLE", "AIFORGE_EGRESS_OFF"])
+def test_a_disabled_email_class_is_not_advertised(monkeypatch, switch):
+    from aiforge_core.runtime.chat_agent import _catalog_gate as cg
+    from aiforge_core.runtime.tools import email_tool
+    monkeypatch.setattr(email_tool, "_stored", dict)
+    monkeypatch.setenv("AIFORGE_SMTP_HOST", "mail.example.test")
+    monkeypatch.setenv(switch, "1")
+    assert cg._email() is False
