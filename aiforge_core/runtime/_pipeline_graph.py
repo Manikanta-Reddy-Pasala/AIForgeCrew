@@ -73,6 +73,9 @@ def _attach_agent_callbacks(*, doer, learner, planner, validator,
     # every named anchor must never replace the operator's ask.
     if enhancer is not None:
         _append_after(enhancer, _make_enhancer_guard())
+        # A spec the chat build route already produced skips the Enhancer's LLM
+        # call (see _make_enhancer_preseed).
+        _append_callback(enhancer, "before_agent_callback", _make_enhancer_preseed())
     # LOC-plateau watcher — after Doer file_diffs land. On the full graph this
     # sits on the Refiner; on the lean graph (no Refiner) it sits on Feedback
     # (or the Doer when Feedback is also absent).
@@ -297,6 +300,34 @@ def _make_enhancer_guard():
         except Exception:  # noqa: BLE001 — the guard must never break a run
             pass
         return None
+    return _cb
+
+
+# State key a caller seeds with an already-enhanced spec (the chat build route
+# enhances before it knows the task is a single one; the sequential team run it
+# falls back to must not enhance the same request a second time).
+PRE_ENHANCED_KEY = "pre_enhanced_body"
+
+
+def _make_enhancer_preseed():
+    """Before-callback for the ADK Enhancer: when state carries
+    ``pre_enhanced_body``, that spec IS the Enhancer's output — written to
+    ``enhanced_body`` and returned as the Enhancer's reply (so chat-mode nodes
+    see it in history exactly where the rewrite would sit), and the LLM call is
+    skipped. Absent, the Enhancer runs as before."""
+    def _cb(callback_context=None, **_kw):
+        try:
+            st = getattr(callback_context, "state", None)
+            spec = st.get(PRE_ENHANCED_KEY) if st is not None else None
+            if not isinstance(spec, str) or not spec.strip():
+                return None
+            from google.genai import types as gtypes
+            reply = gtypes.Content(role="model",
+                                   parts=[gtypes.Part.from_text(text=spec)])
+            st["enhanced_body"] = spec
+            return reply
+        except Exception:  # noqa: BLE001 — fall back to a normal enhance
+            return None
     return _cb
 
 
