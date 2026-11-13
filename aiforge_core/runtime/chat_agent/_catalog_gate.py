@@ -69,8 +69,9 @@ def _blackduck() -> bool:
 def _email() -> bool:
     # email_tool has no _conf(): the old probe always said "not configured",
     # hiding email on every install. Configured = SMTP or IMAP has a host.
+    from aiforge_core.net import egress
     from aiforge_core.runtime.tools import email_tool
-    if email_tool._disabled():
+    if email_tool._disabled() or egress.class_off("email"):
         return False
     return bool(email_tool._smtp_conf().get("host")
                 or email_tool._imap_conf().get("host"))

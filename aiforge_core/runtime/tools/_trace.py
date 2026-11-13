@@ -1,13 +1,15 @@
 """Shared trace-event emitter for the OpenHands-parity tool surface.
 
-Every tool calls :func:`emit` to record a labelled event via
-``runtime.observability.emit_trace``. The emit path is best-effort: a
+Every tool calls :func:`emit` to record a labelled event on the
+``aiforge.tools.trace`` logger at DEBUG, so the trail is only written when
+that logger is set to DEBUG (``aiforge`` runs at INFO). The emit path is best-effort: a
 sink outage or missing config never bubbles into the model loop.
 Oversized string fields are truncated to 4 KB to keep the audit trail
 bounded.
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any
@@ -26,14 +28,11 @@ def _clip(val: Any) -> Any:
 
 
 def _safe_emit(label: str, props: dict[str, Any]) -> None:
-    """Delegate to runtime.observability.emit_trace. Importing here keeps
-    the module unit-test friendly (test_trace.py mocks this function)."""
-    from aiforge_core.runtime import observability
-
-    fn = getattr(observability, "emit_trace", None)
-    if fn is None:
-        return
-    fn(label=label, props=props)
+    """Write the event to the trace logger. It used to look up an
+    ``observability.emit_trace`` that never existed, so every event was
+    dropped (test_trace.py mocks this function)."""
+    if log.isEnabledFor(logging.DEBUG):
+        log.debug("trace %s %s", label, json.dumps(props, default=str))
 
 
 def emit(label: str, props: dict[str, Any]) -> None:

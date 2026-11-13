@@ -1,7 +1,7 @@
 """Autonomous GitHub-issue resolver (sub #10 follow-up; OH parity).
 
 Polls a GitHub repo for issues tagged ``aiforge-bot`` (configurable)
-and converts each into a ticket on the AIForge Postgres ticket queue.
+and converts each into a ticket on the AIForge ticket queue.
 The existing :mod:`adk_runner` then processes those tickets normally,
 producing a PR via :mod:`git_pr`.
 
@@ -17,9 +17,11 @@ Env knobs:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -95,6 +97,18 @@ def issue_to_ticket(
     }
 
 
+def _identifier_for(issue_url: str) -> str:
+    """A ticket identifier that is the same every poll for the same issue, so
+    the store's unique identifier is what stops a second import — including
+    after the first ticket is done while the issue is still open. The slug is
+    for people; the hash of the full URL keeps ``a-b/c`` and ``a/b-c`` (or two
+    hosts) apart. Lowercase, so a slug never looks like a Jira key."""
+    path = re.sub(r"^https?://[^/]+/", "", issue_url).replace("/issues/", "-")
+    slug = re.sub(r"[^a-z0-9]+", "-", path.lower()).strip("-")[:60].rstrip("-")
+    digest = hashlib.sha1(issue_url.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
+    return f"GH-{slug}-{digest}"
+
+
 def resolve_once(
     repo: str | None = None,
     label: str | None = None,
@@ -119,28 +133,23 @@ def resolve_once(
     for issue in issues:
         ticket = issue_to_ticket(issue, project=project)
         issue_url = ticket["metadata"]["issue_url"]
-        # Best-effort dedupe; if the ticket-store doesn't expose a
-        # by_metadata query we fall through and rely on the project's
-        # own idempotency (the underlying create will collide).
-        find_fn = getattr(tickets_mod, "find_by_issue_url", None)
-        if callable(find_fn):
-            try:
-                existing = find_fn(issue_url)
-            except Exception:  # noqa: BLE001
-                existing = None
-            if existing is not None:
+        if not issue_url:
+            continue                  # nothing stable to dedupe on
+        ident = _identifier_for(issue_url)
+        try:
+            if tickets_mod.get(ident) is not None:
                 skipped_existing += 1
                 continue
-        try:
-            tickets_mod.add(
+            tickets_mod.create(
                 project=ticket["project"],
                 title=ticket["title"],
                 body=ticket["body"],
                 metadata=ticket["metadata"],
+                identifier=ident,
             )
             created += 1
         except Exception as exc:  # noqa: BLE001 — soft per-issue
-            log.warning("resolver.add_failed issue=%s: %s",
+            log.warning("resolver.create_failed issue=%s: %s",
                         issue_url, exc)
 
     return {

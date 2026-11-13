@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from aiforge_core.observability.logging import emit
-from aiforge_core.test.mcp_client import find_test_business
+from tests.python.runners.mcp_client import find_test_business
 
 
 @dataclass
@@ -208,8 +208,9 @@ def run_integration(worktree: str, log: object | None = None,
     live = os.environ.get("AIFORGE_TEST_INTEGRATION_LIVE", "0") == "1"
     spring_proc = None
     if live:
-        from aiforge_core.test.spring_boot_runner import (
-            start_service, stop_service,
+        from tests.python.runners.spring_boot_runner import (
+            start_service,
+            stop_service,
         )
         spring_proc, sb_res = start_service(worktree, log=log, port=8090)
         result.notes.append(
@@ -232,7 +233,7 @@ def run_integration(worktree: str, log: object | None = None,
         timeout=30,
     )
     if live and spring_proc is not None:
-        from aiforge_core.test.spring_boot_runner import stop_service
+        from tests.python.runners.spring_boot_runner import stop_service
         stop_service(spring_proc, log=log)
     result.smoke_ran = True
     body = (stdout or "")

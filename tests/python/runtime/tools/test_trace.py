@@ -31,3 +31,26 @@ def test_emit_never_raises_on_observability_failure():
         side_effect=RuntimeError("neo4j down"),
     ):
         _trace.emit("Think", {"thought": "hi"})  # must not raise
+
+
+def test_an_event_reaches_the_trace_logger():
+    """_safe_emit used to look up an observability.emit_trace that never
+    existed, so every event was dropped."""
+    import logging
+
+    seen: list[str] = []
+
+    class _Grab(logging.Handler):
+        def emit(self, record):
+            seen.append(record.getMessage())
+
+    grab = _Grab(level=logging.DEBUG)
+    old = _trace.log.level
+    _trace.log.addHandler(grab)
+    _trace.log.setLevel(logging.DEBUG)
+    try:
+        _trace.emit("Think", {"thought": "hi"})
+    finally:
+        _trace.log.removeHandler(grab)
+        _trace.log.setLevel(old)
+    assert any("Think" in m and '"thought": "hi"' in m for m in seen)
