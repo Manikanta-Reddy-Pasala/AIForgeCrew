@@ -52,7 +52,8 @@ def _registered(monkeypatch, tmp_path, *, compaction="0", idle=False, **env):
 
 
 @pytest.mark.parametrize("raw,want", [
-    (None, None),                                        # unset = idle mode
+    (None, 18),                                          # unset = the evening pass
+    ("idle", None),                                      # opt-in idle mode
     ("18", 18), ("20", 20), ("24", 0),                   # 24 = midnight
     ("off", None), ("", None), ("none", None),
     ("0", None), ("-3", None),                           # 0 = off, like the siblings
@@ -76,9 +77,17 @@ def test_explicit_interval_opts_out_of_the_daily_pass(monkeypatch, tmp_path):
     assert api._compact_at_hour() == 18
 
 
-def test_default_registers_the_idle_pass(monkeypatch, tmp_path):
-    """Default: compact whenever nobody is using the box, not at 18:00."""
+def test_default_registers_the_evening_pass(monkeypatch, tmp_path):
+    """Default: ONE pass at 18:00. The idle pass was the default until 11-13;
+    on a box that is never idle its cycle never finished."""
     tasks = _registered(monkeypatch, tmp_path, idle=True)
+    assert tasks["daily-compact"].at_hour == 18
+    assert "idle-compact" not in tasks
+
+
+def test_idle_is_opt_in(monkeypatch, tmp_path):
+    tasks = _registered(monkeypatch, tmp_path, idle=True,
+                        AIFORGE_COMPACT_AT_HOUR="idle")
     assert tasks["idle-compact"].every_s == 300
     for gone in ("daily-compact", "chat-compact", "session-okr-compact", "recompact-all"):
         assert gone not in tasks
@@ -461,7 +470,7 @@ def test_compaction_enabled_by_default_registers_the_fold(monkeypatch, tmp_path)
     limiter meters it as compaction (what chat leaves of the global ceiling), so
     it can no longer burn a burst ahead of chat — the fix for the user's report."""
     tasks = _registered(monkeypatch, tmp_path, compaction=None, idle=True)
-    assert "idle-compact" in tasks              # real default: the idle pass
+    assert "daily-compact" in tasks             # real default: the evening pass
     assert "reindex" in tasks                 # non-LLM maintenance still on
 
 

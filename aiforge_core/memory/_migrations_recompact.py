@@ -124,6 +124,9 @@ def force_recompact_all(on_step=None, checkpoint=None) -> dict:
         # FIRST: retire captures that were never facts (CLI fragments, headings,
         # raw chat turns) and collapse the truncation ladders the old
         # append-only writer left, so nothing below consolidates junk.
+        # one clean form per fact in every brief and OKF node (no model):
+        # stray nested bullets, joined copies, exact duplicates
+        ("normalize", lambda: md_store.normalize_all()),
         ("repair", lambda: md_store.repair_captures()),
         ("tidy_legacy", lambda: md_store.cleanup_legacy_compacted(refold=False)),
         ("repo", lambda: md_store.compact(group_by="repo", force=True,
