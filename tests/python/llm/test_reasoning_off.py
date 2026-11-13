@@ -41,7 +41,8 @@ def test_the_request_body_carries_both_switches(registry):
     registry.append({"model": "qwen/qwen3.8-27b", "thinking": "no"})
     body = json.loads(_http._build_body(
         _ep(), [{"role": "user", "content": "hi"}], None, None, None, None))
-    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert body["chat_template_kwargs"] == {"enable_thinking": False, "thinking": False}
+    assert body["thinking"] == {"type": "disabled"}
     assert body["messages"][-1]["content"].endswith("/no_think")
 
 
@@ -76,8 +77,10 @@ def test_the_litellm_model_is_built_with_the_kwarg(registry, monkeypatch):
                                "api_base": "http://127.0.0.1:11234/v1", "api_key": "x"})
     # the template kwarg for servers that honour it, and reasoning_effort for
     # the ones (LM Studio's qwen3.8) that only obey that
+    # (+ the hosted-API switch: Thinking is set to Off explicitly here)
     assert llm._additional_args["extra_body"] == {
-        "chat_template_kwargs": {"enable_thinking": False}, "reasoning_effort": "none"}
+        "chat_template_kwargs": {"enable_thinking": False, "thinking": False},
+        "thinking": {"type": "disabled"}, "reasoning_effort": "none"}
 
 
 # ── the switch that actually works: reasoning_effort ──────────────────────────
@@ -95,7 +98,8 @@ def test_thinking_no_also_sends_reasoning_effort_none(registry):
     registry.append({"model": "qwen/qwen3.8-27b", "thinking": "no"})
     body = _body()
     assert body["reasoning_effort"] == "none"
-    assert body["chat_template_kwargs"] == {"enable_thinking": False}     # kept for other servers
+    assert body["chat_template_kwargs"] == {"enable_thinking": False, "thinking": False}
+    assert body["thinking"] == {"type": "disabled"}     # kept for other servers
 
 
 def test_only_the_planner_reasons_every_other_role_is_told_not_to(registry, monkeypatch):
@@ -104,7 +108,8 @@ def test_only_the_planner_reasons_every_other_role_is_told_not_to(registry, monk
     for role in ("chat", "doer", "enhancer", "reviewer", "architect"):
         body = _body(role=role)
         assert body["reasoning_effort"] == "none", role
-        assert body["chat_template_kwargs"] == {"enable_thinking": False}
+        assert body["chat_template_kwargs"] == {"enable_thinking": False, "thinking": False}
+    assert body["thinking"] == {"type": "disabled"}
     planner = _body(role="planner")
     assert "reasoning_effort" not in planner                               # left to the model
     assert "chat_template_kwargs" not in planner
@@ -151,7 +156,8 @@ def test_a_server_that_refused_the_field_is_not_sent_it_again(registry):
     assert fast_reasoning.note_rejection("http://127.0.0.1:11234/v1", err, "qwen/qwen3.8-27b")
     body = _body()
     assert "reasoning_effort" not in body                                  # remembered
-    assert body["chat_template_kwargs"] == {"enable_thinking": False}      # the older switches stay
+    assert body["chat_template_kwargs"] == {"enable_thinking": False, "thinking": False}
+    assert body["thinking"] == {"type": "disabled"}      # the older switches stay
     fast_reasoning.reset()
 
 

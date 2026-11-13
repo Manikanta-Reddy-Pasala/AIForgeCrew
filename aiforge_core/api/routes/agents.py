@@ -242,7 +242,8 @@ class _ModelBody(BaseModel):
     api_key: str | None = None
     insecure_tls: bool | None = None
     vision: str | None = Field(None, description="'auto' | 'yes' | 'no'")
-    thinking: str | None = Field(None, description="reasoning model: 'auto' | 'yes' | 'no'")
+    thinking: str | None = Field(None, description=(
+        "thinking: 'auto' | 'yes' (on) | 'low' | 'medium' | 'high' | 'no' (off)"))
     context_window: int | None = Field(None, ge=0, le=10_000_000,
                                        description="per-model input window (tokens); 0 = use global")
 

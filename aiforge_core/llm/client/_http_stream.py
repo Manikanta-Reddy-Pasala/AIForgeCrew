@@ -2,10 +2,23 @@
 plain or streamed HTTP response."""
 from __future__ import annotations
 
+import contextvars
 import http.client
 import io
 import json
 import urllib.error
+
+
+class ReasoningOverCap(Exception):
+    """The streamed reasoning ran past the model's Low/Medium thinking cap
+    before any answer or tool call. Not a transport error: the caller asks
+    again with reasoning off (see client._native_post)."""
+
+
+#: Reasoning characters a stream may carry before :class:`ReasoningOverCap`
+#: (0 = no cap). Set per request by the transport from Models → Thinking.
+REASONING_CAP_CHARS: "contextvars.ContextVar[int]" = contextvars.ContextVar(
+    "aiforge_reasoning_cap_chars", default=0)
 
 
 def _pkg():
@@ -27,6 +40,8 @@ class _StreamAssembler:
         self.finish = None
         self.usage = None
         self.meta: dict = {}
+        self.cap = REASONING_CAP_CHARS.get()
+        self.reasoned = 0
 
     def _emit(self, kind: str, text: str) -> None:
         try:
@@ -68,6 +83,11 @@ class _StreamAssembler:
         if r:
             self.reasoning.append(r)
             self._emit("reasoning", r)
+            self.reasoned += len(r)
+            if self.cap and self.reasoned > self.cap and not self.content \
+                    and not self.tools:
+                raise ReasoningOverCap(
+                    f"reasoning passed {self.cap // 4} tokens with no answer yet")
         for tc in d.get("tool_calls") or []:
             self._merge_tool(tc)
         if ch.get("finish_reason"):

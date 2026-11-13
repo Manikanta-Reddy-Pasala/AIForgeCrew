@@ -171,7 +171,7 @@ def test_the_twin_is_the_same_model_with_reasoning_off():
     twin = _builder._build_one(_CFG, "planner", reasoning=False)
     body = twin._additional_args["extra_body"]
     assert body["reasoning_effort"] == "none"
-    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert body["chat_template_kwargs"] == {"enable_thinking": False, "thinking": False}
     assert twin.model == _CFG["model_id"]
 
 

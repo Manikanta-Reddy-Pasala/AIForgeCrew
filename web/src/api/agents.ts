@@ -63,6 +63,8 @@ export interface LlmSettings {
 export type LlmSettingsInput = Partial<LlmSettings> & { unset?: string[] };
 
 export type ModelTriState = 'auto' | 'yes' | 'no';
+/** Models → Thinking: auto, on ('yes'), off ('no'), or a limited depth. */
+export type ModelThinking = ModelTriState | 'low' | 'medium' | 'high';
 
 export interface RegistryModel {
   id: string;
@@ -71,7 +73,7 @@ export interface RegistryModel {
   base_url: string;
   insecure_tls: boolean;
   vision: ModelTriState;
-  thinking: ModelTriState;
+  thinking: ModelThinking;
   has_vision: boolean;
   has_thinking: boolean;
   context_window: number;
@@ -84,7 +86,7 @@ export interface ModelInput {
   api_key?: string;
   insecure_tls?: boolean;
   vision?: ModelTriState;
-  thinking?: ModelTriState;
+  thinking?: ModelThinking;
   context_window?: number;
 }
 

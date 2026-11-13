@@ -140,7 +140,7 @@ def _build_one(cfg: dict[str, Any], role: str = "",
         _body.update(_reasoning.off_extras(cfg["model_id"], api_base))
     else:
         if _reasoning.reasoning_off(cfg["model_id"], api_base, role):
-            _body.update(_reasoning.NO_THINK_KWARGS)
+            _body.update(_reasoning.off_extras(cfg["model_id"], api_base))
         _body.update(_reasoning.effort_extras(cfg["model_id"], api_base, role))
     if _body:
         kwargs["extra_body"] = _body
