@@ -1118,19 +1118,12 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
             yield {"type": "thought", "role": "system",
                    "text": "🔎 same tests still failing — traced which of the new lines ran"}
             _notes.append(_trace)
-        # CREATE … TRIGGER still Command: creatable already consumed TRIGGER
-        from ._parse_consume_hint import after_test as _parse_consume_after
-        _pch = _safely(_parse_consume_after, st, name, args, result)
-        if _pch:
-            yield {"type": "thought", "role": "system",
-                   "text": "⚠ CREATE TRIGGER still Command — creatable already ate TRIGGER"}
-            _notes.append(_pch)
     # pytest hung / killed (incl. command_kill on a bg pytest) → infinite loop?
     from ._hang_test_hint import after_tool as _hang_after
     _hang = _safely(_hang_after, st, name, args, result)
     if _hang:
         yield {"type": "thought", "role": "system",
-               "text": "⚠ tests hung — check for an infinite loop in tokenize/parse"}
+               "text": "⚠ tests hung — look for a loop in the changed code"}
         _notes.append(_hang)
     from .._obs_vision import observation_content as _obs_content
     st.convo.append({"role": "user",

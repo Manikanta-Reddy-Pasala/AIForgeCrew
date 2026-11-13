@@ -1,9 +1,8 @@
 """One-shot nudge when a test command is killed / hangs with no progress.
 
-Studio xhard Simple (11-12): the agent ran pytest, saw no new output, killed
-the job, then stalled — the real bug was an infinite loop in ``parse`` on the
-``WHEN (…)`` clause. Surface that once so Simple/Team fix the loop instead of
-re-running the same hung suite.
+A test run that is stopped with little or no new output usually means the
+code under test never returns. Say so once, so the agent looks for the loop
+instead of re-running the same hung suite.
 """
 from __future__ import annotations
 
@@ -15,10 +14,10 @@ from aiforge_core.runtime.failure_signature import result_text
 _NOTE = (
     "[harness — not the user] The test command was stopped (killed / timed out) "
     "with little or no new output. That usually means the code under test is "
-    "stuck in an infinite loop — common in hand-rolled tokenizers/parsers on "
-    "optional clauses (e.g. WHEN (…), parenthesized expressions). Do NOT "
-    "re-run the same full suite yet. Open the parser/tokenizer, find a "
-    "`while` that does not always advance the index, fix it, then re-run "
+    "stuck in an infinite loop or waiting on input. Do NOT re-run the same "
+    "full suite yet. Find the code your last edits changed that can loop "
+    "(a `while` or retry that does not always make progress), fix it, then "
+    "re-run "
     "one failing test file with a short timeout."
 )
 
