@@ -1,7 +1,7 @@
 ---
 name: summarize-tickets-and-pages
 description: When reading a Jira ticket or Confluence page, follow the read skills and always summarize its description, comments, and images, plus its linked tickets/pages.
-triggers: [jira, ticket, confluence, page, summarize, explain, understand]
+triggers: [jira, ticket, confluence]
 scope: global
 alwaysApply: false
 ---

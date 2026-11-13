@@ -1,7 +1,7 @@
 ---
 name: jira-default-project
 description: The organization's default Jira project is CLR — use it for reads, searches, and new tickets unless the user names a different project.
-triggers: [jira, ticket, project, issue]
+triggers: [jira, ticket, clr]
 scope: global
 alwaysApply: true
 ---

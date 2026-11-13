@@ -364,7 +364,18 @@ def _repo_rule_bullets(cwd: str) -> tuple[list[str], list]:
         if not text:
             continue
         flat = text.replace("\n", " ")[:400]
-        if getattr(r, "always", True) or not getattr(r, "globs", None):
+        trig = tuple(getattr(r, "triggers", ()) or ())
+        if trig and not getattr(r, "globs", None) and (
+                not getattr(r, "always", True) or getattr(r, "source", "") == "builtin"):
+            # A topic-gated rule: shown when the message is about its topic.
+            # A SHIPPED default with triggers is gated too, whatever its
+            # alwaysApply says — tk-toml11 (a TOML parser task) carried the
+            # Jira-CLR, resolve-by-name and ticket-summary defaults as
+            # "MANDATORY, HIGHEST priority" in every prompt of the run.
+            tagged.append(_sk.Skill(
+                name=(r.name or text[:60]), description="", triggers=trig,
+                body=flat, source="repo_rules", always=False, priority=0))
+        elif getattr(r, "always", True) or not getattr(r, "globs", None):
             always.append("- " + flat)
         else:
             tagged.append(_sk.Skill(
