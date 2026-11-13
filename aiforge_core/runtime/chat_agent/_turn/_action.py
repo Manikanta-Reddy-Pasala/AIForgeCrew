@@ -152,6 +152,14 @@ def _log_read(st, name, args) -> bool:
         return False
 
 
+def _serve_repeat_once() -> bool:
+    """Serve the first repeat of a read instead of refusing it.
+    Off switch: ``AIFORGE_CHAT_SERVE_REPEAT_READ=0``."""
+    import os
+    return os.environ.get("AIFORGE_CHAT_SERVE_REPEAT_READ", "1").strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
 def _action_stall_guard(st, name, args, sig, _long_chain_help):
     """Stall guard for an action: short-circuit a duplicate read with a progress
     recap, and on the same tool+args repeated too often first recover with a
@@ -170,6 +178,7 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
     from ._waiting import waiting
     if waiting(st, name, args):
         return None                   # a check on a job still running: not a repeat
+    st.serve_repeat_now = False
     key = count_key(name, sig)
     st.action_counts[key] = st.action_counts.get(key, 0) + 1
     st.action_counts.move_to_end(key)
@@ -196,6 +205,27 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
          and (sig in st.read_sigs_seen or _covered(st, name, args))
          and not _log_read(st, name, args))
         or (shell_read and sig in shell_seen)))
+    if duplicate and not shell_read and _serve_repeat_once():
+        # The first repeat of a read is served. Refused, the model asked again
+        # in about half the cases (click pr1a 20 of 44 skips, sqlglot pk1a 38
+        # of 76 were followed by another skip): each refusal was a model call
+        # that ended with it still missing the lines. The same read asked a
+        # second time is still refused below. One served repeat per file
+        # between edits: a range asked again shifted by a line or two (click
+        # a15, ~30 times) is the same repeat, not a new one.
+        edits = getattr(st, "edits_made", 0)
+        served = getattr(st, "repeat_reads_served", None)
+        if served is None or getattr(st, "repeat_reads_edits", None) != edits:
+            served = st.repeat_reads_served = set()
+            st.repeat_reads_edits = edits
+        win = _window(name, args)
+        key = win[0] if win else sig
+        if key not in served:
+            served.add(key)
+            duplicate = False
+            # and in full: the read dedupe would hand back an "already in
+            # context" pointer, which is the same refusal in other words
+            st.serve_repeat_now = True
     signal = detect("action", st, sig, strike(st, sig, per_state=not duplicate),
                     duplicate)
     looping = signal.detail if signal else ""
@@ -1014,7 +1044,9 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     from aiforge_core.runtime.context_seen import (
         carries_fresh_body, dedupe_tool_result)
     try:
-        model_result = dedupe_tool_result(st.convo, name, args, result, cwd)
+        model_result = result if getattr(st, "serve_repeat_now", False) \
+            else dedupe_tool_result(st.convo, name, args, result, cwd)
+        st.serve_repeat_now = False
     except Exception:  # noqa: BLE001 — a dedupe miss must still deliver the result
         model_result = result
     from .._shell import _MAX_OBS_TEST, compact_test_output, is_test_command

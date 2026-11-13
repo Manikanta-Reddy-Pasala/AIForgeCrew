@@ -93,12 +93,12 @@ def test_duplicate_read_is_skipped_and_forces_new_progress(tmp_path):
     assert any("⏭ duplicate read skipped" in t for t in texts)   # dup detected
     assert seen_dupe["hit"]                                       # model saw the skip
     assert any("done, one file" in t for t in texts)             # finished
-    # emitted twice (executed once, then the identical re-read skipped) — only the
-    # first actually ran the tool (one `tool` event), the dup never re-executed.
-    assert reads["n"] == 2
+    # run, its first repeat served (11-13), later identical re-reads skipped
+    # (the same-output guard may add one more ask) — never re-executed.
+    assert reads["n"] in (3, 4)
     tool_reads = [e for e in events if e.get("type") == "tool"
                   and e.get("name") == "file_read"]
-    assert len(tool_reads) == 1
+    assert len(tool_reads) == 2
 
 
 def test_recoveries_disabled_restores_hard_bail(tmp_path):
