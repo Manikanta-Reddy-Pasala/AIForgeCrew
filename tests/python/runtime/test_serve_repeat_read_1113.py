@@ -66,3 +66,17 @@ def test_off_switch_restores_the_skip(monkeypatch):
     st = _st()
     _shown(st, "s1", "core.py", 100, 200)
     assert _run(st, {"path": "core.py", "start": 100, "end": 200}, "s1")[1] == "continue"
+
+
+def test_with_skips_off_every_repeat_is_served_until_the_loop_detector(monkeypatch):
+    """Core mode: no refusals; the same call in an unchanged workspace again and
+    again still ends in the loop recovery, not an endless read."""
+    monkeypatch.setenv("AIFORGE_CHAT_SKIP_REPEAT_READS", "0")
+    st = _st()
+    _shown(st, "s1", "core.py", 100, 200)
+    args = {"path": "core.py", "start": 100, "end": 200}
+    assert _run(st, {"path": "core.py", "start": 101, "end": 199}, "s2")[1] is None
+    outs = [_run(st, args, "s1") for _ in range(8)]
+    assert outs[0] == ([], None) and outs[1] == ([], None)
+    assert not any("duplicate read skipped" in e.get("text", "") for ev, _ in outs for e in ev)
+    assert any(r == "continue" for _, r in outs)          # the loop guard took over
