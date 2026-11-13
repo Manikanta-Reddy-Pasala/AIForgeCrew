@@ -81,3 +81,37 @@ def test_it_is_a_registered_core_act_tool():
     from aiforge_core.runtime.chat_agent._tools._schemas import _CORE_ACT, _CORE_READ
     assert "spawn_task" in TOOLS and "spawn_task" in _CORE_ACT
     assert "spawn_task" not in _CORE_READ                # plan/analyze stay read-only
+
+
+def test_spawn_task_is_in_the_text_protocol_catalog():
+    """Text-protocol models only see tools listed in _SYSTEM — OpenCode parity
+    requires spawn_task there, not only in native schemas."""
+    from aiforge_core.runtime.chat_agent._prompt import _SYSTEM
+    assert "- spawn_task " in _SYSTEM
+
+
+def test_team_mode_alias_runs_a_simple_act_child(monkeypatch, wired):
+    seen = {}
+
+    def _fake_run(messages, **kw):
+        seen.update(kw)
+        yield {"type": "message", "text": "done slice"}
+        yield {"type": "done"}
+
+    monkeypatch.setattr(
+        "aiforge_core.runtime.chat_agent.run_chat_agent", _fake_run)
+    out = _spawn._t_spawn_task(
+        {"task": "Implement ONLY the parser layer in foo.py",
+         "mode": "team", "wait": True}, ".")
+    assert out["ok"] and out["mode"] == "simple"
+    assert seen.get("mode") == "act"
+    assert out.get("max_steps", 0) >= 36  # coding budget
+
+
+def test_capped_decompose_mentions_spawn_task():
+    from aiforge_core.runtime.chat_agent._prompt_text import (
+        DECOMPOSE_RULE, LONG_RUN_RULE, MULTI_AGENT_RULE,
+    )
+    assert "spawn_task" in DECOMPOSE_RULE
+    assert "spawn_task" in LONG_RUN_RULE
+    assert "spawn_task" in MULTI_AGENT_RULE

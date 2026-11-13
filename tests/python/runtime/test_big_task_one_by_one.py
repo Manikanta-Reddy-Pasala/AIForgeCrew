@@ -388,6 +388,7 @@ def test_the_rules_make_decomposition_mandatory_for_big_requests(tmp_path):
     for rule in (LONG_RUN_RULE, DECOMPOSE_RULE):
         assert "ONE BY ONE" in rule and "plan_progress" in rule
         assert "3 or more steps" in rule
+        assert "spawn_task" in rule
     kw = dict(readonly_mode=False, plan_mode=False, analyze_mode=False,
               builder=None, strict_finish=False, session_id=None)
     big = [{"role": "user", "content": "fix the login bug. also add a retry to "
@@ -396,6 +397,7 @@ def test_the_rules_make_decomposition_mandatory_for_big_requests(tmp_path):
     capped = _build_convo(big, str(tmp_path), "chat", **kw)[0][0]["content"]
     small = _build_convo(one_line, str(tmp_path), "chat", **kw)[0][0]["content"]
     assert "BIG TASK = SMALL TASKS" in capped
+    assert "spawn_task" in capped
     assert "BIG TASK = SMALL TASKS" not in small
 
 
@@ -500,6 +502,7 @@ def test_shape_adds_an_acceptance_check_and_flags_big_subtasks():
 def test_the_doer_seed_asks_for_decomposition():
     from aiforge_core.runtime.text_doer_seed import _SEED_HEADER
     assert "SMALL TASKS, ONE BY ONE" in _SEED_HEADER
+    assert "spawn_task" in _SEED_HEADER
 
 
 def test_a_red_run_names_its_failing_tests():

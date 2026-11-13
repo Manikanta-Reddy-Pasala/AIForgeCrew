@@ -148,11 +148,12 @@ CATALOG: dict = {
         {"cmd": "s", "until": "s", "interval_s": "i", "max_checks": "i",
          "timeout_s": "i", "cmd_timeout": "i"}, ("cmd",)),
     "spawn_task": (
-        "Start a SECOND agent on a part of the request that does not depend on "
-        "your own part (research, analysis, a separate question). Default "
-        "wait:true — it runs now and this tool returns its FINAL answer in "
-        "THIS turn. wait:false starts a side chat and posts the answer later "
-        "(do not wait; continue with your part). Give it the full task text.",
+        "Start a SECOND agent on an independent slice: "
+        "research, analysis, OR a coding layer/file that does not "
+        "share your open edits. Default wait:true — it runs now and this tool "
+        "returns its FINAL answer in THIS turn. wait:false starts a side chat "
+        "and posts later (continue with your part). mode: simple (may edit) | "
+        "plan (read-only). Give the full task text with paths and constraints.",
         {"task": "s", "mode": "s", "wait": "b"}, ("task",)),
     "schedule_task": (
         "Run an instruction LATER and REPEATEDLY. action: create | list | "
