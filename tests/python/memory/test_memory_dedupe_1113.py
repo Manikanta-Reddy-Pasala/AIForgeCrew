@@ -132,3 +132,36 @@ def test_a_fact_captured_during_the_fold_is_kept(tmp_path, monkeypatch):
 def test_no_snapshot_carries_nothing_rather_than_everything(tmp_path, monkeypatch):
     out = _prepared(tmp_path, monkeypatch, None, ["a"], on_disk=["a", "b", "c"])
     assert out == ["a"]
+
+
+# ── the evening pass corrects what is already on disk ─────────────────────
+
+def test_normalize_cleans_briefs_and_nodes_once(mem):
+    from aiforge_core.memory import md_store
+    from aiforge_core.memory.okf import author, store
+    _brief("fib", ["FIBCACHE avoids recursion"])
+    author.sync_briefs_to_nodes()
+    n = _node()
+    store.save_node("learning", n["id"], n.get("meta") or {},
+                    "- X\n- - X\n- - - X - - X", reindex=False)
+    p = md_store.briefs_dir() / "compacted-dup.md"
+    _brief("dup", ["- uses redis", "uses redis.", "[dup] Uses Redis", "other"])
+
+    out = md_store.normalize_all()
+    assert out["briefs"] >= 1 and out["nodes"] >= 1 and out["errors"] == 0
+    from aiforge_core.runtime import work_notes
+    facts = work_notes.parse_note(p.read_text())["sections"]["facts"]
+    assert facts == ["uses redis", "other"]
+    assert _node()["body"].strip() == "- X"
+    again = md_store.normalize_all()
+    assert again["briefs"] == 0 and again["nodes"] == 0     # clean store: no writes
+
+
+def test_every_recompact_starts_with_normalize(monkeypatch):
+    from aiforge_core.memory import _migrations_recompact as R
+    from aiforge_core.memory import md_store
+    names = []
+    monkeypatch.setattr(R, "_run_recompact_steps",
+                        lambda steps, out, on_step, cp: names.extend(n for n, _ in steps))
+    R.force_recompact_all()
+    assert names[0] == "normalize"

@@ -191,10 +191,17 @@ def test_startup_migration_folds_without_the_learner_outside_the_window(
     assert seen == []                    # skipped entirely
 
 
-# ── idle mode (the default) ─────────────────────────────────────────────
+# ── evening is the default; idle mode is opt-in ─────────────────────────
 
-def test_idle_mode_is_the_default_and_folds_only_when_idle(monkeypatch):
+def test_the_default_is_one_evening_pass(monkeypatch):
     monkeypatch.delenv("AIFORGE_COMPACT_AT_HOUR", raising=False)
+    monkeypatch.delenv("AIFORGE_COMPACT_EVERY_H", raising=False)
+    assert compact_window.idle_mode() is False
+    assert compact_window.at_hour() == 18
+
+
+def test_idle_mode_is_opt_in_and_folds_only_when_idle(monkeypatch):
+    monkeypatch.setenv("AIFORGE_COMPACT_AT_HOUR", "idle")
     monkeypatch.delenv("AIFORGE_COMPACT_EVERY_H", raising=False)
     for k in ("AIFORGE_PERIODIC_DISABLE", "AIFORGE_JOBS_DISABLE", "AIFORGE_REINDEX_DAILY"):
         monkeypatch.delenv(k, raising=False)

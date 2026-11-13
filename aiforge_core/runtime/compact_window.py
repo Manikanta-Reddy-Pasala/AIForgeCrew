@@ -40,21 +40,20 @@ def disabled() -> bool:
 
 
 def idle_mode() -> bool:
-    """The DEFAULT schedule: compact whenever AIForge is idle (runtime.
-    compact_idle). An explicit AIFORGE_COMPACT_AT_HOUR (an hour, or off) or a
-    positive AIFORGE_COMPACT_EVERY_H selects the older fixed-hour / hourly
-    schedules instead."""
-    if os.environ.get("AIFORGE_COMPACT_AT_HOUR") is not None:
-        return False
-    try:
-        return int(os.environ.get("AIFORGE_COMPACT_EVERY_H", "") or 0) <= 0
-    except (TypeError, ValueError):
-        return True
+    """The OPT-IN idle schedule: compact whenever AIForge is idle (runtime.
+    compact_idle), selected with ``AIFORGE_COMPACT_AT_HOUR=idle``.
+
+    The DEFAULT is one pass a day in the evening (18:00, see :func:`at_hour`).
+    Idle mode was the default until 11-13: on a box that runs benches and
+    tickets around the clock "idle" never settled, and its cycle sat started
+    and never finished for 41 h while the memory filled with duplicates."""
+    raw = (os.environ.get("AIFORGE_COMPACT_AT_HOUR") or "").strip().lower()
+    return raw == "idle"
 
 
 def at_hour() -> "int | None":
     """Local hour of the single daily compaction pass, or None when the daily
-    schedule is off (idle mode — the default —, explicit ``off``/``0``, or an
+    schedule is off (idle mode, explicit ``off``/``0``, or an
     explicit hourly interval)."""
     if idle_mode():
         return None

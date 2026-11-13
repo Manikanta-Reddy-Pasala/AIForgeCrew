@@ -47,6 +47,7 @@ from ._base import (
     read_file,
 )
 from ._capture import _CAPTURE_KINDS, capture
+from ._normalize import normalize_all
 from ._repair import repair_captures
 from ._role import memory_role
 from ._compact import (
@@ -135,6 +136,7 @@ __all__ = [
     "briefs_dir",
     "capture",
     "memory_role",
+    "normalize_all",
     "repair_captures",
     "captures_dir",
     "classify_scope",

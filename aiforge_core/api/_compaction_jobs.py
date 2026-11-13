@@ -303,17 +303,22 @@ def _daily_compact() -> None:
     stages = (("sessions", lambda: _compact_idle_sessions(idle_only=False)),
               ("briefs", _compact_chat_md),
               ("recompact", _recompact_all if recompact_on else lambda: True))
+    _pkg()._af_log.info("daily compaction: start (%s)", today)
     for stage, run in stages:
         if stage in _pkg()._PASS_DONE["stages"]:
             continue                     # already done today — skip on retry
         try:
             if run():
                 _pkg()._PASS_DONE["stages"].add(stage)
+                _pkg()._af_log.info("daily compaction: %s done", stage)
             else:
                 ok = False
+                _pkg()._af_log.warning("daily compaction: %s did not finish", stage)
         except Exception as exc:  # noqa: BLE001
             _pkg()._af_log.warning("daily compaction stage %s failed: %s", stage, exc)
             ok = False
+    if ok:
+        _pkg()._af_log.info("daily compaction: complete")
     if not ok:
         # RAISE so the scheduler retries (bounded) instead of counting a pass
         # that did nothing as today's compaction.
