@@ -29,17 +29,33 @@ import threading
 import urllib.error
 
 _LOCK = threading.Lock()
-_REJECTED: set[tuple[str, str]] = set()
+#: (base_url, model, field) a server answered 400 for.
+_REJECTED: set[tuple[str, str, str]] = set()
 FIELD = "reasoning_effort"
+#: The reasoning switches AIForge may add to an OpenAI-compatible request.
+FIELDS = ("reasoning_effort", "thinking", "chat_template_kwargs")
 
-#: A 400 body that names the reasoning PARAMETER as the problem.
-_NAMES_PARAM = re.compile(
-    r"reasoning_effort"
-    r"|(?:unrecognized|unsupported|unknown|invalid|unexpected|extra)\s+"
-    r"(?:request\s+)?(?:argument|parameter|param|field|input|key)s?"
-    r"[^.\n]{0,40}\breasoning\b"
-    r"|\breasoning\b[\w.\"']*\s+(?:is\s+)?(?:not\s+(?:supported|allowed|"
-    r"permitted|recogni[sz]ed)|unsupported|unrecognized|unknown|invalid)")
+_BAD = (r"(?:unrecognized|unsupported|unknown|invalid|unexpected|extra|"
+        r"not\s+(?:supported|allowed|permitted|recogni[sz]ed))")
+
+#: A 400 body that names the field as the problem.
+_PATTERNS = {
+    # unchanged from the single-field version
+    "reasoning_effort": re.compile(
+        r"reasoning_effort"
+        r"|(?:unrecognized|unsupported|unknown|invalid|unexpected|extra)\s+"
+        r"(?:request\s+)?(?:argument|parameter|param|field|input|key)s?"
+        r"[^.\n]{0,40}\breasoning\b"
+        r"|\breasoning\b[\w.\"']*\s+(?:is\s+)?(?:not\s+(?:supported|allowed|"
+        r"permitted|recogni[sz]ed)|unsupported|unrecognized|unknown|invalid)"),
+    # "Unrecognized request argument supplied: thinking",
+    # pydantic {"type": "extra_forbidden", "loc": ["body", "thinking"]}
+    "thinking": re.compile(
+        _BAD + r"[^.\n]{0,60}[\"'\s:,\[]thinking\b(?!_)"
+        r"|[\"']thinking[\"'][^.\n]{0,80}" + _BAD
+        + r"|extra_forbidden[^\n]{0,80}[\"']thinking[\"']"),
+    "chat_template_kwargs": re.compile(r"chat_template_kwargs"),
+}
 
 
 def _effort() -> str:
@@ -47,13 +63,21 @@ def _effort() -> str:
     return "" if v.lower() in ("", "off", "0", "false", "no") else v
 
 
-def _key(base_url: str, model: str = "") -> tuple[str, str]:
-    return (base_url or "").rstrip("/").lower(), (model or "").strip()
+def _key(base_url: str, model: str = "", field: str = FIELD) -> tuple[str, str, str]:
+    return (base_url or "").rstrip("/").lower(), (model or "").strip(), field
 
 
-def rejected(base_url: str, model: str = "") -> bool:
+def rejected(base_url: str, model: str = "", field: str = FIELD) -> bool:
     with _LOCK:
-        return _key(base_url, model) in _REJECTED
+        return _key(base_url, model, field) in _REJECTED
+
+
+def strip_rejected(body: dict, base_url: str, model: str = "") -> dict:
+    """Drop from ``body`` (in place) every reasoning field this server refused."""
+    for f in FIELDS:
+        if f in body and rejected(base_url, model, f):
+            body.pop(f, None)
+    return body
 
 
 def extras_for(base_url: str, fast_role: bool, model: str = "") -> dict:
@@ -67,10 +91,12 @@ def extras_for(base_url: str, fast_role: bool, model: str = "") -> dict:
     return {FIELD: eff}
 
 
-def note_rejection(base_url: str, exc: Exception, model: str = "") -> bool:
+def note_rejection(base_url: str, exc: Exception, model: str = "",
+                   sent: "dict | None" = None) -> bool:
     """True (and remembered for this model) when ``exc`` is a 400 whose body
-    names the reasoning parameter — the caller then re-sends without it.
-    Anything else: False, nothing recorded."""
+    names one of the reasoning fields — the caller then re-sends without it.
+    With ``sent`` (the request body), only a field that was actually sent
+    counts. Anything else: False, nothing recorded."""
     if not isinstance(exc, urllib.error.HTTPError):
         return False
     if int(getattr(exc, "code", 0) or 0) != 400:
@@ -80,10 +106,13 @@ def note_rejection(base_url: str, exc: Exception, model: str = "") -> bool:
         body = http_err_body(exc).lower()
     except Exception:  # noqa: BLE001
         body = ""
-    if not _NAMES_PARAM.search(body):
+    hit = [f for f in FIELDS
+           if _PATTERNS[f].search(body) and (sent is None or f in sent)]
+    if not hit:
         return False
     with _LOCK:
-        _REJECTED.add(_key(base_url, model))
+        for f in hit:
+            _REJECTED.add(_key(base_url, model, f))
     return True
 
 
@@ -93,4 +122,5 @@ def reset() -> None:
         _REJECTED.clear()
 
 
-__all__ = ["FIELD", "extras_for", "note_rejection", "rejected", "reset"]
+__all__ = ["FIELD", "FIELDS", "extras_for", "note_rejection", "rejected", "reset",
+           "strip_rejected"]

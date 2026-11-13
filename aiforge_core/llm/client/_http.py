@@ -110,12 +110,23 @@ def _apply_reasoning_off(ep: Endpoint, body: dict) -> None:
         if _reasoning.reasoning_off(ep.model, ep.base_url, ep.role):
             from ._text import _system_no_think
             body["messages"] = _system_no_think(body["messages"])
-            body.update(_reasoning.NO_THINK_KWARGS)
-        # The switch that actually works on LM Studio: see reasoning.effort_for.
+            # template kwargs, thinking:{type:disabled}, reasoning_effort:none
+            body.update(_reasoning.off_fields(ep.model, ep.base_url))
+        # Low/Medium/High (Models → Thinking) or AIFORGE_REASONING_EFFORT; the
+        # switch that actually works on LM Studio: see reasoning.effort_for.
         for k, v in _reasoning.effort_extras(ep.model, ep.base_url, ep.role).items():
             body.setdefault(k, v)
     except Exception:  # noqa: BLE001 — never break a call over this
         pass
+
+
+def _reasoning_cap_chars(ep: Endpoint) -> int:
+    """Models → Thinking Low/Medium as streamed characters (~4 per token)."""
+    try:
+        from aiforge_core.llm import reasoning as _reasoning
+        return _reasoning.cap_tokens(ep.model, ep.base_url, ep.role) * 4
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def _build_body(ep: Endpoint, messages: list[dict],
@@ -170,6 +181,13 @@ def _build_body(ep: Endpoint, messages: list[dict],
                     "strict": False,
                 },
             }
+    # A reasoning switch this server answered 400 for is not sent again
+    # (whoever added it: reasoning off, a provider extra, a caller).
+    try:
+        from aiforge_core.llm import fast_reasoning as _fr
+        _fr.strip_rejected(body, ep.base_url, ep.model)
+    except Exception:  # noqa: BLE001
+        pass
     return json.dumps(body).encode()
 
 
@@ -396,8 +414,13 @@ def _post_cancellable_once(ep: Endpoint, payload: bytes, timeout_s: int,
         if sent is not None:
             sent[0] = True
         if sink is not None:
-            return _read_sse_response(conn, url, sink, payload=payload,
-                                      read_timeout=timeout_s)
+            from ._http_stream import REASONING_CAP_CHARS
+            cap_tok = REASONING_CAP_CHARS.set(_reasoning_cap_chars(ep))
+            try:
+                return _read_sse_response(conn, url, sink, payload=payload,
+                                          read_timeout=timeout_s)
+            finally:
+                REASONING_CAP_CHARS.reset(cap_tok)
         return _read_http_response(conn, url)
     except (OSError, ValueError, AttributeError, RuntimeError,
             http.client.HTTPException) as exc:

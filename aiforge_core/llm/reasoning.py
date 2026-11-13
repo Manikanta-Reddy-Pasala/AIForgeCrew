@@ -17,7 +17,15 @@ import contextlib
 import contextvars
 import os
 
-NO_THINK_KWARGS = {"chat_template_kwargs": {"enable_thinking": False}}
+#: Chat-template switches: Qwen3 / GLM templates read ``enable_thinking``,
+#: DeepSeek V3.1+ and Kimi K2.5 templates (vLLM, SGLang, LM Studio) read
+#: ``thinking``. A template ignores a variable it does not use.
+NO_THINK_KWARGS = {"chat_template_kwargs": {"enable_thinking": False, "thinking": False}}
+
+#: The hosted-API switch (Moonshot Kimi, DeepSeek, Z.ai GLM and other
+#: OpenAI-compatible APIs that follow the Anthropic-style field).
+THINKING_FIELD = "thinking"
+THINKING_OFF = {"type": "disabled"}
 
 #: The OpenAI-style request field that asks a server to limit reasoning.
 EFFORT_FIELD = "reasoning_effort"
@@ -100,11 +108,38 @@ def reasoning_off(model: str, base_url: str = "", role: str = "") -> bool:
         return True
     if not role_reasons(role):
         return True
+    return model_setting(model, base_url) == "no"
+
+
+def model_setting(model: str, base_url: str = "") -> "str | None":
+    """Models → Thinking for ``model``: 'yes' | 'no' | 'low' | 'medium' |
+    'high', or None (auto / not registered)."""
     try:
         from aiforge_core.config import model_registry
-        return model_registry.thinking_for(model, base_url) == "no"
+        return model_registry.thinking_for(model, base_url)
     except Exception:  # noqa: BLE001 — a registry problem never breaks a call
-        return False
+        return None
+
+
+#: Reasoning tokens a Low / Medium model may spend before the harness asks
+#: for the answer without it, for servers that ignore ``reasoning_effort``
+#: (Kimi, DeepSeek). High and On are not capped here.
+_CAP_ENV = {"low": ("AIFORGE_THINKING_LOW_TOKENS", 1024),
+            "medium": ("AIFORGE_THINKING_MEDIUM_TOKENS", 4096)}
+
+
+def cap_tokens(model: str, base_url: str = "", role: str = "") -> int:
+    """The reasoning cap in tokens for this request; 0 = none."""
+    if reasoning_off(model, base_url, role):
+        return 0
+    level = model_setting(model, base_url)
+    if level not in _CAP_ENV:
+        return 0
+    key, default = _CAP_ENV[level]
+    try:
+        return max(0, int(os.environ.get(key, default)))
+    except ValueError:
+        return default
 
 
 def effort_for(model: str, base_url: str = "", role: str = "") -> "str | None":
@@ -118,6 +153,9 @@ def effort_for(model: str, base_url: str = "", role: str = "") -> "str | None":
     honour, so it is sent as well."""
     if reasoning_off(model, base_url, role):
         return "none"
+    level = model_setting(model, base_url)
+    if level in ("low", "medium", "high"):
+        return level
     env = os.environ.get("AIFORGE_REASONING_EFFORT", "").strip().lower()
     return env if env in _LEVELS else None
 
@@ -128,27 +166,37 @@ def effort_extras(model: str, base_url: str = "", role: str = "") -> dict:
     eff = effort_for(model, base_url, role)
     if not eff:
         return {}
+    return _unrejected(base_url, model, {EFFORT_FIELD: eff})
+
+
+def _unrejected(base_url: str, model: str, body: dict) -> dict:
+    """``body`` without the fields this server already refused for ``model``."""
     try:
         from aiforge_core.llm import fast_reasoning
-        if fast_reasoning.rejected(base_url, model):
-            return {}
+        return {k: v for k, v in body.items()
+                if not fast_reasoning.rejected(base_url, model, k)}
     except Exception:  # noqa: BLE001
-        pass
-    return {EFFORT_FIELD: eff}
+        return body
+
+
+def off_fields(model: str, base_url: str = "", hosted_switch: bool = True) -> dict:
+    """Every OpenAI-compatible request-body switch that turns reasoning off:
+    the chat-template kwargs (self-hosted), ``thinking: {"type": "disabled"}``
+    (hosted Kimi / DeepSeek / GLM APIs) and ``reasoning_effort: none``
+    (OpenAI, LM Studio, Ollama), minus any this server refused before."""
+    body = {**NO_THINK_KWARGS, EFFORT_FIELD: "none"}
+    if hosted_switch:
+        body[THINKING_FIELD] = dict(THINKING_OFF)
+    return _unrejected(base_url, model, body)
 
 
 def off_extras(model: str, base_url: str = "") -> dict:
     """The request-body switches that turn reasoning OFF for one request,
-    whatever its role: the chat-template kwarg, and ``reasoning_effort: none``
-    unless the server already refused that field."""
-    body = dict(NO_THINK_KWARGS)
-    try:
-        from aiforge_core.llm import fast_reasoning
-        if not fast_reasoning.rejected(base_url, model):
-            body[EFFORT_FIELD] = "none"
-    except Exception:  # noqa: BLE001
-        body[EFFORT_FIELD] = "none"
-    return body
+    whatever its role (the ADK/LiteLLM path, which has no 400-and-resend: the
+    hosted ``thinking`` field only when the operator set Thinking: Off for
+    this model)."""
+    return off_fields(model, base_url,
+                      hosted_switch=model_setting(model, base_url) == "no")
 
 
 def budget_tokens() -> int:
@@ -192,6 +240,7 @@ def no_think_request(llm_request):
 
 
 __all__ = ["reasoning_off", "no_think_request", "NO_THINK_KWARGS", "EFFORT_FIELD",
+           "THINKING_FIELD", "off_fields", "model_setting", "cap_tokens",
            "effort_for", "effort_extras", "role_reasons", "reasoning_roles",
            "boost", "boosted", "boost_steps", "boost_reserve_tokens",
            "off_extras", "budget_tokens"]

@@ -50,29 +50,42 @@ function VisionBadge({ v, onCycle }: Readonly<{
   );
 }
 
-const THINK_ORDER: RegistryModel['thinking'][] = ['auto', 'yes', 'no'];
-function nextThinking(v: RegistryModel['thinking']): RegistryModel['thinking'] {
-  return THINK_ORDER[(THINK_ORDER.indexOf(v || 'auto') + 1) % THINK_ORDER.length];
-}
+// Models → Thinking. Off/Low/Medium matter most for big reasoning models
+// (Kimi, DeepSeek) that otherwise think for minutes before each answer.
+const THINK_OPTIONS: { v: RegistryModel['thinking']; label: string; title: string }[] = [
+  { v: 'auto', label: 'Thinking: auto', title: 'Decide from the model name; planning roles may reason, other roles do not.' },
+  { v: 'yes', label: 'Thinking: on', title: 'A reasoning model: reasons at the server default depth.' },
+  { v: 'high', label: 'Thinking: high', title: 'Asks for reasoning_effort high.' },
+  { v: 'medium', label: 'Thinking: medium', title: 'Asks for reasoning_effort medium; a stream that reasons past ~4k tokens with no answer is asked again with thinking off.' },
+  { v: 'low', label: 'Thinking: low', title: 'Asks for reasoning_effort low; a stream that reasons past ~1k tokens with no answer is asked again with thinking off.' },
+  { v: 'no', label: 'Thinking: off', title: 'Every request turns reasoning off: chat_template_kwargs (enable_thinking / thinking: false), thinking {type: disabled}, reasoning_effort none and /no_think. Fields a server refuses are dropped automatically.' },
+];
 
 // Reasoning ("thinking") indicator — mirrors VisionBadge. Thinking models are
 // auto-picked for planning/review roles; fast (non-thinking) coders for the doer.
-function ThinkingBadge({ v, resolved, onCycle }: Readonly<{
-  v: RegistryModel['thinking']; resolved?: boolean; onCycle?: () => void;
+// With onChange it is a picker (the Models list); without, a read-only badge.
+function ThinkingBadge({ v, resolved, onChange }: Readonly<{
+  v: RegistryModel['thinking']; resolved?: boolean;
+  onChange?: (v: RegistryModel['thinking']) => void;
 }>) {
-  const map = { yes: ['🧠 thinking', '#d29922'], no: ['⚡ fast', '#8b949e'],
-                auto: [`✨ ${resolved ? '🧠' : '⚡'} auto`, '#6aa6ff'] } as const;
-  const [txt, col] = map[v || 'auto'];
+  const map: Record<RegistryModel['thinking'], readonly [string, string]> = {
+    yes: ['🧠 thinking', '#d29922'], high: ['🧠 high', '#d29922'],
+    medium: ['🧠 medium', '#d29922'], low: ['🧠 low', '#d29922'],
+    no: ['⚡ off', '#8b949e'],
+    auto: [`✨ ${resolved ? '🧠' : '⚡'} auto`, '#6aa6ff'] };
+  const [txt, col] = map[v || 'auto'] ?? map.auto;
   const base = { fontSize: 11, color: col, border: `1px solid ${col}`,
                  borderRadius: 6, padding: '2px 8px', whiteSpace: 'nowrap' as const,
                  flex: '0 0 auto' as const, lineHeight: 1.4 };
-  if (!onCycle) return <span style={{ ...base, marginLeft: 6 }}>{txt}</span>;
+  if (!onChange) return <span style={{ ...base, marginLeft: 6 }}>{txt}</span>;
+  const cur = THINK_OPTIONS.find(o => o.v === (v || 'auto'));
   return (
-    <button type="button" onClick={onCycle}
-            title="Reasoning model — click to cycle: auto → yes → no. Thinking models are auto-assigned to planning/review roles."
+    <select value={v || 'auto'} aria-label="Thinking"
+            title={cur?.title}
+            onChange={e => onChange(e.target.value as RegistryModel['thinking'])}
             style={{ ...base, cursor: 'pointer', background: 'transparent' }}>
-      {txt}
-    </button>
+      {THINK_OPTIONS.map(o => <option key={o.v} value={o.v} title={o.title}>{o.label}</option>)}
+    </select>
   );
 }
 
@@ -497,7 +510,7 @@ function ModelsCard({ models, reload }: Readonly<{ models: RegistryModel[]; relo
               </div>
               <CtxEdit value={m.context_window} onCommit={t => setContextFor(m.id, t)} />
               <ThinkingBadge v={m.thinking} resolved={m.has_thinking}
-                             onCycle={() => setThinkingFor(m.id, nextThinking(m.thinking))} />
+                             onChange={t => setThinkingFor(m.id, t)} />
               <VisionBadge v={m.vision} onCycle={() => setVisionFor(m.id, nextVision(m.vision))} />
               <button type="button" className="ghost sm" disabled={testingId === m.id}
                       title="Send a real native tool-calling request to this model and report whether it returns a tool_calls reply — the diagnostic for 'the model doesn't respond' in chat."
