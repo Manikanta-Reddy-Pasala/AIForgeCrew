@@ -48,11 +48,57 @@ def _is_leak_item(s: str) -> bool:
     return any(b in low for b in _BOILERPLATE_SUBSTR)
 
 
+# A list item that still carries its own bullet ("- X") was rendered as
+# "- - X"; read back and re-rendered on the next fold it grew another level,
+# and a fold that joined lines made "- - X - - X" (90 of 249 OKF nodes and 6
+# briefs on nuc, 11-13). Every leading marker is stripped; an item that is the
+# same text joined with itself is split back apart.
+_BULLET_RE = re.compile(r"^(?:\s*[-*+•]\s+)+")
+_JOINED_RE = re.compile(r"\s+(?:-\s+){1,}(?=\S)")
+# "[topic] X" is the same fact as "X" for duplicate detection.
+_TAG_PREFIX_RE = re.compile(r"^\[[\w .:/-]{1,60}\]\s*")
+
+
+def clean_item(s: str) -> str:
+    """One list item without leading bullet markers, whitespace collapsed."""
+    return " ".join(_BULLET_RE.sub("", str(s or "")).split())
+
+
+def item_key(s: str) -> str:
+    """The duplicate-detection form of an item: no bullets, no ``[topic]``
+    prefix, case- and whitespace-folded, trailing punctuation dropped."""
+    t = _TAG_PREFIX_RE.sub("", clean_item(s))
+    return " ".join(t.lower().split()).rstrip(" .;:,")
+
+
+def _unjoin(item: str) -> list[str]:
+    """``X - - X`` (an item joined with its own copies) back to its parts."""
+    if " - " not in item:
+        return [item]
+    parts = [clean_item(p) for p in _JOINED_RE.split(item)]
+    parts = [p for p in parts if p]
+    if len(parts) > 1 and len({item_key(p) for p in parts}) < len(parts):
+        return parts               # only when the pieces repeat each other
+    return [item]
+
+
 def scrub_items(value) -> list[str]:
     """`_as_items` + drop envelope-scaffolding leaks (heading/sentinel/section
-    label/separator/boilerplate). Repair, not reject: bad items vanish, good
-    ones stay."""
-    return [s for s in _as_items(value) if not _is_leak_item(s)]
+    label/separator/boilerplate), strip stray bullet markers and drop exact
+    duplicates (same :func:`item_key`, first kept). Repair, not reject: bad
+    items vanish, good ones stay."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in _as_items(value):
+        for s in _unjoin(clean_item(raw)):
+            if _is_leak_item(s):
+                continue
+            k = item_key(s)
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(s)
+    return out
 
 
 # Kinds this repo mints notes for; a blank/None kind is repaired to "knowledge"

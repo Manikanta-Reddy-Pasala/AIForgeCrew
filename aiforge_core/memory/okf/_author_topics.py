@@ -66,10 +66,11 @@ def _brief_facts_by_topic() -> dict[str, list[str]]:
             # newline would never match itself on the next pass: it would look
             # new every cycle, rewrite the node, bump `rev`, and re-trigger the
             # admin's LLM fold — forever.
-            fact = " ".join(str(raw).split()).strip()
-            if fact and fact not in out.setdefault(topic, []):
-                out[topic].append(fact)
-    return out
+            fact = work_notes.clean_item(raw)
+            if fact:
+                out.setdefault(topic, []).append(fact)
+    # one form per fact (no stray bullets, no "[topic] X" twin of "X")
+    return {t: work_notes.scrub_items(fs) for t, fs in out.items()}
 
 
 def _fact_lines(body: str) -> list[str]:
@@ -79,14 +80,10 @@ def _fact_lines(body: str) -> list[str]:
     it reads out of a brief, so the two halves of "is this fact already held?"
     compare in one form.
     """
-    lines = []
-    for raw in (body or "").splitlines():
-        line = " ".join(raw.split()).strip()
-        if line.startswith("- "):
-            line = line[2:].strip()
-        if line:
-            lines.append(line)
-    return lines
+    from aiforge_core.runtime.work_notes import scrub_items
+    # scrub_items strips EVERY leading bullet (a "- - X" node line read back as
+    # "- X" re-rendered as "- - X", one level deeper per rev) and drops repeats.
+    return scrub_items([ln for ln in (body or "").splitlines() if ln.strip()])
 
 
 # How much of a topic's fact list one node carries. The cap exists because a
@@ -103,6 +100,8 @@ def _body_for(facts: list[str]) -> tuple[str, list[str]]:
 
     Returns ``(body, kept)``. Whole lines only — see ``_BODY_CHARS``.
     """
+    from aiforge_core.runtime.work_notes import scrub_items
+    facts = scrub_items(facts)
     kept: list[str] = []
     size = 0
     # NEWEST first-served. Filling from the front meant that once a node hit the
@@ -159,9 +158,15 @@ def _create_topic_node(topic: str, facts: list) -> tuple[int, int]:
 def _update_topic_node(topic: str, facts: list, held) -> tuple[int, int]:
     """``(updated, dropped)`` for a topic that already has a node."""
     nid, node = held
+    from aiforge_core.runtime.work_notes import item_key
     have = _fact_lines(node.get("body") or "")
-    fresh = [f for f in facts if f not in have]
-    if not fresh:
+    held_keys = {item_key(f) for f in have}
+    fresh = [f for f in facts if item_key(f) not in held_keys]
+    raw = (node.get("body") or "").strip()
+    # A node whose file still holds "- - X" / repeated lines is rewritten once
+    # in clean form even with nothing new; after that it compares equal.
+    dirty = raw != "\n".join(f"- {f}" for f in have)
+    if not fresh and not dirty:
         return 0, 0       # unchanged: no write, no rev bump, nothing to sync
     # The BRIEF's own ordered list, not `have + fresh`: the node keeps the
     # newest facts that fit, and that choice is only stable if the input order
@@ -170,7 +175,7 @@ def _update_topic_node(topic: str, facts: list, held) -> tuple[int, int]:
     # full topic rewrote itself (and re-triggered the admin fold) forever.
     body, kept = _body_for(facts)
     dropped = len(facts) - len(kept)
-    if _fact_lines(body) == have:
+    if _fact_lines(body) == have and not dirty:
         # The node is full: every fresh fact fell off the end, so writing would
         # produce byte-identical content at a higher rev — and would do so on
         # EVERY cycle. Say so once and leave it alone.
