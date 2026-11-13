@@ -45,6 +45,9 @@ def _t_read_lines(args: dict, cwd: str) -> dict:
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
     n = len(lines)
+    args, bad = _normalize_read_args(args)
+    if bad:
+        return {"ok": False, "path": path, "total_lines": n, "error": bad}
     ranges = _ranges(args.get("ranges"))
     if ranges:
         return _read_ranges(path, lines, ranges)
@@ -58,6 +61,83 @@ def _t_read_lines(args: dict, cwd: str) -> dict:
         out["note"] = (f"widened to lines {s}-{e} of {n}: read a file once, "
                        "not in many small pieces")
     return out
+
+
+#: Arguments read_lines understands (after aliases are folded in).
+_READ_KEYS = frozenset({"path", "start", "end", "offset", "limit", "ranges", "full"})
+#: Other names models use for the same thing.
+_START_ALIASES = ("line_start", "start_line", "from", "first_line")
+_END_ALIASES = ("line_end", "end_line", "to", "last_line", "offset_end")
+#: Around a single line number given as the whole range.
+_AROUND = 40
+
+
+def _span(raw):
+    """``(start, end)`` from ``[s, e]``, ``"s-e"`` / ``"s,e"`` / ``"s:e"`` /
+    ``"s..e"``, or one number (a window around it). None when unusable."""
+    if isinstance(raw, dict):
+        s, e = _num(raw.get("start")), _num(raw.get("end"))
+        return (s, e) if s and e and e >= s else None
+    if isinstance(raw, (list, tuple)):
+        if len(raw) == 2:
+            s, e = _num(raw[0]), _num(raw[1])
+            return (s, e) if s and e and e >= s else None
+        if len(raw) == 1:
+            return _span(raw[0])
+        return None
+    if isinstance(raw, str):
+        import re as _re
+        parts = [p for p in _re.split(r"\s*(?:-|,|:|\.\.|\bto\b)\s*", raw.strip()) if p]
+        if len(parts) == 2:
+            s, e = _num(parts[0]), _num(parts[1])
+            return (s, e) if s and e and e >= s else None
+        if len(parts) == 1:
+            raw = parts[0]
+        else:
+            return None
+    c = _num(raw)
+    if c is None or c < 1:
+        return None
+    return max(1, c - _AROUND), c + _AROUND
+
+
+def _normalize_read_args(args: dict) -> "tuple[dict, str]":
+    """Fold the other names models use (``range``, ``lines``, ``line_start``…)
+    into start/end, and refuse what is left over. Bench (11-11): 69 of 70
+    reads sent ``{"range": [2179, 2350]}``; each came back as the file head,
+    so the model never saw the lines and asked again."""
+    a = dict(args or {})
+    for key in ("range", "lines", "line_range"):
+        if key in a:
+            raw = a.pop(key)
+            if (isinstance(raw, list) and len(raw) > 1
+                    and all(isinstance(r, (list, tuple, str, dict)) for r in raw)):
+                a.setdefault("ranges", raw)  # several spans under one name
+                continue
+            sp = _span(raw)
+            if sp is None:
+                return a, (f"read_lines: could not read {key}={raw!r}; "
+                           "give start and end line numbers, e.g. "
+                           '{"start": 120, "end": 180}')
+            a.setdefault("start", sp[0])
+            a.setdefault("end", sp[1])
+    for names, target in ((_START_ALIASES, "start"), (_END_ALIASES, "end")):
+        for k in names:
+            if k in a:
+                v = a.pop(k)
+                a.setdefault(target, v)
+    if isinstance(a.get("ranges"), list):
+        fixed = []
+        for r in a["ranges"]:
+            sp = _span(r)
+            fixed.append(list(sp) if sp else r)
+        a["ranges"] = fixed
+    extra = sorted(k for k in a if k not in _READ_KEYS)
+    if extra:
+        return a, (f"read_lines: unknown argument(s) {', '.join(extra)}; "
+                   "use path with start/end (or offset/limit), or ranges "
+                   "[[start, end], ...]")
+    return a, ""
 
 
 #: The most ranges one call reads, and the most text it returns.
