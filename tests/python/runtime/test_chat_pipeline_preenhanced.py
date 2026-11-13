@@ -114,7 +114,9 @@ def _capture_team_state(monkeypatch, **kw):
     monkeypatch.setattr(context_bundle, "build_bundle",
                         lambda *a, **k: _NoBundle())
 
-    def _drive_awake(q, sid, cwd, raw, started, prompt, team_state):
+    # *_rest: the driver grew an epoch argument; a fake that refused it
+    # raised in the driver thread, the sentinel never came and the test hung.
+    def _drive_awake(q, sid, cwd, raw, started, prompt, team_state, *_rest):
         seen.update(team_state)
         q.put(P._SENTINEL)
     monkeypatch.setattr(P, "_drive_awake", _drive_awake)
