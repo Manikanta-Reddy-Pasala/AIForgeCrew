@@ -1,7 +1,7 @@
 ---
 name: resolve-target-by-name
 description: Always resolve a repo/service/folder, Jira project, or Confluence space that the user names loosely, using the resolver tools, before acting on it.
-triggers: [repo, service, folder, directory, codebase, project, space]
+triggers: [jira, confluence, resolve_repo, "other repo", "another repo", "which repo"]
 scope: global
 alwaysApply: true
 ---
