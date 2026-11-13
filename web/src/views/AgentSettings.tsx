@@ -53,12 +53,12 @@ function VisionBadge({ v, onCycle }: Readonly<{
 // Models → Thinking. Off/Low/Medium matter most for big reasoning models
 // (Kimi, DeepSeek) that otherwise think for minutes before each answer.
 const THINK_OPTIONS: { v: RegistryModel['thinking']; label: string; title: string }[] = [
-  { v: 'auto', label: 'Thinking: auto', title: 'Decide from the model name; planning roles may reason, other roles do not.' },
-  { v: 'yes', label: 'Thinking: on', title: 'A reasoning model: reasons at the server default depth.' },
-  { v: 'high', label: 'Thinking: high', title: 'Asks for reasoning_effort high.' },
-  { v: 'medium', label: 'Thinking: medium', title: 'Asks for reasoning_effort medium; a stream that reasons past ~4k tokens with no answer is asked again with thinking off.' },
-  { v: 'low', label: 'Thinking: low', title: 'Asks for reasoning_effort low; a stream that reasons past ~1k tokens with no answer is asked again with thinking off.' },
-  { v: 'no', label: 'Thinking: off', title: 'Every request turns reasoning off: chat_template_kwargs (enable_thinking / thinking: false), thinking {type: disabled}, reasoning_effort none and /no_think. Fields a server refuses are dropped automatically.' },
+  { v: 'auto', label: '✨ auto', title: 'Decide from the model name; planning roles may reason, other roles do not.' },
+  { v: 'yes', label: '🧠 on', title: 'A reasoning model: reasons at the server default depth.' },
+  { v: 'high', label: '🧠 high', title: 'Asks for reasoning_effort high.' },
+  { v: 'medium', label: '🧠 medium', title: 'Asks for reasoning_effort medium; a stream that reasons past ~4k tokens with no answer is asked again with thinking off.' },
+  { v: 'low', label: '🧠 low', title: 'Asks for reasoning_effort low; a stream that reasons past ~1k tokens with no answer is asked again with thinking off.' },
+  { v: 'no', label: '⚡ off', title: 'Every request turns reasoning off: chat_template_kwargs (enable_thinking / thinking: false), thinking {type: disabled}, reasoning_effort none and /no_think. Fields a server refuses are dropped automatically.' },
 ];
 
 // Reasoning ("thinking") indicator — mirrors VisionBadge. Thinking models are
@@ -83,8 +83,13 @@ function ThinkingBadge({ v, resolved, onChange }: Readonly<{
     <select value={v || 'auto'} aria-label="Thinking"
             title={cur?.title}
             onChange={e => onChange(e.target.value as RegistryModel['thinking'])}
-            style={{ ...base, cursor: 'pointer', background: 'transparent' }}>
-      {THINK_OPTIONS.map(o => <option key={o.v} value={o.v} title={o.title}>{o.label}</option>)}
+            style={{ ...base, cursor: 'pointer', background: 'var(--bg-1, Canvas)',
+                     appearance: 'auto', maxWidth: 110 }}>
+      {THINK_OPTIONS.map(o => (
+        <option key={o.v} value={o.v} title={o.title}
+                style={{ color: 'var(--fg-0, CanvasText)', background: 'var(--bg-1, Canvas)' }}>
+          {o.label}
+        </option>))}
     </select>
   );
 }
@@ -328,6 +333,7 @@ function ModelsCard({ models, reload }: Readonly<{ models: RegistryModel[]; relo
   const [apiKey, setApiKey] = useState('');
   const [ctx, setCtx] = useState<number | ''>('');
   const [vision, setVision] = useState<'auto' | 'yes' | 'no'>('auto');
+  const [thinking, setThinking] = useState<RegistryModel['thinking']>('auto');
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
   // Model discovery from the typed Base URL (GET {base_url}/models).
@@ -345,7 +351,7 @@ function ModelsCard({ models, reload }: Readonly<{ models: RegistryModel[]; relo
     try {
       await chatApi.addModel({ label: label.trim() || model.trim(), model: model.trim(),
         base_url: baseUrl.trim(), api_key: apiKey.trim() || undefined,
-        vision, context_window: typeof ctx === 'number' ? ctx : 0 });
+        vision, thinking, context_window: typeof ctx === 'number' ? ctx : 0 });
       setLabel(''); setModel(''); setCtx('');
       reload();
       toast.success('Model added');
@@ -374,7 +380,7 @@ function ModelsCard({ models, reload }: Readonly<{ models: RegistryModel[]; relo
     try {
       await chatApi.addModel({ label: id.split('/').pop() || id, model: id,
         base_url: baseUrl.trim(), api_key: apiKey.trim() || undefined,
-        vision, context_window: typeof ctx === 'number' ? ctx : 0 });
+        vision, thinking, context_window: typeof ctx === 'number' ? ctx : 0 });
       setDiscovered(d => d.filter(x => x !== id));
       reload();
       toast.success(`Added ${id}`);
@@ -447,6 +453,17 @@ function ModelsCard({ models, reload }: Readonly<{ models: RegistryModel[]; relo
             <option value="auto">Auto-detect</option>
             <option value="yes">Yes — supports images</option>
             <option value="no">No</option>
+          </select></label>
+        <label className="small">Thinking{' '}
+          <select style={input} value={thinking}
+                  title={THINK_OPTIONS.find(o => o.v === thinking)?.title}
+                  onChange={e => setThinking(e.target.value as RegistryModel['thinking'])}>
+            <option value="auto">Auto — from the model name</option>
+            <option value="yes">On — server default depth</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+            <option value="no">Off — no reasoning</option>
           </select></label>
         <label className="small">Context window <span className="muted">(tokens, optional)</span>
           <input style={input} type="number" min={0} step={1024} value={ctx}
