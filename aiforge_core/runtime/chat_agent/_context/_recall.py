@@ -137,9 +137,29 @@ def _bulleted_asks(t: str) -> list:
     """Bullets or numbered lines, stripped of their marker. Fewer than two is
     not a list — fall through to sentence segmentation."""
     lines = [ln for ln in t.splitlines() if ln.strip()]
-    bullets = [_BULLET_RE.sub("", ln.strip()) for ln in lines
-               if _BULLET_RE.match(ln.strip()) and _is_ask_bullet(ln)]
+    bullets: list = []
+    open_item = False
+    for ln in lines:
+        if _BULLET_RE.match(ln.strip()):
+            open_item = _is_ask_bullet(ln)
+            if open_item:
+                bullets.append(_BULLET_RE.sub("", ln.strip()))
+        elif open_item and ln[:1] in (" ", "\t"):
+            # An indented continuation line belongs to its item: tk-toml11's
+            # "…`\xHH` (two hex digits, a code point" stopped mid-sentence.
+            bullets[-1] += " " + ln.strip()
+        else:
+            open_item = False
     return bullets if len(bullets) >= 2 else []
+
+
+def _clip(text: str, cap: int) -> str:
+    """``text`` cut at a word boundary within ``cap`` chars, marked with …."""
+    text = " ".join(text.split())
+    if len(text) <= cap:
+        return text
+    cut = text[:cap - 1].rsplit(" ", 1)[0].rstrip(" ,;:(")
+    return cut + "…"
 
 
 #: "Do not edit the tests", "don't install anything", "never push": a rule for
@@ -229,7 +249,7 @@ def _split_asks(text: str, cap: int = 8) -> list[str]:
             # checklist ("money means a Decimal…") and its 5 features were not.
             return []
         parts = parts or _sentence_asks(t)
-    parts = [p[:160] for p in parts
+    parts = [_clip(p, 160) for p in parts
              if p.strip() and not _CONSTRAINT_LEAD_RE.match(p.strip())][:cap]
     return parts if len(parts) >= 2 else []
 
@@ -440,10 +460,25 @@ def _readme_excerpt(base: str, limit: int = 700) -> str:
             continue
         try:
             with open(rp, encoding="utf-8", errors="ignore") as fh:
-                return fh.read()[:limit]
+                return _readme_prose(fh.read(20000))[:limit]
         except Exception:  # noqa: BLE001
             return ""
     return ""
+
+
+#: README lines that carry no words about the project: badges, link
+#: definitions, images, raw HTML, rule lines. tomlkit's first 700 chars were
+#: all `[pypi_version]: https://img.shields.io/…` lines.
+_README_NOISE = re.compile(
+    r"^\s*(\[!\[|!\[|\[[^\]]+\]:\s*\S+|<[^>]+>|[-=*_]{3,}\s*$|\.\.\s+\|?[\w-]*\|?\s*image::)")
+
+
+def _readme_prose(text: str) -> str:
+    """The README with badge / link-definition / image / HTML lines removed."""
+    keep = [ln for ln in (text or "").splitlines()
+            if ln.strip() and not _README_NOISE.match(ln)
+            and "shields.io" not in ln and "badge" not in ln.lower()]
+    return "\n".join(keep).strip()
 
 
 def _repo_context(cwd: str) -> str:
