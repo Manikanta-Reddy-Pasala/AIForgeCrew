@@ -86,6 +86,8 @@ from ._render import (
     knowledge_text,
     parse_note,
     render_note,
+    clean_item,
+    item_key,
     scrub_items,
     update_note,
     validate_note,

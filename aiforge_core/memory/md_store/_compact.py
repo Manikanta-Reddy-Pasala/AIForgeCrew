@@ -140,6 +140,13 @@ def _prepare_group(key: str, items: list[dict], *, group_by: str,
     # deterministic-merge paths stay for the kind axis and the no-model case.
     use_structured = (group_by in ("repo", "topic")) and summarize
     if use_structured:
+        # What the brief held BEFORE the fold: _late_facts carries only facts
+        # captured during the fold, never ones the fold itself removed.
+        try:
+            _pre, _ = _existing_brief_sections(path, _slug(key))
+            pre_facts = list(_pre.get("facts") or [])
+        except Exception:  # noqa: BLE001
+            pre_facts = None
         # Facts are paged: a topic that outgrows the split cap becomes several
         # cross-referenced parts. The raw units archive out (scheduler), so the
         # topic note(s) ARE the memory.
@@ -151,6 +158,7 @@ def _prepare_group(key: str, items: list[dict], *, group_by: str,
                 # write must re-check for facts captured meanwhile — see
                 # _late_facts. Everything it needs to re-render is kept here.
                 "sections": merged, "title": title, "sources": fold_sources,
+                "pre_facts": pre_facts,
                 "parts": _brief_parts(key, merged, all_tags, title,
                                       sources=fold_sources)}
 
@@ -245,8 +253,19 @@ def _late_facts(p: dict) -> None:
     base = _slug(p["key"])
     current, _tags = _existing_brief_sections(_md_path_for_stem(p["base_stem"]),
                                              base)
-    have = {str(f) for f in sections.get("facts") or []}
-    late = [f for f in (current.get("facts") or []) if str(f) not in have]
+    from aiforge_core.runtime.work_notes import item_key
+    have = {item_key(f) for f in sections.get("facts") or []}
+    pre = p.get("pre_facts")
+    if pre is None:
+        # no snapshot (it could not be read): adding back would undo every
+        # dedupe the fold made, so carry nothing rather than everything
+        return
+    before = {item_key(f) for f in pre}
+    # Only facts that appeared on disk WHILE the fold ran. Diffing the on-disk
+    # brief against the fold's output put back every fact the model merged,
+    # reworded or superseded (513 near-duplicate pairs over 32 briefs, 11-13).
+    late = [f for f in (current.get("facts") or [])
+            if item_key(f) not in have and item_key(f) not in before]
     if not late:
         return
     _log.info("compact: %d fact(s) captured during the fold of '%s' — kept",
