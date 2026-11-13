@@ -60,8 +60,8 @@ states (an example's exact \
 input and output is a test as written; when the request says what a call \
 returns or what type or structure a result has, assert exactly that, and only \
 that — a round trip or "no error" check also passes when the code silently \
-falls back to something else; more tests than the request lists are \
-expected). When it does not ask for tests, add no test files: run the \
+falls back to something else; one focused test per stated point, not a \
+second suite of your own). When it does not ask for tests, add no test files: run the \
 existing suite and the request's own examples once, and name the tests you \
 would add under "Suggested, not done". Run the suite and fix until it is \
 green; a side failure still \
