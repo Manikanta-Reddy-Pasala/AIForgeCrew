@@ -93,12 +93,20 @@ def item_fields() -> dict:
             "item_last_closed": None, "item_fresh_close": False}
 
 
-def active(st) -> bool:
-    """A board big enough to be run item by item, on a run that edits."""
+def tracking(st) -> bool:
+    """A board big enough to keep per-item evidence for, on a run that edits.
+    The evidence log and each closed item's note/files (the panel's evidence
+    under every task) depend on this only, never on the verify/reset switches:
+    turning the done-check off (core mode) must not remove the evidence."""
     board = getattr(st, "board", None) or {}
     return (len(board) >= min_items() and not getattr(st, "readonly_mode", False)
-            and not getattr(st, "builder", None)
-            and (reset_enabled() or verify_enabled()))
+            and not getattr(st, "builder", None))
+
+
+def active(st) -> bool:
+    """A board run item by item: evidence is kept and either the done-check
+    or the per-item context reset is on (the timebox runs only then)."""
+    return tracking(st) and (reset_enabled() or verify_enabled())
 
 
 def _merged(st) -> dict:
@@ -108,7 +116,7 @@ def _merged(st) -> dict:
 def ensure_started(st) -> None:
     """Begin the evidence log, once the board is big enough. What the tree
     already held (the user's own dirty files) is the baseline, not a change."""
-    if getattr(st, "item_log", None) is not None or not active(st):
+    if getattr(st, "item_log", None) is not None or not tracking(st):
         return
     seen = _merged(st)
     try:
@@ -285,7 +293,7 @@ def review_progress(st, result: dict, events: list):
         ensure_started(st)
         slug = result.get("slug")
         item = st.board.get(slug) if result.get("ok") else None
-        if (item is None or item["status"] not in _CLOSED or not active(st)
+        if (item is None or item["status"] not in _CLOSED or not tracking(st)
                 or st.item_log is None):
             return result, events
         if getattr(st, "item_log", None) is not None:
