@@ -153,6 +153,23 @@ def _trim_added_work(raw: str, enriched: str) -> str:
     return " ".join(keep).strip()
 
 
+#: Share of a restatement's words that must be NEW (not in the user's own
+#: message) for it to be attached. tk-toml11: a 2.4k-char spec came back as the
+#: same text with its line breaks merged ("…as written). 3. **New escapes…") —
+#: a second, damaged copy of a precise spec in every prompt of the run.
+_MIN_NEW_WORDS = 0.12
+
+
+def _adds_little(raw: str, enriched: str) -> bool:
+    """True when the restatement is (nearly) the user's own words again."""
+    words = re.findall(r"[a-z0-9_]+", (enriched or "").lower())
+    if not words:
+        return False
+    have = set(re.findall(r"[a-z0-9_]+", (raw or "").lower()))
+    new = sum(1 for w in words if w not in have)
+    return new / len(words) < _MIN_NEW_WORDS
+
+
 def _augment_user_turn(m: dict, enriched, resume_brief, prompt, doc_task) -> None:
     """Augment one user turn IN PLACE with the enhancer's interpretation (verbatim
     words kept + a labelled restatement block, resume brief LAST) and, for a doc
@@ -167,6 +184,8 @@ def _augment_user_turn(m: dict, enriched, resume_brief, prompt, doc_task) -> Non
         raw = raw[:-len(resume_brief)].rstrip().rstrip("-").rstrip()
         brief_tail = f"\n\n---\n{resume_brief}"
     enriched = _trim_added_work(raw, enriched or "")
+    if _adds_little(raw, enriched):
+        enriched = ""                 # a copy of the user's words: say it once
     if enriched and enriched.strip() and enriched.strip() != raw:
         m["content"] = (
             f"{raw}\n\n---\n[Interpreted request — a context-enriched "
