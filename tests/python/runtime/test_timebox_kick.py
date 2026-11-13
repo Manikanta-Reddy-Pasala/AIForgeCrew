@@ -1,4 +1,4 @@
-"""Board timebox: advisory move-on after a request part has closed."""
+"""Board timebox: move-on note, then a harness park when it is ignored."""
 from types import SimpleNamespace
 
 from aiforge_core.runtime.chat_agent._turn import _timebox as T
@@ -26,8 +26,8 @@ def _st(board, **kw):
     return SimpleNamespace(**base)
 
 
-def test_timebox_skips_until_a_request_part_is_closed(monkeypatch):
-    """boc*: parking Tokens before any close left part-1 at 0/12."""
+def test_first_deep_dive_gets_twice_the_limit_not_forever(monkeypatch):
+    """Before any request part closes the item gets 2x the limit, then the note."""
     monkeypatch.setattr(T, "_first_limit", lambda: 60.0)
     monkeypatch.setattr(T, "_FLOOR_S", 60.0)
     from aiforge_core.runtime.chat_agent._turn import _items as I
@@ -35,13 +35,14 @@ def test_timebox_skips_until_a_request_part_is_closed(monkeypatch):
     board = _board("Tokens", "Exprs", "Parser",
                    statuses=["running", "pending", "pending"])
     st = _st(board, item_cur="part-1", item_running={"part-1"},
-             item_clock={"part-1": 120.0}, item_clock_at=1000.0)
-    assert T.check(st, now=1001.0) is None
-    assert st.board["part-1"]["status"] == "running"
+             item_clock={"part-1": 100.0}, item_clock_at=1000.0)
+    assert T.check(st, now=1001.0) is None          # 101 s <= 2 x 60
+    note = T.check(st, now=1031.0)                   # 131 s > 120
+    assert note and "part-2" in note
+    assert st.board["part-1"]["status"] == "running"   # the note itself never parks
 
 
 def test_timebox_advises_move_on_after_a_request_part_closes(monkeypatch):
-    """Advisory only — do not park/force (g2a 17/25 vs boc hard-move 2–7)."""
     monkeypatch.setattr(T, "_first_limit", lambda: 60.0)
     monkeypatch.setattr(T, "_FLOOR_S", 60.0)
     from aiforge_core.runtime.chat_agent._turn import _items as I

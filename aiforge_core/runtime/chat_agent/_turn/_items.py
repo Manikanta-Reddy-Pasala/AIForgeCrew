@@ -359,6 +359,16 @@ def _next_open(board: dict):
 
 
 def _reset_message(st) -> str:
+    if getattr(st, "item_reset_reason", None) == "park":
+        cur = st.item_last_parked
+        slug, title = _next_open(st.board)
+        return (_park_line(st, cur, slug)
+                + "The working context of that item was cleared so this one "
+                "starts fresh and small. What carries over is in the system "
+                "message and the context note: the original task, your task "
+                "board with notes, and the files on disk. Re-read files "
+                "instead of guessing; the cleared transcript is saved and "
+                "memory_lookup restores it if you truly need it.")
     closed = st.item_last_closed
     done_line = ""
     if closed and closed in st.board:
@@ -402,6 +412,66 @@ def at_step_start(st):
                            "asking the agent to move on and come back to it"}
     except Exception:  # noqa: BLE001 — advisory only
         pass
+    try:
+        from ._timebox import park_due
+        due = park_due(st)
+        if due:
+            yield from park(st, *due)
+    except Exception:  # noqa: BLE001 — a failed park keeps working the item
+        pass
+
+
+def _last_red(st) -> str:
+    """The last failing test summary logged for the current item, if any."""
+    for entry in reversed(st.item_log[getattr(st, "item_start", 0):]):
+        if entry and entry[0] == "test" and len(entry) > 2 and entry[1] == "red":
+            return str(entry[2])[:200]
+    return ""
+
+
+def park(st, cur: str, nxt: str):
+    """The harness moves the board itself: ``cur`` back to pending with what
+    still fails, ``nxt`` running, and the working context reset naming it.
+    Yields UI events."""
+    item = st.board[cur]
+    mins = int(st.item_clock.get(cur, 0.0) // 60)
+    red = _last_red(st)
+    item["status"] = "pending"
+    item["parked"] = True
+    item["note"] = (f"PARKED by the harness after {mins} min"
+                    + (f" — still failing: {red}" if red else "")
+                    + "; come back to it when the other items are done")
+    st.item_parked.add(cur)
+    st.board[nxt]["status"] = "running"
+    st.item_cur = nxt
+    st.item_running = {nxt}
+    st.item_last_parked = cur
+    st.item_prev_start = st.item_start
+    st.item_start = len(st.item_log)
+    yield {"type": "subtask_update", "slug": cur, "status": "pending"}
+    yield {"type": "subtask_update", "slug": nxt, "status": "running"}
+    st.item_reset_reason = "park"
+    try:
+        if reset_enabled() and reset_context(st):
+            yield {"type": "thought", "role": "system",
+                   "text": f"⏱ parked {cur} after {mins} min — cleared the "
+                           f"working context and started {nxt}"}
+            return
+    finally:
+        st.item_reset_reason = None
+    from ._convo import _append_directive
+    _append_directive(st, _park_line(st, cur, nxt))
+    yield {"type": "thought", "role": "system",
+           "text": f"⏱ parked {cur} after {mins} min — started {nxt}"}
+
+
+def _park_line(st, cur: str, nxt: str) -> str:
+    return (f"[harness — not the user] Task-board item {cur} "
+            f"({st.board[cur]['title']}) was PARKED by the harness: it took far "
+            "longer than its share after the move-on note. "
+            f"{st.board[cur].get('note', '')}. Now work on {nxt}: "
+            f"{st.board[nxt]['title']} (already marked running) with its own "
+            f"test run; come back to {cur} once the other items are done.\n")
 
 
 def reset_pending_ready(st) -> bool:
