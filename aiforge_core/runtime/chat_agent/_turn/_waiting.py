@@ -101,6 +101,15 @@ def note_background(st, name, args) -> None:
             st.bg_started = time.monotonic()
 
 
+def job_running(st, now: "float | None" = None) -> bool:
+    """A job this turn checked on is still running (its last check said so)
+    and the wait is within the cap. The task-board timebox uses it: a part
+    whose build or suite is running is waiting, not stuck on one part."""
+    jobs = getattr(st, "job_waits", None) or {}
+    now = time.monotonic() if now is None else now
+    return any(now - first <= cap_s() for first in jobs.values())
+
+
 def waiting(st, name, args) -> bool:
     """Before the call runs: the last check on this job found it running, and
     the wait is within the cap; or the call is a shell ``sleep N; ...`` poll."""

@@ -124,6 +124,9 @@ def park_due(st, now: "float | None" = None) -> "tuple[str, str] | None":
     if getattr(st, "time_warned", False) or getattr(st, "deadline_final", None) is not None:
         return None
     now = time.monotonic() if now is None else now
+    from ._waiting import job_running
+    if job_running(st, now):
+        return None             # never park a part while its job is running
     deadline = getattr(st, "turn_deadline", None)
     budget = getattr(st, "turn_budget_s", None)
     if deadline is not None:
@@ -155,14 +158,18 @@ def check(st, now: "float | None" = None) -> "str | None":
     # the step that just ran was worked on the item current when it began
     # (the step that closes an item and starts the next is the old one's)
     was = st.item_cur
-    if was is not None:
+    from ._waiting import job_running
+    busy = job_running(st, now)
+    if was is not None and not busy:
+        # time spent waiting on a running job (a long build, suite or
+        # deploy) is not time stuck on the item: not charged
         # one step's charge is capped: an approval wait or a model outage
         # between two steps is not work on the item
         step = min(max(0.0, now - st.item_clock_at), _STEP_CAP_S)
         st.item_clock[was] = st.item_clock.get(was, 0.0) + step
     st.item_clock_at = now
     cur = _current(st)
-    if cur is None or cur in st.item_boxed:
+    if cur is None or cur in st.item_boxed or busy:
         return None
     deadline = getattr(st, "turn_deadline", None)
     if getattr(st, "time_warned", False) or getattr(st, "deadline_final", None) is not None \
