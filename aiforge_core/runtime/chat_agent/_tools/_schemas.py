@@ -90,7 +90,10 @@ CATALOG: dict = {
     "grep": ("Recursively search file contents.", {"pattern": "s", "path": "s"},
              ("pattern",)),
     "read_lines": ("Read a line range from a file. Several parts of one file: "
-                   "pass ranges [[start, end], …] to read them in ONE call.",
+                   "pass ranges [[start, end], …] to read them in ONE call. "
+                   "Read a whole function or 150+ lines at a time, not "
+                   "20-40 line slices; a range you already read is still in "
+                   "this conversation — do not read it again.",
                    {"path": "s", "start": "i", "end": "i", "ranges": "arr"}, ("path",)),
     "summarize_doc": ("Summarize an attached/loaded document (pdf/docx/xlsx). "
                       "Give the file name/path. Optional `pages` selects a page "
@@ -106,7 +109,10 @@ CATALOG: dict = {
             ("command", "path")),
     # ── run / build / test ───────────────────────────────────────────────
     "run_command": (
-        "Run a shell command. If it is still running after ~15s (or prints "
+        "Run a shell command: tests, builds, git, installs. Not for reading or "
+        "searching files (use the read tools / grep) and not for throwaway "
+        "`python -c` scripts that poke at the code: write the change, then "
+        "run the repo's tests. If it is still running after ~15s (or prints "
         "an error or a prompt first) you get its output so far and an id — "
         "then command_wait / command_output / command_kill; it is not killed. "
         "Pass timeout SECONDS only to cap it on purpose. "

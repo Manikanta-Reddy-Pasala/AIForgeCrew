@@ -512,11 +512,11 @@ _DECOMPOSE = (
 #: OpenCode/Claude-Code Task parity: fan out independent slices via spawn_task
 #: on BOTH capped and unlimited runs (bench deadlines used to omit this).
 _MULTI_AGENT = (
-    "MULTI-AGENT (spawn_task): when parts are independent (different files or "
-    "layers that do not share the same open edit), hand a slice to a second "
-    "agent with spawn_task (wait:true default — you get its FINAL in this "
-    "turn). Prefer that over doing every layer yourself when the board has "
-    "2+ independent coding items. Keep dependent edits on your own turn. ")
+    "MULTI-AGENT (spawn_task): do the work yourself by default. Hand a slice "
+    "to a second agent with spawn_task (wait:true default — you get its FINAL "
+    "in this turn) only when it is a large, independent part (another module "
+    "or layer that needs none of your open edits) and the board has more "
+    "such parts. Keep dependent edits on your own turn. ")
 
 
 #: Added to the system prompt only when the run has no step cap and no
