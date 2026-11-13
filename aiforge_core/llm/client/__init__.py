@@ -81,6 +81,7 @@ from ._errors import (
     _raise_if_model_dropped,
 )
 from ._helpers import _estimate_tokens, _float_env, _int_env, _log, _record_usage
+from ._http_stream import ReasoningOverCap  # noqa: F401  # re-exported
 from ._http import (
     _CANCEL,
     _NON_BODY_EXTRA_KEYS,
@@ -275,25 +276,8 @@ def _complete_raw_once(role: str, messages: list[dict], *,
     import time as _time
     _t0 = _time.perf_counter()
     try:
-        try:
-            body = _post_with_retry(ep, payload, timeout_s, role=role,
-                                    source="native", meter=_meter_tok)
-        except _LLMCancelled:
-            raise
-        except Exception as exc0:  # noqa: BLE001
-            # A server that 400s on `reasoning_effort` is remembered, and the
-            # same request goes again without it (the direct path does this in
-            # _attempt; this is the path simple chat actually uses).
-            try:
-                from aiforge_core.llm import fast_reasoning as _fr
-                refused = _fr.note_rejection(ep.base_url, exc0, getattr(ep, "model", ""))
-            except Exception:  # noqa: BLE001
-                refused = False
-            if not refused:
-                raise
-            payload = _build_body(ep, messages, temperature, max_tokens, top_p, ex)
-            body = _post_with_retry(ep, payload, timeout_s, role=role,
-                                    source="native", meter=_meter_tok)
+        body = _native_post(ep, messages, temperature, max_tokens, top_p, ex,
+                            payload, timeout_s, role, _meter_tok)
     except _LLMCancelled:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -325,6 +309,50 @@ def _complete_raw_once(role: str, messages: list[dict], *,
     # output cap when a reply stops at "length".
     out["_usage"] = body.get("usage") if isinstance(body.get("usage"), dict) else None
     return out
+
+
+def _native_post(ep, messages, temperature, max_tokens, top_p, ex,
+                 payload, timeout_s, role, meter) -> dict:
+    """POST one native completion.
+
+    A server that 400s on a reasoning switch (``reasoning_effort``,
+    ``thinking``, ``chat_template_kwargs``) is remembered, and the same
+    request goes again without it — at most once per switch (the direct path
+    does this in _attempt; this is the path simple chat actually uses).
+
+    A Low/Medium thinking model whose streamed reasoning runs past its cap
+    (servers such as Kimi or DeepSeek ignore ``reasoning_effort``) is asked
+    again with reasoning off."""
+    from aiforge_core.llm import fast_reasoning as _fr
+    from aiforge_core.llm import reasoning as _reasoning
+    for _ in range(len(_fr.FIELDS) + 1):
+        try:
+            return _post_with_retry(ep, payload, timeout_s, role=role,
+                                    source="native", meter=meter)
+        except _LLMCancelled:
+            raise
+        except ReasoningOverCap:
+            _log.info("reasoning over the Low/Medium cap for %s — asking again "
+                      "with thinking off", ep.model)
+            with _reasoning.forced_off():
+                payload = _build_body(ep, messages, temperature, max_tokens, top_p, ex)
+                return _post_with_retry(ep, payload, timeout_s, role=role,
+                                        source="native", meter=meter)
+        except Exception as exc0:  # noqa: BLE001
+            try:
+                sent = json.loads(payload)
+            except Exception:  # noqa: BLE001
+                sent = None
+            try:
+                refused = _fr.note_rejection(ep.base_url, exc0,
+                                             getattr(ep, "model", ""), sent=sent)
+            except Exception:  # noqa: BLE001
+                refused = False
+            if not refused:
+                raise
+            payload = _build_body(ep, messages, temperature, max_tokens, top_p, ex)
+    return _post_with_retry(ep, payload, timeout_s, role=role,
+                            source="native", meter=meter)
 
 
 def _perf_record(family: str, name: str, t0: float) -> None:
