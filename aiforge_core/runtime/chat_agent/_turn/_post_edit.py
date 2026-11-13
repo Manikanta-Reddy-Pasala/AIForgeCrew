@@ -95,8 +95,10 @@ def post_edit_diagnostics(st, files, cwd):
 
 
 def _dropped(st, full) -> list:
-    """Assignments the file had at the work's base commit that this turn
-    removed while the attribute is still read (post_edit.dropped_assignments)."""
+    """Errors found by comparing the file with the work's base commit:
+    assignments this turn removed while the attribute is still read
+    (post_edit.dropped_assignments) and a generator this turn wrote that
+    returns a call above its yields (post_edit.new_generator_returns)."""
     import os
     import subprocess
     if not str(full).endswith(".py"):
@@ -111,11 +113,12 @@ def _dropped(st, full) -> list:
     rel = os.path.relpath(os.path.realpath(full), os.path.realpath(top.stdout.strip()))
     old = subprocess.run(["git", "-C", top.stdout.strip(), "show", f"{base}:{rel}"],
                          capture_output=True, text=True, timeout=4)
-    if old.returncode != 0:
-        return []
     with open(full, encoding="utf-8", errors="replace") as fh:
         now = fh.read()
-    return post_edit.dropped_assignments(full, old.stdout, now)
+    if old.returncode != 0:            # a file this turn created: all of it is new
+        return post_edit.new_generator_returns(full, "", now)
+    return (post_edit.dropped_assignments(full, old.stdout, now)
+            + post_edit.new_generator_returns(full, old.stdout, now))
 
 
 _UNDEFINED = re.compile(r"F821 Undefined name [`'\"]?(\w+)")

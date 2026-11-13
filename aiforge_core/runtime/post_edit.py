@@ -186,6 +186,66 @@ _PLAIN_BASES = frozenset({"object", "Generic", "Protocol", "ABC", "Exception",
                           "BaseException"})
 
 
+def new_generator_returns(path: str, before: str, now: str) -> list:
+    """AF003 findings in ``now`` for functions that had none in ``before``:
+    only what this turn wrote is reported, never code the repo already had."""
+    had = {_AF003_FN.search(e).group(1) for e in _generator_returns(path, before)}
+    return [e for e in _generator_returns(path, now)
+            if _AF003_FN.search(e).group(1) not in had]
+
+
+_AF003_FN = re.compile(r"AF003 `([^`]+)`")
+
+
+def _generator_returns(path: str, src: "str | None" = None) -> list:
+    """``return some_call(...)`` inside a function that also has a plain ``yield``.
+
+    The function is a generator, so the returned value is thrown away and the
+    caller iterates nothing. more-itertools (bench, two runs, same bug): the
+    model wrote ``if maxlen is not None: return _windowed(iterable, maxlen)``
+    above a ``for ...: yield`` loop, got ``[]`` back, and spent the rest of the
+    run (280 calls in one run) probing from the shell without seeing why.
+    Only a returned *call* above every plain ``yield`` is flagged (the early
+    hand-off): a value returned after the yields, or from a ``yield from``
+    sub-generator, may be meant (PEP 380).
+    """
+    import ast
+    try:
+        if src is None:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                src = fh.read()
+        tree = ast.parse(src)
+    except (OSError, SyntaxError, ValueError, RecursionError):
+        return []
+    out = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        yields, returns, stack = [], [], list(fn.body)
+        while stack:
+            node = stack.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda,
+                                 ast.ClassDef)):
+                continue                       # a nested scope is its own function
+            if isinstance(node, ast.Yield):
+                yields.append(node.lineno)
+            elif isinstance(node, ast.Return) and isinstance(node.value, ast.Call):
+                returns.append(node)
+            stack.extend(ast.iter_child_nodes(node))
+        if yields:
+            # the early hand-off shape only: the return sits above every yield.
+            # A value returned after the yields is usually meant (StopIteration
+            # value read by a ``yield from`` caller or a driver loop).
+            for r in sorted((r for r in returns if r.lineno < min(yields)),
+                            key=lambda n: n.lineno):
+                out.append(
+                    f"{path}:{r.lineno}:{r.col_offset + 1}: AF003 `{fn.name}` has a `yield`, "
+                    "so it is a generator and this `return <call>` value is discarded "
+                    "(the caller gets nothing from it): use `yield from <call>` then a "
+                    "bare `return`, or move the `yield` loop into its own function")
+    return out
+
+
 def _missing_self_methods(path: str) -> list:
     """``self.name(...)`` calls to a method the class never defines.
 
