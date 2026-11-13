@@ -151,6 +151,33 @@ def test_a_finished_team_run_ends_the_turn(monkeypatch, tmp_path):
     assert rctx["done"] is True
 
 
+def _team_dispatch(monkeypatch, tmp_path, rctx):
+    from aiforge_core.runtime import chat_pipeline
+    seen: dict = {}
+    monkeypatch.setattr(chat_pipeline, "stream_chat_pipeline",
+                        lambda prompt, **kw: seen.update(kw) or iter([]))
+    rd = pytypes.SimpleNamespace(doc_task=False, route_pipeline=False, notice=None)
+    _drain(C._dispatch_agent_route(rd, None, "fix it", str(tmp_path), 1, [],
+                                   lambda s: s, {}, 0.0, True, None, rctx))
+    return seen
+
+
+def test_a_single_task_team_run_reuses_the_build_routes_spec(monkeypatch, tmp_path):
+    """The sequential team's own Enhancer rewrote the request a second time,
+    and its spec could contradict the SPEC.md the route had just written."""
+    seen = _team_dispatch(monkeypatch, tmp_path,
+                          {"done": False, "spec": "# spec for fix it"})
+    assert seen["enhanced"] == "# spec for fix it"
+
+
+def test_an_unrewritten_prompt_still_gets_the_teams_enhancer(monkeypatch, tmp_path):
+    """The route's enhancer skipped or fell back to the raw prompt — nothing was
+    enhanced, so the team's Enhancer must still run."""
+    seen = _team_dispatch(monkeypatch, tmp_path, {"done": False, "spec": "fix it"})
+    assert seen["enhanced"] is None
+    assert _team_dispatch(monkeypatch, tmp_path, {"done": False})["enhanced"] is None
+
+
 def test_simple_mode_still_falls_through_to_the_single_agent(tmp_path):
     rd = pytypes.SimpleNamespace(doc_task=False, route_pipeline=False, notice=None)
     rctx: dict = {"done": False}

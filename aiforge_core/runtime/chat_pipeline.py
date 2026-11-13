@@ -527,14 +527,16 @@ def stream_chat_pipeline(prompt: str, *, cwd: str,
                          session_id: int | None = None,
                          history: list[dict] | None = None,
                          started_at: float | None = None,
-                         resume_brief: str = "") -> Generator[dict, None, bool]:
+                         resume_brief: str = "",
+                         enhanced: str | None = None) -> Generator[dict, None, bool]:
     """Yield the team turn's events, ending with ``done``. Returns True when the
     driver handed the turn off (answer posted and persisted, Learner still
-    running); the caller then finishes the chat run itself."""
+    running); the caller then finishes the chat run itself. ``enhanced`` is a
+    spec the chat build route already produced; the team Enhancer reuses it."""
     q: queue.Queue = queue.Queue()
     raw_prompt = prompt   # the user's actual request (before context augmentation)
     prompt, _team_state = _build_team_prompt(cwd, prompt, history, session_id,
-                                             resume_brief)
+                                             resume_brief, enhanced)
 
     _epoch = _turn_epoch()           # the producer's; the driver thread has none
     t = threading.Thread(target=lambda: _drive_awake(
