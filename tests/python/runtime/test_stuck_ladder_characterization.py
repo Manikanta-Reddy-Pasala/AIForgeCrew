@@ -104,6 +104,8 @@ def test_escalate_records_the_failed_approach():
 def test_duplicate_read_is_skipped_with_exact_text():
     st = _st()
     st.read_sigs_seen.add("sig")
+    # the first repeat is served (AIFORGE_CHAT_SERVE_REPEAT_READ); the second is skipped
+    assert _drive(A._action_stall_guard(st, "file_read", {}, "sig", True)) == ([], None)
     ev, r = _drive(A._action_stall_guard(st, "file_read", {}, "sig", True))
     assert r == "continue"
     assert ev == [_sys("⏭ duplicate read skipped (file_read)")]
