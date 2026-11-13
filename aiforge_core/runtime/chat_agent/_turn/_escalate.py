@@ -43,6 +43,16 @@ _WRAP_UP = ("Stop retrying. Write `FINAL:` now: what is done, what remains, and 
             "what you would do next. Be specific.")
 
 
+def _condense_on_trip() -> bool:
+    """Condense the history on a stuck trip. tk-toml11 pr1a (11-13): five
+    trips, each condense dropped reads the model then asked for again, which
+    were refused as repeats and counted as the next trip.
+    Off switch: ``AIFORGE_CHAT_STUCK_CONDENSE=0`` (core mode)."""
+    import os
+    return os.environ.get("AIFORGE_CHAT_STUCK_CONDENSE", "1").strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
 def escalate(st, why: str):
     """One stuck trip. Yields a status line and queues the nudge (and a
     condense) on ``st.convo``; returns ``"continue"`` to keep the run going, or
@@ -61,7 +71,7 @@ def escalate(st, why: str):
     restarted = False
     if n % 2 == 0 and pol.stuck_restart:
         restarted = restart_with_handoff(st)
-    else:
+    elif _condense_on_trip():
         # every trip shrinks the context when the restart is off (its
         # default): the long repeating history is what keeps the loop going
         _condense(st)

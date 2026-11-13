@@ -60,3 +60,25 @@ def test_off_switches_silence_their_layers(monkeypatch):
     assert _timebox.check(SimpleNamespace(board={})) is None
     from aiforge_core.runtime.stuck_policy import Policy
     assert Policy.load().stuck_restart is False
+
+
+def test_a_stuck_trip_in_core_mode_keeps_the_history(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.delenv("AIFORGE_CHAT_STUCK_CONDENSE", raising=False)
+    monkeypatch.setenv("AIFORGE_CHAT_CORE", "1")
+    core.apply()
+    import collections
+    import types
+    from aiforge_core.runtime.chat_agent._turn import _escalate as E
+    from aiforge_core.runtime.chat_agent._turn._progress import progress_fields
+    called = []
+    monkeypatch.setattr(E, "_condense", lambda st: called.append(1))
+    st = types.SimpleNamespace(
+        convo=[{"role": "system", "content": "s"}, {"role": "user", "content": "OBSERVATION: x"}],
+        role="doer", action_counts=collections.OrderedDict(), read_sigs_seen=set(),
+        recent_outputs=collections.deque(maxlen=3), continue_nudges=0, stuck_recoveries=0,
+        board={}, cwd="", session_id=None, **progress_fields())
+    for _ in range(3):
+        list(E.escalate(st, "You keep repeating `x` without progress."))
+    assert not called
+    assert "[loop guard — not the user]" in st.convo[-1]["content"]

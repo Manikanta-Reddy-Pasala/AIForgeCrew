@@ -160,6 +160,17 @@ def _serve_repeat_once() -> bool:
         not in ("0", "false", "no", "off")
 
 
+def _skip_repeat_reads() -> bool:
+    """Refuse a read repeated after its first served repeat. Off in core mode
+    (``AIFORGE_CHAT_SKIP_REPEAT_READS=0``): every read is served, as in a plain
+    loop; a read asked again and again with nothing changed is still caught by
+    the identical-call detector below. tk-toml11 pr1a: 112 refusals, and their
+    streaks fed the stuck ladder."""
+    import os
+    return os.environ.get("AIFORGE_CHAT_SKIP_REPEAT_READS", "1").strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
 def _action_stall_guard(st, name, args, sig, _long_chain_help):
     """Stall guard for an action: short-circuit a duplicate read with a progress
     recap, and on the same tool+args repeated too often first recover with a
@@ -220,7 +231,7 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
             st.repeat_reads_edits = edits
         win = _window(name, args)
         key = win[0] if win else sig
-        if key not in served:
+        if key not in served or not _skip_repeat_reads():
             served.add(key)
             duplicate = False
             # and in full: the read dedupe would hand back an "already in

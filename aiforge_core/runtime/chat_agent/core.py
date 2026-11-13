@@ -44,6 +44,8 @@ CORE_OFF = {
     "AIFORGE_CHAT_SECTION_CHECK": "0",
     # history and prompt stay the model's own
     "AIFORGE_CHAT_STUCK_RESTART": "0",     # wipe history every 2nd stuck trip
+    "AIFORGE_CHAT_STUCK_CONDENSE": "0",    # condense history on every stuck trip
+    "AIFORGE_CHAT_SKIP_REPEAT_READS": "0", # refuse a read already shown
     "AIFORGE_CHAT_AIDER_MAP": "0",         # repository map in the prompt
     "AIFORGE_CHAT_SYMBOL_MAP": "0",
 }
