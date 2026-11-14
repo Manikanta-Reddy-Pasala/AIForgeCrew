@@ -40,3 +40,14 @@ def test_a_failed_install_with_a_working_venv_still_starts():
     tail = SRC[i:i + 2200]
     assert "elif _venv_ready; then" in tail
     assert tail.index("elif _venv_ready; then") < tail.index("_fatal")
+
+
+def test_every_egress_controller_gets_the_package_index():
+    """Prod runs the GUARD overlay: its egress-ctl had no UV_DEFAULT_INDEX, so
+    required_hosts() was empty and files.pythonhosted.org stayed blocked."""
+    root = pathlib.Path(__file__).resolve().parents[2]
+    for f in ("docker-compose.guard.yml", "docker-compose.isolated.yml"):
+        text = (root / f).read_text()
+        ctl = text[text.index("egress-ctl:"):]
+        ctl = ctl[:ctl.index("volumes:")]
+        assert re.search(r"^\s+- UV_DEFAULT_INDEX\b", ctl, re.M), f
