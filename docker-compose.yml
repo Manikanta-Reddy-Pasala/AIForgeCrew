@@ -52,6 +52,7 @@ services:
       - AIFORGE_ADMIN_URL
       - AIFORGE_SYNC_GROUP
       - AIFORGE_EXTRAS
+      - TZ                      # the host's timezone (run.sh): local-hour schedules
       - AIFORGE_EMBED_BACKEND
       - AIFORGE_RUNNER_POLL_SEC
       # Off on the host (no bridge started) must be off in the box too, or it
