@@ -367,6 +367,20 @@ def _next_open(board: dict):
 
 
 def _reset_message(st) -> str:
+    """The first message of a fresh item context, with the working set: a
+    reset is a sub-agent per board item — small context, no condense — and
+    it only pays when the new context gets the earlier items' edits as diffs
+    instead of re-reading the files (what made resets lose before)."""
+    msg = _reset_message_head(st)
+    try:
+        from ._workset import note as _workset_note
+        ws = _workset_note(st, after="earlier items' work, carried into this fresh context")
+    except Exception:  # noqa: BLE001
+        ws = ""
+    return msg + ("\n\n" + ws if ws else "")
+
+
+def _reset_message_head(st) -> str:
     if getattr(st, "item_reset_reason", None) == "park":
         cur = st.item_last_parked
         slug, title = _next_open(st.board)

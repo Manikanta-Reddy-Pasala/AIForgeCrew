@@ -91,7 +91,11 @@ def _close(st, slug, status="done"):
 
 # ── chat: end to end ─────────────────────────────────────────────────────
 
-def test_three_items_each_start_from_a_fresh_context(tmp_path):
+def test_three_items_each_start_from_a_fresh_context(tmp_path, monkeypatch):
+    # the transcript is what must not carry over; the working set (the files'
+    # own diffs, test_condense_workset_1114) is off here so the marker that
+    # item 1 WRITES into a.txt does not come back through it
+    monkeypatch.setenv("AIFORGE_CHAT_CONDENSE_WORKSET", "0")
     fn, calls = _scripted([
         _plan("a", title="first thing"),
         _plan("b", title="second thing"),

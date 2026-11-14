@@ -43,3 +43,16 @@ def test_bounded_and_switchable(tmp_path, monkeypatch):
 def test_nothing_edited_nothing_said(tmp_path):
     r = _repo(tmp_path)
     assert W.note(SimpleNamespace(cwd=str(r), file_hashes={})) == ""
+
+
+def test_a_board_item_reset_carries_the_working_set(tmp_path):
+    from aiforge_core.runtime.chat_agent._turn import _items
+    r = _repo(tmp_path)
+    (r / "parser.py").write_text((r / "parser.py").read_text().replace("line 50\n", "line 50 EDIT\n"))
+    st = SimpleNamespace(cwd=str(r), file_hashes={str(r / "parser.py"): "x"},
+                         item_reset_reason=None, item_last_closed="part-1",
+                         board={"part-1": {"title": "Part 1", "status": "done", "note": "ok"},
+                                "part-2": {"title": "Part 2", "status": "pending"}})
+    msg = _items._reset_message(st)
+    assert "CONTEXT RESET" in msg and "Do next: part-2" in msg
+    assert "line 50 EDIT" in msg and "carried into this fresh context" in msg

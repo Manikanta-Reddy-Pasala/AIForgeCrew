@@ -40,8 +40,9 @@ def _git(root: str, *args: str) -> "str | None":
     return p.stdout if p.returncode == 0 else None
 
 
-def note(st) -> str:
-    """The working-set note for the message after a condense ("" if none)."""
+def note(st, after: str = "the history was condensed") -> str:
+    """The working-set note for the message after a condense or a context
+    reset between board items ("" if none)."""
     if not _on():
         return ""
     cwd = str(getattr(st, "cwd", "") or "")
@@ -85,7 +86,7 @@ def note(st) -> str:
     broken = sorted(getattr(st, "regress_said", set()) or set())
     if not parts and not broken and not left:
         return ""
-    out = ["[harness: the history was condensed. Your working set as it is on "
+    out = [f"[harness: {after}. Your working set as it is on "
            "disk NOW — continue from here, do not re-read these files whole:]"]
     out.extend(parts)
     if left:
