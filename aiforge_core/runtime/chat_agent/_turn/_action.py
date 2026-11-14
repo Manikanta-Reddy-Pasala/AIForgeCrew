@@ -1098,6 +1098,14 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
             model_result = {**model_result, "seen_before": _seen}
     except Exception:  # noqa: BLE001 — memory never breaks a step
         pass
+    # tests this turn's edits broke, which a narrow run does not show (_regress)
+    try:
+        from ._regress import check as _regress_check
+        _broke = _regress_check(st, name, args, result, cwd)
+        if _broke and isinstance(model_result, dict):
+            model_result = {**model_result, "regressions": _broke}
+    except Exception:  # noqa: BLE001 — a check never breaks a step
+        pass
     obs = render_observation(name, model_result, _obs_cap)
     _note_green_tests(st, name, args, result, cwd)
     # A compare command that passed on a target file: the harness closes
