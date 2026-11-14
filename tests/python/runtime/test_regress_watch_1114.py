@@ -55,3 +55,15 @@ def test_nothing_is_said_when_nothing_broke_or_it_is_off(repo, monkeypatch):
     assert R.check(st, "run_command", {"cmd": cmd}, {"ok": True}, str(repo)) == ""      # clean
     st2 = SimpleNamespace(edits_made=1)                                                 # too few edits
     assert R.check(st2, "run_command", {"cmd": cmd}, {"ok": True}, str(repo)) == ""
+
+
+def test_it_fires_after_edits_when_the_model_never_runs_pytest(repo, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_REGRESS", "1")
+    monkeypatch.setenv("PYTHONPATH", str(repo))
+    st = SimpleNamespace(edits_made=0)
+    probe = f"cd {repo} && {sys.executable} -c 'import calc; print(calc.add(1, 2))'"
+    assert R.check(st, "run_command", {"cmd": probe}, {"ok": True, "code": 0}, str(repo)) == ""
+    (repo / "calc.py").write_text("def add(a, b):\n    return a + b\n\ndef sub(a, b):\n    return 0\n")
+    st.edits_made = 3
+    note = R.check(st, "file_patch", {"path": "calc.py"}, {"ok": True}, str(repo))
+    assert "test_sub" in note
