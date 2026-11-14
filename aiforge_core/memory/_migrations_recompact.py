@@ -127,6 +127,12 @@ def force_recompact_all(on_step=None, checkpoint=None) -> dict:
         # one clean form per fact in every brief and OKF node (no model):
         # stray nested bullets, joined copies, exact duplicates
         ("normalize", lambda: md_store.normalize_all()),
+        # no model, each with its own off switch, every move recorded under
+        # archive/<stamp>/: retire toy / all-narration topics and facts that
+        # have nothing to do with their brief (AIFORGE_COMPACT_JUNK_SWEEP=0),
+        # then move run narration out of what is left (AIFORGE_COMPACT_NARRATION=0)
+        ("junk_sweep", lambda: md_store.sweep_junk_topics()),
+        ("narration", lambda: md_store.prune_narration()),
         ("repair", lambda: md_store.repair_captures()),
         ("tidy_legacy", lambda: md_store.cleanup_legacy_compacted(refold=False)),
         ("repo", lambda: md_store.compact(group_by="repo", force=True,
@@ -179,6 +185,10 @@ def force_recompact_all(on_step=None, checkpoint=None) -> dict:
             if os.environ.get("AIFORGE_OKR_DAG", "0") == "1"
             else {"skipped": "okr-dag off"})),
         ("reingest", lambda: md_store.ingest_dir()),
+        # vec0 rows whose memory unit is gone (AIFORGE_COMPACT_VEC_PRUNE=0)
+        ("vec_orphans", lambda: __import__(
+            "aiforge_core.memory.sqlite_memory", fromlist=["prune_vec_orphans"]
+        ).prune_vec_orphans()),
     ]
     _pkg().log.info("compact-all: START (%d steps)", len(steps))
     if _run_recompact_steps(steps, out, on_step, checkpoint):
