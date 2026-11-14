@@ -22,6 +22,7 @@ base turns the watch off for the turn; at most ``AIFORGE_CHAT_REGRESS_RUNS``
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shlex
@@ -30,6 +31,7 @@ import tempfile
 import time
 
 _PYTEST = re.compile(r"\bpytest\b")
+log = logging.getLogger("aiforge.regress")
 
 
 def _env_int(name: str, default: int) -> int:
@@ -200,6 +202,8 @@ def check(st, name: str, args: dict, result, cwd: str) -> str:
     if now is None:
         return ""
     new = sorted(now - base)
+    log.info("regress check #%d after %d edits: base %d failing, now %d, new %d (%s)",
+             st.regress_runs, edits, len(base), len(now), len(new), cmd[:120])
     said = st.__dict__.setdefault("regress_said", set())
     if not new or set(new) <= said:
         return ""
