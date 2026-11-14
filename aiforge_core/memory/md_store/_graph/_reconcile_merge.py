@@ -20,6 +20,7 @@ from ._reconcile_names import (
     _shared_prefix,
     _topic_merge_ratio,
     _typo_sibling,
+    _same_name,
 )
 
 
@@ -92,7 +93,9 @@ def _same_topic_family(a, b, families, ratio, sim):
             or (families and shared >= 1)                    # windows-* whole family
             or _typo_sibling(a, b)                           # windows-ntp / -npt
             or difflib.SequenceMatcher(None, a, b).ratio() >= ratio
-            or _same_subject(a, b, sim))                     # calc / calculator
+            or _same_name(a, b)                              # stems / venv / suffix family
+            or (min(len(a), len(b)) >= 3                     # c / m embed close by accident
+                and _same_subject(a, b, sim)))                   # calc / calculator
 
 
 def _topic_clusters(keys: list[str]) -> list[list[str]]:
@@ -142,11 +145,14 @@ def _mergeable_topic_keys(protected: set) -> list[str]:
     excluding them the merge folds a split topic back into a single oversized
     file — undoing the very compaction that split it.
     """
-    part = re.compile(r"-\d+$")
-    return [p.stem[len("compacted-"):] for p in iter_briefs()
-            if not _CAPTURE_SIG_RE.search(p.name)
-            and not part.search(p.stem)
-            and p.stem[len("compacted-"):] not in protected]
+    part = re.compile(r"(?:-\d+)+$")
+    briefs = [p for p in iter_briefs() if not _CAPTURE_SIG_RE.search(p.name)]
+    stems = {p.stem[len("compacted-"):] for p in briefs}
+    # a -N stem is a page of its head only when that head exists; otherwise it
+    # is a topic in its own right (ai-forge-memory-2 beside aiforgememory)
+    return [s for s in sorted(stems)
+            if not (part.search(s) and part.sub("", s) in stems)
+            and s not in protected]
 
 
 def _canonical_name(cluster: list[str], protected: set) -> str:
@@ -158,7 +164,13 @@ def _canonical_name(cluster: list[str], protected: set) -> str:
     prefix = _common_token_prefix(cluster)
     if prefix and prefix not in protected and _mintable(prefix):
         return prefix
-    return cluster[0]
+    # a protected name (a repo) in the cluster keeps its name; otherwise the
+    # shortest WORD name — not one with digits (mx2-5044) or a single letter
+    for name in cluster:
+        if name in protected:
+            return name
+    words = [n for n in cluster if not re.search(r"\d", n) and len(n) >= 3]
+    return words[0] if words else cluster[0]
 
 
 def _mintable(name: str) -> bool:

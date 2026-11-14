@@ -4,6 +4,8 @@ the deterministic + LLM graph rules (merge / dedupe / sweep / lint / contradict
 ``_map``, ``_lint`` and ``_reconcile``."""
 from __future__ import annotations
 
+from ._repage import repage_split_topics
+
 import os
 
 from .._base import iter_briefs
@@ -50,6 +52,7 @@ def finalize_briefs(*, role: str = "learner", recent_only: bool = False) -> dict
         # still counts; skip the LLM rules only when truly nothing changed.
         llm = bool(_briefs_modified_within(win * 1.5))
     steps = [
+        ("repage", lambda: repage_split_topics()),
         ("merge_topics", lambda: merge_similar_topics()),
         ("dedupe_global", lambda: dedupe_global_copies()),
         ("sweep_empty", lambda: sweep_empty_briefs(archive=True)),

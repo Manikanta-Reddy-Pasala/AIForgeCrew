@@ -150,6 +150,9 @@ def force_recompact_all(on_step=None, checkpoint=None) -> dict:
         ("fold_kind", lambda: md_store.fold_kind_briefs()),
         # merge near-duplicate TOPIC briefs (gpsd/gpsd-config/gpsd-configuration,
         # note/notes, gps/gpst) into one — kills topic-brief sprawl.
+        # re-cut split topics (link lines out of facts, no part-of-a-part,
+        # orphan parts back to their head) BEFORE names are merged
+        ("repage", lambda: md_store.repage_split_topics()),
         ("merge_topics", lambda: md_store.merge_similar_topics()),
         # drop project/topic-brief facts that already live in the global brief
         # (recall unions global → those copies are pure redundancy).
