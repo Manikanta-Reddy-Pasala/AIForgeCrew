@@ -513,8 +513,19 @@ _DECOMPOSE = (
 
 #: OpenCode/Claude-Code Task parity: fan out independent slices via spawn_task
 #: on BOTH capped and unlimited runs (bench deadlines used to omit this).
+#: Added when the user ASKS for a sub-agent ("use a sub-agent", "spawn an
+#: agent for ...", "in a separate agent"): their ask outranks the default.
+SUBAGENT_ASK_RULE = (
+    "SUB-AGENT REQUESTED: the user asked for a sub-agent. Run the part they "
+    "named with spawn_task — one call per part they listed, each with the FULL "
+    "task text (paths, constraints, what to return); wait:true unless they "
+    "asked to keep going meanwhile; mode plan for research or questions, simple "
+    "when it must edit. Then use its FINAL in your answer. Do not do that part "
+    "yourself instead.")
+
 _MULTI_AGENT = (
-    "MULTI-AGENT (spawn_task): do the work yourself by default. Hand a slice "
+    "MULTI-AGENT (spawn_task): do the work yourself by default (when the user "
+    "asks for a sub-agent, do as they ask). Hand a slice "
     "to a second agent with spawn_task (wait:true default — you get its FINAL "
     "in this turn) only when it is a large, independent part (another module "
     "or layer that needs none of your open edits) and the board has more "
