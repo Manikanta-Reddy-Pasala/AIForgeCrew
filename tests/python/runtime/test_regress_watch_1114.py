@@ -12,9 +12,11 @@ from aiforge_core.runtime.chat_agent._turn import _regress as R
 
 def test_base_command_strips_narrowing():
     assert R.base_command("cd /r && PYTHONPATH=src python -m pytest tests/test_a.py -k foo -x -q | tail -5") \
-        == "cd /r && PYTHONPATH=src python -m pytest -q"
+        == "cd /r && PYTHONPATH=src python -m pytest"
     assert R.base_command("python -m pytest tests/test_x.py::test_one -v") == "python -m pytest"
     assert R.base_command("ls tests") == ""
+    # -q is added once by the check: a second -q drops pytest's summary line
+    assert R.base_command("cd /r && python3 -m pytest tests -q 2>&1") == "cd /r && python3 -m pytest"
 
 
 def test_failing_ids_and_unfinished_runs():
