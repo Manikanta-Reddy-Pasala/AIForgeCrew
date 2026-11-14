@@ -95,6 +95,56 @@ def _boost_own_project(ctx: "_RecallCtx", hits: list) -> None:
                 continue
 
 
+def _anchor_min_overlap() -> float:
+    """How much of the question an UNANCHORED hit must mention
+    (``AIFORGE_UMEM_ANCHOR_MIN_OVERLAP``, default 0.2; 0 = ungated)."""
+    try:
+        return max(0.0, float(os.environ.get("AIFORGE_UMEM_ANCHOR_MIN_OVERLAP", "0.2")))
+    except (TypeError, ValueError):
+        return 0.2
+
+
+def _unanchored(h: dict) -> bool:
+    """A hit whose score says little about relevance: a rank-scored keyword
+    row, or a topic brief that belongs to no repo (it reaches every repo's
+    recall). Linked briefs are not gated: they are followed only from hits
+    that passed, and exist to bring in a neighbour the words would miss."""
+    ch = str(h.get("channel") or "")
+    if h.get("pinned"):
+        return False
+    if ch == "keyword":
+        return True
+    src = str(h.get("source") or "")
+    return src.startswith("compacted:") and not h.get("repo")
+
+
+def _about_the_query(text: str, h: dict) -> bool:
+    """The hit (its name and text) uses at least two of the question's content
+    words (one when the question has only one) and at least the floor's share
+    of them. Counted over the whole hit: per line missed a fact whose key word
+    sits inside an identifier (``MessageRetryService`` for "retry")."""
+    floor = _anchor_min_overlap()
+    if floor <= 0.0:
+        return True
+    from ._helpers import _content_words
+    q = _content_words(text or "")
+    if not q:
+        return True
+    body = (f"{h.get('title') or ''} "
+            f"{str(h.get('source') or '').rsplit(':', 1)[-1].replace('-', ' ')} "
+            f"{h.get('text') or ''}")
+    m = len(q & _content_words(body))
+    return m >= min(2, len(q)) and m / len(q) >= floor
+
+
+def _gate_unanchored(ctx: "_RecallCtx", hits: list) -> list:
+    """Drop unanchored hits that are not about the question. Recall pulled in
+    whole unrelated briefs this way (a slugify/bug brief on a NATS question,
+    python/java/chatmode briefs on a new repo's first prompt), and in the
+    prompt they read to the model like recalled fact."""
+    return [h for h in hits if not _unanchored(h) or _about_the_query(ctx.text, h)]
+
+
 def _fuse_and_rank(ctx: "_RecallCtx") -> "tuple[list[dict], list[dict]]":
     """Normalize per-source scores, sort, dedup, diversify and rerank the raw
     hits. Returns ``(top, ranked_predupe)`` — ``top`` is the final limited list,
@@ -109,6 +159,10 @@ def _fuse_and_rank(ctx: "_RecallCtx") -> "tuple[list[dict], list[dict]]":
         hits = pkg._normalize_scores(hits)
     except Exception as exc:  # noqa: BLE001 — ranking must never break query
         errors.append(f"normalize: {exc}")
+    try:
+        hits = _gate_unanchored(ctx, hits)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"anchor: {exc}")
     _boost_own_project(ctx, hits)
     hits.sort(key=lambda h: -float(h.get("score") or 0))
     # Snapshot the ranked hits BEFORE cross-channel dedup so the API can show
@@ -166,6 +220,14 @@ def _pinned_constraints(ctx: _RecallCtx) -> list[dict]:
         return []
 
 
+def _linked_cap() -> int:
+    """At most this many linked briefs per recall (``AIFORGE_UMEM_LINKED_MAX``, 2)."""
+    try:
+        return max(0, int(os.environ.get("AIFORGE_UMEM_LINKED_MAX", "2")))
+    except (TypeError, ValueError):
+        return 2
+
+
 def _linked_additions(ctx: "_RecallCtx", top: list[dict]) -> "list[dict]":
     """LINK EXPANSION: follow each matched brief's Links section (wired by
     map_scopes) and return the connected briefs' FULL knowledge text so a hit
@@ -185,6 +247,8 @@ def _linked_additions(ctx: "_RecallCtx", top: list[dict]) -> "list[dict]":
             body = (lk.get("text") or "").strip()
             if not body or body in seen_txt:
                 continue
+            if len(add) >= _linked_cap():
+                break   # neighbours of hits that passed the gate; a few, not all
             seen_txt.add(body)
             add.append({"text": body, "source": lk.get("source"),
                         "channel": "linked", "kind": lk.get("kind"),
