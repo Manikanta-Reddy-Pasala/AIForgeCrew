@@ -449,6 +449,15 @@ def remember_working_ops(session_id, repo: str = "") -> dict:
         if (repo not in _SKIP_REPO and not str(repo).startswith("session-")
                 and _PROJECT_CMD_RE.search(cmd) and cmd not in project):
             project.append(cmd)
+    try:
+        from aiforge_core.runtime import ops_memory
+        structured = ops_memory.enabled()
+    except Exception:  # noqa: BLE001
+        structured = False
+    if structured:
+        # the host table and the repo run recipe (ops_memory) hold these now;
+        # loose notes beside them were what conflicted across hosts
+        return {"ok": True, "written": 0, "structured": True}
     for target, shell in list(ssh_hosts.items())[:_MAX_NOTES]:
         if _remember_note(_ssh_note(target, shell), repo=None, scope="global",
                           tags=["tool:ssh", "connection"]):

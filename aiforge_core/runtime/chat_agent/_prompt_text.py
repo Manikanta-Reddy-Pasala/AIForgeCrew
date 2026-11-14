@@ -166,6 +166,8 @@ Tool arguments:
 - mount_folder {{"path": "/abs/host/folder"}}   (docker sandbox: the user wants you to work in a host folder you cannot see — records it, then TELL them to run `aiforge mount add /abs/host/folder` (or `./run.sh --mount /abs/host/folder` from a checkout) on the HOST; it is not visible here until they do, so don't try to read it)
 - unmount_folder {{"path": "/abs/host/folder"}}   (the user no longer wants a host folder mounted — removes it from the list; it stays visible until they restart the box on the host)
 - save_secret {{"name": "jira_token", "value": "...", "purpose": "Jira API"}}   (a key/token/password the user gives you: stored in ~/.aiforge/security/secrets, memory keeps only its location — NEVER put a secret value in memory_write, notes or files)
+- remember_host {{"name": "nuc", "addresses": ["192.168.70.108"], "user": "ai", "method": "ssh_key|password|paramiko", "secret": "nuc_pass", "recipe": "ssh nuc '<cmd>'", "avoid": ["plain ssh asks for a password"]}}   (when the user says how to reach a machine; a password is saved with save_secret first, here only its name)
+- remember_run {{"python": ".venv/bin/python", "cwd": "src", "env": "PYTHONPATH=src", "test_cmd": "python -m pytest -q"}}   (when the user says how to run code in this repo)
 - email_send    {{"to": "a@b.com", "subject": "...", "body": "..."}}   (send an email via the configured SMTP — write the body in Markdown, it also goes out as formatted HTML; optional "cc"/"bcc"; needs your Approve)
 - email_read    {{"query": "...", "limit": 10}}                        (read recent inbox emails via IMAP — optional "folder"/"unseen_only")
 - gitlab_search {{"query": "..."}}  (find issues; optional "project": "group/proj", "state": "opened")
