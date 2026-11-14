@@ -187,6 +187,14 @@ def _chat_learn_writeback(cwd, prompt, final_text, steps, session_id,
         # depend on it.
         from aiforge_core.runtime import session_ledger
         session_ledger.remember_working_ops(session_id, repo)
+        # hosts (how each is reached) and this repo's run recipe, from the
+        # commands that worked — structured, no model call (ops_memory)
+        try:
+            from aiforge_core.runtime import ops_memory
+            ops_memory.learn_from_items(session_ledger.ledger_items(session_id),
+                                        repo=repo, root=ops_memory.repo_root(cwd))
+        except Exception:  # noqa: BLE001 — learning never breaks the turn
+            pass
         # PREFERENCE FIRST — a preference-cue message ("use X as default", "from"
         # now on…") is UPSERTED by subject and owns the turn. The learner still
         # runs on EVERY turn to distil the OTHER signal (technical learnings,

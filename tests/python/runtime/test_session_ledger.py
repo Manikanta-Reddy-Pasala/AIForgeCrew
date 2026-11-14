@@ -126,6 +126,9 @@ def test_capture_falls_back_when_no_model(monkeypatch):
 
 
 def _capture_notes(monkeypatch):
+    # the loose-note path (AIFORGE_OPS_MEMORY=0); with ops memory on, hosts and
+    # run recipes go to the structured store instead (test_ops_memory_1114.py)
+    monkeypatch.setenv("AIFORGE_OPS_MEMORY", "0")
     seen = []
 
     def write(text, **k):
@@ -283,3 +286,14 @@ def test_a_login_shell_that_worked_is_kept_in_the_note(monkeypatch):
     sl.remember_working_ops(17, repo="shop")
     assert len(seen) == 1
     assert "zsh -lc" in seen[0][0]
+
+
+def test_with_ops_memory_on_no_loose_notes_are_written(monkeypatch):
+    _msgs(monkeypatch, [{"role": "assistant", "steps": [
+        {"type": "tool", "name": "run_command",
+         "args": {"cmd": "ssh nuc 'bash -lc \"pytest -q\"'"},
+         "result": {"ok": True}}]}])
+    seen = _capture_notes(monkeypatch)
+    monkeypatch.setenv("AIFORGE_OPS_MEMORY", "1")
+    out = sl.remember_working_ops(11, repo="shop")
+    assert out["written"] == 0 and out.get("structured") and not seen

@@ -406,3 +406,31 @@ def _t_save_secret(args: dict, cwd: str) -> dict:
     return {"ok": True, "name": name, "path": str(path),
             "memory_note": bool(noted.get("ok", True)) if isinstance(noted, dict) else True,
             "use": f"$(cat {path})"}
+
+
+def _t_remember_host(args: dict, cwd: str) -> dict:
+    """Save how to reach a host (ops_memory): what the user says about a
+    machine — its name/IP, ssh key or password, user, port, a recipe that
+    works, what fails. A password goes through save_secret first; here only
+    its NAME (``secret``)."""
+    from aiforge_core.runtime import ops_memory
+    name = str(args.get("name") or "").strip()
+    fields = {k: args[k] for k in ops_memory.HOST_FIELDS if args.get(k) not in (None, "")}
+    for k in ("aliases", "addresses", "avoid"):
+        if isinstance(fields.get(k), str):
+            fields[k] = [x.strip() for x in fields[k].split(",") if x.strip()]
+    if fields.get("port") is not None:
+        fields["port"] = str(fields["port"])
+    source = "user" if args.get("from_user", True) else "learned"
+    return ops_memory.upsert_host(name, fields, source=source)
+
+
+def _t_remember_run(args: dict, cwd: str) -> dict:
+    """Save how to run code in this repo (ops_memory): interpreter, folder,
+    env, test and run commands the user gave or that proved right."""
+    from aiforge_core.runtime import ops_memory
+    from ._shared import _chat_repo_key
+    repo = str(args.get("repo") or "").strip() or _chat_repo_key(cwd)
+    fields = {k: str(args[k]) for k in ops_memory.REPO_FIELDS if args.get(k)}
+    source = "user" if args.get("from_user", True) else "learned"
+    return ops_memory.upsert_repo(repo, fields, source=source)
