@@ -50,6 +50,16 @@ def _append_session_blocks(add, cwd, messages, session_id, role):
                 add("executed", session_ledger.ledger_block(session_id))
         except Exception:  # noqa: BLE001 — ledger must never break a turn
             pass
+    # OPERATIONAL MEMORY: how to reach the hosts this request names (by name,
+    # alias or IP) and how to run code in this repo — structured entries, the
+    # user's own settings first (runtime/ops_memory.py).
+    try:
+        from aiforge_core.runtime import ops_memory
+        _q = next((m.get("content") or "" for m in reversed(messages or [])
+                   if m.get("role") == "user"), "")
+        add("ops", ops_memory.context_block(_chat_repo_key(cwd), str(_q)))
+    except Exception:  # noqa: BLE001 — never breaks a turn
+        pass
     # OKR-DAG: surgical goal context for the ACTIVE Key Result — the separate
     # Objective→KR→Learning→Session node graph under memory/okr/. CONSOLIDATED
     # OUT by default (AIFORGE_OKR_DAG=1 to re-enable): the flat compacted-<scope>
