@@ -1018,6 +1018,12 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
         _hooks.note_into(None, "PostToolUse", _post)
     except Exception:  # noqa: BLE001 — hooks must never break the turn
         pass
+    # a pytest run that ended with no summary line is not a pass (_test_cut)
+    try:
+        from ._test_cut import mark as _mark_cut
+        result = _mark_cut(name, args, result)
+    except Exception:  # noqa: BLE001 — a check must never lose the result
+        pass
     yield {"type": "tool", "name": name, "args": args, "result": result,
            "call_id": n}
     # Loop-engineering bookkeeping: count edits that actually LANDED (gates
