@@ -151,6 +151,8 @@ from ._misc import (
     _t_mount_folder,
     _t_unmount_folder,
     _t_save_secret,
+    _t_remember_host,
+    _t_remember_run,
     _t_list_repos,
     _t_set_integration_default,
     _t_resolve_repo,

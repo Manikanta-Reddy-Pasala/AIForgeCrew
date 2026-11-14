@@ -264,6 +264,21 @@ CATALOG: dict = {
                     "security folder; memory records only where it is. NEVER "
                     "write a secret into memory, notes or other files.",
                     {"name": "s", "value": "s", "purpose": "s"}, ("name", "value")),
+    "remember_host": ("Save how to reach a machine when the user tells you "
+                      "(or a way proved right): name, IPs, aliases, user, port, "
+                      "method ssh_key|password|paramiko|other, key_path, secret "
+                      "(the NAME of a save_secret entry, never the value), recipe "
+                      "(the command shape that works), avoid (what fails). Saved "
+                      "hosts are shown to you whenever a request names them.",
+                      {"name": "s", "addresses": "arrs", "aliases": "arrs", "user": "s",
+                       "port": "s", "method": "s", "key_path": "s", "secret": "s",
+                       "recipe": "s", "avoid": "arrs", "notes": "s"}, ("name",)),
+    "remember_run": ("Save how to run code in this repo when the user tells you "
+                     "(python interpreter, working folder, env like PYTHONPATH, "
+                     "test command, run command). Shown at the start of every run "
+                     "in this repo.",
+                     {"python": "s", "cwd": "s", "env": "s", "test_cmd": "s",
+                      "run_cmd": "s", "repo": "s"}, ()),
     # ── code graph ───────────────────────────────────────────────────────
     "codegraph_query": ("Query the code graph.",
                         {"query": "s", "symbol": "s"}, ()),
@@ -543,7 +558,7 @@ _CORE_ACT = frozenset({
     "file_patch", "multi_edit", "file_write",
     "run_command", "run_tests", "spawn_task",
     "command_wait", "command_output", "command_kill",
-    "memory_lookup", "memory_write",
+    "memory_lookup", "memory_write", "remember_host", "remember_run",
 })
 _CORE_READ = frozenset({
     "plan_progress", "tool_help",
