@@ -118,3 +118,15 @@ def test_core_mode_keeps_task_board_and_evidence(monkeypatch):
     # the per-item evidence log runs with the done-check off
     assert not _items.verify_enabled() and not _items.active(st)
     assert _items.tracking(st)
+
+
+def test_core_switch_in_runtime_env_applies_at_startup(tmp_path, monkeypatch):
+    """runtime.env is read after import; a core switch set there still applies."""
+    _clear(monkeypatch)
+    import os
+    from aiforge_core.api import _shared, _startup
+    env = tmp_path / "runtime.env"
+    env.write_text("AIFORGE_CHAT_CORE=1\n")
+    monkeypatch.setattr(_shared, "_RUNTIME_ENV_PATH", str(env))
+    _startup._load_runtime_env()
+    assert os.environ.get("AIFORGE_CHAT_PROBE_GUARD") == "0"

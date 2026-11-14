@@ -130,6 +130,17 @@ def _load_runtime_env() -> None:
                 _apply_runtime_env_line(raw, keep_pg)
     except Exception:  # noqa: BLE001
         pass
+    # The lean / core profiles ran at import, before this file was read: a
+    # profile switch set here (AIFORGE_CHAT_CORE=1 in runtime.env) would
+    # otherwise never apply. Both only setdefault, so running them again
+    # changes nothing an operator set explicitly.
+    try:
+        from aiforge_core.runtime.chat_agent import core as _core
+        from aiforge_core.runtime.chat_agent import lean as _lean
+        _lean.apply()
+        _core.apply()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _models_below_context(want: int) -> list[str]:
