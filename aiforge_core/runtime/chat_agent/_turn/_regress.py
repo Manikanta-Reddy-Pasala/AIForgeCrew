@@ -69,8 +69,11 @@ def base_command(cmd: str) -> str:
             skip = True
             continue
         if p in ("-x", "--exitfirst", "--lf", "--last-failed", "-v", "-vv", "-s",
+                 "-q", "-qq", "-qqq", "--quiet", "-rA", "-ra", "-rf", "-rfE",
                  "--tb=short", "--tb=line", "--tb=no") or p.startswith(("--maxfail=", "-k=")):
-            continue
+            continue                       # verbosity is set by the check (-q once)
+        if re.fullmatch(r"\d?>&?\d?|\d?>>?|&>|2>&1|/dev/null|>/dev/null|2>/dev/null", p):
+            continue                       # a redirection: the check reads the output
         if "::" in p or p.endswith(".py") or (not p.startswith("-") and "/" in p) \
                 or (not p.startswith("-") and os.path.isdir(p)):
             continue                       # one file / folder / test id: the run's, not the suite
@@ -166,9 +169,41 @@ def _suite_command(st, root: str) -> str:
     return f"cd {shlex.quote(root)} && {py} -m pytest"
 
 
+def _trace(st, what: str, **kv) -> None:
+    """One line per decision in <config>/logs/regress.ndjson (first 200 a turn):
+    the watch is quiet by design, so this is how to see why."""
+    n = st.__dict__.setdefault("regress_traced", 0) if hasattr(st, "__dict__") else 0
+    if n >= 200:
+        return
+    try:
+        import json
+        from aiforge_core.config.paths import config_dir
+        d = os.path.join(str(config_dir()), "logs")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "regress.ndjson"), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"t": time.time(), "what": what,
+                                 "edits": getattr(st, "edits_made", None), **kv}) + "\n")
+        st.regress_traced = n + 1
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def check(st, name: str, args: dict, result, cwd: str) -> str:
     """After a pytest run or an edit, once enough edits landed since the last
     check: the note naming tests this turn's edits broke, or ""."""
+    try:
+        out = _check(st, name, args, result, cwd)
+    except Exception as exc:  # noqa: BLE001
+        _trace(st, "error", tool=name, error=repr(exc)[:200])
+        raise
+    return out
+
+
+def _check(st, name: str, args: dict, result, cwd: str) -> str:
+    if name in _EDIT_TOOLS:
+        _trace(st, "edit-seen", tool=name, enabled=enabled(),
+               off=bool(getattr(st, "regress_off", False)), ok=(result or {}).get("ok")
+               if isinstance(result, dict) else None)
     if not enabled() or getattr(st, "regress_off", False) or not isinstance(result, dict):
         return ""
     raw = str((args or {}).get("cmd") or (args or {}).get("command") or "")
@@ -181,6 +216,7 @@ def check(st, name: str, args: dict, result, cwd: str) -> str:
         return ""
     edits = int(getattr(st, "edits_made", 0) or 0)
     if edits - int(getattr(st, "regress_at", 0) or 0) < _env_int("AIFORGE_CHAT_REGRESS_EDITS", 3):
+        _trace(st, "few-edits", tool=name)
         return ""
     runs = int(getattr(st, "regress_runs", 0) or 0)
     if runs >= _env_int("AIFORGE_CHAT_REGRESS_RUNS", 8):
@@ -189,21 +225,25 @@ def check(st, name: str, args: dict, result, cwd: str) -> str:
     root = ops_memory.repo_root(cwd)
     cmd = (base_command(raw) if is_test and raw else "") or _suite_command(st, root)
     if not cmd or not root:
+        _trace(st, "no-command", tool=name, root=root)
         return ""
     st.regress_at = edits
     st.regress_runs = runs + 1
     base = _base_failures(st, cmd, root)
     if base is None or getattr(st, "regress_off", False):
+        _trace(st, "no-base", cmd=cmd[:160], off=bool(getattr(st, "regress_off", False)))
         return ""
     res = _run(cmd, root, _env_int("AIFORGE_CHAT_REGRESS_MAX_S", 90) * 2)
     if res is None:
         return ""
     now = _failing(res[0])
     if now is None:
+        _trace(st, "no-summary-now", cmd=cmd[:160], tail=res[0][-200:])
         return ""
     new = sorted(now - base)
     log.info("regress check #%d after %d edits: base %d failing, now %d, new %d (%s)",
              st.regress_runs, edits, len(base), len(now), len(new), cmd[:120])
+    _trace(st, "checked", base=len(base), now=len(now), new=len(new), cmd=cmd[:160])
     said = st.__dict__.setdefault("regress_said", set())
     if not new or set(new) <= said:
         return ""
