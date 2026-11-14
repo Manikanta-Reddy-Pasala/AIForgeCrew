@@ -47,7 +47,8 @@ def test_panel_and_safety_layers_are_not_touched():
     kept = ("AIFORGE_CHAT_LLM_PLAN", "AIFORGE_CHAT_VERIFY_ON_FINAL", "AIFORGE_CHAT_SPEC_RUN",
             "AIFORGE_CHAT_DONE_WATCH", "AIFORGE_CHAT_DISCARD_GUARD", "AIFORGE_CHAT_REWRITE_GUARD",
             "AIFORGE_CHAT_STEER_REPLY", "AIFORGE_CHAT_PROACTIVE_RECALL", "AIFORGE_CHAT_TARGETS",
-            "AIFORGE_CHAT_SAFETY_CAP", "AIFORGE_CHAT_TURN_DEADLINE_S")
+            "AIFORGE_CHAT_SAFETY_CAP", "AIFORGE_CHAT_TURN_DEADLINE_S",
+            "AIFORGE_CHAT_SECTION_CHECK")      # boundary check: stays on
     assert not set(kept) & set(core.CORE_OFF)
 
 
