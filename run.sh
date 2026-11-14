@@ -911,6 +911,17 @@ EOF_SEED
   [[ "$NET" == isolated ]] && ISOLATED=1
   [[ "$NET" == guarded ]] && GUARDED=1
   export AIFORGE_SRC="$PWD"     # the guard overlay's build contexts (a site file elsewhere)
+  # The container's clock follows the HOST's timezone: without it the box ran
+  # on UTC and every local-hour schedule (the 18:00 evening memory compaction)
+  # fired hours late. An explicit TZ wins.
+  if [[ -z "${TZ:-}" ]]; then
+    TZ="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
+    [[ -z "$TZ" && -r /etc/timezone ]] && TZ="$(head -1 /etc/timezone)"
+    if [[ -z "$TZ" && -L /etc/localtime ]]; then        # macOS and most Linux
+      TZ="$(readlink /etc/localtime | sed -n 's#.*/zoneinfo/##p')"
+    fi
+  fi
+  [[ -n "${TZ:-}" ]] && export TZ
   _cfiles=()
   if [[ "${ISOLATED:-0}" == 1 ]]; then _cfiles=(docker-compose.isolated.yml)
   elif [[ -n "${COMPOSE_FILE:-}" ]]; then
