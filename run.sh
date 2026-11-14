@@ -1512,7 +1512,16 @@ export PATH="$PWD/.venv/bin:$PATH"
 _venv_ready() { .venv/bin/python -c "import aiforge_core, pydantic_core" >/dev/null 2>&1; }
 
 [[ "${SHOW_MODEL2VEC:-0}" == "1" ]] && AIFORGE_EXTRAS="${AIFORGE_EXTRAS:+$AIFORGE_EXTRAS,}embed-static"
+# A semantic memory backend needs the vector index (sqlite-vec; model2vec rides
+# in the same extra): install it with the backend instead of leaving recall on
+# a brute-force scan — or on hash, when the backend's own package is missing.
+case "${AIFORGE_EMBED_BACKEND:-}" in
+  sidecar|bge|bge-m3|api|openai|lmstudio|ollama|model2vec|static)
+    [[ ",${AIFORGE_EXTRAS:-}," == *",embed-static,"* ]] \
+      || AIFORGE_EXTRAS="${AIFORGE_EXTRAS:+$AIFORGE_EXTRAS,}embed-static" ;;
+esac
 _EXTRAS=(--extra toolchain)
+_BASE_EXTRAS=(--extra toolchain)        # the set the box cannot run without
 IFS=',' read -ra _extras <<< "${AIFORGE_EXTRAS:-}"
 for _e in ${_extras[@]+"${_extras[@]}"}; do
   _e="${_e//[[:space:]]/}"; [[ -n "$_e" ]] && _EXTRAS+=(--extra "$_e")
@@ -1533,14 +1542,26 @@ elif ! _venv_ready || [[ "$(cat "$_STAMP" 2>/dev/null)" != "$_want" ]]; then
   echo "==> installing python deps: uv.lock versions from the index (${_EXTRAS[*]})"
   _pins=".venv/.aiforge-pins.txt"
   _pip=("$UV" pip install --python .venv/bin/python --no-config --default-index "$_INDEX")
-  "$UV" export --frozen --no-dev --no-hashes --no-emit-project --no-emit-local --quiet \
-      "${_EXTRAS[@]}" -o "$_pins" \
-    && "${_pip[@]}" --no-build -r "$_pins" --override "$_pins" \
-    && "${_pip[@]}" --no-deps -e ./packages/aiforge_memory -e . \
-    || _fatal "installing the python deps failed — see the error above." \
-              "Check ~/.netrc credentials and the CA (AIFORGE_CA_BUNDLE) for $_INDEX."
+  _install_set() {                       # $@ = --extra flags
+    "$UV" export --frozen --no-dev --no-hashes --no-emit-project --no-emit-local --quiet \
+        "$@" -o "$_pins" \
+      && "${_pip[@]}" --no-build -r "$_pins" --override "$_pins" \
+      && "${_pip[@]}" --no-deps -e ./packages/aiforge_memory -e .
+  }
+  if _install_set "${_EXTRAS[@]}"; then
+    printf '%s' "$_want" > "$_STAMP"
+  elif [[ "${_EXTRAS[*]}" != "${_BASE_EXTRAS[*]}" ]] && _install_set "${_BASE_EXTRAS[@]}"; then
+    # An OPTIONAL extra could not be fetched (the egress allowlist, a mirror
+    # without it): run without it rather than crash-loop the service over a
+    # nice-to-have. No stamp, so the next start tries the full set again.
+    echo "!! optional extras (${_EXTRAS[*]}) could not be installed — running with" >&2
+    echo "!! the base set only. Allow the package index's file host in" >&2
+    echo "!! Settings → Network (the index alone is not enough), then restart." >&2
+  else
+    _fatal "installing the python deps failed — see the error above." \
+           "Check ~/.netrc credentials and the CA (AIFORGE_CA_BUNDLE) for $_INDEX."
+  fi
   _venv_ready || _fatal "install finished but .venv cannot import aiforge_core."
-  printf '%s' "$_want" > "$_STAMP"
 fi
 echo "==> deps: .venv is ready"
 _ensure_node || true                     # .venv/bin/{node,npm,npx} from the wheel
