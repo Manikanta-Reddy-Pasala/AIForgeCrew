@@ -23,6 +23,7 @@ from .._prompt_text import (
     DECOMPOSE_RULE,
     GOAL_LOOP_RULE,
     LONG_RUN_RULE,
+    SUBAGENT_ASK_RULE,
 )
 from .._tools import (
     _preferences_context,
@@ -341,6 +342,8 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
         _add_sys_block("batch-reads", BATCH_READS_RULE)
     if last_user and not readonly_mode and not builder and wants_goal_loop(last_user):
         _add_sys_block("goal-loop", GOAL_LOOP_RULE)
+    if last_user and not builder and wants_subagent(last_user):
+        _add_sys_block("subagent-ask", SUBAGENT_ASK_RULE)
 
     _bundle, _img_blocks = _append_context_blocks(
         _add_sys_block, cwd, last_user, messages, session_id, role, cave,
@@ -461,6 +464,17 @@ def _insert_turn_note(convo: list, text: str) -> None:
         last["content"] = content + "\n\n" + body
     elif isinstance(content, list):
         last["content"] = [*content, {"type": "text", "text": body}]
+
+
+_SUBAGENT_RE = re.compile(
+    r"\b(?:sub[- ]?agents?|spawn(?:ed|ing)?\s+(?:an?\s+|one\s+|two\s+|\d+\s+)?(?:new\s+)?agents?"
+    r"|(?:separate|another|second|parallel|helper)\s+agents?|agents?\s+in\s+parallel"
+    r"|delegate\s+(?:it|this|that|them)?\s*to\s+(?:an?\s+)?agent)\b", re.I)
+
+
+def wants_subagent(text: str) -> bool:
+    """The user asked for the work (or a part) to run in a sub-agent."""
+    return bool(_SUBAGENT_RE.search(text or ""))
 
 
 _GOAL_LOOP_RE = re.compile(
