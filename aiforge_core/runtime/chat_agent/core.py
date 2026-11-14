@@ -55,6 +55,16 @@ CORE_OFF = {
 }
 
 
+#: Boundary checks core mode turns ON (they report facts on a tool result; they
+#: do not steer the model between steps).
+CORE_ON = {
+    # tests the turn's edits broke, named on the next edit/test result. tk
+    # (tomlkit) 25-min runs: core alone 7,0,8,0,7,0,3 (avg 3.6, three runs fell
+    # to 0); core + watch 10,7,12 (avg 9.7, none fell to 0).
+    "AIFORGE_CHAT_REGRESS": "1",
+}
+
+
 def on() -> bool:
     return os.environ.get("AIFORGE_CHAT_CORE", "0").strip().lower() in (
         "1", "true", "yes", "on")
@@ -64,5 +74,5 @@ def apply() -> None:
     """Set the core defaults for this process (an explicit setting wins)."""
     if not on():
         return
-    for key, value in CORE_OFF.items():
+    for key, value in {**CORE_OFF, **CORE_ON}.items():
         os.environ.setdefault(key, value)

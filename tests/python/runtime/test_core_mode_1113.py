@@ -11,7 +11,7 @@ ROOT = pathlib.Path(core.__file__).resolve().parents[2]       # aiforge_core/
 
 
 def _clear(monkeypatch):
-    for k in list(core.CORE_OFF) + ["AIFORGE_CHAT_CORE"]:
+    for k in list(core.CORE_OFF) + list(core.CORE_ON) + ["AIFORGE_CHAT_CORE"]:
         monkeypatch.setenv(k, "")       # recorded, so core.apply()'s values are undone
         monkeypatch.delenv(k)
 
@@ -130,3 +130,11 @@ def test_core_switch_in_runtime_env_applies_at_startup(tmp_path, monkeypatch):
     monkeypatch.setattr(_shared, "_RUNTIME_ENV_PATH", str(env))
     _startup._load_runtime_env()
     assert os.environ.get("AIFORGE_CHAT_PROBE_GUARD") == "0"
+
+
+def test_core_mode_turns_the_regression_watch_on(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("AIFORGE_CHAT_CORE", "1")
+    core.apply()
+    from aiforge_core.runtime.chat_agent._turn import _regress
+    assert _regress.enabled()
