@@ -11,10 +11,12 @@ person's words, so it goes out as a user message, not inside the tool result.
 from __future__ import annotations
 
 import json
+import os
 import re
 
-_ACTION_BLOCK = re.compile(
-    r"ACTION:\s*([A-Za-z0-9_]+)\s*\nARGS_JSON:\s*(\{.*\})", re.S)
+_ACTION_HEAD = re.compile(r"ACTION:\s*([A-Za-z0-9_]+)\s*\nARGS_JSON:\s*(?=\{)")
+_THOUGHT_LABEL = re.compile(r"^[ \t]*THOUGHT[ \t]*:[ \t]*", re.I | re.M)
+_DECODER = json.JSONDecoder()
 
 # The person's words merged onto an observation with a blank line.
 _USER_TAIL = re.compile(
@@ -22,17 +24,32 @@ _USER_TAIL = re.compile(
     r"|The user REJECTED the )")
 
 
+def _keep_narration() -> bool:
+    return os.environ.get("AIFORGE_CHAT_REPLAY_NARRATION", "1").strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
 def _parse_action_block(content: str):
-    match = _ACTION_BLOCK.search(content or "")
+    """``(name, args, narration)`` of a step, or None when it holds no call.
+
+    The args end where their JSON object ends (``raw_decode``), so prose after
+    them that contains a ``}`` (code the model talked about) no longer breaks
+    the parse and turns the step into plain text. ``narration`` is what the
+    model said with the call: the ``THOUGHT:`` the step keeps after the action
+    and any prose before it."""
+    text = content or ""
+    match = _ACTION_HEAD.search(text)
     if not match:
         return None
     try:
-        args = json.loads(match.group(2))
-    except (ValueError, TypeError):
+        args, end = _DECODER.raw_decode(text, match.end())
+    except ValueError:
         return None
     if not isinstance(args, dict):
         return None
-    return match.group(1), args
+    said = (text[:match.start()] + "\n" + text[end:]).strip()
+    said = _THOUGHT_LABEL.sub("", said).strip()
+    return match.group(1), args, said
 
 
 def _not_run_reason(nxt) -> str:
@@ -76,11 +93,14 @@ def to_native_messages(convo) -> list[dict]:
             out.append(message)
             index += 1
             continue
-        name, args = parsed
+        name, args, said = parsed
         call_id = f"call_{index}"
+        # The model's own words with its call stay in its history, as any
+        # chat client sends them back; dropping them left it a silent
+        # tool-caller that reasoned through print() scripts instead.
         out.append({
             "role": "assistant",
-            "content": None,
+            "content": said if said and _keep_narration() else None,
             "tool_calls": [{
                 "id": call_id,
                 "type": "function",
