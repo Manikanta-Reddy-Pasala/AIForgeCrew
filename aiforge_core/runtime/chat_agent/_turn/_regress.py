@@ -6,9 +6,11 @@ tomlkit (core-mode bench) reached 5 hidden tests, then a change for one part
 broke the round trip of inline tables, 25 existing tests failed and the score
 went to 0 while every test the model ran passed — in 3 of 7 runs.
 
-So after the model runs pytest and at least ``AIFORGE_CHAT_REGRESS_EDITS`` (3)
-edits have landed since the last check, the harness runs the WHOLE suite with
-the model's own command (narrowing stripped) and compares the failing tests
+So after a pytest run OR an edit, once at least ``AIFORGE_CHAT_REGRESS_EDITS``
+(3) edits have landed since the last check, the harness runs the WHOLE suite
+with the model's own command (narrowing stripped; or the repo's saved test
+command; or the python its probes use with ``-m pytest`` — in one tomlkit run
+the model never ran pytest at all, 258 calls of ``python -c`` probes) and compares the failing tests
 with the same command run on the work's base commit (a temporary git
 worktree of HEAD, made once). Tests that fail now and did not fail at the
 base are named on that tool result. Nothing is said when there are none.
@@ -128,15 +130,52 @@ def _base_failures(st, cmd: str, root: str) -> "set[str] | None":
             pass
 
 
-def check(st, name: str, args: dict, result, cwd: str) -> str:
-    """After a pytest run: the note naming tests this turn's edits broke, or ""."""
-    if not enabled() or getattr(st, "regress_off", False):
+_EDIT_TOOLS = ("file_patch", "multi_edit", "file_write", "edit", "apply_patch")
+_PY_BIN = re.compile(r"(?:^|[\s;&(])((?:\S*/)?python3?(?:\.\d+)?)\s")
+
+
+def _note_interpreter(st, raw: str, result) -> None:
+    """Remember the python the model's commands run with (a test run, or a
+    `python -c` probe that worked) — the suite is run with the same one."""
+    if not isinstance(result, dict) or result.get("ok") is False:
+        return
+    if _PYTEST.search(raw):
+        b = base_command(raw)
+        if b:
+            st.regress_cmd = b
+    m = _PY_BIN.search(" " + raw + " ")
+    if m:
+        st.regress_py = m.group(1)
+
+
+def _suite_command(st, root: str) -> str:
+    """The whole-suite command: the model's own pytest command, the repo's
+    saved test command, or its python with ``-m pytest`` (a repo with tests)."""
+    if getattr(st, "regress_cmd", ""):
+        return st.regress_cmd
+    from aiforge_core.runtime import ops_memory
+    recipe = ops_memory.load()["repos"].get(ops_memory._key(os.path.basename(root)), {})
+    b = base_command(recipe.get("test_cmd") or "")
+    if b:
+        return b
+    if not any(os.path.isdir(os.path.join(root, d)) for d in ("tests", "test")):
         return ""
-    if name not in ("run_command", "run_tests") or not isinstance(result, dict) \
-            or result.get("running") or result.get("background"):
+    py = getattr(st, "regress_py", "") or recipe.get("python") or "python3"
+    return f"cd {shlex.quote(root)} && {py} -m pytest"
+
+
+def check(st, name: str, args: dict, result, cwd: str) -> str:
+    """After a pytest run or an edit, once enough edits landed since the last
+    check: the note naming tests this turn's edits broke, or ""."""
+    if not enabled() or getattr(st, "regress_off", False) or not isinstance(result, dict):
         return ""
     raw = str((args or {}).get("cmd") or (args or {}).get("command") or "")
-    if name == "run_command" and not _PYTEST.search(raw):
+    if name == "run_command":
+        _note_interpreter(st, raw, result)
+    is_test = name == "run_tests" or (name == "run_command" and _PYTEST.search(raw))
+    if not is_test and not (name in _EDIT_TOOLS and result.get("ok") is not False):
+        return ""                 # the model never running pytest is the case this is for
+    if result.get("running") or result.get("background"):
         return ""
     edits = int(getattr(st, "edits_made", 0) or 0)
     if edits - int(getattr(st, "regress_at", 0) or 0) < _env_int("AIFORGE_CHAT_REGRESS_EDITS", 3):
@@ -146,10 +185,7 @@ def check(st, name: str, args: dict, result, cwd: str) -> str:
         return ""
     from aiforge_core.runtime import ops_memory
     root = ops_memory.repo_root(cwd)
-    cmd = base_command(raw) if raw else ""
-    if not cmd:
-        recipe = ops_memory.load()["repos"].get(ops_memory._key(os.path.basename(root)), {})
-        cmd = base_command(recipe.get("test_cmd") or "")
+    cmd = (base_command(raw) if is_test and raw else "") or _suite_command(st, root)
     if not cmd or not root:
         return ""
     st.regress_at = edits
