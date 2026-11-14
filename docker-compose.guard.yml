@@ -108,6 +108,11 @@ services:
       - AIFORGE_EGRESS_ADMIN_TOKEN=${AIFORGE_EGRESS_ADMIN_TOKEN:-}
       - AIFORGE_UI_HOSTS=localhost,127.0.0.1,::1
       - AIFORGE_EGRESS_ALLOW_HOSTS
+      # the package indexes the box installs from (and PyPI's file host) are
+      # always allowed — egress-controller.required_hosts()
+      - UV_DEFAULT_INDEX
+      - AIFORGE_NPM_REGISTRY
+      - npm_config_registry
     volumes:
       - egress-policy:/policy
 
