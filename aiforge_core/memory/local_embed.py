@@ -61,7 +61,18 @@ def embed_signature() -> str:
                                or "minishlab/potion-base-8M")
     if b in ("api", "openai", "lmstudio", "ollama"):
         return "api:" + (_os.environ.get("AIFORGE_EMBED_API_MODEL") or "")
+    if b in _SIDECAR:
+        from aiforge_core.memory import embed as _side
+        return "sidecar:" + _side.SIDECAR_URL
     return "hash"
+
+
+#: the local embedding service the code index already runs (bge-m3, 1024-d;
+#: POST /embed {"text"} -> {"embedding"}): real semantic recall with no extra
+#: package in the image. ``AIFORGE_EMBED_BACKEND=sidecar``; URL from
+#: ``AIFORGE_EMBED_URL`` (default http://127.0.0.1:8764).
+_SIDECAR = ("sidecar", "bge", "bge-m3")
+_SIDE_DIM: list = []
 
 
 def embed(text: str) -> list[float]:
@@ -71,6 +82,8 @@ def embed(text: str) -> list[float]:
         torch; real paraphrase quality). Loads from a local dir → zero network.
       * ``api`` / ``openai`` / ``lmstudio`` / ``ollama`` → an OpenAI-compatible
         ``/v1/embeddings`` endpoint (reuses your model server; NO HF download).
+      * ``sidecar`` / ``bge`` → the local embedding service (bge-m3) at
+        ``AIFORGE_EMBED_URL``.
       * default ``hash`` → the dependency-free lexical embedder below."""
     b = _backend()
     if b in ("model2vec", "static"):
@@ -79,6 +92,12 @@ def embed(text: str) -> list[float]:
     if b in ("api", "openai", "lmstudio", "ollama"):
         from aiforge_core.integrations import api_embed as _ae
         return _ae.embed(text)
+    if b in _SIDECAR:
+        from aiforge_core.memory import embed as _side
+        v = _side.embed(text if (text or "").strip() else ".")
+        if not _SIDE_DIM:
+            _SIDE_DIM.append(len(v))
+        return v
     return _hash_embed(text)
 
 
@@ -91,6 +110,10 @@ def embed_dim() -> int:
     if b in ("api", "openai", "lmstudio", "ollama"):
         from aiforge_core.integrations import api_embed as _ae
         return _ae.dim()
+    if b in _SIDECAR:
+        if not _SIDE_DIM:
+            embed("dimension probe")
+        return _SIDE_DIM[0]
     return EMBED_DIM
 
 
