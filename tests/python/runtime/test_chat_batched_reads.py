@@ -275,8 +275,14 @@ def test_a_refused_call_drops_the_rest_of_the_batch(_two_files, monkeypatch):
     assert "an earlier call was blocked" in _seen(calls, 1)
 
 
-def test_a_repeated_read_in_a_batch_does_not_drop_the_rest(_two_files):
-    """The duplicate-read guard only skips that call."""
+import pytest as _pytest
+
+
+@_pytest.mark.parametrize("serve", ["1", "0"])
+def test_a_repeated_read_in_a_batch_does_not_drop_the_rest(_two_files, monkeypatch, serve):
+    """The repeat is served once (AIFORGE_CHAT_SERVE_REPEAT_READ, default) or
+    skipped (=0); either way the rest of the batch still runs."""
+    monkeypatch.setenv("AIFORGE_CHAT_SERVE_REPEAT_READ", serve)
     replies = iter([_reads("a")[0], None, "FINAL: ok"])
     calls, queued = [], []
 
@@ -294,7 +300,8 @@ def test_a_repeated_read_in_a_batch_does_not_drop_the_rest(_two_files):
         return items, 0
     fn.take_queued = take
     evs = _run(_two_files, fn)
-    assert _paths(evs) == ["a.txt", "b.txt", "c.txt"]
+    want = ["a.txt", "a.txt", "b.txt", "c.txt"] if serve == "1" else ["a.txt", "b.txt", "c.txt"]
+    assert _paths(evs) == want
     assert len(calls) == 3
     assert "tool calls in your last reply" not in _seen(calls, 2)
 

@@ -92,3 +92,61 @@ def test_the_tools_save_user_facts(tmp_path):
     assert h["_source"]["method"] == "user"
     assert _t_remember_run({"python": "/opt/py/bin/python", "repo": "svc"}, str(tmp_path))["ok"]
     assert O.load()["repos"]["svc"]["python"] == "/opt/py/bin/python"
+
+
+# ── fixes: a failure fixed before is named when it comes back ─────────────
+_RED = {"ok": False, "code": 1, "stdout": (
+    "FAILED tests/test_calc.py::test_divide - ZeroDivisionError: division by zero\n"
+    "1 failed, 4 passed in 0.12s\n"), "stderr": ""}
+_GREEN = {"ok": True, "code": 0, "stdout": "5 passed in 0.10s\n", "stderr": ""}
+
+
+def _st(**hashes):
+    from types import SimpleNamespace
+    return SimpleNamespace(file_hashes=dict(hashes))
+
+
+def test_red_then_green_after_an_edit_records_the_fix_and_names_it_next_time(tmp_path):
+    st = _st(**{str(tmp_path / "calc.py"): "a"})
+    assert O.fix_hook(st, "run_tests", {}, _RED, str(tmp_path), "shop") == ""
+    st.file_hashes[str(tmp_path / "calc.py")] = "b"          # the fix
+    O.fix_hook(st, "run_tests", {}, _GREEN, str(tmp_path), "shop")
+    fixes = O.load()["fixes"]
+    assert len(fixes) == 1
+    e = next(iter(fixes.values()))
+    assert e["repo"] == "shop" and e["files"][0].endswith("calc.py")
+    later = _st()
+    note = O.fix_hook(later, "run_tests", {}, _RED, str(tmp_path), "shop")
+    assert "seen before" in note and "calc.py" in note
+    assert O.fix_hook(later, "run_tests", {}, _RED, str(tmp_path), "shop") == ""   # once
+
+
+def test_green_without_an_edit_records_nothing(tmp_path):
+    st = _st(**{str(tmp_path / "calc.py"): "a"})
+    O.fix_hook(st, "run_tests", {}, _RED, str(tmp_path), "shop")
+    O.fix_hook(st, "run_tests", {}, _GREEN, str(tmp_path), "shop")    # flaky: no edit
+    assert O.load()["fixes"] == {}
+
+
+def test_the_fingerprint_ignores_line_numbers_and_timings(tmp_path):
+    st = _st(**{"/r/a.py": "1"})
+    O.fix_hook(st, "run_tests", {}, _RED, "/r", "shop")
+    st.file_hashes["/r/a.py"] = "2"
+    O.fix_hook(st, "run_tests", {}, _GREEN, "/r", "shop")
+    moved = dict(_RED, stdout=_RED["stdout"].replace("0.12s", "0.98s"))
+    assert "seen before" in O.fix_hook(_st(), "run_tests", {}, moved, "/r", "shop")
+
+
+def test_repo_location_is_learned_only_when_the_repo_has_none(tmp_path, monkeypatch):
+    import subprocess
+    from aiforge_core.config import repo_map
+    repo = tmp_path / "svc"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    assert O.learn_repo_location("svc", str(repo))
+    assert repo_map.get_path("svc") == str(repo)
+    other = tmp_path / "svc2"
+    other.mkdir()
+    subprocess.run(["git", "init", "-q", str(other)], check=True)
+    assert not O.learn_repo_location("svc", str(other))     # a set folder is kept
+    assert repo_map.get_path("svc") == str(repo)

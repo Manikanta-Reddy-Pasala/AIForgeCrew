@@ -18,6 +18,14 @@ So two small structured stores, written without a model call:
            ``avoid`` (what failed, e.g. "plain ssh: password prompt").
 ``repos``  one entry per repo key: python interpreter, working folder, env
            (PYTHONPATH...), test command, run command.
+``fixes``  one entry per failure fingerprint (``failure_signature``: no line
+           numbers, temp paths or timings): the files and functions whose
+           change turned that failure green. Saved only with that proof (the
+           same run failed, then went green after edits); shown only when the
+           same failure comes back, on that test result — never in the prompt.
+
+Repo locations are learned too, into the existing ``repos.json``
+(``config.repo_map``): the folder a chat worked in, for a repo that has none.
 
 Each field remembers who set it: what the USER said is never overwritten by
 something learned from a command. Lookup is deterministic: a host is shown to
@@ -61,6 +69,7 @@ def load() -> dict:
         data = {}
     data.setdefault("hosts", {})
     data.setdefault("repos", {})
+    data.setdefault("fixes", {})
     return data
 
 
@@ -359,5 +368,125 @@ def context_block(repo: str, text: str) -> str:
     return "\n\n".join(parts)
 
 
+# ── fixes: a failure seen before, and what turned it green ───────────────
+_MAX_FIXES = 300
+_FIX_TOOLS = ("run_tests", "run_command", "bash", "shell")
+
+
+def _sig_key(sig: str) -> str:
+    import hashlib
+    return hashlib.sha1(sig.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _changed_since(st, snap: dict) -> list[str]:
+    now = dict(getattr(st, "file_hashes", {}) or {})
+    return sorted(p for p, h in now.items() if snap.get(p) != h)
+
+
+def _functions_touched(root: str, files: list[str]) -> list[str]:
+    """Function/class names from the diff's hunk headers (``@@ ... @@ def f``)."""
+    import subprocess
+    if not root or not files:
+        return []
+    try:
+        p = subprocess.run(["git", "-C", root, "diff", "-U0", "HEAD", "--", *files],
+                           capture_output=True, text=True, timeout=6)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    names: list[str] = []
+    for m in re.finditer(r"^@@[^@]*@@\s*(?:async\s+)?(?:def|class|func|fn|function|public|private|protected)?\s*([\w.]+)",
+                         p.stdout, re.M):
+        if m.group(1) not in names and len(m.group(1)) > 1:
+            names.append(m.group(1))
+    return names[:6]
+
+
+def record_fix(sig: str, headline: str, *, repo: str, files: list[str],
+               functions: list[str]) -> dict:
+    if not sig or not files:
+        return {"ok": False}
+    k = _sig_key(sig)
+    with _LOCK:
+        data = load()
+        e = data["fixes"].get(k) or {"signature": sig[:400], "count": 0}
+        e.update({"headline": headline[:200], "repo": repo, "files": files[:8],
+                  "functions": functions[:6], "updated": time.strftime("%Y-%m-%d")})
+        e["count"] = int(e.get("count") or 0) + 1
+        data["fixes"][k] = e
+        if len(data["fixes"]) > _MAX_FIXES:      # oldest first out
+            for old in sorted(data["fixes"], key=lambda x: data["fixes"][x].get("updated", ""))[
+                    :len(data["fixes"]) - _MAX_FIXES]:
+                data["fixes"].pop(old, None)
+        _save(data)
+    return {"ok": True, "fix": k}
+
+
+def known_fix(sig: str, repo: str = "") -> "dict | None":
+    e = load()["fixes"].get(_sig_key(sig)) if sig else None
+    if not e:
+        return None
+    return e
+
+
+def fix_note(e: dict, repo: str) -> str:
+    where = "" if not e.get("repo") or e.get("repo") == repo else f" (in {e['repo']})"
+    fn = f" — {', '.join(e['functions'])}" if e.get("functions") else ""
+    return (f"This failure was seen before{where} and went green after changing "
+            f"{', '.join(e.get('files') or [])}{fn}. Check that change first.")
+
+
+def fix_hook(st, name: str, args: dict, result, cwd: str, repo: str = "") -> str:
+    """Per tool result: remember failures; when a run goes green after edits,
+    record what changed for each failure seen; when a known failure comes
+    back, return the note for that result ("" otherwise)."""
+    if not enabled() or name not in _FIX_TOOLS or not isinstance(result, dict):
+        return ""
+    if result.get("running") or result.get("timed_out") or result.get("stopped"):
+        return ""
+    from aiforge_core.runtime.failure_signature import failure_of, result_text, runner_green
+    text = result_text(result)
+    open_ = st.__dict__.setdefault("fix_open", {}) if hasattr(st, "__dict__") else {}
+    if result.get("ok") is False:
+        fail = failure_of(text)
+        if not fail.signature:
+            return ""
+        open_.setdefault(fail.signature, (fail.headline, dict(getattr(st, "file_hashes", {}) or {})))
+        e = known_fix(fail.signature, repo)
+        said = st.__dict__.setdefault("fix_said", set())
+        if e and fail.signature not in said:        # once per failure per turn
+            said.add(fail.signature)
+            return fix_note(e, repo)
+        return ""
+    if open_ and runner_green(text):
+        root = repo_root(cwd)
+        for sig, (headline, snap) in list(open_.items()):
+            files = _changed_since(st, snap)
+            if files:
+                rel = [_rel(f, root) for f in files]
+                record_fix(sig, headline, repo=repo, files=rel,
+                           functions=_functions_touched(root, rel))
+            open_.pop(sig, None)
+    return ""
+
+
+def learn_repo_location(repo: str, cwd: str) -> bool:
+    """The folder a chat worked in becomes the repo's location in repos.json —
+    only when that repo has none (a folder the user set is never replaced)."""
+    if not enabled() or not repo or repo in ("repo", "chat") or repo.startswith("session-"):
+        return False
+    root = repo_root(cwd)
+    if not root or not os.path.isdir(os.path.join(root, ".git")):
+        return False
+    try:
+        from aiforge_core.config import repo_map
+        if repo_map.get_path(repo):
+            return False
+        repo_map.set_path(repo, root)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 __all__ = ["enabled", "load", "upsert_host", "upsert_repo", "find_hosts",
-           "learn_repo_command", "learn_from_items", "context_block", "METHODS"]
+           "learn_repo_command", "learn_from_items", "context_block", "METHODS",
+           "fix_hook", "record_fix", "known_fix", "learn_repo_location"]
