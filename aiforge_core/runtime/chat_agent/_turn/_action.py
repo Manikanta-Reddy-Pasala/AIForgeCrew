@@ -1102,11 +1102,13 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     try:
         from ._regress import check as _regress_check
         _broke = _regress_check(st, name, args, result, cwd)
-        if _broke and isinstance(model_result, dict):
-            model_result = {**model_result, "regressions": _broke}
     except Exception:  # noqa: BLE001 — a check never breaks a step
-        pass
+        _broke = ""
     obs = render_observation(name, model_result, _obs_cap)
+    # After rendering: a command's text rendering keeps only its output (a
+    # "regressions" key was dropped there) and a JSON one is cut at the cap.
+    if _broke:
+        obs = f"{obs}\n{_broke}"
     _note_green_tests(st, name, args, result, cwd)
     # A compare command that passed on a target file: the harness closes
     # that target's enforced board item (the model cannot).
