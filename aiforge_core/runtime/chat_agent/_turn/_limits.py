@@ -737,6 +737,16 @@ def _after_condense(st, unread, before):
         except Exception:  # noqa: BLE001 — the note never blocks a step
             pass
         try:
+            # the files the turn changed, as diffs, and the tests it broke —
+            # the condense kept only their names (_workset)
+            from ._workset import note as _workset_note
+            ws = _workset_note(st)
+            if ws:
+                from ._convo import _append_directive
+                _append_directive(st, ws)
+        except Exception:  # noqa: BLE001 — advisory only
+            pass
+        try:
             from ._contract_gate import progress_note
             note = progress_note(st)
             if note:
