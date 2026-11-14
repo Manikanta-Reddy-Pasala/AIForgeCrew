@@ -19,7 +19,9 @@ def _normalize_brief(path) -> bool:
     from aiforge_core.runtime import work_notes
     text = path.read_text(encoding="utf-8", errors="replace")
     sec = work_notes.parse_note(text)["sections"]
-    clean = {k: work_notes.scrub_items(sec.get(k)) for k in _LISTS}
+    kr, facts, learnings = work_notes.scrub_sections(
+        sec.get("key_results"), sec.get("facts"), sec.get("learnings"))
+    clean = {"facts": facts, "learnings": learnings, "key_results": kr}
     if all(clean[k] == list(sec.get(k) or []) for k in _LISTS) and "\n- - " not in text:
         return False
     return bool(work_notes.update_note(str(path), **clean).get("ok"))

@@ -48,6 +48,7 @@ from ._base import (
 )
 from ._capture import _CAPTURE_KINDS, capture
 from ._normalize import normalize_all
+from ._prune import prune_narration, sweep_junk_topics
 from ._repair import repair_captures
 from ._role import memory_role
 from ._compact import (
@@ -137,6 +138,8 @@ __all__ = [
     "capture",
     "memory_role",
     "normalize_all",
+    "prune_narration",
+    "sweep_junk_topics",
     "repair_captures",
     "captures_dir",
     "classify_scope",

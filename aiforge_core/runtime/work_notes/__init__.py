@@ -89,6 +89,7 @@ from ._render import (
     clean_item,
     item_key,
     scrub_items,
+    scrub_sections,
     update_note,
     validate_note,
 )

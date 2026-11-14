@@ -69,6 +69,7 @@ from ._maintenance import (
     stored_dim_mismatch,
     stored_embedder_changed,
 )
+from ._vec_prune import prune_vec_orphans
 
 __all__ = [
     "write_unit",
@@ -92,4 +93,5 @@ __all__ = [
     "dedupe",
     "clear",
     "stats",
+    "prune_vec_orphans",
 ]
