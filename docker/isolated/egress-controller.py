@@ -152,9 +152,34 @@ def _write(path: str, text: str) -> None:
     os.replace(tmp, path)
 
 
+#: hosts a package index serves its FILES from (the index page links there)
+_INDEX_FILE_HOSTS = {"pypi.org": ["files.pythonhosted.org"]}
+
+
+def required_hosts() -> list[str]:
+    """Hosts the box cannot install anything without: the configured package
+    indexes (UV_DEFAULT_INDEX, the npm registry) and, for PyPI, its file host.
+    Always allowed, whatever Settings holds: allowing pypi.org but not
+    files.pythonhosted.org let the index answer and every download fail, and a
+    container whose start installs an extra then crash-looped."""
+    out: list[str] = []
+    for var in ("UV_DEFAULT_INDEX", "AIFORGE_NPM_REGISTRY", "npm_config_registry"):
+        raw = os.environ.get(var, "").strip()
+        if not raw:
+            continue
+        try:
+            h = normalise(raw)
+        except ValueError:
+            continue
+        for x in [h, *_INDEX_FILE_HOSTS.get(h, [])]:
+            if x not in out:
+                out.append(x)
+    return out
+
+
 def save(hosts: list[str], who: str = "") -> list[str]:
     clean: list[str] = []
-    for raw in hosts:
+    for raw in [*hosts, *required_hosts()]:
         h = normalise(raw)
         if h not in clean:
             clean.append(h)

@@ -158,3 +158,24 @@ def test_a_restart_drops_entries_the_rules_now_refuse(ctl, tmp_path):
     (tmp_path / "hosts.json").write_text(json.dumps({"hosts": ["pypi.org", "127.0.0.1", "bad host"]}))
     ctl.seed()
     assert ctl.load() == ["pypi.org"]
+
+
+def test_the_package_index_and_its_file_host_are_always_allowed(ctl, monkeypatch):
+    """pypi.org allowed but files.pythonhosted.org not: the index answered and
+    every wheel download failed — and a start that installed an extra crash-
+    looped the box. The index's hosts now ride on every save."""
+    monkeypatch.setenv("UV_DEFAULT_INDEX", "https://pypi.org/simple")
+    monkeypatch.setenv("AIFORGE_NPM_REGISTRY", "https://registry.npmjs.org/")
+    saved = ctl.save(["github.com"], who="test")
+    assert {"github.com", "pypi.org", "files.pythonhosted.org",
+            "registry.npmjs.org"} <= set(saved)
+    lines = open(ctl.ALLOW).read().splitlines()
+    assert _matches(lines, "files.pythonhosted.org")
+
+
+def test_a_private_index_is_allowed_without_pypi(ctl, monkeypatch):
+    monkeypatch.setenv("UV_DEFAULT_INDEX", "https://artifactory.internal/api/pypi/simple")
+    monkeypatch.delenv("AIFORGE_NPM_REGISTRY", raising=False)
+    monkeypatch.delenv("npm_config_registry", raising=False)
+    saved = ctl.save([], who="test")
+    assert saved == ["artifactory.internal"]

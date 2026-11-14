@@ -153,6 +153,11 @@ services:
       - AIFORGE_OUT_SUBNET=${AIFORGE_OUT_SUBNET:-10.251.251.0/24}
       # First start only: seeds the list. After that Settings owns it.
       - AIFORGE_EGRESS_ALLOW_HOSTS
+      # The package indexes the box installs from (and, for PyPI, its file
+      # host) are always allowed — see required_hosts().
+      - UV_DEFAULT_INDEX
+      - AIFORGE_NPM_REGISTRY
+      - npm_config_registry
     volumes:
       - egress-policy:/policy
 
