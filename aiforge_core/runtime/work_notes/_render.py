@@ -64,33 +64,75 @@ def clean_item(s: str) -> str:
     return " ".join(_BULLET_RE.sub("", str(s or "")).split())
 
 
+def _strict() -> bool:
+    """The stricter duplicate rules (markdown folding, joined lines whose parts
+    already exist, cross-section dedupe). Off switch:
+    ``AIFORGE_SCRUB_STRICT=0`` restores the 11-13 behaviour."""
+    return os.environ.get("AIFORGE_SCRUB_STRICT", "1") != "0"
+
+
+# Markdown that changes how a fact LOOKS, not what it says: "`f(x)`" and
+# "f(x)", "**must**" and "must", "[docs](http://x)" and "docs".
+_MD_LINK_RE = re.compile(r"\[([^\]]{1,200})\]\([^)\s]{0,500}\)")
+_MD_EMPH_RE = re.compile(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1")
+_MD_CODE_RE = re.compile(r"`+")
+# "contains the requirements" and "contains requirements" are one fact.
+_ARTICLE_RE = re.compile(r"\b(?:a|an|the)\b", re.IGNORECASE)
+
+
+def _fold_markdown(t: str) -> str:
+    t = _MD_LINK_RE.sub(r"\1", t)
+    t = _MD_EMPH_RE.sub(r"\2", t)
+    return _MD_CODE_RE.sub("", t)
+
+
 def item_key(s: str) -> str:
     """The duplicate-detection form of an item: no bullets, no ``[topic]``
-    prefix, case- and whitespace-folded, trailing punctuation dropped."""
+    prefix, no markdown (backticks, bold, links), no articles, case- and
+    whitespace-folded, trailing punctuation dropped."""
     t = _TAG_PREFIX_RE.sub("", clean_item(s))
+    if _strict():
+        t = _ARTICLE_RE.sub(" ", _fold_markdown(t))
     return " ".join(t.lower().split()).rstrip(" .;:,")
 
 
-def _unjoin(item: str) -> list[str]:
-    """``X - - X`` (an item joined with its own copies) back to its parts."""
+def _unjoin(item: str, known: "set[str] | None" = None) -> list[str]:
+    """``X - - X`` (an item joined with its own copies) back to its parts.
+
+    A line is split when its pieces repeat each other, or (``known``: the keys
+    of the list's other items) when at least half of its pieces already stand
+    as items of their own — a fold that glued three facts into one bullet next
+    to the same three facts. A lone " - " inside an ordinary sentence matches
+    neither, so prose is left alone."""
     if " - " not in item:
         return [item]
     parts = [clean_item(p) for p in _JOINED_RE.split(item)]
     parts = [p for p in parts if p]
-    if len(parts) > 1 and len({item_key(p) for p in parts}) < len(parts):
-        return parts               # only when the pieces repeat each other
+    if len(parts) < 2:
+        return [item]
+    keys = [item_key(p) for p in parts]
+    if len(set(keys)) < len(parts):
+        return parts               # the pieces repeat each other
+    if known and _strict() and 2 * sum(k in known for k in keys) >= len(parts):
+        return parts               # the pieces are already items of their own
     return [item]
 
 
-def scrub_items(value) -> list[str]:
+def scrub_items(value, *, drop: "set[str] | None" = None,
+                known: "set[str] | None" = None) -> list[str]:
     """`_as_items` + drop envelope-scaffolding leaks (heading/sentinel/section
     label/separator/boilerplate), strip stray bullet markers and drop exact
     duplicates (same :func:`item_key`, first kept). Repair, not reject: bad
-    items vanish, good ones stay."""
+    items vanish, good ones stay. ``drop``: keys already held elsewhere (another
+    section of the same note) — items with those keys are left out too;
+    ``known``: keys of items held elsewhere, used only to tell a joined line
+    apart (see :func:`_unjoin`)."""
+    raw_items = [clean_item(r) for r in _as_items(value)]
+    known = set(known or ()) | {item_key(r) for r in raw_items if " - " not in r}
     out: list[str] = []
-    seen: set[str] = set()
-    for raw in _as_items(value):
-        for s in _unjoin(clean_item(raw)):
+    seen: set[str] = set(drop or ())
+    for raw in raw_items:
+        for s in _unjoin(raw, known):
             if _is_leak_item(s):
                 continue
             k = item_key(s)
@@ -99,6 +141,32 @@ def scrub_items(value) -> list[str]:
             seen.add(k)
             out.append(s)
     return out
+
+
+# A Key Result naming a ticket (ONE-3) is the measurable-work twin of its fact
+# on purpose (md_store W2 seeds it), so cross-section dedupe leaves it alone.
+_TICKET_KEY_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,9}-\d+\b")
+
+
+def scrub_sections(key_results=None, facts=None, learnings=None
+                   ) -> tuple[list[str], list[str], list[str]]:
+    """:func:`scrub_items` for the three list sections of one note, plus
+    cross-section dedupe: a fact repeated in two sections is kept once, in the
+    most specific one — Facts, then Learnings, then Key Results (except a
+    ticket-key Key Result, see ``_TICKET_KEY_RE``)."""
+    if not _strict():
+        return (scrub_items(key_results), scrub_items(facts),
+                scrub_items(learnings))
+    allk = {item_key(clean_item(r))
+            for sec in (key_results, facts, learnings) for r in _as_items(sec)
+            if " - " not in clean_item(r)}
+    f = scrub_items(facts, known=allk)
+    fk = {item_key(x) for x in f}
+    lrn = scrub_items(learnings, drop=fk, known=allk)
+    held = fk | {item_key(x) for x in lrn}
+    kr = [x for x in scrub_items(key_results, known=allk)
+          if item_key(x) not in held or _TICKET_KEY_RE.search(x)]
+    return kr, f, lrn
 
 
 # Kinds this repo mints notes for; a blank/None kind is repaired to "knowledge"
@@ -210,10 +278,12 @@ def render_note(kind: str, key: str, *, title: str,  # NOSONAR
         parts.append("## Objective\n\n" + obj)
     # scrub_items drops envelope scaffolding (heading/sentinel/section-label/
     # boilerplate) that a model or bad fold leaked into a list section.
-    for heading, items in (("Key Results", scrub_items(key_results)),
-                           ("Facts", scrub_items(facts)),
+    kr_items, fact_items, learn_items = scrub_sections(key_results, facts,
+                                                       learnings)
+    for heading, items in (("Key Results", kr_items),
+                           ("Facts", fact_items),
                            ("Links", norm_links),
-                           ("Learnings", scrub_items(learnings))):
+                           ("Learnings", learn_items)):
         if items:
             parts.append(f"## {heading}\n\n"
                          + "\n".join(f"- {i}" for i in items))

@@ -749,7 +749,10 @@ def test_every_recompact_step_runs(monkeypatch):
     assert out["ok"] is True
     # "repair" leads: retiring non-fact captures and collapsing duplicate
     # claims BEFORE anything consolidates them keeps junk out of the briefs.
-    # "normalize" first: one clean form per fact before anything reads them.
-    assert ran[:5] == ["normalize", "repair", "tidy_legacy", "repo", "topic"]
+    # "normalize" first: one clean form per fact before anything reads them,
+    # then the no-model junk/narration passes so no fold spends calls on them.
+    assert ran[:7] == ["normalize", "junk_sweep", "narration", "repair",
+                       "tidy_legacy", "repo", "topic"]
     assert "reingest" in ran
+    assert ran[-1] == "vec_orphans"     # after reingest has settled the index
     assert "map_scopes" in ran
