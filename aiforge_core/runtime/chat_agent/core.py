@@ -12,6 +12,7 @@ Core mode keeps what the product needs and what protects the work:
   jobs, the evidence under each task;
 - safety: approvals, policy, refusing commands that would wipe the turn's work,
   deadlines and caps, waiting on long-running jobs;
+- boundary checks: the spec section handed back when a task is closed;
 - deterministic finish checks: the test run at the end, running the request's
   examples, the done watch, and the checks that keep the answer honest
   (claims of edits or files that did not change);
@@ -41,7 +42,10 @@ CORE_OFF = {
     # the board stays (panel); the harness stops re-opening and parking items
     "AIFORGE_CHAT_ITEM_VERIFY": "0",
     "AIFORGE_CHAT_ITEM_TIMEBOX_S": "0",    # also turns off parking (history reset)
-    "AIFORGE_CHAT_SECTION_CHECK": "0",
+    # AIFORGE_CHAT_SECTION_CHECK stays ON: it runs only when the model closes a
+    # task (the section's own spec text rides on that "done" result), a
+    # boundary check, not a note between steps. Click 11-14: core 5-6/37 in 3
+    # runs, core + section check 18/37 at the same 25 min.
     # history and prompt stay the model's own
     "AIFORGE_CHAT_STUCK_RESTART": "0",     # wipe history every 2nd stuck trip
     "AIFORGE_CHAT_STUCK_CONDENSE": "0",    # condense history on every stuck trip
