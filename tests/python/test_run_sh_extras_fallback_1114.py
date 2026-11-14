@@ -11,8 +11,8 @@ SRC = (pathlib.Path(__file__).resolve().parents[2] / "run.sh").read_text(encodin
 def test_a_semantic_backend_pulls_the_embed_static_extra():
     block = SRC[SRC.index('case "${AIFORGE_EMBED_BACKEND:-}" in'):]
     block = block[:block.index("esac")]
-    for backend in ("sidecar", "api", "model2vec"):
-        assert re.search(rf"\b{backend}\b", block)
+    assert re.search(r"\bmodel2vec\b", block)
+    assert "sidecar" not in block.split(")")[0]      # sidecar embeds elsewhere: no extra
     assert "embed-static" in block
 
 
@@ -33,3 +33,10 @@ def test_the_container_gets_the_hosts_timezone():
     assert "export TZ" in SRC
     compose = (pathlib.Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text()
     assert re.search(r"^\s+- TZ\b", compose, re.M)
+
+
+def test_a_failed_install_with_a_working_venv_still_starts():
+    i = SRC.index('if _install_set "${_EXTRAS[@]}"; then')
+    tail = SRC[i:i + 2200]
+    assert "elif _venv_ready; then" in tail
+    assert tail.index("elif _venv_ready; then") < tail.index("_fatal")

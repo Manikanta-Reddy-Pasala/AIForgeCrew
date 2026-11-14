@@ -1527,7 +1527,7 @@ _venv_ready() { .venv/bin/python -c "import aiforge_core, pydantic_core" >/dev/n
 # in the same extra): install it with the backend instead of leaving recall on
 # a brute-force scan — or on hash, when the backend's own package is missing.
 case "${AIFORGE_EMBED_BACKEND:-}" in
-  sidecar|bge|bge-m3|api|openai|lmstudio|ollama|model2vec|static)
+  model2vec|static)          # the sidecar/api backends embed elsewhere: no extra
     [[ ",${AIFORGE_EXTRAS:-}," == *",embed-static,"* ]] \
       || AIFORGE_EXTRAS="${AIFORGE_EXTRAS:+$AIFORGE_EXTRAS,}embed-static" ;;
 esac
@@ -1568,6 +1568,12 @@ elif ! _venv_ready || [[ "$(cat "$_STAMP" 2>/dev/null)" != "$_want" ]]; then
     echo "!! optional extras (${_EXTRAS[*]}) could not be installed — running with" >&2
     echo "!! the base set only. Allow the package index's file host in" >&2
     echo "!! Settings → Network (the index alone is not enough), then restart." >&2
+  elif _venv_ready; then
+    # Nothing could be installed (an index or its file host unreachable), but
+    # the venv from the last good install still imports: run on it rather
+    # than crash-loop the service. No stamp, so the next start tries again.
+    echo "!! installing the python deps failed — running on the existing .venv." >&2
+    echo "!! Fix the index access (see above), then restart." >&2
   else
     _fatal "installing the python deps failed — see the error above." \
            "Check ~/.netrc credentials and the CA (AIFORGE_CA_BUNDLE) for $_INDEX."
