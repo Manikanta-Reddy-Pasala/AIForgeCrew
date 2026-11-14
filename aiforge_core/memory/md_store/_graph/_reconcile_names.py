@@ -94,3 +94,63 @@ def _common_token_prefix(keys: list[str]) -> str:
         else:
             break
     return "-".join(out)
+
+
+# ── same subject by NAME: stems, abbreviations, separators, suffix families ──
+#: common developer abbreviations, expanded before comparing names
+_ABBREV = {
+    "venv": "virtual-environment", "virtualenv": "virtual-environment",
+    "e2e": "end-to-end", "env": "environment", "db": "database",
+    "k8s": "kubernetes", "auth": "authentication", "config": "configuration",
+    "cfg": "configuration", "repo": "repository", "repos": "repository",
+    "doc": "documentation", "docs": "documentation", "deps": "dependencies",
+    "py": "python", "js": "javascript", "ts": "typescript", "msg": "message",
+}
+_SUFFIXES = ("ations", "ation", "ments", "ment", "ings", "ing", "ence", "ent",
+             "ies", "ers", "er", "ate", "es", "ed", "s")
+
+
+def _stem(tok: str) -> str:
+    """A crude stem: testing/tests -> test, persistence/persistent -> persist,
+    validation/validate -> valid. Only strips when 3+ letters stay."""
+    t = tok.lower()
+    for suf in _SUFFIXES:
+        keep = 5 if suf in ("ence", "ent", "er", "ers", "ate") else 3   # client != cli
+        if t.endswith(suf) and len(t) - len(suf) >= keep:
+            return t[:-len(suf)]
+    return t
+
+
+def _name_tokens(key: str) -> list[str]:
+    out: list[str] = []
+    for t in _toks(key.lower()):
+        out.extend(_toks(_ABBREV.get(t, t)))
+    return [_stem(t) for t in out]
+
+
+def _name_key(key: str) -> str:
+    """The subject a topic name names, spelling aside: stems joined with no
+    separator, so ai-forge-memory == aiforgememory, venv-setup ==
+    virtual-environment-setup, persistence == persistent. A bare number does
+    not name a subject (ai-forge-memory-2), unless the name is only numbers."""
+    toks = _name_tokens(key)
+    words = [t for t in toks if not t.isdigit()]
+    return "".join(words or toks)
+
+
+def _same_name(a: str, b: str) -> bool:
+    """Same subject by name: equal name keys, or a SUFFIX family — the shorter
+    is one word (4+ letters) that the longer ends with (validation /
+    input-validation / assertion-validation; test / end-to-end-testing)."""
+    if _name_key(a) == _name_key(b):
+        return True
+    ta, tb = _name_tokens(a), _name_tokens(b)
+    short, long_ = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+    return (len(short) == 1 and len(long_) > 1 and len(short[0]) >= 4
+            and long_[-1] == short[0]
+            and long_[0] not in _MODIFIERS)         # in-memory is not the memory topic
+
+
+#: a leading word that changes what the rest means (in-memory, non-blocking)
+_MODIFIERS = frozenset({"in", "on", "of", "no", "non", "un", "pre", "post", "anti",
+                        "multi", "self", "sub", "over", "under"})

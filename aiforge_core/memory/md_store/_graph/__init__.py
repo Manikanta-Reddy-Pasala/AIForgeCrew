@@ -9,6 +9,8 @@ surface so ``from ._graph import <name>`` and every ``_graph.<name>`` attribute
 (public AND underscore-private) is unchanged."""
 from __future__ import annotations
 
+from ._repage import repage_split_topics
+
 from ._finalize import _briefs_modified_within, finalize_briefs
 from ._lint import (
     _remove_facts_locked,
@@ -47,6 +49,7 @@ __all__ = [
     "lint_graph",
     "map_scopes",
     "merge_similar_topics",
+    "repage_split_topics",
     "reconcile_briefs",
     "reheal_scopes",
     "resolve_contradictions",
