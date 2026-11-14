@@ -1089,6 +1089,15 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
         for k in ("_recipe", "_recipe_was", "_recipe_warn"):
             if args.get(k):
                 model_result[k.lstrip("_")] = args[k]
+    # a failure fixed before: say what turned it green, on this result only
+    try:
+        from aiforge_core.runtime import ops_memory as _ops
+        from .._tools import _chat_repo_key as _rk
+        _seen = _ops.fix_hook(st, name, args, result, cwd, _rk(cwd))
+        if _seen and isinstance(model_result, dict):
+            model_result = {**model_result, "seen_before": _seen}
+    except Exception:  # noqa: BLE001 — memory never breaks a step
+        pass
     obs = render_observation(name, model_result, _obs_cap)
     _note_green_tests(st, name, args, result, cwd)
     # A compare command that passed on a target file: the harness closes

@@ -193,6 +193,7 @@ def _chat_learn_writeback(cwd, prompt, final_text, steps, session_id,
             from aiforge_core.runtime import ops_memory
             ops_memory.learn_from_items(session_ledger.ledger_items(session_id),
                                         repo=repo, root=ops_memory.repo_root(cwd))
+            ops_memory.learn_repo_location(repo, cwd)
         except Exception:  # noqa: BLE001 — learning never breaks the turn
             pass
         # PREFERENCE FIRST — a preference-cue message ("use X as default", "from"
