@@ -634,7 +634,7 @@ def _t_run_command(args: dict, cwd: str) -> dict:
                                        args.get("description") or "")
     handed = False
     try:
-        res = _run_to_end(proc, timeout, spool, idle_s)
+        res = _run_to_end(proc, timeout, spool, idle_s, cmd=cmd)
         if not is_test_command("run_command", {"cmd": cmd}):
             # 40K is kept for a test or build run's failure list only; any
             # other command's result (UI event, action log, stored steps)
@@ -677,7 +677,7 @@ def _hand_off(proc, spool, cmd, base, why, started, timeout, idle_s) -> dict:
     return cmd_jobs.look(job, why)
 
 
-def _run_to_end(proc, timeout: float, spool, idle_s: float = 0.0) -> dict:
+def _run_to_end(proc, timeout: float, spool, idle_s: float = 0.0, cmd: str = "") -> dict:
     from aiforge_core.runtime import chat_cancel
     sid = chat_cancel.active()
     if sid is not None:
@@ -686,7 +686,7 @@ def _run_to_end(proc, timeout: float, spool, idle_s: float = 0.0) -> dict:
         except Exception:  # noqa: BLE001
             pass
     from aiforge_core.runtime.cmd_jobs import checkin_s
-    stopped = _await_exit(proc, timeout, sid, spool, idle_s, checkin_s())
+    stopped = _await_exit(proc, timeout, sid, spool, idle_s, checkin_s(cmd))
     if stopped is not None:
         return stopped
     out, err = _collect_output(proc, spool)

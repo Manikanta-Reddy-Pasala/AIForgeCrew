@@ -308,7 +308,7 @@ def _run_checked(command: str, wall_s: float, *, argv=None,
         if sid is not None:
             chat_cancel.track_pgid(sid, pgid)
     res = run_to_completion(argv or command, root(), wall_s, idle_limit_s(),
-                            checkin_s=cmd_jobs.checkin_s(), cmd=command,
+                            checkin_s=cmd_jobs.checkin_s(command), cmd=command,
                             on_spawn=_track, interrupt=_hit)
     if "job" in res:
         return {**res["job"], "command": command}

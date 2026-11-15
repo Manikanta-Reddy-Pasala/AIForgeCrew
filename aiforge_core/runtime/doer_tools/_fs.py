@@ -309,7 +309,7 @@ def run_shell(cmd: str) -> dict:
     from ..cmd_jobs import checkin_s
     ran = run_to_completion(_argv, root(),
                             wall_cap_s(None, "AIFORGE_SHELL_TIMEOUT"),
-                            idle_limit_s(), checkin_s=checkin_s(), cmd=cmd)
+                            idle_limit_s(), checkin_s=checkin_s(cmd), cmd=cmd)
     if "job" in ran:
         # Still running at the check-in (or it just printed an error or a
         # prompt): not killed, not waited out — the Doer decides.

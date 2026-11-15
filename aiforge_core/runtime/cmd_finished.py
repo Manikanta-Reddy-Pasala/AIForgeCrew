@@ -105,6 +105,13 @@ def _whole_tail(stream) -> str:
 def record_job(job, code, ended_by) -> None:
     """A cmd_jobs job's WHOLE output tail and exit code, for the loop rules."""
     try:
+        if code is not None and not ended_by and not getattr(job, "killed", None):
+            import time as _time
+            from aiforge_core.runtime import cmd_jobs
+            cmd_jobs.note_duration(job.cmd, _time.monotonic() - job.started)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         out = _whole_tail(job.streams[0])
         err = _whole_tail(job.streams[1]) if len(job.streams) > 1 else ""
         record(job.key, job.cmd, code, out, err, stopped=ended_by)

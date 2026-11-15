@@ -61,8 +61,47 @@ def _env_s(name: str, default: float) -> float:
         return default
 
 
-def checkin_s() -> float:
-    return _env_s("AIFORGE_CMD_CHECKIN_S", 15.0)
+#: How long each command took the last time it ran to the end (this process).
+_DURATIONS: dict = {}
+_DURATIONS_LOCK = threading.Lock()
+_MAX_KEYS = 200
+
+
+def _dur_key(cmd: "str | None") -> str:
+    import re as _re
+    c = _re.sub(r"\s*(?:2>&1\s*)?\|\s*(?:tail|head|grep|egrep|less|more|cat|tee|sed|awk)\b.*$",
+                "", cmd or "")
+    return " ".join(c.split())
+
+
+def note_duration(cmd: "str | None", secs: float) -> None:
+    """Remember how long ``cmd`` took to finish."""
+    k = _dur_key(cmd)
+    if not k or secs <= 0:
+        return
+    with _DURATIONS_LOCK:
+        _DURATIONS[k] = float(secs)
+        while len(_DURATIONS) > _MAX_KEYS:
+            _DURATIONS.pop(next(iter(_DURATIONS)))
+
+
+def checkin_s(cmd: "str | None" = None) -> float:
+    """How long a foreground command runs before it becomes a job the agent
+    checks on. A command that took ``d`` seconds last time gets about 1.3x
+    that (capped, AIFORGE_CMD_CHECKIN_MAX_S default 180): a Maven test run of
+    ~30 s went to the background at 15 s every time, and each one cost a whole
+    model call just to wait for it (11 of 76 calls on a real PosClientBackend
+    job; OpenCode, same model, did the job in 14 calls)."""
+    base = _env_s("AIFORGE_CMD_CHECKIN_S", 15.0)
+    k = _dur_key(cmd)
+    if not k or os.environ.get("AIFORGE_CMD_CHECKIN_S"):
+        return base                     # an explicit setting is used as given
+    with _DURATIONS_LOCK:
+        d = _DURATIONS.get(k)
+    if d is None:
+        return base
+    cap = _env_s("AIFORGE_CMD_CHECKIN_MAX_S", 180.0)
+    return max(base, min(d * 1.3 + 2.0, cap))
 
 
 def stuck_s() -> float:
