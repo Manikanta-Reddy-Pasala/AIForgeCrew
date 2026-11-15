@@ -22,6 +22,15 @@ from ._base import (
 )
 
 
+#: Terminal colour/control codes. Tool output carries them ("[1;31mERROR[m"),
+#: and a note that kept them showed garbage in recall and the Memory tab.
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[@-Z\\-_]")
+
+
+def _clean(text) -> str:
+    return _ANSI.sub("", str(text or ""))
+
+
 def _ingest_unit(*, title: str, body: str, kind: str, tags: list[str],
                  source: str, repo: str, replace: bool = False) -> None:
     """Mirror a note into the active memory backend so it's searchable.
@@ -75,6 +84,7 @@ def rewrite_body(path, body: str, *, evidence: str | None = None) -> dict:
     """Replace a note's body IN PLACE (frontmatter kept, ``updated`` stamped)
     and re-ingest it. Used by the subject upsert, so folding a new claim into a
     subject updates one file instead of minting another dated copy."""
+    body = _clean(body)
     d = _parse(path)
     tags = list(d.get("tags") or [])
     ev = evidence or d.get("evidence") or None
@@ -112,6 +122,7 @@ def write(title: str, text: str, *, kind: str = "note",
     project/topic brief and is invisible to repo-scoped recall (only the global
     Memory search reaches it). That's intended for hand-dropped notes; scoped
     knowledge should go through ``capture()`` (which classifies + stamps)."""
+    title, text = _clean(title), _clean(text)
     tags = list(tags or [])
     created = _now_iso()
     digest = hashlib.sha1((title + text).encode(), usedforsecurity=False).hexdigest()[:6]
@@ -155,6 +166,7 @@ def upsert_section(*, source: str, title: str, section_title: str,
     use). The filename is the FULL readable ``title`` slug — one stable
     file per session that grows with each run, then re-ingested whole.
     """
+    title, section_title, section_body = _clean(title), _clean(section_title), _clean(section_body)
     tags = list(tags or [])
     with _WRITE_LOCK:
         existing = _find_by_source(source)
@@ -195,6 +207,7 @@ def append_bullet(*, source: str, title: str, bullet: str,
     """Append a deduped ``- bullet`` to the file keyed by ``source`` (one
     clean list, e.g. a rule book). Used for user rules that must persist
     and apply every session."""
+    bullet = _clean(bullet)
     tags = list(tags or [])
     line = "- " + bullet.strip()
     with _WRITE_LOCK:
