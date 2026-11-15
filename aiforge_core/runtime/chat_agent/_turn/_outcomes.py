@@ -490,6 +490,45 @@ def _project_python(st, cwd) -> "str | None":
     return None
 
 
+#: Display pipes after a test command: they cut the runner's own summary.
+_DISPLAY_PIPE = re.compile(r"\s*(?:2>&1\s*)?\|\s*(?:tail|head|grep|egrep|less|more|cat|tee|sed|awk)\b.*$")
+
+
+def _rerun_own_test(st, cwd) -> "tuple[bool, str] | None":
+    """The turn's own last test command, run again on the final code, for a
+    project the harness's guessed runner cannot run (a toolchain the command
+    sets up and the guess does not). ``(green, output)``, or None when there
+    is no such command or it ran no tests.
+
+    A real PosClientBackend turn re-keyed accounts, broke an existing test
+    in the very class it worked on, and finished: the guessed "mvn -q test"
+    could not run on the system JDK and the regression watch only knows
+    pytest, so nothing re-ran the class. Its own command
+    (JAVA_HOME=<jdk24> mvn -o -q test -Dtest=<Class>) runs it."""
+    try:
+        from aiforge_core.runtime.shell_writes import command_of
+        from aiforge_core.runtime.parallel_subtasks import _fail_count
+        from ._done_watch import _run
+        last = getattr(st, "last_test_cmd", None) or getattr(st, "last_full_test", None)
+        cmd = command_of(last[1]) if last else ""
+        cmd = _DISPLAY_PIPE.sub("", cmd or "").strip()
+        if not cmd or not _TEST_CMD.search(cmd):
+            return None
+        try:
+            limit = int(os.environ.get("AIFORGE_CHAT_FINISH_RERUN_S", "600"))
+        except ValueError:
+            limit = 600
+        code, out = _run(cmd, str(getattr(st, "cwd", "") or cwd), timeout=limit)
+        from aiforge_core.runtime.failure_signature import _ANSI
+        out = _ANSI.sub("", out or "")    # Maven colours split "Tests run:" apart
+        if not _TESTS_RAN.search(out):
+            return None
+        fails = _fail_count(out)
+        return (code == 0 and fails == 0), out
+    except Exception:  # noqa: BLE001 — the finish check must never break a turn
+        return None
+
+
 def _project_verify(st, cwd):
     """``(ok, output)`` of the finish check: the harness's own project runner,
     unless it could not run the tests at all (no counts, a collection error)
@@ -514,7 +553,8 @@ def _project_verify(st, cwd):
         # guessed "mvn -q test" on the system JDK 21, the repo needs 24): no
         # verdict, whatever the turn ran last.
         if not py and not _TESTS_RAN.search(out or "") and _TOOLCHAIN_MISMATCH.search(out or ""):
-            return None, out
+            own = _rerun_own_test(st, cwd)
+            return own if own is not None else (None, out)
         if not _whole_suite(cmd or "", base):
             # Not a Python tree, the guessed runner ran no test at all, and the
             # turn's own test command passed on this very code: the runner's

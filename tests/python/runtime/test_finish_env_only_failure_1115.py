@@ -79,3 +79,20 @@ def test_real_compile_error_keeps_the_failure(tmp_path, monkeypatch):
                             "[INFO] BUILD FAILURE")
     st = _st(tmp_path, last_full_test=None)
     assert O._project_verify(st, str(tmp_path))[0] is False
+
+
+def test_toolchain_mismatch_reruns_the_turns_own_test_command(tmp_path, monkeypatch):
+    from aiforge_core.runtime.chat_agent._turn import _done_watch
+    _patch(monkeypatch)
+    ran = []
+    red = ("[ERROR] Tests run: 19, Failures: 1, Errors: 0, Skipped: 0\n"
+           "[ERROR]   FooTest.carriesDates:40 expected: <4> but was: <0>\n[INFO] BUILD FAILURE")
+    monkeypatch.setattr(_done_watch, "_run", lambda cmd, cwd, timeout=0: ran.append(cmd) or (1, red))
+    st = _st(tmp_path, last_full_test=None, last_test_cmd=("run_command", {
+        "command": "cd /w && JAVA_HOME=/j mvn -o -q test -Dtest=FooTest 2>&1 | tail -40"}))
+    ok, out = O._project_verify(st, str(tmp_path))
+    assert ok is False and "carriesDates" in out
+    assert ran == ["cd /w && JAVA_HOME=/j mvn -o -q test -Dtest=FooTest"]   # pipe dropped
+    monkeypatch.setattr(_done_watch, "_run", lambda cmd, cwd, timeout=0: (
+        0, "[INFO] Tests run: 19, Failures: 0, Errors: 0, Skipped: 0\n[INFO] BUILD SUCCESS"))
+    assert O._project_verify(st, str(tmp_path))[0] is True
