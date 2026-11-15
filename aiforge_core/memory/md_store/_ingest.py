@@ -196,8 +196,11 @@ def upsert_section(*, source: str, title: str, section_title: str,
             path.write_text(fm + f"## {section_title}\n\n{section_body.strip()}\n",
                             encoding="utf-8")
     d = _parse(path)
+    # The file is the whole truth and it grew: replace the source's row, or
+    # every append left an older partial copy behind (a rule book recalled
+    # twice, once without its newest rule).
     _ingest_unit(title=d["title"], body=d["body"], kind=kind,
-                 tags=d["tags"] or tags, source=source, repo=repo)
+                 tags=d["tags"] or tags, source=source, repo=repo, replace=True)
     d.pop("body", None)
     return d
 
@@ -240,8 +243,11 @@ def append_bullet(*, source: str, title: str, bullet: str,
             )
             path.write_text(fm + line + "\n", encoding="utf-8")
     d = _parse(path)
+    # The file is the whole truth and it grew: replace the source's row, or
+    # every append left an older partial copy behind (a rule book recalled
+    # twice, once without its newest rule).
     _ingest_unit(title=d["title"], body=d["body"], kind=kind,
-                 tags=d["tags"] or tags, source=source, repo=repo)
+                 tags=d["tags"] or tags, source=source, repo=repo, replace=True)
     d.pop("body", None)
     return d
 
