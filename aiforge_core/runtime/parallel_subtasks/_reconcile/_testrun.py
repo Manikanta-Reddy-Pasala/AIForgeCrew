@@ -418,6 +418,36 @@ _HUNG = re.compile(r"did not finish in \d+\s*s|a test hangs|\btimed out after\b|
                    r"\+{3,} Timeout \+{3,}|^E\s+Failed: Timeout >", re.I | re.M)
 
 
+_MVN_SUMMARY = re.compile(r"Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+)")
+_CTEST_SUMMARY = re.compile(r"\b\d+% tests passed,\s*(\d+) tests? failed out of (\d+)")
+_GTEST_SUMMARY = re.compile(r"^\s*(\d+) FAILED TESTS?\b", re.M)
+_GTEST_RAN = re.compile(r"^\[==========\] \d+ tests? from .* ran\.", re.M)
+_MESON_SUMMARY = re.compile(r"^Fail:\s+(\d+)\s*$", re.M)
+
+
+def _runner_counts(out: str) -> "int | None":
+    """Failures from a non-pytest runner's own summary (Maven/Surefire, ctest,
+    googletest, meson), or None when none is there. Maven's green
+    "Tests run: 5, Failures: 0, Errors: 0" read as 999 (the word "Errors"
+    with no pytest count), and a failing googletest run read as 0."""
+    m = _MVN_SUMMARY.findall(out)
+    if m:
+        _run, f, e = m[-1]                      # the last line is the total
+        return int(f) + int(e)
+    m = _CTEST_SUMMARY.findall(out)
+    if m:
+        return int(m[-1][0])
+    m = _GTEST_SUMMARY.findall(out)
+    if m:
+        return int(m[-1])
+    if _GTEST_RAN.search(out) and "[  FAILED  ]" not in out:
+        return 0
+    m = _MESON_SUMMARY.findall(out)
+    if m:
+        return int(m[-1])
+    return None
+
+
 def _fail_count(output: str) -> int:
     """Number of unhealthy tests from the build/test output (for the regression
     guard + reconcile progress signal). Sums pytest FAILED **and** ERRORS — a
@@ -430,6 +460,9 @@ def _fail_count(output: str) -> int:
         # a run cut off by its time limit counted 0: no counts, no error word
         # ("the test run did not finish in 300 s — a test hangs")
         return 999
+    own = _runner_counts(out)
+    if own is not None:
+        return own
     failed_n = _count_before(out, ("failed",))
     errored_n = _count_before(out, ("error", "errors"))
     n = (failed_n or 0) + (errored_n or 0)

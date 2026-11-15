@@ -103,6 +103,14 @@ _GRADLE = re.compile(r"^(\S[^\n>]*?)[ \t]>[ \t]([^\n]+?)[ \t]+FAILED[ \t]*$", re
 _JEST_CASE = re.compile(r"^[ \t]*(?:✕|×|✗)[ \t]+(.+?)[ \t]*$", re.M)
 _JEST_FILE = re.compile(r"^[ \t]*FAIL[ \t]+(\S+)(?:[ \t]+>[ \t]+(.+?))?[ \t]*$", re.M)
 _GO_CASE = re.compile(r"^[ \t]*--- FAIL:[ \t]+(\S+)", re.M)
+# cargo test: "test tests::adds ... FAILED"
+_RUST_CASE = re.compile(r"^test[ \t]+(\S+)[ \t]+\.\.\.[ \t]+FAILED[ \t]*$", re.M)
+# ctest: "  3 - parser_test (Failed)" under "The following tests FAILED:"
+_CTEST_CASE = re.compile(
+    r"^[ \t]*\d+[ \t]+-[ \t]+(\S+)[ \t]+\((?:Failed|SEGFAULT|Subprocess aborted|"
+    r"Child aborted|Timeout|Not Run|Exception|ILLEGAL|BUS|OTHER_FAULT)[^)]*\)", re.M)
+# googletest: "[  FAILED  ] Suite.Name (0 ms)" / listed "[  FAILED  ] Suite.Name"
+_GTEST_CASE = re.compile(r"^\[  FAILED  \][ \t]+([A-Za-z_][\w/]*\.[\w/]+)", re.M)
 
 
 def _test_items(text: str) -> list[str]:
@@ -118,6 +126,9 @@ def _test_items(text: str) -> list[str]:
     items += [f"js:{f}" + (f" > {_message(n)}" if n else "")
               for f, n in _JEST_FILE.findall(text)]
     items += [f"go:{m}" for m in _GO_CASE.findall(text)]
+    items += [f"rust:{m}" for m in _RUST_CASE.findall(text)]
+    items += [f"ctest:{m}" for m in _CTEST_CASE.findall(text)]
+    items += [f"gtest:{m}" for m in dict.fromkeys(_GTEST_CASE.findall(text))]
     return items
 
 
@@ -138,6 +149,8 @@ _COMPILERS = (
 )
 # rustc: error[E0425]: cannot find value `x`\n  --> src/main.rs:3:5
 _RUSTC = re.compile(r"^error(\[E\d+\])?:\s+(.+)\n\s*-->\s*(\S+?):\d+:\d+", re.M)
+# C/C++ linker: undefined reference to `Parser::parse()'
+_LINK = re.compile(r"undefined reference to [`'\"]([^'`\"\n]+)['`\"]")
 
 
 def _compile_items(text: str) -> list[str]:
@@ -145,6 +158,7 @@ def _compile_items(text: str) -> list[str]:
              for rx in _COMPILERS for f, m in rx.findall(text)]
     items += [f"build:{_short_path(f)}: {code}{_message(m)}"
               for code, m, f in _RUSTC.findall(text)]
+    items += [f"link:undefined reference to {m}" for m in dict.fromkeys(_LINK.findall(text))]
     return items
 
 
@@ -253,10 +267,14 @@ _GREEN = (
     re.compile(r"^ok\s+\S+", re.M),                               # go test
     re.compile(r"\btest result: ok\.", re.M),                     # cargo
     re.compile(r"^OK(?: \(|$)", re.M),                            # unittest
+    re.compile(r"\b100% tests passed\b"),                         # ctest
+    re.compile(r"^\[  PASSED  \] \d+ tests?\.", re.M),             # googletest
+    re.compile(r"^Ok:\s+[1-9]\d*\s*$", re.M),                      # meson test
 )
 _RED = re.compile(r"\b[1-9]\d* (?:failed|errors?|failing)\b|\bFAILED\b|"
                   r"\bBUILD FAILURE\b|\bBUILD FAILED\b|^FAIL\b|"
-                  r"Failures:\s*[1-9]|Errors:\s*[1-9]|test result: FAILED", re.M)
+                  r"Failures:\s*[1-9]|Errors:\s*[1-9]|test result: FAILED|"
+                  r"\b[1-9]\d* tests? failed out of\b|^\[  FAILED  \]|^Fail:\s+[1-9]", re.M)
 
 
 def runner_green(output) -> bool:

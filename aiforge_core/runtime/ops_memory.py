@@ -244,13 +244,15 @@ _TEST = re.compile(
     r"|(?:\bgradle|\bgradlew|\./gradlew)\b[^|;&]*\b(?:test|check)\b"
     r"|\b(?:npm|yarn|pnpm|bun)\s+(?:run\s+)?test\b"
     r"|\bgo\s+test\b|\bcargo\s+(?:test|nextest)\b|\bdotnet\s+test\b"
-    r"|\bmake\s+(?:test|check)\b|\b(?:jest|vitest|mocha|rspec|phpunit|ctest)\b)")
+    r"|\bmake\b[^|;&]*\b(?:test|check)\b|\bmeson\s+test\b|\bbazel\s+test\b|\s--gtest_\w+"
+    r"|\b(?:jest|vitest|mocha|rspec|phpunit|ctest)\b)")
 # Leading VAR=value assignments of the command (JAVA_HOME, PATH=...:$PATH, ...).
 _ENV_PREFIX = re.compile(r"^((?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|\S+)\s+)+)")
 # The narrowing part of a run (one test, a filter) is this run's, not the recipe.
 _NARROW = re.compile(
     r"\s(?:-k|-x|--lf|::)\b|\s\S+::\S+|\s-Dtest=\S+|\s--tests?\s+\S+"
-    r"|\s-run\s+\S+|\s-t\s+\S+|\s--testNamePattern\S*")
+    r"|\s-run\s+\S+|\s-t\s+\S+|\s--testNamePattern\S*|\s--gtest_filter=\S+|\s-R\s+\S+"
+    r"|(?<=cargo test)\s+(?!-)\S+|(?<=nextest run)\s+(?!-)\S+|\s--(?=\s|$)")
 # Output trimming after the command is not part of the recipe.
 _TRIM = re.compile(r"\s*(?:2>&1\s*)?(?:\|\s*(?:tail|head|grep|tee|less|cat)\b.*)?$")
 _PROBE = re.compile(r"\s-c\s|<<|\bpython3?\s+-\s")

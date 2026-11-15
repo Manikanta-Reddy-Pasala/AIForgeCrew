@@ -153,6 +153,16 @@ def _note_interpreter(st, raw: str, result) -> None:
         st.regress_py = m.group(1)
 
 
+def _python_tests(root: str) -> bool:
+    """The repo's tests/ (or test/) folder holds Python test files."""
+    for d in ("tests", "test"):
+        top = os.path.join(root, d)
+        for _dir, _subs, files in os.walk(top):
+            if any(f.endswith(".py") for f in files):
+                return True
+    return False
+
+
 def _suite_command(st, root: str) -> str:
     """The whole-suite command: the model's own pytest command, the repo's
     saved test command, or its python with ``-m pytest`` (a repo with tests)."""
@@ -165,6 +175,8 @@ def _suite_command(st, root: str) -> str:
         return b
     if not any(os.path.isdir(os.path.join(root, d)) for d in ("tests", "test")):
         return ""
+    if not _python_tests(root):
+        return ""                 # a Rust/C++/Java tests/ folder: pytest has nothing to run
     py = getattr(st, "regress_py", "") or recipe.get("python") or "python3"
     return f"cd {shlex.quote(root)} && {py} -m pytest"
 

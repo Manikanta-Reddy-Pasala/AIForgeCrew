@@ -37,7 +37,7 @@ def test_maven_with_jdk_env_is_learned():
 
 
 @pytest.mark.parametrize("cmd,want", [
-    ("npm test -- --testNamePattern=foo", "npm test --"),
+    ("npm test -- --testNamePattern=foo", "npm test"),
     ("./gradlew test --tests com.x.FooTest", "./gradlew test"),
     ("go test ./... -run TestFoo", "go test ./..."),
     ("cargo test", "cargo test"),
@@ -93,3 +93,13 @@ def test_still_running_wait_changes_nothing():
 def test_foreground_command_unchanged():
     run = {"name": "run_command", "args": {"command": "ls"}, "result": {"ok": True}}
     assert _fold(_steps(run))[0]["outcome"] is True
+
+
+def test_regress_never_runs_pytest_in_a_rust_tests_folder(tmp_path):
+    from types import SimpleNamespace
+    from aiforge_core.runtime.chat_agent._turn import _regress
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "integration.rs").write_text("#[test] fn a() {}\n")
+    assert _regress._suite_command(SimpleNamespace(), str(tmp_path)) == ""
+    (tmp_path / "tests" / "test_a.py").write_text("def test_a(): pass\n")
+    assert "-m pytest" in _regress._suite_command(SimpleNamespace(), str(tmp_path))

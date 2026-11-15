@@ -36,13 +36,15 @@ from ._progress import _SHELL_TOOLS, _digest, _refresh_tree
 
 _TEST_CMD = re.compile(
     r"\b(pytest|npm test|npm run test|yarn test|pnpm test|jest|vitest|"
-    r"mvn\S* (?:\S+ )*?(?:test|verify)|go test|cargo test|gradlew? (?:\S+ )*?test|"
-    r"python -m unittest|tox)\b")
+    r"mvn\S* (?:\S+ )*?(?:test|verify)|go test|cargo test|cargo nextest|gradlew? (?:\S+ )*?test|"
+    r"python -m unittest|tox|ctest|meson test|bazel test|dotnet test|"
+    r"make (?:\S+ )*?(?:test|check)|\S+ --gtest_\w+)\b")
 #: A narrowed run proves only the part it ran.
 _NARROW = re.compile(
     r"\s-k\b|\s-m\s+(?!pytest\b|unittest\b|tox\b)|--lf\b|--last-failed\b|--deselect\b|\s-t\b|"
     r"\s-x\b|--exitfirst\b|--maxfail\b|"
-    r"--testNamePattern\b|--tests\b|\s-run\b|-Dtest=|-Dit\.test=|::|"
+    r"--testNamePattern\b|--tests\b|\s-run\b|-Dtest=|-Dit\.test=|::|--gtest_filter\b|"
+    r"\sctest\b.*\s-R\s|"
     r"\s[\w./-]+\.(?:py|js|jsx|ts|tsx|java|kt|go|rs)\b")
 _FULL_MODES = ("all", "full")
 _UNTRACKED_MAX = 500
@@ -176,7 +178,7 @@ def _note_green_tests(st, name, args, result, cwd) -> None:
 
 _RAN = re.compile(r"\b[1-9]\d* passed\b")
 #: A runner's output that shows tests actually ran (any toolchain's counts).
-_TESTS_RAN = re.compile(r"Tests run:\s*\d+|\b\d+ (?:passed|failed|failing)\b|^--- (?:FAIL|PASS)|"
+_TESTS_RAN = re.compile(r"Tests run:\s*\d+|\b\d+% tests passed|^\[==========\] \d+ tests?|^Ok:\s+\d+|\b\d+ (?:passed|failed|failing)\b|^--- (?:FAIL|PASS)|"
                         r"^(?:ok|FAIL)\s+\S+|test result:|^Tests:\s", re.M)
 #: Failure words in any runner's output (pytest, maven, gradle, jest, go, cargo).
 _RED_TEXT = re.compile(r"\b[1-9]\d* (?:failed|errors?|failing)\b|\bFAILED\b|"
