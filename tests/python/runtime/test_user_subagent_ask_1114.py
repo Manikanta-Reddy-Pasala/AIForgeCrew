@@ -29,3 +29,7 @@ def test_ordinary_requests_are_not(text):
 def test_the_rule_names_spawn_task_and_the_default_defers_to_the_user():
     assert "spawn_task" in P.SUBAGENT_ASK_RULE and "Do not do that part" in P.SUBAGENT_ASK_RULE
     assert "when the user asks for a sub-agent" in P._MULTI_AGENT
+
+
+def test_big_spawn_rule_names_spawn_task_and_keeps_integration():
+    assert "spawn_task" in P.BIG_SPAWN_RULE and "full test run at the end" in P.BIG_SPAWN_RULE
