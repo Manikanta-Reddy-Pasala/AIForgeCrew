@@ -41,7 +41,8 @@ def _t_read_lines(args: dict, cwd: str) -> dict:
         with open(fp, encoding="utf-8", errors="replace") as fh:
             lines = fh.readlines()
     except FileNotFoundError:
-        return {"ok": False, "error": f"not found: {path}"}
+        from ._missing import hint as _missing_hint
+        return {"ok": False, "error": f"not found: {path}", **_missing_hint(path, cwd)}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": str(exc)}
     n = len(lines)

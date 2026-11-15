@@ -201,7 +201,9 @@ def _t_file_read(args: dict, cwd: str) -> dict:
                 "note": "this is a DIRECTORY — listing its entries; "
                         "call file_read on a specific file to read contents"}
     if not p.is_file():
-        return {"ok": False, "error": f"no such file or directory: {args['path']}"}
+        from ._tools._missing import hint as _missing_hint
+        return {"ok": False, "error": f"no such file or directory: {args['path']}",
+                **_missing_hint(str(args["path"]), cwd)}
     if any(args.get(k) not in (None, "") for k in ("offset", "limit", "start", "end")):
         # a ranged read (OpenCode's read takes offset/limit): only that range,
         # not the whole file or its outline from line 1
