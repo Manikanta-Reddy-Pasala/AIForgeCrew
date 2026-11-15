@@ -140,11 +140,16 @@ class BgCapture:
     def _store(self, cls) -> "dict | None":
         if not cls or cls.get("category") == "none":
             return None
-        stored = self.rc.store(cls, repo=self.repo, session_id=self.session_id,
-                               repo_root=self.cwd)
-        ev = {"type": "captured", "id": stored.get("id"),
+        store_all = getattr(self.rc, "store_all", None)
+        stored = (store_all(cls, repo=self.repo, session_id=self.session_id,
+                            repo_root=self.cwd) if store_all else
+                  [self.rc.store(cls, repo=self.repo, session_id=self.session_id,
+                                 repo_root=self.cwd)])
+        ev = {"type": "captured", "id": stored[0].get("id"),
               "category": cls["category"], "scope": cls["scope"],
               "text": cls.get("canonical", ""), "repo": self.repo}
+        if cls.get("more"):
+            ev["more"] = [m.get("canonical", "") for m in cls["more"]]
         intent = self.rc.recognize_gate_intent(cls)
         if intent:
             ev["gate_intent"] = intent

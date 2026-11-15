@@ -49,13 +49,23 @@ _SYS = (
     "than a universal directive, set \"triggers\" to 1-3 short lowercase "
     "topic words; leave it an empty list [] when the rule should ALWAYS "
     "apply regardless of topic.\n\n"
+    "When the message states SEVERAL separate rules/facts (a numbered or "
+    "bulleted list, or \"also ...\"), put the FIRST in the main fields and "
+    "EACH other one in \"more\" as its own object with the same fields "
+    "(category, scope, canonical, confidence, triggers). Never merge two "
+    "rules into one canonical, and never drop one; keep exact values "
+    "(paths, versions, flags) in the canonical text. \"more\" is [] when "
+    "there is only one.\n\n"
     "Respond with STRICT JSON ONLY, no prose, no code fence:\n"
     '{\"category\":\"rule|memory|feedback|none\",'
     '\"scope\":\"global|project|session\",'
     '\"canonical\":\"<cleaned one-line directive/fact>\",'
     '\"confidence\":0.0-1.0,\"task_present\":true|false,'
-    '\"triggers\":[]}'
+    '\"triggers\":[],\"more\":[]}'
 )
+
+#: Most extra rules/facts kept from one message (beyond the first).
+_MAX_MORE = 6
 
 
 def _llm_complete(role: str, messages: list[dict], **kw) -> str:
@@ -112,24 +122,22 @@ def _extract_json(text: str) -> dict | None:
     return obj if isinstance(obj, dict) else None
 
 
-def _parse_classification(raw: str) -> dict | None:
-    obj = _extract_json(raw)
-    if obj is None:
+def _parse_item(obj: dict, scope_default: str = "session") -> dict | None:
+    """One {category, scope, canonical, confidence, triggers} object, cleaned;
+    None when it is not a usable classification."""
+    if not isinstance(obj, dict):
         return None
     cat = str(obj.get("category", "")).strip().lower()
     scope = str(obj.get("scope", "")).strip().lower()
     if cat not in _VALID_CATEGORIES:
         return None
     if scope not in _VALID_SCOPES:
-        scope = "session"
+        scope = scope_default
     canonical = str(obj.get("canonical") or "").strip().replace("\n", " ")
     try:
         conf = float(obj.get("confidence"))
     except (TypeError, ValueError):
         conf = 0.0
-    task_present = obj.get("task_present")
-    if not isinstance(task_present, bool):
-        task_present = True
     triggers_raw = obj.get("triggers") or []
     if not isinstance(triggers_raw, list):
         triggers_raw = []
@@ -144,8 +152,34 @@ def _parse_classification(raw: str) -> dict | None:
     triggers = [t for t in triggers if t]  # drop anything that sanitized to empty
     triggers = [t for t in triggers if re.search(r"[a-z0-9]", t)]  # drop pure-punctuation junk
     return {"category": cat, "scope": scope, "canonical": canonical,
-            "confidence": conf, "task_present": task_present,
-            "triggers": triggers}
+            "confidence": conf, "triggers": triggers}
+
+
+def _parse_classification(raw: str) -> dict | None:
+    obj = _extract_json(raw)
+    if obj is None:
+        return None
+    first = _parse_item(obj)
+    if first is None:
+        return None
+    task_present = obj.get("task_present")
+    if not isinstance(task_present, bool):
+        task_present = True
+    first["task_present"] = task_present
+    # A message with several rules ("1. ... 2. ...") used to keep only the
+    # first: the rest were never stored, so a later session did not know them.
+    more, seen = [], {first["canonical"].lower()}
+    for extra in (obj.get("more") or [])[:_MAX_MORE] if isinstance(obj.get("more"), list) else []:
+        item = _parse_item(extra, scope_default=first["scope"])
+        if item is None or item["category"] == "none" or not item["canonical"]:
+            continue
+        if item["canonical"].lower() in seen:
+            continue
+        seen.add(item["canonical"].lower())
+        item["task_present"] = task_present
+        more.append(item)
+    first["more"] = more
+    return first
 
 
 def classify(message: str, *, repo: str | None = None,
@@ -169,7 +203,7 @@ def classify(message: str, *, repo: str | None = None,
             role,
             [{"role": "system", "content": _SYS},
              {"role": "user", "content": message.strip()[:4000]}],
-            max_tokens=250, temperature=0.0, timeout_s=timeout,
+            max_tokens=700, temperature=0.0, timeout_s=timeout,
         )
     except Exception as exc:  # noqa: BLE001
         log.debug("rule_capture.classify llm error (none): %s", exc)
@@ -177,8 +211,11 @@ def classify(message: str, *, repo: str | None = None,
     c = _parse_classification(raw or "")
     if c is None:
         return _none()
-    if c["category"] == "none" or not c["canonical"]:
-        return _none()
-    if c["confidence"] < _min_conf():
-        return _none()
+    c["more"] = [m for m in c.get("more", []) if m["confidence"] >= _min_conf()]
+    if c["category"] == "none" or not c["canonical"] or c["confidence"] < _min_conf():
+        # The first slot can be "none" while a listed one is real: promote it.
+        if not c["more"]:
+            return _none()
+        nxt, rest = c["more"][0], c["more"][1:]
+        c = {**nxt, "more": rest}
     return c

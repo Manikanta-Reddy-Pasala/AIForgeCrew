@@ -443,7 +443,10 @@ def _run_capture_pass(_rc, prompt, repo, cwd, session_id):
         c = _rc.classify(prompt, repo=repo, session_id=session_id)
         if c.get("category") == "none":
             return None
-        stored = _rc.store(c, repo=repo, session_id=session_id, repo_root=cwd)
+        store_all = getattr(_rc, "store_all", None)
+        stored = (store_all(c, repo=repo, session_id=session_id, repo_root=cwd)[0]
+                  if store_all else
+                  _rc.store(c, repo=repo, session_id=session_id, repo_root=cwd))
         return c, stored, _rc.recognize_gate_intent(c)
 
     ex = _cf.ThreadPoolExecutor(max_workers=1)

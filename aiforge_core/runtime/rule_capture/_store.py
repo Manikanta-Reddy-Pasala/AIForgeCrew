@@ -177,3 +177,17 @@ def store(c: dict, *, repo: str | None = None, session_id=None,
         log.debug("rule_capture.store failed: %s", exc)
         return {"id": rid, "location": "", "category": c.get("category"),
                 "scope": c.get("scope")}
+
+
+def store_all(c: dict, *, repo: str | None = None, session_id=None,
+              repo_root: str | None = None) -> list[dict]:
+    """Store the classification and every extra item it carries in
+    ``more`` (a message stating several rules). First result is the primary
+    one. Never raises."""
+    # Through the package, so an ``rc.store`` monkeypatch (tests) reaches it.
+    from aiforge_core.runtime import rule_capture as _rc
+    out = [_rc.store(c, repo=repo, session_id=session_id, repo_root=repo_root)]
+    for extra in c.get("more") or []:
+        out.append(_rc.store(extra, repo=repo, session_id=session_id,
+                             repo_root=repo_root))
+    return out

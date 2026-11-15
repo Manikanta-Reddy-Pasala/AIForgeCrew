@@ -89,6 +89,7 @@ from ._store import (
     _slug,
     _write_repo_rule,
     store,
+    store_all,
 )
 from ._transparency import (
     _ACTIONABLE_TIME_RE,
@@ -104,7 +105,7 @@ from ._transparency import (
 )
 
 __all__ = [
-    "classify", "store", "list_captured", "rescope", "undo",
+    "classify", "store", "store_all", "list_captured", "rescope", "undo",
     "recognize_gate_intent", "GATE_INTENT_FLAG",
     "is_commit_command", "repo_key",
     "set_gate_flag", "clear_gate_flag", "flag_active", "flag_active_scope",
