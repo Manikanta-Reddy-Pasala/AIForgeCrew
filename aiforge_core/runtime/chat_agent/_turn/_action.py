@@ -1036,6 +1036,16 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     if name in _READ_OBS_TOOLS:
         _safely(note_read, st, args, result, cwd)
     _safely(note_command, st, name, result, cwd)
+    # files the shell wrote get the edit checks (syntax/import) and count as an
+    # edit for the regression watch (_shell_writes)
+    try:
+        from ._shell_writes import shell_edits
+        _sh_files = shell_edits(st, name, result, cwd)
+        if _sh_files:
+            st.edits_made = int(getattr(st, "edits_made", 0) or 0) + 1
+            yield from post_edit_diagnostics(st, _sh_files, cwd)
+    except Exception:  # noqa: BLE001 — a check never breaks a step
+        pass
     _safely(note_identical, st, sig, result)
     from .._guards.external import note_external
     _safely(note_external, st, name, result)
