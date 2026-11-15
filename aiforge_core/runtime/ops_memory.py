@@ -418,11 +418,33 @@ def _functions_touched(root: str, files: list[str]) -> list[str]:
     except (OSError, subprocess.SubprocessError):
         return []
     names: list[str] = []
-    for m in re.finditer(r"^@@[^@]*@@\s*(?:async\s+)?(?:def|class|func|fn|function|public|private|protected)?\s*([\w.]+)",
-                         p.stdout, re.M):
-        if m.group(1) not in names and len(m.group(1)) > 1:
-            names.append(m.group(1))
+    for m in re.finditer(r"^@@[^@]*@@[ \t]*(.+)$", p.stdout, re.M):
+        name = _hunk_name(m.group(1))
+        if name and name not in names:
+            names.append(name)
     return names[:6]
+
+
+#: Words in a hunk header that are never the name (modifiers, keywords, types).
+_NOT_NAME = frozenset(
+    "public private protected internal static final abstract synchronized native "
+    "async await export default pub fn def func function class interface enum struct "
+    "impl trait record object const let var val override virtual inline extern "
+    "unsafe void int long bool boolean char double float string auto return".split())
+
+
+def _hunk_name(header: str) -> str:
+    """The function/class a hunk header names: the identifier right before
+    "(", else the identifier after class/struct/interface/enum/impl/trait.
+    Java's "public final class InventoryAgingCalculator {" read as "final"."""
+    m = re.search(r"([A-Za-z_][\w.:]*)\s*(?:<[^>]*>)?\s*\(", header)
+    if m and m.group(1).split(".")[-1].lower() not in _NOT_NAME:
+        return m.group(1).split("::")[-1]
+    m = re.search(r"\b(?:class|struct|interface|enum|impl|trait|record|object)\s+([A-Za-z_]\w*)", header)
+    if m:
+        return m.group(1)
+    words = [w for w in re.findall(r"[A-Za-z_]\w*", header) if w.lower() not in _NOT_NAME]
+    return words[0] if words and len(words[0]) > 1 else ""
 
 
 def record_fix(sig: str, headline: str, *, repo: str, files: list[str],

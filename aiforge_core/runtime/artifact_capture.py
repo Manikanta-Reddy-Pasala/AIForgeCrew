@@ -150,6 +150,44 @@ def existing_match(kind: str, name: str, description: str, triggers,
     return who if best >= floor else ""
 
 
+_FIX_NAME = re.compile(r"^\s*(?:fix(?:es|ed|ing)?|bug\s*fix|bug|correct(?:s|ed|ing)?|"
+                       r"resolv(?:e|es|ed|ing)|patch(?:es|ed)?|repair(?:s|ed)?)\b", re.I)
+_EDIT_KEYS = ("path", "file", "file_path", "filename", "target")
+
+
+def _edited_stems(steps) -> set:
+    """Base names (no extension) of the files the turn's edit tools wrote."""
+    from aiforge_core.runtime.tools.mutating import FILE_WRITE_TOOLS
+    out = set()
+    for s in steps or []:
+        if not isinstance(s, dict) or s.get("type") != "tool" \
+                or s.get("name") not in FILE_WRITE_TOOLS:
+            continue
+        args = s.get("args") or {}
+        paths = [args.get(k) for k in _EDIT_KEYS]
+        paths += [e.get("path") for e in (args.get("edits") or []) if isinstance(e, dict)]
+        for p in paths:
+            if isinstance(p, str) and p:
+                stem = os.path.splitext(os.path.basename(p))[0]
+                if len(stem) >= 5:
+                    out.add(stem.lower())
+    return out
+
+
+def one_off_fix(name: str, description: str, triggers, steps) -> bool:
+    """The proposal is one bug fix, not a reusable procedure: it is named as a
+    fix, or it names a file this very turn edited. A real PosClientBackend
+    turn fixed inventory-aging labels and auto-saved a GLOBAL skill "Fix
+    Inventory Aging Bucket Label Formatting" (InventoryAgingCalculator.java)
+    that every project's skill search would then offer."""
+    if _FIX_NAME.search(name or ""):
+        return True
+    text = " ".join([name or "", description or "", " ".join(triggers or [])]).lower()
+    squashed = re.sub(r"[^a-z0-9]", "", text)
+    return any(stem in text or stem.replace("_", "") in squashed
+               for stem in _edited_stems(steps))
+
+
 def _write(kind: str, prop, cwd: str) -> dict:
     if kind == "skill":
         from aiforge_core.runtime import skills
@@ -183,6 +221,13 @@ def capture_from_chat(*, prompt: str, final_text: str, steps, cwd: str,
     body = (getattr(prop, "body", "") or "").strip()
     if kind not in _KINDS or not name or not body:
         return {"ok": True, "captured": False, "skipped": "nothing reusable"}
+
+    if one_off_fix(name, getattr(prop, "description", ""), getattr(prop, "triggers", None),
+                   steps):
+        log.info("artifact_capture: %s '%s' is one fix, not a procedure — not saved",
+                 kind, name)
+        return {"ok": True, "captured": False, "skipped": "one-off fix", "kind": kind,
+                "name": name}
 
     dupe = existing_match(kind, name, prop.description, prop.triggers, body)
     if dupe:

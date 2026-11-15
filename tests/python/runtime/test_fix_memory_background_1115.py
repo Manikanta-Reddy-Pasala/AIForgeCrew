@@ -36,3 +36,14 @@ def test_background_red_then_quiet_green_records_the_fix(tmp_path, monkeypatch):
     note = ops_memory.fix_hook(st2, "run_command", {"cmd": "mvn test"},
                                {"ok": False, "output": RED}, str(tmp_path), "Pcb")
     assert "seen before" in note and "src/Foo.java" in note
+
+
+def test_hunk_names_across_languages():
+    from aiforge_core.runtime.ops_memory import _hunk_name
+    assert _hunk_name("public final class InventoryAgingCalculator {") == "InventoryAgingCalculator"
+    assert _hunk_name("    public List<String> labels() {") == "labels"
+    assert _hunk_name("static String txnDay(Document doc) {") == "txnDay"
+    assert _hunk_name("def test_repr(self):") == "test_repr"
+    assert _hunk_name("pub fn matches(&self, v: &Version) -> bool {") == "matches"
+    assert _hunk_name("impl VersionReq {") == "VersionReq"
+    assert _hunk_name("bool XMLDocument::Parse(const char* p)") == "Parse"
