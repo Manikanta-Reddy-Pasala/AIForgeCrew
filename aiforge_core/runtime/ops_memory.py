@@ -463,7 +463,20 @@ def fix_hook(st, name: str, args: dict, result, cwd: str, repo: str = "") -> str
     """Per tool result: remember failures; when a run goes green after edits,
     record what changed for each failure seen; when a known failure comes
     back, return the note for that result ("" otherwise)."""
-    if not enabled() or name not in _FIX_TOOLS or not isinstance(result, dict):
+    if not enabled() or not isinstance(result, dict):
+        return ""
+    # A long build goes to the background: its start says "running" and its
+    # end comes back through command_wait. Judge that end as the command's
+    # own run — before, a Maven fix (always backgrounded) was never recorded.
+    try:
+        from aiforge_core.runtime import cmd_finished
+        run = cmd_finished.as_run(name, args, result)
+    except Exception:  # noqa: BLE001
+        run = (name, args, result)
+    if run is None:
+        return ""
+    name, args, result = run
+    if name not in _FIX_TOOLS or not isinstance(result, dict):
         return ""
     if result.get("running") or result.get("timed_out") or result.get("stopped"):
         return ""
@@ -481,7 +494,11 @@ def fix_hook(st, name: str, args: dict, result, cwd: str, repo: str = "") -> str
             said.add(fail.signature)
             return fix_note(e, repo)
         return ""
-    if open_ and runner_green(text):
+    # Green: the runner says so, or a clean exit with no failure in its output
+    # ("mvn -q test" prints nothing at all when every test passes).
+    green = runner_green(text) or (result.get("ok") is True
+                                   and not failure_of(text).signature)
+    if open_ and green:
         root = repo_root(cwd)
         for sig, (headline, snap) in list(open_.items()):
             files = _changed_since(st, snap)
