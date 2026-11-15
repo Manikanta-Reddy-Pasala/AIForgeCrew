@@ -135,7 +135,7 @@ def _base_failures(st, cmd: str, root: str) -> "set[str] | None":
             pass
 
 
-_EDIT_TOOLS = ("file_patch", "multi_edit", "file_write", "edit", "apply_patch")
+from aiforge_core.runtime.tools.mutating import FILE_WRITE_TOOLS as _EDIT_TOOLS  # the one list
 _PY_BIN = re.compile(r"(?:^|[\s;&(])((?:\S*/)?python3?(?:\.\d+)?)\s")
 
 
