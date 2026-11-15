@@ -109,7 +109,8 @@ def _vec_enabled() -> bool:
     # the lexical hash backend uses the brute-force scan. sqlite-vec ships with
     # the embed-static extra.
     return os.environ.get("AIFORGE_EMBED_BACKEND", "hash").strip().lower() in (
-        "model2vec", "static", "api", "openai", "lmstudio", "ollama")
+        "model2vec", "static", "api", "openai", "lmstudio", "ollama",
+        "sidecar", "bge", "bge-m3")
 
 
 _VEC_WARNED = False
