@@ -45,3 +45,21 @@ def test_off_switch(monkeypatch):
     for _ in range(50):
         _limits.note_spin(st)
     assert _limits._may_extend(st, 10) is True
+
+
+def test_second_extension_needs_fewer_failing_tests():
+    st = _st()
+    _limits.note_test_fails(st, 3)
+    assert _limits._may_extend(st, 10) is True          # first: as before
+    st.edits_made += 5                                   # edits land...
+    _limits.note_test_fails(st, 3)                       # ...but the tests do not move
+    assert _limits._may_extend(st, 20) is False
+    _limits.note_test_fails(st, 1)                       # now they do
+    assert _limits._may_extend(st, 30) is True
+
+
+def test_turn_without_tests_is_judged_as_before():
+    st = _st()
+    assert _limits._may_extend(st, 10) is True
+    st.edits_made += 1
+    assert _limits._may_extend(st, 20) is True

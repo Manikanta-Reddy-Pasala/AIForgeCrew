@@ -66,6 +66,32 @@ def _spinning(st) -> bool:
     return since >= cap
 
 
+def note_test_fails(st, fails) -> None:
+    """Record a test run's failure count (0 = green); the turn's best so far
+    is what an extension compares against."""
+    try:
+        fails = int(fails)
+    except (TypeError, ValueError):
+        return
+    best = getattr(st, "best_fails", None)
+    st.best_fails = fails if best is None else min(best, fails)
+
+
+def _tests_stalled(st) -> bool:
+    """A further extension needs the tests to have got better since the last
+    one: a real PosClientBackend turn used both extensions (93+ minutes, 650
+    calls) editing steadily while its failing tests never dropped. Edits that
+    do not move the tests are not progress. The first extension, and a turn
+    that ran no tests, are judged as before."""
+    if int(getattr(st, "extensions_used", 0) or 0) < 1:
+        return False
+    at = getattr(st, "best_fails_at_grant", None)
+    best = getattr(st, "best_fails", None)
+    if at is None or best is None:
+        return False
+    return best >= at
+
+
 def _may_extend(st, n):
     """True when this turn EARNED another budget: extensions remain and it
     produced NEW work (a landed edit, or a read of something not read before)
@@ -81,9 +107,12 @@ def _may_extend(st, n):
         return False
     if _spinning(st):
         return False
+    if _tests_stalled(st):
+        return False
     st.extensions_used += 1
     st.progress_mark = mark
     st.spin_at_grant = int(getattr(st, "spin_events", 0) or 0)
+    st.best_fails_at_grant = getattr(st, "best_fails", None)
     st.granted_at_step = n
     return True
 

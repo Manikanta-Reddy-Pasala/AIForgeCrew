@@ -121,6 +121,15 @@ def _note_green_tests(st, name, args, result, cwd) -> None:
     if stale:
         return                        # tested the code as it was before the edits
     st.last_test_cmd = (name, dict(args or {}))      # any test run: its interpreter
+    try:                                              # the turn's best failure count so far
+        _txt = result_text(result)
+        if _TESTS_RAN.search(_txt or ""):
+            from aiforge_core.runtime.parallel_subtasks import _fail_count
+            from ._limits import note_test_fails
+            note_test_fails(st, 0 if result.get("ok") is True and not _RED_TEXT.search(_txt)
+                            else _fail_count(_txt))
+    except Exception:  # noqa: BLE001
+        pass
     # The turn's own test command ended with exit 0 and no failure in its
     # output, on exactly this code: the finish check reads this when its own
     # guessed runner cannot run the project at all (see _project_verify).
