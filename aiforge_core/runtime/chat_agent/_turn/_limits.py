@@ -36,6 +36,36 @@ from ._shared import (
 from ._tasks import pin_board, turn_pin
 
 
+#: Stuck-guard interventions since the last grant that mark a turn as
+#: spinning rather than working (AIFORGE_CHAT_EXTEND_MAX_SPIN).
+_MAX_SPIN = 8
+
+
+def note_spin(st) -> None:
+    """Count one intervention of a stuck guard (a skipped duplicate read, a
+    refused discard, a nudge, a change of approach)."""
+    try:
+        st.spin_events = int(getattr(st, "spin_events", 0) or 0) + 1
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _spinning(st) -> bool:
+    """Edits keep landing but the guards keep stepping in: a real
+    PosClientBackend turn patched the same files back and forth, re-ran reads
+    it already had (45 skipped), tried to reset its own edits (12 refused) and
+    changed approach 3 times — and each landed edit counted as progress, so
+    the 40-minute turn was extended and ran 62+ minutes in a loop."""
+    try:
+        cap = int(os.environ.get("AIFORGE_CHAT_EXTEND_MAX_SPIN", str(_MAX_SPIN)))
+    except ValueError:
+        cap = _MAX_SPIN
+    if cap <= 0:
+        return False
+    since = int(getattr(st, "spin_events", 0) or 0) - int(getattr(st, "spin_at_grant", 0) or 0)
+    return since >= cap
+
+
 def _may_extend(st, n):
     """True when this turn EARNED another budget: extensions remain and it
     produced NEW work (a landed edit, or a read of something not read before)
@@ -49,8 +79,11 @@ def _may_extend(st, n):
     mark = (st.reads_new, st.edits_made, _fp)
     if mark == st.progress_mark:
         return False
+    if _spinning(st):
+        return False
     st.extensions_used += 1
     st.progress_mark = mark
+    st.spin_at_grant = int(getattr(st, "spin_events", 0) or 0)
     st.granted_at_step = n
     return True
 

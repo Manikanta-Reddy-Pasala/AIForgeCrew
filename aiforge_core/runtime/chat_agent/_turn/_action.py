@@ -1237,6 +1237,8 @@ def _discard_gate(st, name, args, cwd):
     gone = refusal(st, name, args, cwd)
     if gone is None:
         return None
+    from ._limits import note_spin
+    note_spin(st)
     yield {"type": "thought", "role": "system",
            "text": "⛔ refused a command that would discard this turn's own edits"}
     yield {"type": "tool", "name": name, "args": args, "result": gone}

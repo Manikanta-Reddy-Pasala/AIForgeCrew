@@ -35,6 +35,8 @@ def nudge(st, thought: str, text: str, *, reply: str | None = None):
     model's own turn that provoked it: it goes in first, or two user turns in
     a row would break some providers."""
     yield {"type": "thought", "role": "system", "text": thought}
+    from .._limits import note_spin
+    note_spin(st)
     if reply is not None:
         st.convo.append({"role": "assistant", "content": reply})
     st.convo.append({"role": "user", "content": text})
@@ -44,6 +46,8 @@ def change_approach(st, why: str, *, reply: str | None = None, prepare=None):
     """Change approach (``escalate``); once the escalations are spent, end the
     turn with the give-up message. ``prepare`` runs just before, ``reply`` is
     appended as the model's turn first (see :func:`nudge`)."""
+    from .._limits import note_spin
+    note_spin(st)
     if prepare is not None:
         prepare()
     if reply is not None:
