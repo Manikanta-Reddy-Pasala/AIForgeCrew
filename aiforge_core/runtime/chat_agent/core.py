@@ -35,7 +35,6 @@ CORE_OFF = {
     "AIFORGE_CHAT_PROBE_GUARD": "0",       # "many commands / reads and no edit"
     "AIFORGE_CHAT_FORCE_WRITE": "0",       # next call may only edit
     "AIFORGE_CHAT_STRUCTURE_CHECK": "0",   # moved/dropped functions note
-    "AIFORGE_CHAT_TEST_GUARD": "0",        # changed old assertions note
     "AIFORGE_CHAT_STUB_NOTE": "0",         # stub functions note
     "AIFORGE_CHAT_TRACE_HINT": "0",        # line trace after a repeated failure
     "AIFORGE_CHAT_EXAMPLE_GATE": "0",      # "examples have no test" send-back
@@ -62,6 +61,11 @@ CORE_ON = {
     # (tomlkit) 25-min runs: core alone 7,0,8,0,7,0,3 (avg 3.6, three runs fell
     # to 0); core + watch 10,7,12 (avg 9.7, none fell to 0).
     "AIFORGE_CHAT_REGRESS": "1",
+    # an edit that removes an assertion an existing test had is named on that
+    # edit's result (restore it, change the code) — bad click runs rewrote
+    # test_info_dict.py / test_bashcomplete.py to match their own code. Quiet
+    # otherwise; its send-back gate stays off.
+    "AIFORGE_CHAT_TEST_GUARD": "1",
 }
 
 
