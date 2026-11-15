@@ -119,6 +119,15 @@ def _note_green_tests(st, name, args, result, cwd) -> None:
     if stale:
         return                        # tested the code as it was before the edits
     st.last_test_cmd = (name, dict(args or {}))      # any test run: its interpreter
+    # The turn's own test command ended with exit 0 and no failure in its
+    # output, on exactly this code: the finish check reads this when its own
+    # guessed runner cannot run the project at all (see _project_verify).
+    try:
+        st.own_test_ok_fp = (content_fingerprint(cwd)
+                             if result.get("ok") is True
+                             and not _RED_TEXT.search(result_text(result)) else None)
+    except Exception:  # noqa: BLE001
+        st.own_test_ok_fp = None
     if result.get("ok") is not True:
         # tests that never started for a missing dependency (tomlkit: yaml)
         try:
@@ -166,6 +175,13 @@ def _note_green_tests(st, name, args, result, cwd) -> None:
 
 
 _RAN = re.compile(r"\b[1-9]\d* passed\b")
+#: A runner's output that shows tests actually ran (any toolchain's counts).
+_TESTS_RAN = re.compile(r"Tests run:\s*\d+|\b\d+ (?:passed|failed|failing)\b|^--- (?:FAIL|PASS)|"
+                        r"^(?:ok|FAIL)\s+\S+|test result:|^Tests:\s", re.M)
+#: Failure words in any runner's output (pytest, maven, gradle, jest, go, cargo).
+_RED_TEXT = re.compile(r"\b[1-9]\d* (?:failed|errors?|failing)\b|\bFAILED\b|"
+                       r"\bBUILD FAILURE\b|\bBUILD FAILED\b|^FAIL\b|\[ERROR\]|"
+                       r"Failures:\s*[1-9]|Errors:\s*[1-9]|test result: FAILED", re.M)
 
 
 _FAILED_ID = re.compile(r"^(?:FAILED|ERROR)\s+(\S+::\S+)", re.M)
@@ -481,6 +497,17 @@ def _project_verify(st, cwd):
         from aiforge_core.runtime import git_target
         base = git_target.command_base(getattr(st, "cwd", None) or cwd) or cwd
         if not _whole_suite(cmd or "", base):
+            # Not a Python tree, the guessed runner ran no test at all, and the
+            # turn's own test command passed on this very code: the runner's
+            # failure is its environment, not the work. A real PosClientBackend
+            # job: "mvn -q test" ran on the system JDK 21 where the repo needs 24
+            # ("release version 24 not supported"), the model was told its tests
+            # fail, rewrote pom.xml to chase it, and the false "checks still
+            # FAIL" note was saved into memory.
+            if not py and not _TESTS_RAN.search(out or "") \
+                    and getattr(st, "own_test_ok_fp", None) \
+                    and st.own_test_ok_fp == content_fingerprint(cwd):
+                return None, out
             # a narrower run cannot stand for the tree; a runner that cannot
             # run this suite on the original code either has no verdict
             return (None, out) if _runner_broken_at_base(st, cwd, py) else (ok, out)
