@@ -130,13 +130,79 @@ _SKIP = re.compile(
     r"|\bt\.Skip(?:f|Now)?\(|@(?:Disabled|Ignore)\b|#\[ignore\]|\bskip\(\s*[\"']")
 
 
+#: Lines that are structure, not what a test feeds the code: imports,
+#: declarations, annotations, lone braces.
+_STRUCTURE = re.compile(
+    r"^\s*(?:import\b|package\b|from\s+\S+\s+import\b|using\b|#include\b|use\s|mod\s|"
+    r"@\w+|[{}()\];,]*$|(?:public|private|protected|static|final|class|interface|"
+    r"void|fn|func|def|async\s+def|describe|it|test)\b)")
+_SETUP_PY_TEST = re.compile(r"^test|^setUp|^setup")
+
+
+def _py_setup(text: str) -> "Counter | None":
+    """Non-assertion statements inside Python test functions/fixtures."""
+    try:
+        tree = ast.parse(textwrap.dedent(text))
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
+        return None
+    out: Counter = Counter()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                and _SETUP_PY_TEST.search(node.name):
+            for stmt in node.body:
+                if isinstance(stmt, (ast.Assert, ast.FunctionDef, ast.AsyncFunctionDef,
+                                     ast.ClassDef, ast.Pass)):
+                    continue
+                src = ast.unparse(stmt)
+                if not _ASSERTION.search(src.split("\n", 1)[0]) and "\n" not in src:
+                    out[src] += 1
+    return out
+
+
+def _line_statements(text: str):
+    """Lines joined until their ( and [ close; braces open blocks, so a class
+    or method body is not swallowed into one statement."""
+    buf, depth = [], 0
+    for ln in text.splitlines():
+        if not buf and ln.lstrip().startswith(("#", "//", "/*", "*")):
+            continue
+        buf.append(ln)
+        bare = _STRINGS.sub("", ln)
+        depth += sum(bare.count(c) for c in "([") - sum(bare.count(c) for c in ")]")
+        if depth <= 0 or len(buf) > 40:
+            yield "\n".join(buf)
+            buf, depth = [], 0
+    if buf:
+        yield "\n".join(buf)
+
+
+def _setup(text: str) -> Counter:
+    """The statements an existing test feeds the code: inputs, mocks,
+    fixtures (``when(...).thenReturn(...)``, ``let x = parse("...")``)."""
+    py = _py_setup(text)
+    if py is not None:
+        return py
+    return Counter(_norm(st) for st in _line_statements(text)
+                   if not _ASSERTION.search(st.split("\n", 1)[0])
+                   and not _STRUCTURE.match(st.split("\n", 1)[0])
+                   and ("(" in st or "=" in st))
+
+
 def lost_assertions(before: str, after: str) -> list[str]:
     """Assertion lines of ``before`` that ``after`` no longer has (by count),
-    then skip markers ``after`` added."""
+    then skip markers ``after`` added, then setup lines of existing tests
+    that ``after`` changed.
+
+    Setup counts too: a real PosClientBackend job changed how accounts are
+    keyed, and instead of the code keeping the old behaviour it edited an
+    existing test's mock (``"bankId", "L1"`` -> ``"accountNumber", ...``); no
+    assertion moved, the suite went green, the real test still failed."""
     gone = _assertions(before) - _assertions(after)
     skips = (Counter(_norm(ln) for ln in after.splitlines() if _SKIP.search(ln))
              - Counter(_norm(ln) for ln in before.splitlines() if _SKIP.search(ln)))
-    return [*gone.elements(), *(f"(new skip) {ln}" for ln in skips.elements())]
+    setup = _setup(before) - _setup(after)
+    return [*gone.elements(), *(f"(new skip) {ln}" for ln in skips.elements()),
+            *(f"(changed test setup) {ln}" for ln in setup.elements())]
 
 
 _TESTS_WORD = r"(?:tests?\b|test_\w+|\w+_test\b|\w+Tests?\b|specs?\b)"
@@ -337,8 +403,9 @@ def check(st, name, files, args, cwd=""):
         yield {"type": "thought", "role": "system",
                "text": f"⚠ edit to {shown} changed an existing assertion: {lost[0][:120]}"}
         from ._notes import hold
-        head = ("[harness — not the user] This edit changed or removed an assertion "
-                f"that `{rel}` already had before this request:\n{shown_lines}{more}\n")
+        head = ("[harness — not the user] This edit changed or removed an assertion, "
+                f"or the setup (inputs, mocks) of a test, that `{rel}` already had before "
+                f"this request:\n{shown_lines}{more}\n")
         if allows_test_changes(str(getattr(st, "goal", "") or ""), rel):
             hold(st, head + "The request allows some existing tests to change. Keep "
                      "this only if it is one of those; otherwise put it back and change "
