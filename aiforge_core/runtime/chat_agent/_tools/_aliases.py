@@ -13,7 +13,6 @@ from __future__ import annotations
 _PATH = {"file_path": "path", "filePath": "path", "filename": "path", "file": "path"}
 _ALIASES: dict = {
     "read_file": ("file_read", _PATH),
-    "read": ("file_read", _PATH),
     "view": ("file_read", _PATH),
     "view_file": ("file_read", _PATH),
     "open_file": ("file_read", _PATH),

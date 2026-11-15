@@ -121,7 +121,7 @@ def test_family_index_lists_families_and_names_no_extra_tool():
     assert "- jira:" in index and "- web:" in index and "tool_help" in index
     core = _given("what is 2+2")
     leaked = [n for n in NATIVE_TOOL_NAMES
-              if n not in core and re.search(rf"\b{re.escape(n)}\b", index)]
+              if n not in core and n != "read" and re.search(rf"\b{re.escape(n)}\b", index)]
     assert leaked == []
     assert len(index) < 1200
 

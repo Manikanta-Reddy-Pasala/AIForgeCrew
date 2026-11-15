@@ -114,6 +114,7 @@ from ._code import (
     _t_codegraph_explore,
     _t_code_search,
     _t_read_lines,
+    _t_read,
     _t_rename_symbol,
     _t_summarize_doc,
 )
