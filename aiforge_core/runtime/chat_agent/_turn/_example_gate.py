@@ -86,6 +86,36 @@ def _sentence(text: str, start: int, end: int) -> str:
     return text[lo + 1:min(his) if his else len(text)]
 
 
+#: A plain double-quoted value in prose ("They should read "1 year", "2 years"").
+_PLAIN = re.compile(r'"([^"\n`]{2,80})"')
+#: Plain quotes are common in prose ("are treated as", "read as"), so only a
+#: plainly EXPECTED cue counts for them.
+_PLAIN_CUE = re.compile(r"(?:->|=>|\b(?:should|must|ought\s+to|needs?\s+to)\s+(?:be|read|say|show|"
+                        r"display|return|print|output|give|stay|become|equal)\b|\bexpected\b|"
+                        r"\binstead\s+(?:read|show|return|print)\b)[^.;\n]{0,40}$", re.I)
+
+
+def _plain_examples(text: str) -> list:
+    """Double-quoted values outside backticks, right after an output word,
+    in a sentence that is not about the current/wrong behaviour. Real bug
+    reports quote expected output this way more often than in backticks
+    (a real PosClientBackend job: 'They should read "1 year", "2 years"')."""
+    spans = [(m.start(), m.end()) for m in _SPAN.finditer(text)]
+    out = []
+    for m in _PLAIN.finditer(text):
+        if any(a <= m.start() < b for a, b in spans):
+            continue
+        v = '"' + m.group(1).strip() + '"'
+        if len(_norm(v)) < 3 or "{" in v or "%" in v:
+            continue
+        if _NOT_EXPECTED.search(_sentence(text, m.start(), m.end())):
+            continue
+        if not _PLAIN_CUE.search(text[max(0, m.start() - 60):m.start()]):
+            continue
+        out.append(v)
+    return out
+
+
 def examples(request: str, expected_only: bool = False) -> list:
     """The request's example values, in order, each once. ``expected_only``:
     only those right after an output word."""
@@ -109,6 +139,7 @@ def examples(request: str, expected_only: bool = False) -> list:
         if expected_only and not cue:
             continue
         out.append(v)
+    out += _plain_examples(text)
     return list(dict.fromkeys(out))
 
 
@@ -262,7 +293,23 @@ def note_untracked(st, cwd) -> None:
         st.example_untracked0 = set()
 
 
-def _held(v: str, norm: str, loose: str) -> bool:
+def _quoted_held(v: str, raw: str) -> "bool | None":
+    """A short quoted value is held only as a whole string literal: "1 year"
+    is not held by a test of "1 - 1 year" (the quote-and-space-stripping
+    match said it was). None: not a short single-line quoted value."""
+    if not _QUOTED.match(v) or "\\" in v or len(v) > 82:
+        return None
+    inner = v[1:-1].strip()
+    words = [re.escape(w) for w in inner.split()]
+    if not words:
+        return None
+    return bool(re.search(r"""["']\s*""" + r"\s+".join(words) + r"""\s*["']""", raw))
+
+
+def _held(v: str, norm: str, loose: str, raw: str = "") -> bool:
+    q = _quoted_held(v, raw) if raw else None
+    if q is not None:
+        return q
     a = _ASSIGN.match(v)
     if a:
         # env={"NAME": "value"}, setenv("NAME", "value"), NAME=value
@@ -304,7 +351,7 @@ def untested(st, expected_only: bool = False, unwritten: bool = False) -> list:
     # a pair reads `input` -> `result` once the list wraps each item in backticks
     missed = [f"{a}` -> `{b}" for a, b in wanted_pairs if not _pair_held(a, b, chunks)]
     in_pairs = {_norm(b) for a, b in wanted_pairs}
-    return missed + [v for v in wanted if not _held(v, norm, loose)
+    return missed + [v for v in wanted if not _held(v, norm, loose, text)
                      and (_norm(v) not in in_pairs or not missed)]
 
 
