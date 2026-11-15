@@ -169,6 +169,8 @@ def _step_cap_guard(st, n):
                            f"step budget to {st.safety} "
                            f"({st.extensions_used}/{st.ext_budget})"}
         else:
+            from ._best_state import restore_if_worse
+            yield from restore_if_worse(st)
             _fire_stop("cap", st.cwd)
             # Name the knob that ACTUALLY stopped this run. A Quick-mode
             # turn is bounded by its caller's max_steps, so pointing the
@@ -329,6 +331,8 @@ def _deadline_guard(st, n):
                            f"turn by {int(st.turn_budget_s)}s "
                            f"({st.extensions_used}/{st.ext_budget})"}
         else:
+            from ._best_state import restore_if_worse
+            yield from restore_if_worse(st)
             _fire_stop("deadline", st.cwd)
             yield {"type": "message",
                    "text": f"(stopped: hit the {int(st.turn_budget_s)}s turn "

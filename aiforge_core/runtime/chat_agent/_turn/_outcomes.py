@@ -126,8 +126,13 @@ def _note_green_tests(st, name, args, result, cwd) -> None:
         if _TESTS_RAN.search(_txt or ""):
             from aiforge_core.runtime.parallel_subtasks import _fail_count
             from ._limits import note_test_fails
-            note_test_fails(st, 0 if result.get("ok") is True and not _RED_TEXT.search(_txt)
-                            else _fail_count(_txt))
+            _fails = (0 if result.get("ok") is True and not _RED_TEXT.search(_txt)
+                      else max(1, _fail_count(_txt)) if result.get("ok") is not True
+                      else _fail_count(_txt))
+            note_test_fails(st, _fails)
+            from aiforge_core.runtime.shell_writes import command_of
+            from . import _best_state
+            _best_state.note(st, command_of(args or {}) or "", _fails, cwd)
     except Exception:  # noqa: BLE001
         pass
     # The turn's own test command ended with exit 0 and no failure in its
