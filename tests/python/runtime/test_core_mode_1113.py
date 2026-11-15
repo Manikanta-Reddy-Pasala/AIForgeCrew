@@ -138,3 +138,12 @@ def test_core_mode_turns_the_regression_watch_on(monkeypatch):
     core.apply()
     from aiforge_core.runtime.chat_agent._turn import _regress
     assert _regress.enabled()
+
+
+def test_core_mode_keeps_the_test_guard_on(monkeypatch):
+    _clear(monkeypatch)
+    monkeypatch.setenv("AIFORGE_CHAT_CORE", "1")
+    core.apply()
+    import os
+    assert os.environ["AIFORGE_CHAT_TEST_GUARD"] == "1"
+    assert "AIFORGE_CHAT_TEST_GUARD" not in core.CORE_OFF
