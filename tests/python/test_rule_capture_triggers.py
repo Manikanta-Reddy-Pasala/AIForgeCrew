@@ -79,7 +79,7 @@ def test_write_repo_rule_no_triggers_stays_always(tmp_path):
 def test_do_store_tags_md_bullet_with_triggers(monkeypatch, tmp_path):
     calls = {}
 
-    def fake_append_bullet(*, source, title, bullet, kind, tags):
+    def fake_append_bullet(*, source, title, bullet, kind, tags, repo="rules"):
         calls["bullet"] = bullet
 
     monkeypatch.setattr("aiforge_core.memory.md_store.append_bullet",
@@ -96,7 +96,7 @@ def test_do_store_tags_md_bullet_with_triggers(monkeypatch, tmp_path):
 def test_do_store_no_triggers_bullet_untagged(monkeypatch):
     calls = {}
 
-    def fake_append_bullet(*, source, title, bullet, kind, tags):
+    def fake_append_bullet(*, source, title, bullet, kind, tags, repo="rules"):
         calls["bullet"] = bullet
 
     monkeypatch.setattr("aiforge_core.memory.md_store.append_bullet",

@@ -189,7 +189,8 @@ def upsert_section(*, source: str, title: str, section_title: str,
                 f"kind: {kind}\n"
                 f"tags: {', '.join(tags)}\n"
                 f"source: {source}\n"
-                f"created: {_now_iso()}\n"
+                + (f"repo: {repo}\n" if repo not in ("notes", "") else "")
+                + f"created: {_now_iso()}\n"
                 "---\n\n"
             )
             path.write_text(fm + f"## {section_title}\n\n{section_body.strip()}\n",
@@ -233,7 +234,8 @@ def append_bullet(*, source: str, title: str, bullet: str,
                 f"kind: {kind}\n"
                 f"tags: {', '.join(tags)}\n"
                 f"source: {source}\n"
-                f"created: {_now_iso()}\n"
+                + (f"repo: {repo}\n" if repo not in ("rules", "") else "")
+                + f"created: {_now_iso()}\n"
                 "---\n\n"
             )
             path.write_text(fm + line + "\n", encoding="utf-8")

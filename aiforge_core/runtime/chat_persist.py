@@ -148,7 +148,7 @@ def _write_auto_memory(chat_store, session_id: int, cwd: str, prompt: str,
                 source=f"repo:{repo}", title=f"{repo} — project memory",
                 section_title=f"{when} · {prompt.strip()[:50]}",
                 section_body=f"{final_text[:600]}", kind="project",
-                tags=["repo", repo])
+                tags=["repo", repo], repo=repo)
     except Exception:  # noqa: BLE001
         pass
 

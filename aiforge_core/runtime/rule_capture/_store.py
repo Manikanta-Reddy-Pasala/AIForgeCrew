@@ -80,6 +80,26 @@ def _new_item(rid: str, c: dict, repo, session_id) -> dict:
     }
 
 
+def _scope_repo(scope: str, repo, repo_root, default: str) -> str:
+    """The memory row's repo for a capture of this scope: a PROJECT one under
+    the project's own key (the key chat recall reads), a GLOBAL one in the
+    shared bucket every project reads. Before, a project rule went into the
+    "rules" bucket and a project note into "notes" — buckets scoped recall
+    skips on purpose — so the project never recalled them, and compaction
+    then folded them into the SHARED brief every other project reads; and a
+    global fact was filed under whatever project the chat was in."""
+    if scope == "global":
+        return "shared" if default == "notes" else default
+    if scope == "project":
+        try:
+            from aiforge_core.runtime import chat_scope
+            key = chat_scope.project_key(repo_root) if repo_root else ""
+        except Exception:  # noqa: BLE001
+            key = ""
+        return key or repo or default
+    return default
+
+
 def _rule_brief_source(scope: str, repo) -> tuple[str, str]:
     if scope == "global":
         return "rules:global", "AIForge rules (all sessions)"
@@ -118,7 +138,8 @@ def _store_rule(item: dict, c: dict, repo, repo_root) -> None:
     bullet_text = (f"[triggers: {', '.join(triggers)}] {canonical}"
                    if triggers else canonical)
     md_store.append_bullet(source=src, title=title, bullet=bullet_text,
-                           kind=cat, tags=[cat, scope])
+                           kind=cat, tags=[cat, scope],
+                           repo=_scope_repo(scope, repo, repo_root, "rules"))
     item["md_source"] = src
     item["md_bullet"] = "- " + bullet_text
     item["location"] = f"md:{src}"
@@ -133,10 +154,11 @@ def _store_rule(item: dict, c: dict, repo, repo_root) -> None:
         _write_global_repo_rule(item, canonical, triggers)
 
 
-def _store_memory(item: dict, repo) -> None:
+def _store_memory(item: dict, repo, repo_root=None) -> None:
     from aiforge_core.runtime.tools.memory_write import memory_write
     memory_write(text=item["canonical"], kind="note",
-                 tags=[item["category"], item["scope"]], repo=repo or "notes")
+                 tags=[item["category"], item["scope"]],
+                 repo=_scope_repo(item["scope"], repo, repo_root, "notes"))
     item["location"] = f"memory:{item['scope']}"
 
 
@@ -153,7 +175,7 @@ def _do_store(c: dict, *, rid: str, repo: str | None, session_id,
         if cat in ("rule", "feedback"):
             _store_rule(item, c, repo, repo_root)
         else:
-            _store_memory(item, repo)
+            _store_memory(item, repo, repo_root)
     except Exception as exc:  # noqa: BLE001 — store must never raise
         log.debug("rule_capture store soft-fail: %s", exc)
     # Persist the index entry (global/project only — session is in-memory).
