@@ -38,7 +38,7 @@ from ._tasks import pin_board, turn_pin
 
 #: Stuck-guard interventions since the last grant that mark a turn as
 #: spinning rather than working (AIFORGE_CHAT_EXTEND_MAX_SPIN).
-_MAX_SPIN = 8
+_MAX_SPIN = 5
 
 
 def note_spin(st) -> None:
