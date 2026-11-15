@@ -58,6 +58,12 @@ _RULES = (
     "(a test or command that passes, a file that exists, the answer given).\n"
     "- A rule about how to work (\"don't push\", \"don't edit the tests\") "
     "is not a task.\n"
+    "- Reading, finding or understanding the code is not a task: every task "
+    "starts that way.\n"
+    "- One change is one task even when the message lists the cases it must "
+    "handle (\"singular for 1\", \"the last bucket keeps…\"): those cases are "
+    "its check, not tasks of their own.\n"
+    "- Running the tests is part of a task's check, not a task of its own.\n"
     "- Do not add work the user did not ask for; extra work the agent thinks "
     "is needed is reported as \"Suggested, not done\", never planned. Split a "
     "big piece of work into its natural steps only when it really has "
@@ -255,7 +261,30 @@ def plan_asks(role: str, message: str, messages, cwd=None, session_id=None):
                        for x in tasks if isinstance(x, (str, dict))) if t]
     if tasks and not out:
         return None                  # a shape we cannot read: not "no list"
+    out = _lean(out, text)
     return out[:_MAX_TASKS] if len(out) >= 2 else []
+
+
+#: A task that only reads: how every task starts, not work of its own.
+_READ_ONLY_TASK = re.compile(
+    r"^\s*(?:find|identify|locate|look\s+(?:at|for|up)|read|explore|understand|"
+    r"investigate|inspect|review|examine|search|study)\b", re.I)
+#: Items a request with no list of its own may be split into.
+_MAX_UNLISTED = 4
+
+
+def _lean(tasks: list, message: str) -> list:
+    """Drop read-only tasks (while real work remains) and keep a request that
+    gives no list of its own to a few items. A real one-bug report became 8
+    items ("Find the code…", "Identify where…", one per case the fix must
+    handle, "Run the tests…"), and the agent spent 11 of its 76 calls ticking
+    them (OpenCode, same model: 14 calls in all)."""
+    work = [t for t in tasks if not _READ_ONLY_TASK.search(t)]
+    if work:
+        tasks = work
+    if not sections(message):
+        tasks = tasks[:_MAX_UNLISTED]
+    return tasks
 
 
 _STATUSES = ("pending", "running", "done", "failed", "skipped")
