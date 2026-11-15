@@ -93,17 +93,49 @@ def _summarize(name: str, args: dict, result) -> "dict | None":
     return None
 
 
-def _fold_message_steps(m: dict, seen: dict, order: list) -> None:
+#: Tools that report on a command started in the background (by its id).
+_BG_REPORT_TOOLS = {"command_wait", "command_output", "command_status"}
+
+
+def _bg_final(result) -> "tuple[str, bool] | None":
+    """``(id, exited_ok)`` when this result says a background command ENDED."""
+    if not isinstance(result, dict) or result.get("running") is not False:
+        return None
+    if result.get("code") is None or not result.get("id"):
+        return None
+    try:
+        return str(result["id"]), int(result["code"]) == 0
+    except (TypeError, ValueError):
+        return None
+
+
+def _fold_message_steps(m: dict, seen: dict, order: list,
+                        bg: "dict | None" = None) -> None:
     """Fold one assistant message's tool steps into the dedup accumulators. A
     later call to the SAME action updates its outcome (a retry that finally
-    succeeded shows as ok)."""
+    succeeded shows as ok).
+
+    A command that went to the background answers ``ok`` when it STARTS; its
+    real outcome is the exit code a later ``command_wait`` reports. So a
+    still-running command has no outcome yet, and the wait sets it — before,
+    a build that started and then failed was filed as one that worked."""
     if not isinstance(m, dict) or m.get("role") != "assistant":
         return
+    bg = {} if bg is None else bg
     for s in (m.get("steps") or []):
         if not isinstance(s, dict) or s.get("type") != "tool":
             continue
-        entry = _summarize(s.get("name") or "", s.get("args") or {},
-                           s.get("result"))
+        name, result = s.get("name") or "", s.get("result")
+        if name in _BG_REPORT_TOOLS:
+            fin = _bg_final(result)
+            if fin and fin[0] in bg and bg[fin[0]] in seen:
+                seen[bg[fin[0]]]["outcome"] = fin[1]
+            continue
+        entry = _summarize(name, s.get("args") or {}, result)
+        if entry and name in _CMD_TOOLS and isinstance(result, dict) \
+                and result.get("running") is True and result.get("id"):
+            entry["outcome"] = None
+            bg[str(result["id"])] = entry["key"]
         if not entry:
             continue
         k = entry["key"]
@@ -125,8 +157,9 @@ def ledger_items(session_id) -> list[dict]:
         return []
     seen: dict[str, dict] = {}
     order: list[str] = []
+    bg: dict[str, str] = {}
     for m in msgs:
-        _fold_message_steps(m, seen, order)
+        _fold_message_steps(m, seen, order, bg)
     return [seen[k] for k in order]
 
 

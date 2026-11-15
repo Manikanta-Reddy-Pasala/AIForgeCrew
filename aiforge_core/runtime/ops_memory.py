@@ -236,7 +236,23 @@ def upsert_repo(repo: str, fields: dict, *, source: str = "learned") -> dict:
 _PY = re.compile(r"(?:^|[\s;&(])((?:\S*/)?(?:\.?venv|env|\.tox/\w+|\S*envs?/\S+)/bin/python3?(?:\.\d+)?)\b")
 _PYPATH = re.compile(r"\bPYTHONPATH=(\S+)")
 _CD = re.compile(r"^\s*cd\s+(\S+)\s*&&")
-_TEST = re.compile(r"(?:-m\s+pytest|\bpytest\b|-m\s+unittest|\btox\b)")
+# Any toolchain's test command, not only Python's: a working
+# "JAVA_HOME=... mvn -o test" was never learned, so every session rediscovered it.
+_TEST = re.compile(
+    r"(?:-m\s+pytest|\bpytest\b|-m\s+unittest|\btox\b"
+    r"|(?:\bmvn|\bmvnw|\./mvnw)\b[^|;&]*\b(?:test|verify)\b"
+    r"|(?:\bgradle|\bgradlew|\./gradlew)\b[^|;&]*\b(?:test|check)\b"
+    r"|\b(?:npm|yarn|pnpm|bun)\s+(?:run\s+)?test\b"
+    r"|\bgo\s+test\b|\bcargo\s+(?:test|nextest)\b|\bdotnet\s+test\b"
+    r"|\bmake\s+(?:test|check)\b|\b(?:jest|vitest|mocha|rspec|phpunit|ctest)\b)")
+# Leading VAR=value assignments of the command (JAVA_HOME, PATH=...:$PATH, ...).
+_ENV_PREFIX = re.compile(r"^((?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|\S+)\s+)+)")
+# The narrowing part of a run (one test, a filter) is this run's, not the recipe.
+_NARROW = re.compile(
+    r"\s(?:-k|-x|--lf|::)\b|\s\S+::\S+|\s-Dtest=\S+|\s--tests?\s+\S+"
+    r"|\s-run\s+\S+|\s-t\s+\S+|\s--testNamePattern\S*")
+# Output trimming after the command is not part of the recipe.
+_TRIM = re.compile(r"\s*(?:2>&1\s*)?(?:\|\s*(?:tail|head|grep|tee|less|cat)\b.*)?$")
 _PROBE = re.compile(r"\s-c\s|<<|\bpython3?\s+-\s")
 
 
@@ -260,20 +276,26 @@ def learn_repo_command(repo: str, root: str, cmd: str) -> dict:
     m = _PY.search(cmd)
     if m:
         fields["python"] = _rel(m.group(1), root)
-    m = _PYPATH.search(cmd)
-    if m:
-        fields["env"] = f"PYTHONPATH={_rel(m.group(1), root)}"
     m = _CD.match(cmd)
     if m:
         cwd = _rel(m.group(1), root)
         if cwd != ".":
             fields["cwd"] = cwd
-    if _TEST.search(cmd) and not _PROBE.search(cmd):
-        body = cmd[_CD.match(cmd).end():].strip() if _CD.match(cmd) else cmd.strip()
+    body = cmd[m.end():].strip() if m else cmd.strip()
+    env = _ENV_PREFIX.match(body)
+    if env:
+        fields["env"] = " ".join(
+            (f"{k}={_rel(v, root)}" if k == "PYTHONPATH" else f"{k}={v}")
+            for k, _, v in (a.partition("=") for a in env.group(1).split()))
+        body = body[env.end():].strip()
+    else:
+        mp = _PYPATH.search(cmd)
+        if mp:
+            fields["env"] = f"PYTHONPATH={_rel(mp.group(1), root)}"
+    if _TEST.search(body) and not _PROBE.search(body):
         if root:
             body = body.replace(root.rstrip("/") + "/", "").replace(root, ".")
-        # the narrowing part (one test, -k, -x) is this run's, not the recipe
-        body = re.split(r"\s(?:-k|-x|--lf|::)\b|\s\S+::\S+", body)[0].strip()
+        body = _TRIM.sub("", _NARROW.split(body)[0]).strip()
         if "|" not in body and len(body) < 200:
             fields["test_cmd"] = body
     if not fields:
