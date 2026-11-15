@@ -24,6 +24,7 @@ from .._prompt_text import (
     GOAL_LOOP_RULE,
     LONG_RUN_RULE,
     SUBAGENT_ASK_RULE,
+    BIG_SPAWN_RULE,
 )
 from .._tools import (
     _preferences_context,
@@ -342,6 +343,10 @@ def _build_convo(messages, cwd, role, *, readonly_mode, plan_mode,
         _add_sys_block("batch-reads", BATCH_READS_RULE)
     if last_user and not readonly_mode and not builder and wants_goal_loop(last_user):
         _add_sys_block("goal-loop", GOAL_LOOP_RULE)
+    if (_big and not readonly_mode and not builder
+            and os.environ.get("AIFORGE_CHAT_BIG_SPAWN", "0").strip().lower()
+            in ("1", "true", "yes", "on")):
+        _add_sys_block("big-spawn", BIG_SPAWN_RULE)
     if last_user and not builder and wants_subagent(last_user):
         _add_sys_block("subagent-ask", SUBAGENT_ASK_RULE)
 

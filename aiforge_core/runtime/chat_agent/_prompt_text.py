@@ -513,6 +513,19 @@ _DECOMPOSE = (
 
 #: OpenCode/Claude-Code Task parity: fan out independent slices via spawn_task
 #: on BOTH capped and unlimited runs (bench deadlines used to omit this).
+#: Added to a BIG request (several parts) when AIFORGE_CHAT_BIG_SPAWN=1: each
+#: part runs as a sub-agent with its own small context; this agent keeps the
+#: plan, the integration and the final test run.
+BIG_SPAWN_RULE = (
+    "BIG TASK — SUB-AGENTS: after you plan the parts, run each part that "
+    "changes its own module/file with spawn_task (wait:true, mode simple), one "
+    "at a time, in order. Give it: that part's full text from the request, the "
+    "files to change, how to run the repo's tests, and what to return (files "
+    "changed, tests run, what is left). Mark the part running before and done "
+    "after with plan_progress. Keep for yourself: the plan, reading each "
+    "sub-agent's FINAL, fixing what they left between the parts, and the full "
+    "test run at the end.")
+
 #: Added when the user ASKS for a sub-agent ("use a sub-agent", "spawn an
 #: agent for ...", "in a separate agent"): their ask outranks the default.
 SUBAGENT_ASK_RULE = (
