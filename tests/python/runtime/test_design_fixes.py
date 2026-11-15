@@ -87,12 +87,13 @@ def test_native_prompt_only_names_given_tools():
         NATIVE_TOOL_SCHEMAS, text="what is 2+2")}
     text = native_rules("/tmp") + "\n" + BATCH_READS_RULE
     extras = [name for name in NATIVE_TOOL_NAMES
-              if name not in given and re.search(rf"\b{re.escape(name)}\b", text)]
+              if name not in given and name != "read"
+              and re.search(rf"\b{re.escape(name)}\b", text)]
     assert extras == []
     plan_given = {s["function"]["name"] for s in filter_native(
         NATIVE_TOOL_SCHEMAS, mode="plan", text="what is 2+2")}
     plan_extras = [name for name in NATIVE_TOOL_NAMES
-                   if name not in plan_given
+                   if name not in plan_given and name != "read"
                    and re.search(rf"\b{re.escape(name)}\b", plan_rules("/tmp"))]
     assert plan_extras == []
 

@@ -33,6 +33,19 @@ def _t_code_search(args: dict, cwd: str) -> dict:
     return _cs.code_search(args, cwd)
 
 
+def _t_read(args: dict, cwd: str) -> dict:
+    """OpenCode-shaped read: a file's lines, numbered, from ``offset`` (0-based)
+    for ``limit`` lines (default 2000) — never an outline. With one read tool
+    in this shape the model stopped reading code through ``cat | sed``."""
+    path = str(args.get("path") or args.get("filePath") or args.get("file_path") or "")
+    try:
+        offset = max(0, int(args.get("offset") or 0))
+        limit = max(1, int(args.get("limit") or 2000))
+    except (TypeError, ValueError):
+        offset, limit = 0, 2000
+    return _t_read_lines({"path": path, "start": offset + 1, "end": offset + limit}, cwd)
+
+
 def _t_read_lines(args: dict, cwd: str) -> dict:
     import os as _os
     path = str(args.get("path") or "")

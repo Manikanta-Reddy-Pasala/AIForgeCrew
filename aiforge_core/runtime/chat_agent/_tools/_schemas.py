@@ -89,6 +89,10 @@ CATALOG: dict = {
              {"name": "s", "kind": "s"}, ("name",)),
     "grep": ("Recursively search file contents.", {"pattern": "s", "path": "s"},
              ("pattern",)),
+    "read": ("Read a file: its lines, numbered, from offset (0-based first "
+             "line, default 0) for limit lines (default 2000). Use this for "
+             "every file read — not cat, sed, head or python.",
+             {"path": "s", "offset": "i", "limit": "i"}, ("path",)),
     "read_lines": ("Read a line range from a file. Several parts of one file: "
                    "pass ranges [[start, end], …] to read them in ONE call. "
                    "Read a whole function or 150+ lines at a time, not "
@@ -566,6 +570,17 @@ _CORE_READ = frozenset({
     "memory_lookup", "git_status", "git_diff", "repo_map", "code_search",
     "search_chat_sessions", "session_actions",
 })
+def _one_read() -> bool:
+    """One OpenCode-shaped ``read`` tool in the list instead of file_read /
+    read_files / read_lines (``AIFORGE_CHAT_ONE_READ=1``). The others stay
+    callable. tomlkit: the same model used OpenCode's read 49 times and ours
+    4 — file_read hands back an OUTLINE for a big file, so it read code with
+    cat | sed (53 of its first 100 calls) and edited first at call 100."""
+    import os
+    return os.environ.get("AIFORGE_CHAT_ONE_READ", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 _TOOL_HELP = {"type": "function", "function": {
     "name": "tool_help",
     "description": (
@@ -605,6 +620,8 @@ def filter_native(schemas: list[dict], *, mode: str = "act",
     ``tool_help`` or kept from earlier turns of the session."""
     readonly = (mode or "act").lower() in ("plan", "analyze")
     keep = set(_CORE_READ if readonly else _CORE_ACT)
+    if _one_read():
+        keep = (keep - {"file_read", "read_files", "read_lines"}) | {"read"}
     if builder and not readonly:
         from .._registry import _BUILDER_FINALIZE_TOOL
         fin = _BUILDER_FINALIZE_TOOL.get(builder)
