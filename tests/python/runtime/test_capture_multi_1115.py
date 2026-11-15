@@ -56,3 +56,12 @@ def test_store_all_stores_each(monkeypatch):
     out = rc.store_all({"category": "rule", "canonical": "a",
                         "more": [{"category": "memory", "canonical": "b"}]})
     assert seen == ["a", "b"] and [o["id"] for o in out] == ["a", "b"]
+
+
+def test_one_off_directive_is_session_scope():
+    c = rc._parse_classification(_raw(canonical="Use the pcb-bugfix workflow for this."))
+    assert c["scope"] == "session"
+    for lasting in ("Always use the pcb-bugfix workflow for this repo",
+                    "From now on use the pcb-bugfix workflow for this kind of bug",
+                    "run maven offline"):
+        assert rc._parse_classification(_raw(canonical=lasting))["scope"] == "project"

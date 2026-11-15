@@ -122,6 +122,21 @@ def _extract_json(text: str) -> dict | None:
     return obj if isinstance(obj, dict) else None
 
 
+#: A directive about the current task only ("use the X workflow for this").
+_ONE_OFF = re.compile(r"\b(?:for\s+this(?:\s+(?:one|task|bug|fix|change|ticket|request))?|this\s+time|"
+                      r"right\s+now|for\s+now|in\s+this\s+(?:task|chat|request))\b", re.I)
+#: Words that make it lasting.
+_LASTING = re.compile(r"\b(?:always|never|every|each|from\s+now\s+on|remember|whenever|"
+                      r"any\s+time|all\s+(?:my\s+)?(?:projects|repos|sessions)|going\s+forward|by\s+default)\b",
+                      re.I)
+
+
+def _one_off(canonical: str) -> bool:
+    """A real chain stored "Use the pcb-bugfix workflow for this." as a
+    PERMANENT project rule, injected as mandatory into every later session."""
+    return bool(_ONE_OFF.search(canonical)) and not _LASTING.search(canonical)
+
+
 def _parse_item(obj: dict, scope_default: str = "session") -> dict | None:
     """One {category, scope, canonical, confidence, triggers} object, cleaned;
     None when it is not a usable classification."""
@@ -151,6 +166,8 @@ def _parse_item(obj: dict, scope_default: str = "session") -> dict | None:
                 for t in triggers_raw if isinstance(t, str) and t.strip()][:3]
     triggers = [t for t in triggers if t]  # drop anything that sanitized to empty
     triggers = [t for t in triggers if re.search(r"[a-z0-9]", t)]  # drop pure-punctuation junk
+    if cat in ("rule", "feedback") and scope != "session" and _one_off(canonical):
+        scope = "session"
     return {"category": cat, "scope": scope, "canonical": canonical,
             "confidence": conf, "triggers": triggers}
 
