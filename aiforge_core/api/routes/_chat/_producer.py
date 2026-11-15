@@ -250,6 +250,10 @@ def _goal_pass(pc, gctx):
 
 
 def _events(pc):
+    wctx = {"done": False}
+    yield from _worktree_gate_events(pc, wctx)
+    if wctx["done"]:
+        return
     pctx0 = {"done": False}
     yield from _early_route_events(pc._cmd_help_text, pc.body, pc.history, pc.cwd, pc.role,
                                    pc.session_id, pctx0)
@@ -555,38 +559,28 @@ def _read_only_folder(cwd, session_id) -> bool:
 
 def _ensure_chat_worktree(pc) -> None:
     """Give this chat its own git worktree the first time it speaks in a git
-    project, and run the turn in it. On any failure the turn simply runs in the
-    project folder, as it always did."""
-    try:
-        from aiforge_core.runtime import chat_runs, chat_store, chat_worktree
-        sess = chat_store.get_session(pc.session_id)
-        wd = chat_worktree.workdir_of(sess)
-        if wd:
-            pc.cwd = wd              # same worktree in every mode
-            return
-        if not chat_worktree.eligible(sess, pc.body.mode):
-            return
-        chat_runs.set_phase(pc.session_id, "creating this chat's own workspace (git worktree)")
-        pc.run.publish({"type": "thought", "role": "system",
-                        "text": "🌿 Creating this chat's own workspace: a git worktree on a branch "
-                                "of its own, so other chats in this project do not touch your files."})
-        data = chat_worktree.ensure(pc.session_id)
-        if not data:
-            return
-        pc.cwd = data["path"]
-        note = f"🌿 Working on branch `{data['branch']}` (from `{data['base_branch'] or 'HEAD'}`). "
-        if data.get("dirty_at_start"):
-            n = len(data["dirty_at_start"])
-            note += (f"Your folder has {n} uncommitted file{'s' if n != 1 else ''}; "
-                     "they are not in this workspace.")
-        pc.run.publish({"type": "thought", "role": "system", "text": note.strip()})
-    except Exception as exc:  # noqa: BLE001 — never block the turn on this
-        try:
-            pc.run.publish({"type": "thought", "role": "system",
-                            "text": f"⚠ Could not make a separate workspace ({str(exc)[:160]}); "
-                                    "working in the project folder."})
-        except Exception:  # noqa: BLE001
-            pass
+    project, and run the turn in it; ask once per project where worktrees go,
+    and list the project's old worktrees (see ``_worktree_gate``). On any
+    failure the turn simply runs in the project folder, as it always did."""
+    from . import _worktree_gate
+    _worktree_gate.run(pc)
+
+
+def _worktree_gate_events(pc, gctx):
+    """What the turn-start worktree pass left: a message that ends the turn
+    (the "where?" question, a cleanup summary), or notices before the work."""
+    for note in getattr(pc, "_wt_notices", None) or ():
+        yield {"type": "thought", "role": "system", "text": note}
+    gate = getattr(pc, "_wt_gate", None)
+    if not gate:
+        return
+    _settle_early_exit(pc, gate["text"])
+    ev = {"type": "message", "text": gate["text"]}
+    if gate.get("awaiting"):
+        ev["awaiting_input"] = True
+    yield ev
+    yield {"type": "done"}
+    gctx["done"] = True
 
 
 def _bind_wait_status(pc) -> None:
@@ -673,7 +667,8 @@ def _produce(pc):
         # shows live runs (the page tails orchestrator-<role>.ndjson).
         _clog, emit = _setup_chat_logger()
         _chat_runs.set_phase(pc.session_id, "saving a checkpoint of the workspace")
-        _auto_checkpoint(pc)   # snapshot first (off the response-open path)
+        if not getattr(pc, "_wt_gate", None):   # a turn that only asks edits nothing
+            _auto_checkpoint(pc)   # snapshot first (off the response-open path)
         _chat_runs.set_phase(pc.session_id,
                              "preparing context (memory, rules, repo map)")
         _drive_produce_stream(lambda: _events(pc), st, steps, pc.run, pc.session_id,

@@ -115,6 +115,8 @@ def test_simple_to_plan_to_team_never_adds_a_worktree(env, monkeypatch):
 
 def test_a_chat_that_starts_in_team_mode_gets_exactly_one(env, monkeypatch):
     from aiforge_core.api.routes._chat import _producer as pr
+    # The project's place is set (no once-per-project question this turn).
+    monkeypatch.setenv("AIFORGE_CHAT_WORKTREE_PLACE", "repo")
     sid = env.new_chat()
     published: list = []
 

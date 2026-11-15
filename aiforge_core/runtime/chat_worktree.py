@@ -80,19 +80,37 @@ _IN_REPO = ".aiforge-worktrees"
 _SCRATCH = "scratch"
 
 
-def _in_repo() -> bool:
-    """AIFORGE_CHAT_WORKTREE_PLACE: ``repo`` (default) puts a chat's worktree in
-    ``<project>/.aiforge-worktrees/``; ``config`` in AIForge's own folder."""
-    return os.environ.get("AIFORGE_CHAT_WORKTREE_PLACE", "repo").strip().lower() \
-        not in ("config", "home", "outside")
+def place_of(repo: "str | None") -> str:
+    """Where chats of ``repo`` work: ``repo`` (inside the project, in
+    ``.aiforge-worktrees/``), ``config`` (AIForge's own folder) or ``none`` (no
+    worktree, the project folder itself). An explicit env
+    (AIFORGE_CHAT_WORKTREE_PLACE / AIFORGE_CHAT_WORKTREES=0) wins, then the
+    project's saved choice (:mod:`worktree_prefs`), then ``repo``."""
+    try:
+        from . import worktree_prefs
+        return worktree_prefs.place_for(repo) or "repo"
+    except Exception as exc:  # noqa: BLE001 — a broken prefs file keeps the default
+        log.debug("worktree place lookup failed: %s", exc)
+        return "repo"
 
 
-def _run_dir(repo: str, name: str) -> str:
-    if _in_repo() and os.access(repo, os.W_OK):
-        return os.path.join(repo, _IN_REPO, name)
+def _in_repo(repo: "str | None" = None) -> bool:
+    return place_of(repo) != "config"
+
+
+def config_holder(repo: str) -> str:
+    """The folder under AIForge's config that holds ``repo``'s chat worktrees
+    when they are not kept inside the project."""
     slug = re.sub(r"[^a-z0-9]+", "-", os.path.basename(repo).lower()).strip("-") or "repo"
     key = hashlib.sha1(repo.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
-    return os.path.join(_root(), f"{slug}-{key}", name)
+    return os.path.join(_root(), f"{slug}-{key}")
+
+
+def _run_dir(repo: str, name: str, place: "str | None" = None) -> str:
+    in_repo = (place != "config") if place else _in_repo(repo)
+    if in_repo and os.access(repo, os.W_OK):
+        return os.path.join(repo, _IN_REPO, name)
+    return os.path.join(config_holder(repo), name)
 
 
 def scratch_dir(cwd: "str | None") -> "str | None":
@@ -199,13 +217,28 @@ def covers(cwd: "str | None", folder: "str | None") -> bool:
     return f == r or f.startswith(r + os.sep)
 
 
-def eligible(session: "dict | None", mode: str = "simple") -> "str | None":
+def eligible(session: "dict | None", mode: str = "simple", *,
+             ignore_answers: bool = False, place: "str | None" = None) -> "str | None":
     """The repo root this chat should get a worktree of, or None.
 
     Only a FRESH chat opened on a project folder that is a git repo with a
     commit; any mode (``mode`` is kept for callers, it no longer matters). Not a
     side task (it shares its parent's), not a scratch chat, and not when the
-    feature is off."""
+    feature is off or the project is set to work without one (``none``).
+    ``ignore_answers``: the only answer so far is the harness's own question
+    (where should worktrees go), so the chat is still fresh. ``place``
+    overrides the project's setting for this one call."""
+    repo = fresh_repo(session, ignore_answers=ignore_answers)
+    if not repo:
+        return None
+    if (place or place_of(repo)) == "none":
+        return None
+    return repo
+
+
+def fresh_repo(session: "dict | None", *, ignore_answers: bool = False) -> "str | None":
+    """:func:`eligible` without the project's place setting: the repo a fresh
+    chat on a git project stands in, or None."""
     if not enabled() or not session:
         return None
     if session.get("parent_id") or workdir_of(session) or session.get("temporary"):
@@ -227,8 +260,9 @@ def eligible(session: "dict | None", mode: str = "simple") -> "str | None":
     # worktree mid-conversation would hide that work from it.
     try:
         from aiforge_core.runtime import chat_store
-        if any(m.get("role") == "assistant"
-               for m in chat_store.get_messages(int(session["id"])) or []):
+        if not ignore_answers and any(
+                m.get("role") == "assistant"
+                for m in chat_store.get_messages(int(session["id"])) or []):
             return None
     except Exception:  # noqa: BLE001
         pass
@@ -301,16 +335,18 @@ def _link_state(repo: str, wt: str) -> None:
         log.debug("could not link %s: %s", link, exc)
 
 
-def ensure(session_id) -> "dict | None":
+def ensure(session_id, *, place: "str | None" = None,
+           ignore_answers: bool = False) -> "dict | None":
     """Make the chat's worktree if it should have one and has none yet; return
     its :func:`info`. Slow on a big repo (a checkout): callers show progress.
-    Raises ``RuntimeError`` with a readable reason when git refuses."""
+    Raises ``RuntimeError`` with a readable reason when git refuses.
+    ``place`` / ``ignore_answers``: see :func:`eligible`."""
     sess = _session(session_id)
     if sess is None:
         return None
     if workdir_of(sess):
         return info(sess)
-    repo = eligible(sess, "simple")
+    repo = eligible(sess, "simple", ignore_answers=ignore_answers, place=place)
     if not repo:
         return None
     with _lock(repo):
@@ -320,7 +356,7 @@ def ensure(session_id) -> "dict | None":
         token = uuid.uuid4().hex[:4]
         branch = f"{_prefix(repo)}/chat-{sess['id']}-{token}"
         _exclude_state(repo)           # before the folder exists in the repo
-        run_dir = _run_dir(repo, f"chat-{sess['id']}-{token}")
+        run_dir = _run_dir(repo, f"chat-{sess['id']}-{token}", place)
         wt = os.path.join(run_dir, "work")
         os.makedirs(os.path.join(run_dir, _SCRATCH), exist_ok=True)
         base_sha = _out(["rev-parse", "HEAD"], repo)
@@ -632,4 +668,5 @@ def _scratch_note(cwd) -> str:
 
 
 __all__ = ["enabled", "covers", "main_repo_of", "is_worktree", "workdir_of", "eligible", "ensure",
+           "fresh_repo", "place_of", "config_holder",
            "info", "seal", "seal_for_session", "merge", "remove", "prompt_note"]

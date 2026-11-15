@@ -618,6 +618,9 @@ def api(monkeypatch, tmp_path):
         "AIFORGE_LLM_MAX_RPM": "0", "AIFORGE_CHAT_TOOL_PROTOCOL": "text",
         "AIFORGE_PROJECT_INGEST": "0", "AIFORGE_SESSION_COMPACT_ON_SWITCH": "0",
         "AIFORGE_CHAT_NEXT_STEP": "0", "AIFORGE_PREDICT_NEXT_STEP": "0",
+        # The project's worktree place is chosen: no once-per-project question
+        # (test_worktree_question_end_to_end clears it to see that question).
+        "AIFORGE_CHAT_WORKTREE_PLACE": "repo",
     }.items():
         monkeypatch.setenv(k, v)
     for k in ("AIFORGE_PG_URL", "AIFORGE_FORCE_PG", "AIFORGE_PARALLEL_SUBTASKS",
@@ -1527,3 +1530,36 @@ def test_an_installed_venv_in_the_tree_is_not_test_gaming(tmp_path):
 
 
 # --- END ---
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Where worktrees go: asked once per project, then the request runs
+# ════════════════════════════════════════════════════════════════════════════
+
+def test_worktree_question_end_to_end(api, monkeypatch):
+    monkeypatch.delenv("AIFORGE_CHAT_WORKTREE_PLACE")
+    seen = []
+
+    def agent(n, role, convo):
+        seen.append(convo[-1]["content"] if convo else "")
+        return "FINAL: the cart total sums the list."
+    api.agent = agent
+    sid = api.session()
+    evs = api.send(sid, "what does total() in src/cart.py do?")
+    msg = [e for e in evs if e.get("type") == "message"]
+    assert msg and msg[-1].get("awaiting_input") and "has no worktree setting yet" in msg[-1]["text"]
+    assert not seen                                       # no agent ran
+    assert api.store.get_session(sid).get("workdir") is None
+    assert len(trees(api.repo)) == 1
+
+    api.send(sid, "1")
+    assert any("what does total() in src/cart.py do?" in str(c) for c in seen)
+    wd = api.store.get_session(sid)["workdir"]
+    assert wd and len(trees(api.repo)) == 2
+    from aiforge_core.runtime import worktree_prefs
+    assert worktree_prefs.get(str(api.repo))["place"] == "repo"
+
+    sid2 = api.session()                                  # asked once per project
+    evs = api.send(sid2, "and what does it return for []?")
+    assert not any(e.get("awaiting_input") for e in evs)
+    assert api.store.get_session(sid2)["workdir"]
