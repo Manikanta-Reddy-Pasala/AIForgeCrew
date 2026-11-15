@@ -177,6 +177,17 @@ def _note_green_tests(st, name, args, result, cwd) -> None:
 
 
 _RAN = re.compile(r"\b[1-9]\d* passed\b")
+#: The guessed runner could not use this machine's toolchain for the project:
+#: a JDK/compiler release it does not support, a too-old rustc/CMake/Node, a
+#: missing tool. That is the environment the harness ran in, not the work.
+_TOOLCHAIN_MISMATCH = re.compile(
+    r"release version \d+ not supported|invalid target release|invalid source release|"
+    r"Unsupported class file major version|has been compiled by a more recent version of the Java|"
+    r"requires rustc \S+ or newer|is not supported by the following package|"
+    r"package `[^`]+` cannot be built because it requires rustc|"
+    r"CMake \S+ or higher is required|Unsupported engine|engine \"node\" is incompatible|"
+    r"command not found|No such file or directory: '(?:mvn|gradle|cargo|cmake|ctest|go|npm)'",
+    re.I)
 #: A runner's output that shows tests actually ran (any toolchain's counts).
 _TESTS_RAN = re.compile(r"Tests run:\s*\d+|\b\d+% tests passed|^\[==========\] \d+ tests?|^Ok:\s+\d+|\b\d+ (?:passed|failed|failing)\b|^--- (?:FAIL|PASS)|"
                         r"^(?:ok|FAIL)\s+\S+|test result:|^Tests:\s", re.M)
@@ -498,6 +509,12 @@ def _project_verify(st, cwd):
         cmd = command_of(last[1]) if last else ""
         from aiforge_core.runtime import git_target
         base = git_target.command_base(getattr(st, "cwd", None) or cwd) or cwd
+        # Not a Python tree and the runner never got to the tests because of
+        # its toolchain (seen twice on a real PosClientBackend chain: the
+        # guessed "mvn -q test" on the system JDK 21, the repo needs 24): no
+        # verdict, whatever the turn ran last.
+        if not py and not _TESTS_RAN.search(out or "") and _TOOLCHAIN_MISMATCH.search(out or ""):
+            return None, out
         if not _whole_suite(cmd or "", base):
             # Not a Python tree, the guessed runner ran no test at all, and the
             # turn's own test command passed on this very code: the runner's
