@@ -30,6 +30,16 @@ def _pkg():
     return package
 
 
+def _is_rule_book(d: dict) -> bool:
+    """A rule book (``rules:<scope>``, kind rule/feedback) is the store the
+    mandatory rules block reads every session — not knowledge to fold. On a
+    real PosClientBackend chain compaction folded the project's rule book into
+    its brief and ARCHIVED the file: the next session's rules block no longer
+    had "run Maven offline" or "needs JDK 24"."""
+    src = str(d.get("source") or "")
+    return src.startswith("rules:") or (d.get("kind") or "") in ("rule", "feedback")
+
+
 def _live_capture_notes(group_by: str) -> list[dict]:
     """The raw capture units eligible for this axis.
 
@@ -49,7 +59,8 @@ def _live_capture_notes(group_by: str) -> list[dict]:
             continue
         d["_path"] = p
         files.append(d)
-    live = [d for d in files if not d["file"].startswith("compacted-")]
+    live = [d for d in files if not d["file"].startswith("compacted-")
+            and not _is_rule_book(d)]
     if group_by == "repo":
         live = [d for d in live if (d.get("kind") or "") != "session"]
     return live
