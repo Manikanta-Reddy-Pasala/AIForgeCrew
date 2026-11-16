@@ -662,7 +662,80 @@ def _jdk_key(cwd: str) -> str:
         return os.path.realpath(cwd or ".")
 
 
+#: The last finished run of each test command, per repository content.
+_TEST_RUNS: dict = {}
+_TEST_RUN_TTL_S = 1800
+_RUN_KEY_PIPE = re.compile(r"\s*(?:2>&1\s*)?(?:\|\s*(?:tail|head|grep|egrep|less|more|cat|tee|sed|awk)\b.*"
+                           r"|\|\|\s*true\s*)$")
+
+
+def _run_key(cmd: str) -> str:
+    """A test command without what does not change its result: the leading
+    `cd X &&`, env prefixes, `timeout N`, output pipes and `|| true`."""
+    c = _RUN_KEY_PIPE.sub("", cmd or "")
+    c = _LEAD_CD.sub("", c)
+    words = c.split()
+    while words and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0])
+                     or words[0] == "timeout" or re.match(r"^\d+[smh]?$", words[0])):
+        words = words[1:]
+    return " ".join(words)
+
+
+def _reuse_on() -> bool:
+    return os.environ.get("AIFORGE_CHAT_TEST_REUSE", "1").strip().lower() not in (
+        "0", "false", "no", "off")
+
+
+def _test_reuse(cmd: str, cwd: str):
+    """``(key, fingerprint, cached result or None)`` for a test command."""
+    if not _reuse_on() or not is_test_command("run_command", {"cmd": cmd}):
+        return None, None, None
+    try:
+        import time as _time
+        from ._turn._outcomes import content_fingerprint
+        root = _jdk_key(cwd)
+        fp = content_fingerprint(root)
+        if not fp:
+            return None, None, None
+        key = (root, _run_key(cmd))
+        hit = _TEST_RUNS.get(key)
+        if hit and hit[0] == fp and _time.time() - hit[2] < _TEST_RUN_TTL_S:
+            return key, fp, hit[1]
+        return key, fp, None
+    except Exception:  # noqa: BLE001
+        return None, None, None
+
+
 def _t_run_command(args: dict, cwd: str) -> dict:
+    """run_command, plus: a test command re-run on code that has not changed
+    since its last finished run gets that run's result back at once. On a
+    real PosClientBackend job the model re-ran the same Maven tests with no
+    edit in between (only the `| tail`/`| grep` changed) — ~35 s each, the
+    bulk of a turn whose model calls took 4 minutes in all."""
+    cmd0 = args.get("cmd") or ""
+    key, fp, cached = _test_reuse(cmd0, cwd)
+    if cached is not None:
+        import time as _time
+        age = int(_time.time() - _TEST_RUNS[key][2])
+        return {**cached, "reused": (
+            f"the code has not changed since this test command last ran {age}s ago: this "
+            "is that run's result. Change the code before running it again.")}
+    res = _t_run_command_jdk(args, cwd)
+    try:
+        if key and isinstance(res, dict) and res.get("code") is not None \
+                and not res.get("running") and not res.get("id"):
+            import time as _time
+            from ._turn._outcomes import content_fingerprint
+            if content_fingerprint(key[0]) == fp:          # the run itself changed nothing
+                _TEST_RUNS[key] = (fp, dict(res), _time.time())
+                while len(_TEST_RUNS) > 100:
+                    _TEST_RUNS.pop(next(iter(_TEST_RUNS)))
+    except Exception:  # noqa: BLE001
+        pass
+    return res
+
+
+def _t_run_command_jdk(args: dict, cwd: str) -> dict:
     cmd = args.get("cmd") or ""
     home = (_JDK_FOR.get(_jdk_key(cwd)) if _JDK_FOR and _JVM_BUILD.search(cmd)
             and "JAVA_HOME=" not in cmd else None)

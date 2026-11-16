@@ -15,6 +15,7 @@ def test_rerun_with_fitting_jdk(monkeypatch):
             return {"ok": True, "code": 0, "stdout": "BUILD SUCCESS", "stderr": ""}
         return {"ok": False, "code": 1, "stdout": ERR, "stderr": ""}
     monkeypatch.setattr(_shell, "_t_run_command_once", once)
+    monkeypatch.setenv("AIFORGE_CHAT_TEST_REUSE", "0")
     monkeypatch.setattr(_env_guard, "installed_jdks", lambda: [(25, "/j25"), (24, "/j24"), (21, "/j21")])
     r = _shell._t_run_command({"cmd": "cd /r && mvn -o -q test -Dtest=X"}, "/r")
     assert r["ok"] is True and "JAVA_HOME=/j24" in r["toolchain"]
@@ -40,6 +41,7 @@ def test_piped_command_with_hidden_jdk_error_is_rerun_and_sticky(monkeypatch):
             return {"ok": True, "code": 0, "stdout": "BUILD SUCCESS", "stderr": ""}
         return {"ok": True, "code": 0, "stdout": ERR, "stderr": ""}      # `| tail` exit 0
     monkeypatch.setattr(_shell, "_t_run_command_once", once)
+    monkeypatch.setenv("AIFORGE_CHAT_TEST_REUSE", "0")
     monkeypatch.setattr(_shell, "_JDK_FOR", {})
     monkeypatch.setattr(_shell, "_jdk_key", lambda cwd: "/r")
     monkeypatch.setattr(_env_guard, "installed_jdks", lambda: [(24, "/j24")])
