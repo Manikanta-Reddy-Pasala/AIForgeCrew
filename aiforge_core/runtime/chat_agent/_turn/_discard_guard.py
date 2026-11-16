@@ -424,6 +424,22 @@ def _small_loss(paths) -> bool:
     return total <= cap
 
 
+def _asked_tests(st, lost, base) -> list:
+    """The turn's own TEST files among ``lost`` when the request asks for tests."""
+    try:
+        from ._test_guard import _TEST_FILE, asks_for_tests
+    except Exception:  # noqa: BLE001
+        return []
+    if not asks_for_tests(str(getattr(st, "goal", "") or "")):
+        return []
+    out = []
+    for p in lost:
+        rel = os.path.relpath(p, base).replace(os.sep, "/") if base else p
+        if _TEST_FILE.search(rel) and not _Git().tracked(p):
+            out.append(p)                    # a test this turn created
+    return out
+
+
 def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     """The result to hand back instead of running ``args``, or None."""
     if not _on() or not isinstance(args, dict):
@@ -444,6 +460,18 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
         return None
     if not lost:
         return None
+    # The request asks for tests: the turn's own test files stay. A real
+    # PosServerBackend run could not make its new test pass, `rm`-ed it about
+    # fifteen times (the quick-repeat release and its own confirm_delete let
+    # it through each time), and finished "green" with no test — 0/4.
+    kept = _asked_tests(st, lost, base)
+    if kept:
+        shown = [os.path.relpath(p, base) for p in kept[:4]]
+        return {"ok": False, "error": "would_delete_asked_for_test", "files": shown,
+                "hint": ("The request asks for tests, so the test you wrote stays: "
+                         f"{', '.join(shown)}. Do not delete it to get a green run. Make the "
+                         "code pass it, or fix the test itself (its setup, its expected "
+                         "values) with file_patch if the test is wrong.")}
     # Little to lose: undoing a few changed lines costs less than the refusals
     # (a real PosClientBackend turn was refused ~12 times — git checkout,
     # git stash to compare with the original — to protect a 1-line edit, then

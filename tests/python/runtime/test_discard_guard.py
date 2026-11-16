@@ -336,3 +336,21 @@ def test_a_small_loss_is_not_refused(repo, monkeypatch):
     core.write_text("x = 3\n")
     st = SimpleNamespace(file_hashes={str(core): "h"}, goal="")
     assert G.refusal(st, "run_command", {"cmd": "git checkout -- src/core.py"}, str(root))
+
+
+def test_a_new_test_the_request_asked_for_is_never_deleted(repo, monkeypatch):
+    """Not by a quick repeat, not by confirm_delete, not by the override."""
+    monkeypatch.setenv("AIFORGE_CHAT_DISCARD_SMALL_LINES", "20")
+    root, edited = repo
+    from aiforge_core.runtime import git_target
+    monkeypatch.setattr(git_target, "command_base", lambda cwd: str(root))
+    t = root / "src" / "test" / "java" / "RevokerTest.java"
+    t.parent.mkdir(parents=True)
+    t.write_text("class RevokerTest {}\n")
+    st = SimpleNamespace(file_hashes={str(t): "h"}, goal="Notify the console. Fix it with a unit test.")
+    for args in ({"cmd": f"rm {t}"}, {"cmd": f"rm -f {t}"}, {"cmd": f"rm -f {t}", "confirm_delete": True},
+                 {"cmd": f"rm {t}", "discard": True}):
+        r = G.refusal(st, "run_command", args, str(root))
+        assert r and r["error"] == "would_delete_asked_for_test", args
+    st2 = SimpleNamespace(file_hashes={str(t): "h"}, goal="Notify the console.")
+    assert G.refusal(st2, "run_command", {"cmd": f"rm {t}"}, str(root)) is None   # small, not asked
