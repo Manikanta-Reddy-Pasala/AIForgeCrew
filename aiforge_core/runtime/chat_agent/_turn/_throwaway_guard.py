@@ -7,7 +7,7 @@ and ran each: 86 write-and-run cycles, 237 model calls, 40 minutes, where
 OpenCode with the same model took 4. After the third such file in a turn the
 agent is told once to put the case in the repo's own test and run that;
 each further one counts toward the stuck limit (no extension while it goes
-on). Off: ``AIFORGE_CHAT_PROBE_GUARD=0``.
+on). Off: ``AIFORGE_CHAT_THROWAWAY_GUARD=0``.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ _WRITE_TOOLS = ("file_write", "write_file", "create_file", "file_create")
 
 
 def _on() -> bool:
-    return os.environ.get("AIFORGE_CHAT_PROBE_GUARD", "1").strip().lower() not in (
+    return os.environ.get("AIFORGE_CHAT_THROWAWAY_GUARD", "1").strip().lower() not in (
         "0", "false", "no", "off")
 
 
