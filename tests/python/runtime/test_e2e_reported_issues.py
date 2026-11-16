@@ -1538,6 +1538,8 @@ def test_an_installed_venv_in_the_tree_is_not_test_gaming(tmp_path):
 
 def test_worktree_question_end_to_end(api, monkeypatch):
     monkeypatch.delenv("AIFORGE_CHAT_WORKTREE_PLACE")
+    # the blocking question (the default since 11-16 does not hold the request)
+    monkeypatch.setenv("AIFORGE_CHAT_WORKTREE_ASK_BLOCK", "1")
     seen = []
 
     def agent(n, role, convo):
