@@ -357,6 +357,37 @@ def _prompt(data: dict, message: str, mid_run: bool, said: str,
     return "\n\n".join(parts)
 
 
+_WORD = re.compile(r"[A-Za-z0-9_]{4,}")
+
+
+def _kept_closed(g: dict, message: str) -> bool:
+    """A goal the user closed in the progress panel (done or deleted) stays
+    closed: the goal tracker may not reopen it, or add it again as a new goal,
+    on a later message that does not talk about it. Users saw goals they had
+    deleted or ticked come back with every new message they typed. A message
+    that uses most of the goal's own words is about it and may reopen it."""
+    if not g.get("closed_by_user"):
+        return False
+    words = {w.lower() for w in _WORD.findall(f"{g.get('title') or ''} {g.get('text') or ''}"[:400])}
+    if not words:
+        return True
+    said = {w.lower() for w in _WORD.findall(message or "")}
+    return len(words & said) / len(words) < 0.5
+
+
+def _like_closed(text: str, data: dict, message: str) -> bool:
+    """``text`` (a goal the tracker wants to add) repeats a goal the user
+    closed, and the message does not talk about that goal."""
+    import difflib
+    t = _norm_text(text)
+    for g in data["goals"]:
+        if g.get("closed_by_user") and _kept_closed(g, message):
+            if difflib.SequenceMatcher(None, t, _norm_text(g.get("text"))).ratio() >= 0.8 \
+                    or (g.get("title") and _norm_text(g["title"]) in t):
+                return True
+    return False
+
+
 def _apply(data: dict, reply: dict, message: str, turn,
            mid_run: bool = False) -> "tuple[dict, list]":
     """``data`` after the model's reply, and one line per change. An earlier
@@ -387,6 +418,8 @@ def _apply(data: dict, reply: dict, message: str, turn,
                 g["closed_turn"] = turn
                 changes.append(f"dropped {gid}: {g['text'][:160]}")
                 continue
+            if status == OPEN and g["status"] != OPEN and _kept_closed(g, message):
+                continue                     # the user closed it: it stays closed
             if status == OPEN and g["status"] == DONE and gid in wanted:
                 g["reopened_from"] = g["status"]
                 g["status"] = OPEN           # the user wants more of it
@@ -406,6 +439,9 @@ def _apply(data: dict, reply: dict, message: str, turn,
         if not text or status != OPEN:
             continue
         same = next((g for g in data["goals"] if g["text"] == text), None)
+        if (same is not None and same["status"] != OPEN and _kept_closed(same, message)) \
+                or (same is None and _like_closed(text, data, message)):
+            continue                         # a goal the user closed, not asked for again
         if same is not None:
             # The user asks again for a goal that was dropped or done: it is
             # that goal, open again — not a duplicate to skip.
@@ -866,6 +902,9 @@ def user_edit(session_id, goal_id: str, *, text: "str | None" = None,
             g["status"] = status
             if status != OPEN:
                 g["closed_turn"] = turn
+                g["closed_by_user"] = True   # stays closed on later messages
+            else:
+                g.pop("closed_by_user", None)
         if not changes:
             return None
         if goal_id in was_now or data.get("now") != was_now:
