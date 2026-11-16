@@ -86,15 +86,20 @@ def note_test_fails(st, fails, cmd: str = "") -> None:
         return
     per = st.__dict__.setdefault("test_runs_by_cmd", {}) if hasattr(st, "__dict__") else {}
     rec = per.get(cmd)
+    # Progress = a test command doing better than before, or a new one green.
+    better = (rec is not None and fails < rec[0]) or (rec is None and fails == 0)
     if rec is None or fails < rec[0]:
         per[cmd] = [fails, 0]                     # [best, runs since it improved]
     else:
         rec[1] += 1
+    if hasattr(st, "__dict__"):
+        st.test_runs_since_better = 0 if better else int(
+            getattr(st, "test_runs_since_better", 0) or 0) + 1
 
 
 def _stuck_red(st) -> bool:
-    """Every test command still red has gone _STALL_RUNS runs without a new
-    best (commands that pass do not count). A real PosClientBackend turn
+    """The last _STALL_RUNS graded test runs brought no new best on any test
+    command, and some test is still red. A real PosClientBackend turn
     went from 3 failing to 1 in its first runs, then ran the same class ~60
     more times at 1/17 and was still given its first extension (81 minutes;
     OpenCode stopped at 13)."""
@@ -106,7 +111,10 @@ def _stuck_red(st) -> bool:
     if n <= 0 or not per:
         return False
     red = [r for r in per.values() if r[0] > 0]
-    return bool(red) and all(r[1] >= n for r in red)
+    # The last n graded test runs, over every test command, brought no new
+    # best anywhere. (Requiring EACH red command to reach n runs let a red
+    # test method run only three times keep a stuck turn "moving".)
+    return bool(red) and int(getattr(st, "test_runs_since_better", 0) or 0) >= n
 
 
 def _tests_stalled(st) -> bool:

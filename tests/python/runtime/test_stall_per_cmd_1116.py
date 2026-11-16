@@ -42,3 +42,28 @@ def test_off_switch(monkeypatch):
     for _ in range(20):
         _limits.note_test_fails(st, 1, "mvn test")
     assert _limits._stuck_red(st) is False
+
+
+def test_every_way_of_saving_the_output_is_the_same_test(monkeypatch):
+    from aiforge_core.runtime.chat_agent._shell import test_identity
+    base = "mvn test -Dtest=CashFlowStatementBuilderTest"
+    for v in (f"cd /r && {base} 2>&1 > /tmp/out.txt; grep 'Tests run:' /tmp/out.txt",
+              f"{base} 2>&1 > /tmp/o.txt 2>&1; grep -B2 -A5 Cash /tmp/o.txt",
+              f"timeout 300 {base} 2>&1 | tail -40", f"JAVA_HOME=/j {base} && echo ok",
+              f"{base} || true"):
+        assert test_identity(v) == base, v
+    monkeypatch.delenv("AIFORGE_CHAT_STALL_RUNS", raising=False)
+    st = _st()
+    for i in range(9):
+        _limits.note_test_fails(st, 4, test_identity(f"{base} > /tmp/x{i}.txt; grep v{i} /tmp/x{i}.txt"))
+    assert _limits._stuck_red(st) is True
+
+
+def test_a_rarely_run_red_method_does_not_keep_a_stuck_turn_moving(monkeypatch):
+    monkeypatch.delenv("AIFORGE_CHAT_STALL_RUNS", raising=False)
+    st = _st()
+    _limits.note_test_fails(st, 4, "mvn test -Dtest=C")
+    for i in range(8):
+        cmd = "mvn test -Dtest=C#rare" if i in (2, 5) else "mvn test -Dtest=C"
+        _limits.note_test_fails(st, 1 if "#" in cmd else 4, cmd)
+    assert _limits._stuck_red(st) is True

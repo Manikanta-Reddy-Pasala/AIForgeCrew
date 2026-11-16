@@ -760,6 +760,26 @@ def _run_key(cmd: str) -> str:
     return " ".join(words)
 
 
+_FIRST_SPLIT = re.compile(r"\s*(?:\d?>>?|&>|\|\|?|;|&&)")
+
+
+def test_identity(cmd: str) -> str:
+    """WHICH test a command runs: the command up to its first redirect, pipe,
+    `;` or `&&` (after a leading `cd X &&`), without env prefixes or `timeout`.
+    For judging progress only — every way of saving or filtering the output
+    is the same test. On a real PosClientBackend run the model ran one test
+    class ~25 times at 4/18 failing as `mvn test … 2>&1 > /tmp/out.txt; grep
+    <something new>`, each a "new" command, and was given an extension.
+    (Result reuse keys on :func:`_run_key`, where a different grep matters.)"""
+    c = _LEAD_CD.sub("", cmd or "")
+    c = _FIRST_SPLIT.split(c, maxsplit=1)[0]
+    words = c.split()
+    while words and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0])
+                     or words[0] == "timeout" or re.match(r"^\d+[smh]?$", words[0])):
+        words = words[1:]
+    return " ".join(words)
+
+
 def _reuse_on() -> bool:
     return os.environ.get("AIFORGE_CHAT_TEST_REUSE", "1").strip().lower() not in (
         "0", "false", "no", "off")

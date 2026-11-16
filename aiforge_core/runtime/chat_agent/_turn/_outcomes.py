@@ -132,8 +132,8 @@ def _note_green_tests(st, name, args, result, cwd) -> None:
             from aiforge_core.runtime.shell_writes import command_of
             _cmd = command_of(args or {}) or ""
             try:
-                from .._shell import _run_key
-                _key = _run_key(_cmd)
+                from .._shell import test_identity
+                _key = test_identity(_cmd)
             except Exception:  # noqa: BLE001
                 _key = _cmd
             note_test_fails(st, _fails, _key)
