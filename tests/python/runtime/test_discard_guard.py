@@ -185,6 +185,8 @@ def _st_for(repo, monkeypatch):
 
 
 def test_a_repo_wide_command_is_never_released_one_file_at_a_time(repo, monkeypatch):
+    # the one-file release limit alone (the snapshot release is its own test)
+    monkeypatch.setattr(G, "_SNAPSHOT_AFTER", 999)
     root, st = _st_for(repo, monkeypatch)
     st.file_hashes = {str(root / "src" / "core.py"): "h"}          # one edited file
     for cmd in ("git reset --hard", "git stash", "git checkout -f main", "git checkout ."):
@@ -203,6 +205,8 @@ def test_old_refusals_go_stale_once_the_file_is_edited_again(repo, monkeypatch):
 
 
 def test_only_one_file_a_turn_is_released(repo, monkeypatch):
+    # the one-file release limit alone (the snapshot release is its own test)
+    monkeypatch.setattr(G, "_SNAPSHOT_AFTER", 999)
     root, st = _st_for(repo, monkeypatch)
     for _ in range(2):
         G.refusal(st, "run_command", {"cmd": "rm src/core.py"}, str(root))
@@ -354,3 +358,24 @@ def test_a_new_test_the_request_asked_for_is_never_deleted(repo, monkeypatch):
         assert r and r["error"] == "would_delete_asked_for_test", args
     st2 = SimpleNamespace(file_hashes={str(t): "h"}, goal="Notify the console.")
     assert G.refusal(st2, "run_command", {"cmd": f"rm {t}"}, str(root)) is None   # small, not asked
+
+
+def test_repeated_start_over_is_let_go_after_a_snapshot(repo, monkeypatch):
+    """Tracked work refused 3 times: saved with git stash create, then allowed,
+    with a note naming the snapshot."""
+    root, edited = repo
+    from aiforge_core.runtime import git_target
+    monkeypatch.setattr(git_target, "command_base", lambda cwd: str(root))
+    core = root / "src" / "core.py"
+    core.write_text("".join(f"line_{i} = {i}\n" for i in range(40)))
+    st = SimpleNamespace(file_hashes={str(core): "h"}, goal="", discard_released={"x"})
+    cmd = {"cmd": "git checkout -- src/core.py"}
+    for _ in range(3):
+        assert G.refusal(st, "run_command", cmd, str(root))
+    assert G.refusal(st, "run_command", cmd, str(root)) is None
+    note = " ".join(st.held_notes)
+    sha = note.split("snapshot ")[1].split(")")[0]
+    import subprocess
+    shown = subprocess.run(["git", "-C", str(root), "show", f"{sha}:src/core.py"],
+                           capture_output=True, text=True).stdout
+    assert "line_39 = 39" in shown                       # the edits are recoverable

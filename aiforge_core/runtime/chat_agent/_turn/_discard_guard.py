@@ -424,6 +424,42 @@ def _small_loss(paths) -> bool:
     return total <= cap
 
 
+#: Refusals of the same tracked files before they are saved and let go.
+_SNAPSHOT_AFTER = 3
+
+
+def _snapshot_release(st, lost, base) -> "str | None":
+    """After _SNAPSHOT_AFTER refusals of the same tracked files: save every
+    tracked change (``git stash create``), hold a note naming how to get it
+    back, and return the snapshot's sha (the command may run); else None."""
+    if not hasattr(st, "__dict__") or not lost or not all(_Git().tracked(p) for p in lost):
+        return None
+    counts = st.__dict__.setdefault("discard_refusals", {})
+    key = tuple(sorted(lost))
+    counts[key] = counts.get(key, 0) + 1
+    if counts[key] <= _SNAPSHOT_AFTER:
+        return None
+    try:
+        from . import _best_state
+        top = _Git().top(os.path.dirname(lost[0]) or ".") or base
+        snap = _best_state._snapshot(top)
+    except Exception:  # noqa: BLE001
+        snap = None
+    if not snap or not snap.get("sha"):
+        return None
+    counts.pop(key, None)
+    sha = snap["sha"][:12]
+    rels = [os.path.relpath(p, top) for p in lost[:6]]
+    try:
+        from ._notes import hold
+        hold(st, "[harness — not the user] Your edits to " + ", ".join(rels) + " were saved "
+                 f"before that command ran (snapshot {sha}). `git diff {sha} -- <file>` shows "
+                 f"what changed since; `git checkout {sha} -- <file>` brings a file back.")
+    except Exception:  # noqa: BLE001
+        pass
+    return sha
+
+
 def _asked_tests(st, lost, base) -> list:
     """The turn's own TEST files among ``lost`` when the request asks for tests."""
     try:
@@ -526,6 +562,14 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
             released.add(lost[0])
             tried.pop(lost[0], None)
             return None
+    # Refused again and again for the same tracked files: the model means to
+    # start over. Let it — after saving the edits, so nothing is lost. A real
+    # PosClientBackend run was refused 59 times (rm + git show HEAD:…, git
+    # checkout, git stash, git reset --hard on one 84-line change) once its
+    # single one-file release was spent: 34 minutes, neither fixed nor restarted.
+    saved = _snapshot_release(st, lost, base)
+    if saved:
+        return None
     shown = [os.path.relpath(p, base) for p in lost[:8]]
     if broken:
         # a repo-wide reset also wipes work the guard does not track: name
