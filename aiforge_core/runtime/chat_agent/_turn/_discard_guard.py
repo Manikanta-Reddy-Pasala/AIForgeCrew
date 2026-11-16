@@ -385,6 +385,45 @@ _USER_RESET = re.compile(r"\b(?:start (?:over|again|from scratch)|from scratch|r
                          r"throw (?:it|everything) away)\b", re.I)
 
 
+#: Changed lines a discard may lose without being refused
+#: (AIFORGE_CHAT_DISCARD_SMALL_LINES; 0 = always protect).
+_SMALL_LINES = 20
+
+
+def _small_loss(paths) -> bool:
+    """What undoing ``paths`` would lose is at most _SMALL_LINES lines: the
+    diff against HEAD of tracked files, every line of untracked ones."""
+    import subprocess
+    try:
+        cap = int(os.environ.get("AIFORGE_CHAT_DISCARD_SMALL_LINES", str(_SMALL_LINES)))
+    except ValueError:
+        cap = _SMALL_LINES
+    if cap <= 0:
+        return False
+    total, g = 0, _Git()
+    try:
+        for p in paths:
+            if g.tracked(p):
+                d = os.path.dirname(p) or "."
+                r = subprocess.run(["git", "-C", d, "diff", "--numstat", "HEAD", "--", p],
+                                   capture_output=True, timeout=10)
+                if r.returncode != 0:
+                    return False
+                for line in r.stdout.decode(errors="replace").splitlines():
+                    a, b = (line.split("\t") + ["", ""])[:2]
+                    if not (a.isdigit() and b.isdigit()):
+                        return False          # binary: not small
+                    total += int(a) + int(b)
+            else:
+                with open(p, "rb") as fh:
+                    total += fh.read().count(b"\n")
+            if total > cap:
+                return False
+    except Exception:  # noqa: BLE001
+        return False
+    return total <= cap
+
+
 def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     """The result to hand back instead of running ``args``, or None."""
     if not _on() or not isinstance(args, dict):
@@ -404,6 +443,12 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     except Exception:  # noqa: BLE001 — the guard never blocks on its own error
         return None
     if not lost:
+        return None
+    # Little to lose: undoing a few changed lines costs less than the refusals
+    # (a real PosClientBackend turn was refused ~12 times — git checkout,
+    # git stash to compare with the original — to protect a 1-line edit, then
+    # fought whole-file-write refusals too, and ended on the starting score).
+    if _small_loss(lost):
         return None
     # The override is for one file the model means to drop — not for a
     # repo-wide stash/reset of its own tracked work (attrs n5: 14/18 at 25

@@ -11,6 +11,13 @@ import pytest
 from aiforge_core.runtime.chat_agent._turn import _discard_guard as G
 
 
+@pytest.fixture(autouse=True)
+def _protect_small_edits_too(monkeypatch):
+    """These tests are about the protection itself, on one-line files: the
+    small-loss allowance (see test_a_small_loss_is_not_refused) is off."""
+    monkeypatch.setenv("AIFORGE_CHAT_DISCARD_SMALL_LINES", "0")
+
+
 @pytest.fixture
 def repo(tmp_path):
     (tmp_path / "src").mkdir()
@@ -310,3 +317,22 @@ def test_a_file_the_test_guard_flagged_may_be_restored(repo, monkeypatch):
     assert G.refusal(st, "run_command", {"cmd": "git checkout ."}, str(root))
     st2 = SimpleNamespace(file_hashes=dict.fromkeys(edited, "h"), goal="")
     assert G.refusal(st2, "run_command", {"cmd": "git checkout -- src/core.py"}, str(root))
+
+
+def test_a_small_loss_is_not_refused(repo, monkeypatch):
+    """Undoing a one-line edit is allowed; a big change stays protected."""
+    monkeypatch.setenv("AIFORGE_CHAT_DISCARD_SMALL_LINES", "20")
+    root, edited = repo
+    from aiforge_core.runtime import git_target
+    monkeypatch.setattr(git_target, "command_base", lambda cwd: str(root))
+    core = root / "src" / "core.py"
+    core.write_text("x = 2\n")
+    st = SimpleNamespace(file_hashes={str(core): "h"}, goal="")
+    assert G.refusal(st, "run_command", {"cmd": "git checkout -- src/core.py"}, str(root)) is None
+    core.write_text("".join(f"line_{i} = {i}\n" for i in range(40)))
+    st = SimpleNamespace(file_hashes={str(core): "h"}, goal="")
+    assert G.refusal(st, "run_command", {"cmd": "git checkout -- src/core.py"}, str(root))
+    monkeypatch.setenv("AIFORGE_CHAT_DISCARD_SMALL_LINES", "0")
+    core.write_text("x = 3\n")
+    st = SimpleNamespace(file_hashes={str(core): "h"}, goal="")
+    assert G.refusal(st, "run_command", {"cmd": "git checkout -- src/core.py"}, str(root))
