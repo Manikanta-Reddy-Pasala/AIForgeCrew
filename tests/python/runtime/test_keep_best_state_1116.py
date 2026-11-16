@@ -52,3 +52,25 @@ def test_off_switch(tmp_path, monkeypatch):
     st = _repo(tmp_path)
     B.note(st, "pytest", 1, str(tmp_path))
     assert not getattr(st, "best_state", None)
+
+
+def test_give_up_restores_the_best_state(tmp_path, monkeypatch):
+    from aiforge_core.runtime.chat_agent._turn._stuck import ladder
+    st = _repo(tmp_path)
+    (tmp_path / "a.py").write_text("best\n")
+    st.edits_made = 1
+    B.note(st, "mvn -o test -Dtest=X", 2, str(tmp_path))
+    (tmp_path / "a.py").write_text("does not compile\n")
+    st.edits_made = 4
+    B.note(st, "mvn -o test -Dtest=X", 999, str(tmp_path))
+
+    def _spent(st, why):
+        if False:
+            yield None
+        return "wrap_up"
+    monkeypatch.setattr(ladder, "escalate", _spent)
+    monkeypatch.setattr(ladder, "give_up_message", lambda st: "(stopped)")
+    st.convo = []
+    evs = list(ladder.change_approach(st, "stuck"))
+    assert any("restored" in str(e.get("text", "")) for e in evs)
+    assert (tmp_path / "a.py").read_text() == "best\n"
