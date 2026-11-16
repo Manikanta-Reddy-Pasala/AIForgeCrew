@@ -67,3 +67,13 @@ def test_a_rarely_run_red_method_does_not_keep_a_stuck_turn_moving(monkeypatch):
         cmd = "mvn test -Dtest=C#rare" if i in (2, 5) else "mvn test -Dtest=C"
         _limits.note_test_fails(st, 1 if "#" in cmd else 4, cmd)
     assert _limits._stuck_red(st) is True
+
+
+def test_a_passing_narrow_run_is_not_progress(monkeypatch):
+    monkeypatch.delenv("AIFORGE_CHAT_STALL_RUNS", raising=False)
+    st = _st()
+    _limits.note_test_fails(st, 2, "mvn test -Dtest=C")
+    for i in range(6):
+        cmd = f"mvn test -Dtest=C#m{i}" if i % 2 else "mvn test -Dtest=C"
+        _limits.note_test_fails(st, 0 if "#" in cmd else 2, cmd)
+    assert _limits._stuck_red(st) is True

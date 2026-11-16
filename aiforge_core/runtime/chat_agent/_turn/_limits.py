@@ -68,7 +68,7 @@ def _spinning(st) -> bool:
 
 #: Runs of one test command with no new best, while it is still red, before
 #: the turn's tests count as stuck (AIFORGE_CHAT_STALL_RUNS; 0 = off).
-_STALL_RUNS = 8
+_STALL_RUNS = 6
 
 
 def note_test_fails(st, fails, cmd: str = "") -> None:
@@ -86,8 +86,11 @@ def note_test_fails(st, fails, cmd: str = "") -> None:
         return
     per = st.__dict__.setdefault("test_runs_by_cmd", {}) if hasattr(st, "__dict__") else {}
     rec = per.get(cmd)
-    # Progress = a test command doing better than before, or a new one green.
-    better = (rec is not None and fails < rec[0]) or (rec is None and fails == 0)
+    # Progress = a test command doing better than before. A NEW command that
+    # passes is not: a real Java service run kept its class at 2/17 failing and
+    # ran single passing methods (0/1) in between — each read as progress, and
+    # the turn was extended at its 7th graded run (81 minutes, no test gained).
+    better = rec is not None and fails < rec[0]
     if rec is None or fails < rec[0]:
         per[cmd] = [fails, 0]                     # [best, runs since it improved]
     else:
