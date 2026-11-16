@@ -619,7 +619,10 @@ def _jdk_rerun(cmd: str, res: dict, args: dict, cwd: str) -> "dict | None":
     AIFORGE_CHAT_AUTO_JDK=0 turns it off."""
     if os.environ.get("AIFORGE_CHAT_AUTO_JDK", "1").strip().lower() in ("0", "false", "no", "off"):
         return None
-    if res.get("ok") is not False or args.get("_jdk_rerun") or not _JVM_BUILD.search(cmd):
+    # The exit code alone is not enough: `mvn … 2>&1 | tail -50` exits 0 with
+    # the JDK error hidden in its output (a real run then spent ~30 calls on
+    # find/ls/cat in target/ wondering why nothing compiled).
+    if args.get("_jdk_rerun") or not _JVM_BUILD.search(cmd):
         return None
     try:
         from ._turn._env_guard import _JDK_TOO_OLD, installed_jdks
@@ -637,6 +640,7 @@ def _jdk_rerun(cmd: str, res: dict, args: dict, cwd: str) -> "dict | None":
     home = fit[-1]                               # the oldest one that is new enough
     if f"JAVA_HOME={home}" in cmd:
         return None
+    _JDK_FOR[_jdk_key(cwd)] = home               # every later build here starts with it
     again = _t_run_command({**args, "cmd": _with_jdk(cmd, home), "_jdk_rerun": True}, cwd)
     if isinstance(again, dict):
         again["toolchain"] = (
@@ -646,7 +650,28 @@ def _jdk_rerun(cmd: str, res: dict, args: dict, cwd: str) -> "dict | None":
     return again
 
 
+#: The JDK that fitted, per repository, for this process.
+_JDK_FOR: dict = {}
+
+
+def _jdk_key(cwd: str) -> str:
+    try:
+        from aiforge_core.runtime import repo_ident
+        return repo_ident.git_toplevel(cwd) or os.path.realpath(cwd or ".")
+    except Exception:  # noqa: BLE001
+        return os.path.realpath(cwd or ".")
+
+
 def _t_run_command(args: dict, cwd: str) -> dict:
+    cmd = args.get("cmd") or ""
+    home = (_JDK_FOR.get(_jdk_key(cwd)) if _JDK_FOR and _JVM_BUILD.search(cmd)
+            and "JAVA_HOME=" not in cmd else None)
+    if home and _JVM_BUILD.search(cmd) and "JAVA_HOME=" not in cmd \
+            and os.environ.get("AIFORGE_CHAT_AUTO_JDK", "1").strip().lower() not in (
+                "0", "false", "no", "off"):
+        # The model often keeps typing the bare command; run it with the JDK
+        # that already worked here instead of failing first every time.
+        args = {**args, "cmd": _with_jdk(cmd, home), "_jdk_rerun": True}
     res = _t_run_command_once(args, cwd)
     try:
         again = _jdk_rerun(args.get("cmd") or "", res, args, cwd) if isinstance(res, dict) else None

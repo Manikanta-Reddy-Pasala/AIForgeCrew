@@ -29,3 +29,22 @@ def test_no_rerun_for_other_failures_or_tools(monkeypatch):
     monkeypatch.setattr(_shell, "_t_run_command_once",
                         lambda a, c: {"ok": False, "code": 1, "stdout": ERR, "stderr": ""})
     assert "toolchain" not in _shell._t_run_command({"cmd": "make build"}, "/r")
+
+
+def test_piped_command_with_hidden_jdk_error_is_rerun_and_sticky(monkeypatch):
+    calls = []
+
+    def once(args, cwd):
+        calls.append(args["cmd"])
+        if "JAVA_HOME" in args["cmd"]:
+            return {"ok": True, "code": 0, "stdout": "BUILD SUCCESS", "stderr": ""}
+        return {"ok": True, "code": 0, "stdout": ERR, "stderr": ""}      # `| tail` exit 0
+    monkeypatch.setattr(_shell, "_t_run_command_once", once)
+    monkeypatch.setattr(_shell, "_JDK_FOR", {})
+    monkeypatch.setattr(_shell, "_jdk_key", lambda cwd: "/r")
+    monkeypatch.setattr(_env_guard, "installed_jdks", lambda: [(24, "/j24")])
+    r = _shell._t_run_command({"cmd": "mvn -o -q test 2>&1 | tail -50"}, "/r")
+    assert r["ok"] and "toolchain" in r
+    calls.clear()
+    _shell._t_run_command({"cmd": "mvn -o -q compile"}, "/r")         # later bare command
+    assert calls == ["JAVA_HOME=/j24 PATH=/j24/bin:$PATH mvn -o -q compile"]
