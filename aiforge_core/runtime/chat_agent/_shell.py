@@ -598,7 +598,64 @@ def _label_job(res: dict, args: dict) -> dict:
     return res
 
 
+_JVM_BUILD = re.compile(r"(?:^|[\s;&|(/])(?:mvn|mvnw|gradle|gradlew|javac|java|sbt|lein|kotlinc)\b")
+_LEAD_CD = re.compile(r"^(\s*cd\s+\S+\s*&&\s*)")
+
+
+def _with_jdk(cmd: str, home: str) -> str:
+    """``cmd`` run with ``home`` as its JDK: the env goes after a leading
+    ``cd X &&`` so it applies to the build, not to the cd."""
+    env = f"JAVA_HOME={home} PATH={home}/bin:$PATH "
+    m = _LEAD_CD.match(cmd)
+    return (m.group(1) + env + cmd[m.end():]) if m else env + cmd
+
+
+def _jdk_rerun(cmd: str, res: dict, args: dict, cwd: str) -> "dict | None":
+    """A JVM build that failed because the JDK on PATH is too old, run once
+    more with an installed JDK that fits. Fresh runs on PosClientBackend
+    (needs 24, system java 21) spent most of their 130-210 shell commands
+    on it: 50-70 failing mvn runs, 20-40 `ls /usr/lib/jvm`, jar/javap
+    probes — OpenCode, same model, did the whole job in ~14 calls.
+    AIFORGE_CHAT_AUTO_JDK=0 turns it off."""
+    if os.environ.get("AIFORGE_CHAT_AUTO_JDK", "1").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    if res.get("ok") is not False or args.get("_jdk_rerun") or not _JVM_BUILD.search(cmd):
+        return None
+    try:
+        from ._turn._env_guard import _JDK_TOO_OLD, installed_jdks
+    except Exception:  # noqa: BLE001
+        return None
+    text = f"{res.get('stdout') or ''}\n{res.get('stderr') or ''}"
+    m = _JDK_TOO_OLD.search(text)
+    if not m:
+        return None
+    raw = int(next(g for g in m.groups() if g))
+    need = raw - 44 if raw >= 45 else raw
+    fit = [h for v, h in installed_jdks() if v >= need]
+    if not fit:
+        return None
+    home = fit[-1]                               # the oldest one that is new enough
+    if f"JAVA_HOME={home}" in cmd:
+        return None
+    again = _t_run_command({**args, "cmd": _with_jdk(cmd, home), "_jdk_rerun": True}, cwd)
+    if isinstance(again, dict):
+        again["toolchain"] = (
+            f"the java on PATH is too old for this project (needs JDK {need}); this result is "
+            f"from the same command run with JAVA_HOME={home}. Run build/test commands as: "
+            f"{_with_jdk('<command>', home).strip()}")
+    return again
+
+
 def _t_run_command(args: dict, cwd: str) -> dict:
+    res = _t_run_command_once(args, cwd)
+    try:
+        again = _jdk_rerun(args.get("cmd") or "", res, args, cwd) if isinstance(res, dict) else None
+    except Exception:  # noqa: BLE001 — a retry must never break the command
+        again = None
+    return again if again is not None else res
+
+
+def _t_run_command_once(args: dict, cwd: str) -> dict:
     cmd = args["cmd"]
     root = _workspace_root()
     base = str(root) if root is not None else cwd
