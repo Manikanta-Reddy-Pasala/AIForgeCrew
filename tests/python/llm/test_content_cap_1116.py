@@ -68,3 +68,21 @@ def test_native_post_reasks_once_with_the_note(monkeypatch):
                               {}, b"first", 30, "chat", None)
     assert out == {"ok": True} and len(sent) == 2
     assert b"cut off" in sent[1] and b"fix it" in sent[1]
+
+
+def test_the_reask_is_capped_and_a_second_overrun_is_an_empty_reply(monkeypatch):
+    from aiforge_core.llm import client
+    calls = []
+
+    def fake_post(ep, payload, timeout_s, **kw):
+        calls.append(payload)
+        raise ContentOverCap("long")
+
+    monkeypatch.setattr(client, "_post_with_retry", fake_post)
+    monkeypatch.setattr(client, "_build_body", lambda ep, msgs, *a: repr(msgs).encode())
+    ep = type("E", (), {"model": "m", "base_url": "u"})()
+    out = client._native_post(ep, [{"role": "user", "content": "fix it"}], 0, None, None,
+                              {}, b"first", 30, "chat", None)
+    assert len(calls) == 2
+    ch = out["choices"][0]
+    assert ch["finish_reason"] == "length" and ch["message"]["content"] == ""

@@ -342,15 +342,20 @@ def _native_post(ep, messages, temperature, max_tokens, top_p, ex,
         except ContentOverCap:
             _log.info("reply text over the cap with no tool call for %s — asking again "
                       "once with a note to act through the tools", ep.model)
-            from ._http import _UNCAPPED
             nudged = list(messages) + [{"role": "user", "content": _CONTENT_CAP_NOTE}]
-            tok = _UNCAPPED.set(True)
+            payload = _build_body(ep, nudged, temperature, max_tokens, top_p, ex)
             try:
-                payload = _build_body(ep, nudged, temperature, max_tokens, top_p, ex)
+                # The re-ask is capped too: left uncapped, one real run's
+                # re-ask generated for 279 s.
                 return _post_with_retry(ep, payload, timeout_s, role=role,
                                         source="native", meter=meter)
-            finally:
-                _UNCAPPED.reset(tok)
+            except ContentOverCap:
+                # Twice over: an empty reply, which the loop's empty-turn
+                # retry handles (it never reads a cut monologue as an answer).
+                _log.info("reply text over the cap again for %s — empty reply", ep.model)
+                return {"object": "chat.completion", "choices": [{
+                    "index": 0, "finish_reason": "length",
+                    "message": {"role": "assistant", "content": ""}}]}
         except ReasoningOverCap:
             _log.info("reasoning over the Low/Medium cap for %s — asking again "
                       "with thinking off", ep.model)
