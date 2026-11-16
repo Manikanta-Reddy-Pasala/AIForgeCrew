@@ -7,7 +7,10 @@ and ran each: 86 write-and-run cycles, 237 model calls, 40 minutes, where
 OpenCode with the same model took 4. After the third such file in a turn the
 agent is told once to put the case in the repo's own test and run that;
 each further one counts toward the stuck limit (no extension while it goes
-on). Off: ``AIFORGE_CHAT_THROWAWAY_GUARD=0``.
+on). The note alone did not hold: the next run wrote 73 more (/tmp/test1.rs
+… /tmp/test50.rs) after it. So once the note has been given, a further
+throwaway SOURCE file is refused before it is written (:func:`refusal`).
+Off: ``AIFORGE_CHAT_THROWAWAY_GUARD=0``.
 """
 from __future__ import annotations
 
@@ -45,6 +48,31 @@ def _written(name: str, args: dict) -> list:
         cmd = str(args.get("cmd") or args.get("command") or "")
         return [m.group(1) for m in _SHELL_WRITE.finditer(cmd) if ">" in cmd or "tee" in cmd]
     return []
+
+
+_SOURCE = re.compile(r"\.(?:rs|py|java|kt|scala|c|cc|cpp|cxx|h|hpp|go|js|ts|rb|cs|swift)$", re.I)
+
+
+def refusal(st, name: str, args: dict, cwd: str = ""):
+    """The result to return INSTEAD of running this call, or None. Only after
+    the note was given, and only for a new throwaway source file."""
+    if not _on() or not getattr(st, "probe_said", False):
+        return None
+    try:
+        root = str(getattr(st, "cwd", "") or cwd or "")
+        new = [p for p in _written(name, args or {})
+               if _SOURCE.search(p) and _throwaway(p, root)]
+        if not new:
+            return None
+        from ._limits import note_spin
+        note_spin(st)
+        return {"ok": False, "blocked": "throwaway_program",
+                "error": (f"refused: {os.path.basename(new[0])} would be another throwaway "
+                          "program. Put the case into the repository's own test (the "
+                          "existing test file for this code) and run the project's test "
+                          "command instead.")}
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def check(st, name: str, args: dict, cwd: str = "") -> None:

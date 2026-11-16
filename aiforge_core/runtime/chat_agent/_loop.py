@@ -413,9 +413,14 @@ def _gated_action(st, step, name, args, sig, n, cwd, session_id):
     else:
         from ._turn import _structure_guard
         _structure_guard.snapshot(st, name, args, cwd)
-        result = yield from _dispatch_tool(name, args, cwd, n, _hb,
-                                           _take_early_read(st, sig),
-                                           task=running_task(st))
+        from ._turn import _throwaway_guard
+        _refused = _throwaway_guard.refusal(st, name, args, cwd)
+        if _refused is not None:
+            result = _refused
+        else:
+            result = yield from _dispatch_tool(name, args, cwd, n, _hb,
+                                               _take_early_read(st, sig),
+                                               task=running_task(st))
         result, _note = _net.end(_h, result) if _h is not None else (
             result, _net.poll(cwd))
         result, _rnote = _roles.net_end(_rh, result)
