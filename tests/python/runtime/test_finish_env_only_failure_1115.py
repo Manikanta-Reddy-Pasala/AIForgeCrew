@@ -121,3 +121,34 @@ def test_python_project_keeps_the_full_check(tmp_path, monkeypatch):
     monkeypatch.setattr(O, "_python_project", lambda cwd: True)
     st = _st(tmp_path, last_full_test=None, last_test_cmd=("run_command", {"command": "pytest -q tests/a"}))
     assert O._project_verify(st, str(tmp_path))[0] is True and ran == ["guessed"]
+
+
+def test_no_own_command_compiles_instead_and_retries_with_a_fitting_jdk(tmp_path, monkeypatch):
+    from aiforge_core.runtime.chat_agent._turn import _done_watch, _env_guard
+    (tmp_path / "pom.xml").write_text("<project/>")
+    monkeypatch.setattr(O, "_run_project_verify", lambda cwd, python=None: (_ for _ in ()).throw(
+        AssertionError("whole-suite guess must not run")))
+    monkeypatch.setattr(O, "_project_python", lambda st, cwd: None)
+    monkeypatch.setattr(O, "_python_project", lambda cwd: False)
+    monkeypatch.setattr(_env_guard, "installed_jdks", lambda: [(25, "/j25"), (24, "/j24"), (21, "/j21")])
+    ran = []
+
+    def fake(cmd, cwd, timeout=0):
+        ran.append(cmd)
+        if not cmd.startswith("JAVA_HOME"):
+            return 1, JDK_ERR
+        return 1, "[ERROR] /w/src/test/java/a/NewTest.java:[3,44] cannot find symbol\n[ERROR] COMPILATION ERROR"
+    monkeypatch.setattr(_done_watch, "_run", fake)
+    st = _st(tmp_path, last_full_test=None)
+    ok, out = O._project_verify(st, str(tmp_path))
+    assert ok is False and "do not compile" in out and "NewTest.java" in out
+    assert ran == ["mvn -q -o test-compile", "JAVA_HOME=/j24 PATH=/j24/bin:$PATH mvn -q -o test-compile"]
+
+
+def test_compiling_project_has_no_verdict(tmp_path, monkeypatch):
+    from aiforge_core.runtime.chat_agent._turn import _done_watch
+    (tmp_path / "Cargo.toml").write_text("[package]")
+    monkeypatch.setattr(O, "_project_python", lambda st, cwd: None)
+    monkeypatch.setattr(O, "_python_project", lambda cwd: False)
+    monkeypatch.setattr(_done_watch, "_run", lambda cmd, cwd, timeout=0: (0, "Finished test profile"))
+    assert O._project_verify(_st(tmp_path, last_full_test=None), str(tmp_path))[0] is None

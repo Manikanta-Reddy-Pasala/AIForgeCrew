@@ -553,6 +553,59 @@ def _python_project(cwd) -> bool:
         return True                   # unknown: keep the full check
 
 
+#: Compile code AND tests, no test run: marker file -> command.
+_COMPILE_CMDS = (
+    ("pom.xml", "mvn -q -o test-compile"),
+    ("build.gradle", "./gradlew -q --offline testClasses"),
+    ("build.gradle.kts", "./gradlew -q --offline testClasses"),
+    ("Cargo.toml", "cargo test --no-run --quiet"),
+    ("go.mod", "go vet ./..."),
+)
+
+
+def _compile_check(st, cwd) -> "tuple[bool | None, str] | None":
+    """``(ok, output)`` of compiling the project's code and tests; a JDK that
+    is too old is retried once with an installed one that fits. None when the
+    project has no known compile command; ``(None, out)`` when the toolchain
+    still cannot build it (no verdict)."""
+    try:
+        from aiforge_core.runtime import git_target
+        from aiforge_core.runtime.failure_signature import _ANSI
+        from ._done_watch import _run
+        from ._env_guard import _JDK_TOO_OLD, installed_jdks
+        root = git_target.command_base(getattr(st, "cwd", "") or cwd) or cwd
+        cmd = next((c for marker, c in _COMPILE_CMDS
+                    if os.path.isfile(os.path.join(root, marker))), None)
+        if not cmd:
+            return None
+        try:
+            limit = int(os.environ.get("AIFORGE_CHAT_FINISH_COMPILE_S", "300"))
+        except ValueError:
+            limit = 300
+        code, out = _run(cmd, root, timeout=limit)
+        out = _ANSI.sub("", out or "")
+        m = _JDK_TOO_OLD.search(out)
+        if code != 0 and m:
+            raw = int(next(g for g in m.groups() if g))
+            need = raw - 44 if raw >= 45 else raw
+            fit = [h for v, h in installed_jdks() if v >= need]
+            if not fit:
+                return None, out
+            home = fit[-1]                      # the oldest one that is new enough
+            code, out = _run(f"JAVA_HOME={home} PATH={home}/bin:$PATH {cmd}", root,
+                             timeout=limit)
+            out = _ANSI.sub("", out or "")
+            if code != 0 and _JDK_TOO_OLD.search(out):
+                return None, out
+        if code == 0:
+            return None, out                    # it builds; no test ran, so no verdict
+        if _TOOLCHAIN_MISMATCH.search(out) and "error:" not in out.lower():
+            return None, out
+        return False, ("[the code or its tests do not compile]\n" + out[-6000:])
+    except Exception:  # noqa: BLE001 — the finish check must never break a turn
+        return None
+
+
 def _project_verify(st, cwd):
     """``(ok, output)`` of the finish check: the harness's own project runner,
     unless it could not run the tests at all (no counts, a collection error)
@@ -570,6 +623,13 @@ def _project_verify(st, cwd):
         own = _rerun_own_test(st, cwd)
         if own is not None:
             return own
+        # No test command of its own: compile the code and the tests instead of
+        # guessing the whole suite (which ran 13+ minutes on PosClientBackend,
+        # twice). A broken build is what this catches: two real jobs ended with
+        # code or a new test that did not compile (0/18, 0/8).
+        built = _compile_check(st, cwd)
+        if built is not None:
+            return built
     ok, out = _run_project_verify(cwd, python=py) if py else _run_project_verify(cwd)
     try:
         from aiforge_core.runtime.parallel_subtasks import _fail_count

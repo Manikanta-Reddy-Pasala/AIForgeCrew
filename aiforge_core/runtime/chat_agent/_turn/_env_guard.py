@@ -60,7 +60,8 @@ def missing_modules(text: str, top: str) -> list:
 #: The JDK running the build is older than the project's release/target.
 _JDK_TOO_OLD = re.compile(
     r"release version (\d+) not supported|invalid (?:target|source) release:?\s*(\d+)|"
-    r"class file (?:major )?version (\d+)|Unsupported class file major version (\d+)", re.I)
+    r"class file (?:major )?version (\d+)|Unsupported class file major version (\d+)|"
+    r"class file has wrong version (\d+)", re.I)
 _JDK_GLOBS = ("/usr/lib/jvm/*", "~/.sdkman/candidates/java/*", "~/jdk*", "~/jdk*/*", "~/jdks/*",
               "~/.jdks/*", "/opt/*jdk*", "/opt/*jdk*/*", "/opt/java/*",
               "/Library/Java/JavaVirtualMachines/*/Contents/Home")

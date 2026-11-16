@@ -41,3 +41,10 @@ def test_none_found_says_so(tmp_path, monkeypatch):
 
 def test_class_file_version_maps_to_java_release():
     assert E._JDK_TOO_OLD.search("Unsupported class file major version 68")
+
+
+def test_wrong_class_file_version_means_java_24():
+    m = E._JDK_TOO_OLD.search("bad class file: Foo.class\n class file has wrong version 68.0, "
+                              "should be 65.0")
+    raw = int(next(g for g in m.groups() if g))
+    assert raw - 44 == 24
