@@ -503,6 +503,10 @@ def _run_refusal(cmd: str, args: dict, base: str, *,
             and delete_guard.removes_vcs_history(cmd, base):
         return {"ok": False, "blocked": "vcs_history",
                 "error": delete_guard.vcs_history_refusal(cmd)}
+    if args.get("_refuse_outside_delete"):
+        return {"ok": False, "blocked": "delete_outside",
+                "error": delete_guard.OUTSIDE_REFUSAL.format(
+                    paths=", ".join(args["_refuse_outside_delete"]))}
     if not allow_delete and not args.get("confirm_delete") \
             and delete_guard.is_destructive_delete(cmd, base):
         return {"ok": False, "blocked": "delete",

@@ -130,6 +130,17 @@ def _command_gate_flags(name, args, cwd, session_id, _mode_approvals):
         # Only a human who sees this exact command may delete the history:
         # no pre-confirmation, no sandbox or allow-delete exemption.
         return True, False
+    if destructive_del and not _mode_approvals:
+        try:
+            from aiforge_core.runtime.tools import delete_guard as _dg
+            from aiforge_core.runtime import repo_ident as _ri
+            outside = _dg.outside_targets(cmd, _ri.git_toplevel(cwd) or cwd)
+        except Exception:  # noqa: BLE001
+            outside = []
+        if outside:
+            # Approvals off confirms deletes in the project, never outside it.
+            args["_refuse_outside_delete"] = outside[:4]
+            return False, auto_commit
     if destructive_del and _delete_pre_confirmed(cmd, repo, session_id,
                                                  _mode_approvals):
         destructive_del = False

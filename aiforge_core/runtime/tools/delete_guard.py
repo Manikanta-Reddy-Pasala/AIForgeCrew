@@ -459,3 +459,51 @@ def allow_delete(env_keys: tuple[str, ...] = ("AIFORGE_ALLOW_DELETE",)) -> bool:
         if os.environ.get(k, "").strip().lower() in ("1", "true", "yes", "on"):
             return True
     return False
+
+
+
+#: Maven/Gradle commands that wipe the shared local repository.
+_PURGE_TOOLS = re.compile(r"\bdependency:purge-local-repository\b|\bbuild-cache-clean\b")
+
+
+def outside_targets(cmd: str, root: "str | None") -> list:
+    """Local paths an ``rm``-family command in ``cmd`` would delete OUTSIDE
+    ``root`` (temp dirs excepted), following ``cd X &&``. Remote commands
+    (``ssh host 'rm …'``, ``kubectl delete``) delete nothing here and are not
+    counted. A real fresh run wiped ~/.m2/repository/com/oneshell (the
+    machine's shared Maven cache) dozens of times while approvals were off."""
+    if not cmd or not root:
+        return []
+    root = os.path.realpath(os.path.expanduser(root))
+    out, base = [], root
+    for seg in _split_segments(_strip_heredocs(cmd)):
+        words = _words(seg)
+        verb, args = _verb_and_args(words)
+        if verb == "cd" and args:
+            nxt = os.path.expanduser(args[0])
+            base = os.path.realpath(nxt if os.path.isabs(nxt) else os.path.join(base, nxt))
+            continue
+        if _PURGE_TOOLS.search(seg):
+            out.append("~/.m2/repository (dependency:purge-local-repository)")
+            continue
+        if verb not in _REMOVE_VERBS:
+            continue
+        for a in args:
+            if not a or _is_option(a):
+                continue
+            path = os.path.expanduser(a)
+            full = os.path.realpath(path if os.path.isabs(path) else os.path.join(base, path))
+            if full == root or full.startswith(root.rstrip("/") + "/"):
+                continue
+            if any((full + "/").startswith(t) for t in _TMP_ROOTS):
+                continue
+            out.append(a)
+    return out
+
+
+OUTSIDE_REFUSAL = (
+    "refused: this deletes files OUTSIDE the project ({paths}) and approvals "
+    "are off, so nobody can confirm it. Shared caches and other folders are "
+    "not yours to delete: refresh a dependency with the build tool instead "
+    "(e.g. `mvn -U ...`, `gradle --refresh-dependencies`, `cargo update`), "
+    "or ask the user.")
