@@ -1,7 +1,7 @@
 """A command that took d seconds last time waits ~1.3x d in the foreground
 before it becomes a job, so a 30-s test run comes back in one call.
 
-Live case: a real PosClientBackend job spent 11 of 76 model calls on
+Live case: a real OrderService job spent 11 of 76 model calls on
 command_wait — each ~30-s Maven run went to the background at 15 s.
 """
 from types import SimpleNamespace

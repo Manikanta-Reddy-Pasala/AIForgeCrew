@@ -497,7 +497,7 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     if not lost:
         return None
     # The request asks for tests: the turn's own test files stay. A real
-    # PosServerBackend run could not make its new test pass, `rm`-ed it about
+    # Java service run could not make its new test pass, `rm`-ed it about
     # fifteen times (the quick-repeat release and its own confirm_delete let
     # it through each time), and finished "green" with no test — 0/4.
     kept = _asked_tests(st, lost, base)
@@ -509,7 +509,7 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
                          "code pass it, or fix the test itself (its setup, its expected "
                          "values) with file_patch if the test is wrong.")}
     # Little to lose: undoing a few changed lines costs less than the refusals
-    # (a real PosClientBackend turn was refused ~12 times — git checkout,
+    # (a real Java service turn was refused ~12 times — git checkout,
     # git stash to compare with the original — to protect a 1-line edit, then
     # fought whole-file-write refusals too, and ended on the starting score).
     if _small_loss(lost):
@@ -523,7 +523,7 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
         return None
     # The test guard said this existing test file lost an assertion and asked
     # for it back: restoring exactly that file is what it asked for. A real
-    # PosClientBackend run was refused here and rewrote the whole 7,500-char
+    # Java service run was refused here and rewrote the whole 7,500-char
     # test by hand five times (~30 s of generation each) instead.
     flagged = getattr(st, "test_guard_flagged", None) or set()
     if one_file and not _REPO_WIDE.search(cmd) \
@@ -564,7 +564,7 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
             return None
     # Refused again and again for the same tracked files: the model means to
     # start over. Let it — after saving the edits, so nothing is lost. A real
-    # PosClientBackend run was refused 59 times (rm + git show HEAD:…, git
+    # Java service run was refused 59 times (rm + git show HEAD:…, git
     # checkout, git stash, git reset --hard on one 84-line change) once its
     # single one-file release was spent: 34 minutes, neither fixed nor restarted.
     saved = _snapshot_release(st, lost, base)

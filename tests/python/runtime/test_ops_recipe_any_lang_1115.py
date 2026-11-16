@@ -1,6 +1,6 @@
 """The run recipe is learned for any toolchain, from the command's FINAL outcome.
 
-Live case (real PosClientBackend job): the agent's working command was
+Live case (real OrderService job): the agent's working command was
 ``cd <repo> && JAVA_HOME=/home/ai/jdk24/... PATH=...:$PATH mvn -o -q test
 -Dtest=X 2>&1 | tail -40``, run in the background. Nothing was learned:
 the learner knew only pytest/unittest/tox and only PYTHONPATH, so the next
@@ -10,7 +10,7 @@ import pytest
 
 from aiforge_core.runtime import ops_memory, session_ledger
 
-ROOT = "/w/PosClientBackend"
+ROOT = "/w/OrderService"
 
 
 @pytest.fixture(autouse=True)
@@ -20,19 +20,19 @@ def _cfg(tmp_path, monkeypatch):
 
 
 def _repo():
-    return ops_memory.load()["repos"]["posclientbackend"]
+    return ops_memory.load()["repos"]["orderservice"]
 
 
 def test_maven_with_jdk_env_is_learned():
     cmd = (f"cd {ROOT} && JAVA_HOME=/home/ai/jdk24/jdk-24.0.2+12 "
            "PATH=/home/ai/jdk24/jdk-24.0.2+12/bin:$PATH mvn -o -q test "
-           "-Dtest=InventoryAgingCalculatorTest 2>&1 | tail -40")
-    assert ops_memory.learn_repo_command("PosClientBackend", ROOT, cmd)["ok"]
+           "-Dtest=AgingCalculatorTest 2>&1 | tail -40")
+    assert ops_memory.learn_repo_command("OrderService", ROOT, cmd)["ok"]
     r = _repo()
     assert r["test_cmd"] == "mvn -o -q test"
     assert r["env"] == ("JAVA_HOME=/home/ai/jdk24/jdk-24.0.2+12 "
                         "PATH=/home/ai/jdk24/jdk-24.0.2+12/bin:$PATH")
-    block = ops_memory.context_block("PosClientBackend", "fix a bug")
+    block = ops_memory.context_block("OrderService", "fix a bug")
     assert "JAVA_HOME=/home/ai/jdk24/jdk-24.0.2+12" in block and "mvn -o -q test" in block
 
 
@@ -41,23 +41,23 @@ def test_maven_with_jdk_env_is_learned():
     ("./gradlew test --tests com.x.FooTest", "./gradlew test"),
     ("go test ./... -run TestFoo", "go test ./..."),
     ("cargo test", "cargo test"),
-    ("PYTHONPATH=/w/PosClientBackend/src .venv/bin/python -m pytest tests -k foo",
+    ("PYTHONPATH=/w/OrderService/src .venv/bin/python -m pytest tests -k foo",
      ".venv/bin/python -m pytest tests"),
 ])
 def test_other_toolchains(cmd, want):
-    ops_memory.learn_repo_command("PosClientBackend", ROOT, cmd)
+    ops_memory.learn_repo_command("OrderService", ROOT, cmd)
     assert _repo()["test_cmd"] == want
 
 
 def test_python_env_stays_relative():
     ops_memory.learn_repo_command(
-        "PosClientBackend", ROOT, "PYTHONPATH=/w/PosClientBackend/src pytest -q")
+        "OrderService", ROOT, "PYTHONPATH=/w/OrderService/src pytest -q")
     assert _repo()["env"] == "PYTHONPATH=src"
 
 
 def test_non_test_command_learns_no_test_cmd():
-    ops_memory.learn_repo_command("PosClientBackend", ROOT, "mvn -o -q compile")
-    assert "test_cmd" not in (ops_memory.load()["repos"].get("posclientbackend") or {})
+    ops_memory.learn_repo_command("OrderService", ROOT, "mvn -o -q compile")
+    assert "test_cmd" not in (ops_memory.load()["repos"].get("orderservice") or {})
 
 
 def _steps(*steps):

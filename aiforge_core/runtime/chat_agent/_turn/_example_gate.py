@@ -47,7 +47,7 @@ _ASKS_TESTS = re.compile(r"\b(?:add|write|with|include|cover|create|own)\b[^.\n]
 #: "no test yet" a gap worth naming.
 _ASKS_NEW_TESTS = re.compile(r"\b(?:add|write|create)\s+(?:\w+\s+){0,3}(?:tests?|unit\s+tests?)\b", re.I)
 #: "no tests" — but not "no test dependencies / framework / setup yet": a
-#: PosServerBackend request said "Fix it … with a unit test. The module has no
+#: Java service request said "Fix it … with a unit test. The module has no
 #: test dependencies yet." and the run was told the request asked for no
 #: tests; it deleted the test it had written.
 _NO_TESTS = re.compile(r"\b(?:no|don'?t|do\s+not|without|skip)\s+(?:\w+\s+){0,2}tests?\b"
@@ -105,7 +105,7 @@ def _plain_examples(text: str) -> list:
     """Double-quoted values outside backticks, right after an output word,
     in a sentence that is not about the current/wrong behaviour. Real bug
     reports quote expected output this way more often than in backticks
-    (a real PosClientBackend job: 'They should read "1 year", "2 years"')."""
+    (a real Java service job: 'They should read "1 year", "2 years"')."""
     spans = [(m.start(), m.end()) for m in _SPAN.finditer(text)]
     out = []
     for m in _PLAIN.finditer(text):

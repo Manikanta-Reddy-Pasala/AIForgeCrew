@@ -46,7 +46,7 @@ def test_off_switch(monkeypatch):
 
 def test_every_way_of_saving_the_output_is_the_same_test(monkeypatch):
     from aiforge_core.runtime.chat_agent._shell import test_identity
-    base = "mvn test -Dtest=CashFlowStatementBuilderTest"
+    base = "mvn test -Dtest=ReportStatementBuilderTest"
     for v in (f"cd /r && {base} 2>&1 > /tmp/out.txt; grep 'Tests run:' /tmp/out.txt",
               f"{base} 2>&1 > /tmp/o.txt 2>&1; grep -B2 -A5 Cash /tmp/o.txt",
               f"timeout 300 {base} 2>&1 | tail -40", f"JAVA_HOME=/j {base} && echo ok",

@@ -1,6 +1,6 @@
 """Compaction never folds or archives a rule book.
 
-Live case: a real PosClientBackend chain compacted the project rule book into
+Live case: a real OrderService chain compacted the project rule book into
 the project brief and archived the file, so the mandatory rules block of the
 next session lost "run Maven offline" and "needs JDK 24".
 """

@@ -520,7 +520,7 @@ def _rerun_own_test(st, cwd) -> "tuple[bool, str] | None":
     sets up and the guess does not). ``(green, output)``, or None when there
     is no such command or it ran no tests.
 
-    A real PosClientBackend turn re-keyed accounts, broke an existing test
+    A real Java service turn re-keyed accounts, broke an existing test
     in the very class it worked on, and finished: the guessed "mvn -q test"
     could not run on the system JDK and the regression watch only knows
     pytest, so nothing re-ran the class. Its own command
@@ -622,7 +622,7 @@ def _project_verify(st, cwd):
     py = _project_python(st, cwd)
     # A non-Python project the turn tested itself: its own command is the check
     # (the toolchain it set up, the classes it touched). The guessed runner ran
-    # the WHOLE PosClientBackend suite ("mvn -q test", every class, online) for
+    # the WHOLE Java service suite ("mvn -q test", every class, online) for
     # 10+ minutes at the end of a real job, against the user's own rule to run
     # only the touched classes.
     if not py and not _python_project(cwd):
@@ -630,7 +630,7 @@ def _project_verify(st, cwd):
         if own is not None:
             return own
         # No test command of its own: compile the code and the tests instead of
-        # guessing the whole suite (which ran 13+ minutes on PosClientBackend,
+        # guessing the whole suite (which ran 13+ minutes on a Java service,
         # twice). A broken build is what this catches: two real jobs ended with
         # code or a new test that did not compile (0/18, 0/8).
         built = _compile_check(st, cwd)
@@ -648,7 +648,7 @@ def _project_verify(st, cwd):
         from aiforge_core.runtime import git_target
         base = git_target.command_base(getattr(st, "cwd", None) or cwd) or cwd
         # Not a Python tree and the runner never got to the tests because of
-        # its toolchain (seen twice on a real PosClientBackend chain: the
+        # its toolchain (seen twice on a real Java service chain: the
         # guessed "mvn -q test" on the system JDK 21, the repo needs 24): no
         # verdict, whatever the turn ran last.
         if not py and not _TESTS_RAN.search(out or "") and _TOOLCHAIN_MISMATCH.search(out or ""):
@@ -657,7 +657,7 @@ def _project_verify(st, cwd):
         if not _whole_suite(cmd or "", base):
             # Not a Python tree, the guessed runner ran no test at all, and the
             # turn's own test command passed on this very code: the runner's
-            # failure is its environment, not the work. A real PosClientBackend
+            # failure is its environment, not the work. A real Java service
             # job: "mvn -q test" ran on the system JDK 21 where the repo needs 24
             # ("release version 24 not supported"), the model was told its tests
             # fail, rewrote pom.xml to chase it, and the false "checks still

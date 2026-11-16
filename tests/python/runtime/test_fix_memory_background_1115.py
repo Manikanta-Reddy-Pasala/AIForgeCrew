@@ -1,6 +1,6 @@
 """A failure fixed through backgrounded runs is remembered.
 
-Live case: on a real PosClientBackend chain the fixes store stayed empty
+Live case: on a real OrderService chain the fixes store stayed empty
 although sessions went red -> green: every `mvn test` was backgrounded (its
 end came via command_wait, which the hook ignored) and `mvn -q` prints
 nothing when green (no runner "passed" text).
@@ -40,7 +40,7 @@ def test_background_red_then_quiet_green_records_the_fix(tmp_path, monkeypatch):
 
 def test_hunk_names_across_languages():
     from aiforge_core.runtime.ops_memory import _hunk_name
-    assert _hunk_name("public final class InventoryAgingCalculator {") == "InventoryAgingCalculator"
+    assert _hunk_name("public final class AgingCalculator {") == "AgingCalculator"
     assert _hunk_name("    public List<String> labels() {") == "labels"
     assert _hunk_name("static String txnDay(Document doc) {") == "txnDay"
     assert _hunk_name("def test_repr(self):") == "test_repr"

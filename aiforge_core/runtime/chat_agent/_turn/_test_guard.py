@@ -193,7 +193,7 @@ def lost_assertions(before: str, after: str) -> list[str]:
     then skip markers ``after`` added, then setup lines of existing tests
     that ``after`` changed.
 
-    Setup counts too: a real PosClientBackend job changed how accounts are
+    Setup counts too: a real Java service job changed how accounts are
     keyed, and instead of the code keeping the old behaviour it edited an
     existing test's mock (``"bankId", "L1"`` -> ``"accountNumber", ...``); no
     assertion moved, the suite went green, the real test still failed."""

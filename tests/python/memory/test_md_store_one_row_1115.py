@@ -1,6 +1,6 @@
 """A growing note (rule book, session note) keeps ONE memory row per source.
 
-Live case: the PosClientBackend rule book had two rows after two rules — the
+Live case: the OrderService rule book had two rows after two rules — the
 first held only rule 1 — so recall could return the stale copy.
 """
 import sqlite3

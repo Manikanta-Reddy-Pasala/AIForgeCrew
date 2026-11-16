@@ -52,7 +52,7 @@ def note_spin(st) -> None:
 
 def _spinning(st) -> bool:
     """Edits keep landing but the guards keep stepping in: a real
-    PosClientBackend turn patched the same files back and forth, re-ran reads
+    Java service turn patched the same files back and forth, re-ran reads
     it already had (45 skipped), tried to reset its own edits (12 refused) and
     changed approach 3 times — and each landed edit counted as progress, so
     the 40-minute turn was extended and ran 62+ minutes in a loop."""
@@ -99,7 +99,7 @@ def note_test_fails(st, fails, cmd: str = "") -> None:
 
 def _stuck_red(st) -> bool:
     """The last _STALL_RUNS graded test runs brought no new best on any test
-    command, and some test is still red. A real PosClientBackend turn
+    command, and some test is still red. A real Java service turn
     went from 3 failing to 1 in its first runs, then ran the same class ~60
     more times at 1/17 and was still given its first extension (81 minutes;
     OpenCode stopped at 13)."""
@@ -119,7 +119,7 @@ def _stuck_red(st) -> bool:
 
 def _tests_stalled(st) -> bool:
     """A further extension needs the tests to have got better since the last
-    one: a real PosClientBackend turn used both extensions (93+ minutes, 650
+    one: a real Java service turn used both extensions (93+ minutes, 650
     calls) editing steadily while its failing tests never dropped. Edits that
     do not move the tests are not progress. The first extension, and a turn
     that ran no tests, are judged as before."""

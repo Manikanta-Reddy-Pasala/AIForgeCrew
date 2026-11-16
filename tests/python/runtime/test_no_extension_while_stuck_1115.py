@@ -1,6 +1,6 @@
 """A turn the stuck guards keep stepping into earns no extension.
 
-Live case: a real PosClientBackend turn patched files back and forth, had 45
+Live case: a real OrderService turn patched files back and forth, had 45
 duplicate reads skipped, 12 discard commands refused and 3 changes of
 approach; every landed edit counted as progress, so its 40-minute turn was
 extended and ran 62+ minutes in a loop.

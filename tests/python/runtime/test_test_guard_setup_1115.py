@@ -1,6 +1,6 @@
 """The test guard also notices a changed SETUP line of an existing test.
 
-Live case (real PosClientBackend job): the change re-keyed accounts; rather
+Live case (real OrderService job): the change re-keyed accounts; rather
 than keep the old behaviour, the model edited an existing test's mock
 (``.append("bankId", "L1")`` -> ``.append("accountNumber", ...)``). No
 assertion moved, its run went green, the real test still failed.

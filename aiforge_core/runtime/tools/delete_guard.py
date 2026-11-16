@@ -470,7 +470,7 @@ def outside_targets(cmd: str, root: "str | None") -> list:
     """Local paths an ``rm``-family command in ``cmd`` would delete OUTSIDE
     ``root`` (temp dirs excepted), following ``cd X &&``. Remote commands
     (``ssh host 'rm …'``, ``kubectl delete``) delete nothing here and are not
-    counted. A real fresh run wiped ~/.m2/repository/com/oneshell (the
+    counted. A real fresh run wiped ~/.m2/repository/com/acme (the
     machine's shared Maven cache) dozens of times while approvals were off."""
     if not cmd or not root:
         return []

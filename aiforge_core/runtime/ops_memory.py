@@ -436,7 +436,7 @@ _NOT_NAME = frozenset(
 def _hunk_name(header: str) -> str:
     """The function/class a hunk header names: the identifier right before
     "(", else the identifier after class/struct/interface/enum/impl/trait.
-    Java's "public final class InventoryAgingCalculator {" read as "final"."""
+    Java's "public final class AgingCalculator {" read as "final"."""
     m = re.search(r"([A-Za-z_][\w.:]*)\s*(?:<[^>]*>)?\s*\(", header)
     if m and m.group(1).split(".")[-1].lower() not in _NOT_NAME:
         return m.group(1).split("::")[-1]

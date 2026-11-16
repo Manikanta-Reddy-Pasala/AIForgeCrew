@@ -2,9 +2,9 @@
 
 The Python contract check (:mod:`spec_contract`) reads code with ``ast``, so
 a request for a Java project that wrote "The unit test will call: `new
-ConsoleSessionRevoker(String url, String token)` and `void
-passwordChanged(String phone)`" was never checked: a real PosServerBackend run
-built ``ConsoleSessionRevoker(WebClient, String)`` returning ``Mono<Void>``,
+SessionNotifier(String url, String token)` and `void
+passwordChanged(String phone)`" was never checked: a real Java service run
+built ``SessionNotifier(WebClient, String)`` returning ``Mono<Void>``,
 the test could not compile (0/4), and the run took 40 minutes; OpenCode, which
 followed the stated signature, got 2/4.
 

@@ -39,7 +39,7 @@ def _clean_sticky(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("text,prefix", [
-    ("move ONE-356 to Done", "jira_"),
+    ("move JIRA-156 to Done", "jira_"),
     ("search the web for the release notes", "web_"),
     ("check the MR pipeline", "gitlab_"),
     ("why did CI fail on the merge request", "gitlab_"),
@@ -99,7 +99,7 @@ def test_families_are_sticky_per_session_and_survive_compaction():
 
 def test_approved_plan_run_inherits_families_from_the_plan_text():
     convo = [{"role": "user", "content":
-              "Carry out the approved plan.\n\n1. Read ONE-356.\n"
+              "Carry out the approved plan.\n\n1. Read JIRA-156.\n"
               "2. Transition it to Done."}]
     names = _names(_native.select_native_tools(convo, schemas=NATIVE_TOOL_SCHEMAS))
     assert "jira_read" in names

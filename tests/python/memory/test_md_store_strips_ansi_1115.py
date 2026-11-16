@@ -1,6 +1,6 @@
 """Memory notes never keep terminal colour codes from tool output.
 
-Live case: a real PosClientBackend session note stored
+Live case: a real OrderService session note stored
 "[1;31mERROR[m] [1m[Help 1][m ..." and recall showed that garbage.
 """
 from aiforge_core.memory import md_store

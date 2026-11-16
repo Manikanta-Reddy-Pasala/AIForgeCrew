@@ -176,9 +176,9 @@ def _edited_stems(steps) -> set:
 
 def one_off_fix(name: str, description: str, triggers, steps) -> bool:
     """The proposal is one bug fix, not a reusable procedure: it is named as a
-    fix, or it names a file this very turn edited. A real PosClientBackend
+    fix, or it names a file this very turn edited. A real Java service
     turn fixed inventory-aging labels and auto-saved a GLOBAL skill "Fix
-    Inventory Aging Bucket Label Formatting" (InventoryAgingCalculator.java)
+    Inventory Aging Bucket Label Formatting" (AgingCalculator.java)
     that every project's skill search would then offer."""
     if _FIX_NAME.search(name or ""):
         return True

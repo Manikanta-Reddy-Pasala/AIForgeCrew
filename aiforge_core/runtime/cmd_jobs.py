@@ -112,7 +112,7 @@ def checkin_s(cmd: "str | None" = None) -> float:
     checks on. A command that took ``d`` seconds last time gets about 1.3x
     that (capped, AIFORGE_CMD_CHECKIN_MAX_S default 180): a Maven test run of
     ~30 s went to the background at 15 s every time, and each one cost a whole
-    model call just to wait for it (11 of 76 calls on a real PosClientBackend
+    model call just to wait for it (11 of 76 calls on a real Java service
     job; OpenCode, same model, did the job in 14 calls)."""
     base = _env_s("AIFORGE_CMD_CHECKIN_S", 15.0)
     k = _dur_key(cmd)

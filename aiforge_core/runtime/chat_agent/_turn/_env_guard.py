@@ -97,7 +97,7 @@ def installed_jdks() -> list:
 
 def _jdk_note(st, text: str) -> str:
     """A build stopped because its JDK is too old: name the installed JDKs that
-    are new enough. A real PosClientBackend job (needs 24, system java 21)
+    are new enough. A real Java service job (needs 24, system java 21)
     never found the JDK 24 at ~/jdk24/... in a fresh run, never ran a test,
     and finished with a test file that did not compile (0/8)."""
     m = _JDK_TOO_OLD.search(text or "")
@@ -142,7 +142,7 @@ def _m2_has(group: str, artifact: str) -> bool:
 
 def _test_dep_note(st, text: str, top: str) -> str:
     """A test build stopped because JUnit / AssertJ / Mockito … is not a
-    dependency (a module with no test scope yet). A PosServerBackend request
+    dependency (a module with no test scope yet). A Java service request
     said "the module has no test dependencies yet"; the run wrote a test, got
     `package org.junit.jupiter.api does not exist`, never added the
     dependency, and neither its test nor the graded one compiled (0/3)."""

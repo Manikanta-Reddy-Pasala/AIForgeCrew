@@ -1,7 +1,7 @@
 """A build stopped by a too-old JDK names the installed JDKs that are new
 enough, once per turn.
 
-Live case: a fresh run on PosClientBackend (needs 24, system java 21) never
+Live case: a fresh run on OrderService (needs 24, system java 21) never
 found ~/jdk24/..., never ran a test, and shipped a test that did not
 compile (0/8). OpenCode broke the same job's pom.xml trying to work around it.
 """

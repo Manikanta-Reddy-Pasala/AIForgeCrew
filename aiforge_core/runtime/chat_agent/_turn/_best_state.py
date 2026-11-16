@@ -1,6 +1,6 @@
 """Never end a turn worse than its best tested state.
 
-A real PosClientBackend turn ran 124 minutes, got its tests to their best
+A real Java service turn ran 124 minutes, got its tests to their best
 point, kept editing, and was stopped by the time limit with 4 failing where
 it had started with 1 (13/18 against 16/18 before it touched anything): the
 last edits broke what an earlier state had right, and the stop handed that

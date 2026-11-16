@@ -1,7 +1,7 @@
 """A turn stopped by its limit never hands back code that tests worse than
 its best tested state.
 
-Live case: a real PosClientBackend turn reached its best, kept editing, and
+Live case: a real OrderService turn reached its best, kept editing, and
 was stopped at 4 failing where it started with 1 (13/18 vs 16/18).
 """
 import subprocess

@@ -612,7 +612,7 @@ def _with_jdk(cmd: str, home: str) -> str:
 
 def _jdk_rerun(cmd: str, res: dict, args: dict, cwd: str) -> "dict | None":
     """A JVM build that failed because the JDK on PATH is too old, run once
-    more with an installed JDK that fits. Fresh runs on PosClientBackend
+    more with an installed JDK that fits. Fresh runs on a Java service
     (needs 24, system java 21) spent most of their 130-210 shell commands
     on it: 50-70 failing mvn runs, 20-40 `ls /usr/lib/jvm`, jar/javap
     probes — OpenCode, same model, did the whole job in ~14 calls.
@@ -679,7 +679,7 @@ def _jdk_upfront(cwd: str) -> None:
     build file asks for a newer Java than the one on PATH and a fitting JDK
     is installed, every build there runs with it from the start —
     foreground or background. The after-failure re-run only covers a build
-    that finished in the foreground; on PosClientBackend (pom: Java 24,
+    that finished in the foreground; on a Java service (pom: Java 24,
     PATH: 21) most Maven runs went to the background, failed with "class
     file has wrong version 68.0", and the model spent 30-60 calls on find,
     javac, jar and unzip — OpenCode gave up testing after 4 commands."""
@@ -767,7 +767,7 @@ def test_identity(cmd: str) -> str:
     """WHICH test a command runs: the command up to its first redirect, pipe,
     `;` or `&&` (after a leading `cd X &&`), without env prefixes or `timeout`.
     For judging progress only — every way of saving or filtering the output
-    is the same test. On a real PosClientBackend run the model ran one test
+    is the same test. On a real Java service run the model ran one test
     class ~25 times at 4/18 failing as `mvn test … 2>&1 > /tmp/out.txt; grep
     <something new>`, each a "new" command, and was given an extension.
     (Result reuse keys on :func:`_run_key`, where a different grep matters.)"""
@@ -808,7 +808,7 @@ def _test_reuse(cmd: str, cwd: str):
 def _t_run_command(args: dict, cwd: str) -> dict:
     """run_command, plus: a test command re-run on code that has not changed
     since its last finished run gets that run's result back at once. On a
-    real PosClientBackend job the model re-ran the same Maven tests with no
+    real Java service job the model re-ran the same Maven tests with no
     edit in between (only the `| tail`/`| grep` changed) — ~35 s each, the
     bulk of a turn whose model calls took 4 minutes in all."""
     cmd0 = args.get("cmd") or ""

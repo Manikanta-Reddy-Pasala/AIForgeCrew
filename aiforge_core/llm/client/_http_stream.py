@@ -17,7 +17,7 @@ class ReasoningOverCap(Exception):
 
 class ContentOverCap(Exception):
     """The streamed reply TEXT ran past :data:`CONTENT_CAP_CHARS` before any
-    tool call started, on a request that offered tools. A real PosClientBackend
+    tool call started, on a request that offered tools. A real Java service
     turn spent 188 s writing a 49,000-character monologue — whole test files
     pasted into its reply — then called read_lines. The caller asks again once
     with a note to act through the tools (see client._native_post)."""

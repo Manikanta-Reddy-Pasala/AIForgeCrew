@@ -56,7 +56,7 @@ def change_approach(st, why: str, *, reply: str | None = None, prepare=None):
     if result == "continue":
         return "continue"
     # Giving up hands back what is on disk: never worse than the turn's best
-    # tested state (a real PosClientBackend turn gave up with code that no
+    # tested state (a real Java service turn gave up with code that no
     # longer compiled — 0/18 where it started at 16/18).
     from .._best_state import restore_if_worse
     yield from restore_if_worse(st)

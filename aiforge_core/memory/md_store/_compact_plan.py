@@ -33,7 +33,7 @@ def _pkg():
 def _is_rule_book(d: dict) -> bool:
     """A rule book (``rules:<scope>``, kind rule/feedback) is the store the
     mandatory rules block reads every session — not knowledge to fold. On a
-    real PosClientBackend chain compaction folded the project's rule book into
+    real Java service chain compaction folded the project's rule book into
     its brief and ARCHIVED the file: the next session's rules block no longer
     had "run Maven offline" or "needs JDK 24"."""
     src = str(d.get("source") or "")

@@ -81,7 +81,7 @@ _REWRITES = 3
 
 def _rewrite_spin(st, name: str, args: dict) -> None:
     """A file rewritten whole again and again is not progress: a real
-    PosServerBackend run wrote the same two files 72 times with file_write,
+    Java service run wrote the same two files 72 times with file_write,
     each one a "new edit", and was given its extension (85+ minutes). From
     the 4th whole-file write of one file, each counts toward the stuck limit
     (no extension while it goes on). file_patch / multi_edit are not counted."""

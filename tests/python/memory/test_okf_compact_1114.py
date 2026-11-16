@@ -119,7 +119,7 @@ def test_off_topic_keeps_rules_short_items_and_bucket_topics():
 
 
 def test_off_topic_is_a_no_op_when_no_fact_names_the_topic():
-    assert off_topic("PosClientBackend", ["a b c alpha", "beta gamma delta",
+    assert off_topic("OrderService", ["a b c alpha", "beta gamma delta",
                                           "epsilon zeta", "theta iota"]) == []
 
 
@@ -186,7 +186,7 @@ def test_toy_topic_is_archived_whole_and_real_topic_kept(mem):
     toy = _brief("calc", ["Created calc.py with def add(a, b)",
                           "Added subtract(a, b) with 5 tests; all 10 tests pass"])
     real = _brief("bug", ["Built — all tests pass",
-                          "PosClientBackend pushes sync data to NATS"])
+                          "OrderService pushes sync data to NATS"])
     out = md_store.sweep_junk_topics()
     assert out["briefs_archived"] == 1
     assert not toy.exists() and real.exists()

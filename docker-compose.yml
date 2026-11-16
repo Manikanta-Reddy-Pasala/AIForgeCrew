@@ -42,7 +42,7 @@ services:
       # human meant it (it runs shells). Neither was passed through, so
       # `run.sh --host 0.0.0.0` could not work in docker mode at all: the box
       # crash-looped on the boot guard. That is how the WireGuard bridge behind
-      # tickets.oneshell.in lost its backend.
+      # tickets.acme.in lost its backend.
       - AIFORGE_ALLOW_UNAUTH_NONLOOPBACK
       - AIFORGE_BIND_HOST
       - AIFORGE_APT_MIRROR

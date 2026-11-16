@@ -2,7 +2,7 @@
 non-Python project at all while the turn's own test command passed on the
 same code.
 
-Live case (real PosClientBackend job): the runner ran ``mvn -q test`` on the
+Live case (real OrderService job): the runner ran ``mvn -q test`` on the
 system JDK 21 where the repo needs 24 -> "release version 24 not supported",
 no tests run (fail count 999). The model was told its tests fail, rewrote
 pom.xml to chase it, and "checks still FAIL" was saved into memory.

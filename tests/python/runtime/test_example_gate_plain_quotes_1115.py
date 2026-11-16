@@ -1,7 +1,7 @@
 """Expected values written in plain double quotes count, and a quoted value
 is held only as a whole string.
 
-Live case (real PosClientBackend job): 'They should read "1 year", "2 years"'
+Live case (real OrderService job): 'They should read "1 year", "2 years"'
 gave no examples (backticks only), and the turn's test of the WRONG labels
 ("1 - 1 year") would have counted as holding "1 year" anyway (quotes and
 spaces were stripped before matching).
