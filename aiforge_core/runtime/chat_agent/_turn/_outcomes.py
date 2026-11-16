@@ -129,10 +129,16 @@ def _note_green_tests(st, name, args, result, cwd) -> None:
             _fails = (0 if result.get("ok") is True and not _RED_TEXT.search(_txt)
                       else max(1, _fail_count(_txt)) if result.get("ok") is not True
                       else _fail_count(_txt))
-            note_test_fails(st, _fails)
             from aiforge_core.runtime.shell_writes import command_of
+            _cmd = command_of(args or {}) or ""
+            try:
+                from .._shell import _run_key
+                _key = _run_key(_cmd)
+            except Exception:  # noqa: BLE001
+                _key = _cmd
+            note_test_fails(st, _fails, _key)
             from . import _best_state
-            _best_state.note(st, command_of(args or {}) or "", _fails, cwd)
+            _best_state.note(st, _cmd, _fails, cwd)
     except Exception:  # noqa: BLE001
         pass
     # The turn's own test command ended with exit 0 and no failure in its

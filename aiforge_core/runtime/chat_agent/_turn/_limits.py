@@ -66,15 +66,47 @@ def _spinning(st) -> bool:
     return since >= cap
 
 
-def note_test_fails(st, fails) -> None:
+#: Runs of one test command with no new best, while it is still red, before
+#: the turn's tests count as stuck (AIFORGE_CHAT_STALL_RUNS; 0 = off).
+_STALL_RUNS = 8
+
+
+def note_test_fails(st, fails, cmd: str = "") -> None:
     """Record a test run's failure count (0 = green); the turn's best so far
-    is what an extension compares against."""
+    is what an extension compares against. Each test command also keeps its
+    own best and how many runs ago it last improved: a single passing test
+    method (0/1) must not hide that the class it belongs to is stuck red."""
     try:
         fails = int(fails)
     except (TypeError, ValueError):
         return
     best = getattr(st, "best_fails", None)
     st.best_fails = fails if best is None else min(best, fails)
+    if not cmd:
+        return
+    per = st.__dict__.setdefault("test_runs_by_cmd", {}) if hasattr(st, "__dict__") else {}
+    rec = per.get(cmd)
+    if rec is None or fails < rec[0]:
+        per[cmd] = [fails, 0]                     # [best, runs since it improved]
+    else:
+        rec[1] += 1
+
+
+def _stuck_red(st) -> bool:
+    """Every test command still red has gone _STALL_RUNS runs without a new
+    best (commands that pass do not count). A real PosClientBackend turn
+    went from 3 failing to 1 in its first runs, then ran the same class ~60
+    more times at 1/17 and was still given its first extension (81 minutes;
+    OpenCode stopped at 13)."""
+    try:
+        n = int(os.environ.get("AIFORGE_CHAT_STALL_RUNS", str(_STALL_RUNS)))
+    except ValueError:
+        n = _STALL_RUNS
+    per = getattr(st, "test_runs_by_cmd", None) or {}
+    if n <= 0 or not per:
+        return False
+    red = [r for r in per.values() if r[0] > 0]
+    return bool(red) and all(r[1] >= n for r in red)
 
 
 def _tests_stalled(st) -> bool:
@@ -107,7 +139,7 @@ def _may_extend(st, n):
         return False
     if _spinning(st):
         return False
-    if _tests_stalled(st):
+    if _tests_stalled(st) or _stuck_red(st):
         return False
     st.extensions_used += 1
     st.progress_mark = mark
