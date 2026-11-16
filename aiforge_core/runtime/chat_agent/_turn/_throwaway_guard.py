@@ -75,9 +75,35 @@ def refusal(st, name: str, args: dict, cwd: str = ""):
         return None
 
 
+#: Whole-file writes of one file in a turn before each further one is spin.
+_REWRITES = 3
+
+
+def _rewrite_spin(st, name: str, args: dict) -> None:
+    """A file rewritten whole again and again is not progress: a real
+    PosServerBackend run wrote the same two files 72 times with file_write,
+    each one a "new edit", and was given its extension (85+ minutes). From
+    the 4th whole-file write of one file, each counts toward the stuck limit
+    (no extension while it goes on). file_patch / multi_edit are not counted."""
+    if name not in _WRITE_TOOLS:
+        return
+    path = str((args or {}).get("path") or (args or {}).get("file") or "")
+    if not path:
+        return
+    counts = st.__dict__.setdefault("rewrites", {}) if hasattr(st, "__dict__") else {}
+    counts[path] = counts.get(path, 0) + 1
+    if counts[path] > _REWRITES:
+        from ._limits import note_spin
+        note_spin(st)
+
+
 def check(st, name: str, args: dict, cwd: str = "") -> None:
     if not _on():
         return
+    try:
+        _rewrite_spin(st, name, args or {})
+    except Exception:  # noqa: BLE001
+        pass
     try:
         root = str(getattr(st, "cwd", "") or cwd or "")
         new = [p for p in _written(name, args or {}) if _throwaway(p, root)]

@@ -59,3 +59,19 @@ def test_rewriting_one_probe_file_counts_each_time(monkeypatch, tmp_path):
         g.check(st, "run_command", probe)
     assert st.probe_said
     assert g.refusal(st, "run_command", probe)["ok"] is False
+
+
+def test_rewriting_one_file_whole_again_and_again_is_spin(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from aiforge_core.runtime.chat_agent._turn import _throwaway_guard as g
+    monkeypatch.delenv("AIFORGE_CHAT_THROWAWAY_GUARD", raising=False)
+    st = SimpleNamespace(cwd=str(tmp_path), spin_events=0)
+    f = str(tmp_path / "src" / "Revoker.java")
+    for _ in range(3):
+        g.check(st, "file_write", {"path": f})
+    assert st.spin_events == 0
+    g.check(st, "file_write", {"path": f})
+    g.check(st, "file_write", {"path": f})
+    assert st.spin_events == 2
+    g.check(st, "file_patch", {"path": f})                    # a patch is not a rewrite
+    assert st.spin_events == 2
