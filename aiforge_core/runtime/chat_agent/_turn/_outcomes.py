@@ -150,8 +150,12 @@ def _note_green_tests(st, name, args, result, cwd) -> None:
                              and not _RED_TEXT.search(result_text(result)) else None)
     except Exception:  # noqa: BLE001
         st.own_test_ok_fp = None
-    if result.get("ok") is not True:
-        # tests that never started for a missing dependency (tomlkit: yaml)
+    if result.get("ok") is not True or _RED_TEXT.search(result_text(result) or ""):
+        # tests that never started for a missing dependency (tomlkit: yaml).
+        # Also a run that "passed" only because a pipe hid the exit code: a
+        # real Java service run piped every `mvn test` through `| tail -50`
+        # (exit 0) while the output said "package org.junit… does not exist";
+        # no note fired, the dependency was never added, the tests scored 0.
         try:
             from . import _env_guard
             from ._notes import hold
