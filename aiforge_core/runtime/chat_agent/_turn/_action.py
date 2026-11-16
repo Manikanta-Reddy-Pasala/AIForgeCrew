@@ -1004,6 +1004,11 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     reads/edits (feeding the progress + verify gates), post-edit syntax self-
     check, builder-finalize signal, and append the (smart-truncated) OBSERVATION.
     Returns "return" when the same-failure rule paused the turn, else None."""
+    try:
+        from . import _throwaway_guard
+        _throwaway_guard.check(st, name, args or {}, cwd)
+    except Exception:  # noqa: BLE001
+        pass
     # PostToolUse hook (best-effort, never blocks).
     try:
         from aiforge_core.runtime import hooks as _hooks
