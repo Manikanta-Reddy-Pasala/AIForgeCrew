@@ -652,6 +652,85 @@ def _jdk_rerun(cmd: str, res: dict, args: dict, cwd: str) -> "dict | None":
 
 #: The JDK that fitted, per repository, for this process.
 _JDK_FOR: dict = {}
+#: Repositories whose build file was already checked for a Java version.
+_JDK_CHECKED: set = set()
+_BUILD_JAVA = (
+    ("pom.xml", re.compile(r"<(?:java\.version|maven\.compiler\.(?:release|target|source)|release)>"
+                           r"\s*(?:1\.)?(\d+)\s*<")),
+    ("build.gradle", re.compile(r"JavaLanguageVersion\.of\(\s*(\d+)|(?:source|target)Compatibility"
+                                r"\s*=\s*['\"]?(?:JavaVersion\.VERSION_)?(?:1[._])?(\d+)")),
+    ("build.gradle.kts", re.compile(r"JavaLanguageVersion\.of\(\s*(\d+)|jvmToolchain\(\s*(\d+)")),
+)
+
+
+def _default_java_major() -> "int | None":
+    """The major version of the `java` on PATH (from its home's release file)."""
+    import shutil
+    from ._turn._env_guard import _jdk_major
+    exe = shutil.which("java")
+    if not exe:
+        return None
+    home = os.path.dirname(os.path.dirname(os.path.realpath(exe)))
+    return _jdk_major(home)
+
+
+def _jdk_upfront(cwd: str) -> None:
+    """Pick the JDK BEFORE the first JVM build of a repository: when its
+    build file asks for a newer Java than the one on PATH and a fitting JDK
+    is installed, every build there runs with it from the start —
+    foreground or background. The after-failure re-run only covers a build
+    that finished in the foreground; on PosClientBackend (pom: Java 24,
+    PATH: 21) most Maven runs went to the background, failed with "class
+    file has wrong version 68.0", and the model spent 30-60 calls on find,
+    javac, jar and unzip — OpenCode gave up testing after 4 commands."""
+    key = _jdk_key(cwd)
+    if key in _JDK_FOR or key in _JDK_CHECKED:
+        return
+    _JDK_CHECKED.add(key)
+    need = 0
+    for name, rx in _BUILD_JAVA:
+        try:
+            with open(os.path.join(key, name), encoding="utf-8", errors="replace") as fh:
+                text = fh.read(400_000)
+        except OSError:
+            continue
+        for m in rx.finditer(text):
+            v = int(next(g for g in m.groups() if g))
+            need = max(need, v)
+    if need < 9:
+        return
+    have = _default_java_major()
+    if have is not None and have >= need:
+        return
+    from ._turn._env_guard import installed_jdks
+    fit = [h for v, h in installed_jdks() if v >= need]
+    if fit:
+        _JDK_FOR[key] = fit[-1]                  # the oldest one that is new enough
+
+
+def learn_jdk_from_output(text: str, cwd: str) -> "str | None":
+    """A finished build's output (a background job read by command_wait)
+    showing the JDK is too old: remember a fitting JDK for the repository and
+    return the note for the model, else None."""
+    if not text or not cwd or os.environ.get("AIFORGE_CHAT_AUTO_JDK", "1").strip().lower() in (
+            "0", "false", "no", "off"):
+        return None
+    try:
+        from ._turn._env_guard import _JDK_TOO_OLD, installed_jdks
+        m = _JDK_TOO_OLD.search(text)
+        if not m:
+            return None
+        raw = int(next(g for g in m.groups() if g))
+        need = raw - 44 if raw >= 45 else raw
+        fit = [h for v, h in installed_jdks() if v >= need]
+        if not fit:
+            return None
+        _JDK_FOR[_jdk_key(cwd)] = fit[-1]
+        return (f"this failed because the java on PATH is too old for the project (needs JDK "
+                f"{need}). Run the same command again: build/test commands here now run with "
+                f"JAVA_HOME={fit[-1]} automatically.")
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _jdk_key(cwd: str) -> str:
@@ -737,6 +816,12 @@ def _t_run_command(args: dict, cwd: str) -> dict:
 
 def _t_run_command_jdk(args: dict, cwd: str) -> dict:
     cmd = args.get("cmd") or ""
+    if _JVM_BUILD.search(cmd) and "JAVA_HOME=" not in cmd and os.environ.get(
+            "AIFORGE_CHAT_AUTO_JDK", "1").strip().lower() not in ("0", "false", "no", "off"):
+        try:
+            _jdk_upfront(cwd)
+        except Exception:  # noqa: BLE001
+            pass
     home = (_JDK_FOR.get(_jdk_key(cwd)) if _JDK_FOR and _JVM_BUILD.search(cmd)
             and "JAVA_HOME=" not in cmd else None)
     if home and _JVM_BUILD.search(cmd) and "JAVA_HOME=" not in cmd \

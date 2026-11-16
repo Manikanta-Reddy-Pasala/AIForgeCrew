@@ -34,7 +34,19 @@ def _t_command_wait(args: dict, _cwd: str) -> dict:
         sid = chat_cancel.active()
     except Exception:  # noqa: BLE001
         pass
-    return cmd_jobs.wait(job, max_s, session_id=sid)
+    res = cmd_jobs.wait(job, max_s, session_id=sid)
+    try:                     # a background build that failed on an old JDK
+        if isinstance(res, dict) and not res.get("running"):
+            from ._shell import _JVM_BUILD, learn_jdk_from_output
+            if _JVM_BUILD.search(job.cmd or ""):
+                note = learn_jdk_from_output(
+                    f"{res.get('stdout') or ''}\n{res.get('stderr') or ''}\n{res.get('output') or ''}",
+                    _cwd)
+                if note:
+                    res["toolchain"] = note
+    except Exception:  # noqa: BLE001
+        pass
+    return res
 
 
 def _t_command_output(args: dict, _cwd: str) -> dict:
