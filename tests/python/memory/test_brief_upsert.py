@@ -37,10 +37,10 @@ def test_w1_supersede_same_key(mem):
 
 def test_w2_ticket_seeded_into_key_results(mem):
     from aiforge_core.memory import md_store
-    md_store._brief_upsert("svc", "ONE-3 first end-to-end pipeline green")
+    md_store._brief_upsert("svc", "JIRA-3 first end-to-end pipeline green")
     facts, kr = _facts_kr(md_store)
-    assert any("ONE-3" in f for f in facts)     # still a fact
-    assert any("ONE-3" in k for k in kr)        # and a Key Result
+    assert any("JIRA-3" in f for f in facts)     # still a fact
+    assert any("JIRA-3" in k for k in kr)        # and a Key Result
 
 
 def test_w6_superset_prunes_shorter(mem):

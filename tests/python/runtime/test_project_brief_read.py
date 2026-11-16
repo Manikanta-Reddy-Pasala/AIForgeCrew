@@ -58,7 +58,7 @@ def test_memory_block_prepends_project_brief(mem, monkeypatch):
     _brief(md_store, "shared", ["never commit directly to main"])
     monkeypatch.setattr("aiforge_core.memory.unified_query.query",
                         lambda *a, **k: {"hits": [], "used_sources": []})
-    ticket = types.SimpleNamespace(title="t", body="b", identifier="ONE-1",
+    ticket = types.SimpleNamespace(title="t", body="b", identifier="JIRA-1",
                                    project="svc")
     out = memory_block.fetch(ticket)
     assert "Project memory (OKR briefs)" in out

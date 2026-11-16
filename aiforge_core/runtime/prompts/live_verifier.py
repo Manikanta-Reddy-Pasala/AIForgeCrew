@@ -2,8 +2,9 @@
 approves, before ``git_pr`` opens a PR.
 
 The agent receives the recipe markdown inline (loaded by the pipeline
-from ``aiforge_core/recipes/live_verify/{project}.md`` with fallback
-to ``_default.md``). Its only job is to follow that recipe using the
+from ``$AIFORGE_CONFIG_DIR/recipes/live_verify/{project}.md``, then the
+packaged ``aiforge_core/recipes/live_verify/``, with fallback to
+``_default.md``). Its only job is to follow that recipe using the
 bash + file_read tools and emit a structured JSON verdict.
 """
 from __future__ import annotations

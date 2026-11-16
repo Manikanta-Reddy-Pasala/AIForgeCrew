@@ -15,7 +15,7 @@ class _Ticket:
         self.title = "do a thing"
         self.body = ""
         self.branch = None
-        self.identifier = "ONE-100"
+        self.identifier = "JIRA-100"
         self.id = 1
 
 

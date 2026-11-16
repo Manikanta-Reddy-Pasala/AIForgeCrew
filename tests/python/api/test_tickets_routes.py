@@ -32,7 +32,7 @@ class _T:
 
     def __init__(self, **kw):
         self.id = kw.get("id", 1)
-        self.identifier = kw.get("identifier", "ONE-1")
+        self.identifier = kw.get("identifier", "JIRA-1")
         self.title = kw.get("title", "Fix the parser")
         self.body = kw.get("body", "")
         self.status = kw.get("status", "todo")
@@ -75,9 +75,9 @@ def store(monkeypatch, tmp_path):
                               "assignee_role")})
     monkeypatch.setattr(tk.tickets_mod, "create", _create)
     monkeypatch.setattr(tk.tickets_mod, "get",
-                        lambda ident: state["ticket"] if ident == "ONE-1" else None)
+                        lambda ident: state["ticket"] if ident == "JIRA-1" else None)
     monkeypatch.setattr(tk.tickets_mod, "delete",
-                        lambda ident: bool(state["deleted"].append(ident)) or ident == "ONE-1")
+                        lambda ident: bool(state["deleted"].append(ident)) or ident == "JIRA-1")
     monkeypatch.setattr(tk.tickets_mod, "set_branch",
                         lambda tid, branch: state.update(branch=branch))
     monkeypatch.setattr(tk.tickets_mod, "update_status",
@@ -98,7 +98,7 @@ def store(monkeypatch, tmp_path):
 
 
 def _row(**kw):
-    base = {"id": 1, "identifier": "ONE-1", "title": "t", "body": "b",
+    base = {"id": 1, "identifier": "JIRA-1", "title": "t", "body": "b",
             "status": "todo", "priority": "medium", "assignee_role": None,
             "parent_id": None, "branch": None, "project": None, "labels": None,
             "metadata": None, "updated_at": None}
@@ -156,13 +156,13 @@ def test_an_event_row_is_shaped():
 
 
 @pytest.mark.parametrize("title,branch", [
-    ("Fix the parser", "aiforge/ONE-1-fix-the-parser"),
-    ("", "aiforge/ONE-1"),
-    ("!!!", "aiforge/ONE-1"),
-    ("A" * 100, "aiforge/ONE-1-" + "a" * 40),
+    ("Fix the parser", "aiforge/JIRA-1-fix-the-parser"),
+    ("", "aiforge/JIRA-1"),
+    ("!!!", "aiforge/JIRA-1"),
+    ("A" * 100, "aiforge/JIRA-1-" + "a" * 40),
 ])
 def test_a_branch_is_derived_from_the_title(title, branch):
-    assert tk._derive_branch("ONE-1", title) == branch
+    assert tk._derive_branch("JIRA-1", title) == branch
 
 
 # ─── attachments ───────────────────────────────────────────────────────
@@ -174,22 +174,22 @@ def _file(name, data=b"hello"):
 
 
 def test_attachments_are_written_and_described(store, tmp_path):
-    out = tk._persist_ticket_attachments("ONE-1", [_file("spec.txt")])
+    out = tk._persist_ticket_attachments("JIRA-1", [_file("spec.txt")])
     assert out == [{"name": "spec.txt", "size": 5,
-                    "path": ".aiforge/ticket-files/ONE-1/spec.txt",
-                    "abs_path": str(tmp_path / "ticket-files/ONE-1/spec.txt")}]
-    assert (tmp_path / "ticket-files/ONE-1/spec.txt").read_bytes() == b"hello"
+                    "path": ".aiforge/ticket-files/JIRA-1/spec.txt",
+                    "abs_path": str(tmp_path / "ticket-files/JIRA-1/spec.txt")}]
+    assert (tmp_path / "ticket-files/JIRA-1/spec.txt").read_bytes() == b"hello"
 
 
 def test_an_attachment_name_cannot_escape_its_ticket_dir(store, tmp_path):
-    out = tk._persist_ticket_attachments("ONE-1", [_file("../../etc/passwd")])
+    out = tk._persist_ticket_attachments("JIRA-1", [_file("../../etc/passwd")])
     assert out[0]["name"] == "passwd"
-    assert (tmp_path / "ticket-files/ONE-1/passwd").exists()
+    assert (tmp_path / "ticket-files/JIRA-1/passwd").exists()
 
 
 def test_an_undecodable_attachment_is_skipped(store):
     bad = tk.AttachedFile(name="x.bin", content_b64="!!!not base64!!!")
-    assert tk._persist_ticket_attachments("ONE-1", [bad]) == []
+    assert tk._persist_ticket_attachments("JIRA-1", [bad]) == []
 
 
 def test_an_unwritable_store_names_the_directory(store, monkeypatch, tmp_path):
@@ -200,7 +200,7 @@ def test_an_unwritable_store_names_the_directory(store, monkeypatch, tmp_path):
                         lambda self, **kw: (_ for _ in ()).throw(PermissionError(13, "denied")))
     attachment = _file("a.txt")
     with pytest.raises(HTTPException) as ei:
-        tk._persist_ticket_attachments("ONE-1", [attachment])
+        tk._persist_ticket_attachments("JIRA-1", [attachment])
     assert ei.value.status_code == 500
     assert "could not store attachments under" in str(ei.value.detail)
     assert "writable" in str(ei.value.detail)
@@ -212,19 +212,19 @@ def test_a_failed_write_is_not_reported_as_saved(store, monkeypatch):
                         lambda self, data: (_ for _ in ()).throw(OSError(28, "no space")))
     attachment = _file("a.txt")
     with pytest.raises(HTTPException, match="could not store attachments under"):
-        tk._persist_ticket_attachments("ONE-1", [attachment])
+        tk._persist_ticket_attachments("JIRA-1", [attachment])
 
 
 def test_named_attachments_are_removed(store, tmp_path):
-    tk._persist_ticket_attachments("ONE-1", [_file("a.txt"), _file("b.txt")])
-    assert tk._remove_ticket_attachments("ONE-1", ["a.txt", "gone.txt"]) == ["a.txt"]
-    assert not (tmp_path / "ticket-files/ONE-1/a.txt").exists()
-    assert (tmp_path / "ticket-files/ONE-1/b.txt").exists()
+    tk._persist_ticket_attachments("JIRA-1", [_file("a.txt"), _file("b.txt")])
+    assert tk._remove_ticket_attachments("JIRA-1", ["a.txt", "gone.txt"]) == ["a.txt"]
+    assert not (tmp_path / "ticket-files/JIRA-1/a.txt").exists()
+    assert (tmp_path / "ticket-files/JIRA-1/b.txt").exists()
 
 
 def test_removal_names_are_reduced_to_basenames(store, tmp_path):
-    tk._persist_ticket_attachments("ONE-1", [_file("a.txt")])
-    assert tk._remove_ticket_attachments("ONE-1", ["../../a.txt", ""]) == ["a.txt"]
+    tk._persist_ticket_attachments("JIRA-1", [_file("a.txt")])
+    assert tk._remove_ticket_attachments("JIRA-1", ["../../a.txt", ""]) == ["a.txt"]
 
 
 # ─── creating ──────────────────────────────────────────────────────────
@@ -243,8 +243,8 @@ def create_env(monkeypatch, store):
 
 def test_a_ticket_is_created_with_a_derived_branch(client, create_env):
     body = client.post("/api/tickets", json={"title": "Fix the parser"}).json()
-    assert body["identifier"] == "ONE-1"
-    assert create_env["branch"] == "aiforge/ONE-1-fix-the-parser"
+    assert body["identifier"] == "JIRA-1"
+    assert create_env["branch"] == "aiforge/JIRA-1-fix-the-parser"
 
 
 def test_the_detector_decides_the_route_by_default(client, create_env):
@@ -292,13 +292,13 @@ def test_max_turns_lands_in_metadata(client, create_env):
 
 def test_an_unknown_parent_is_a_400(client, create_env):
     r = client.post("/api/tickets", json={"title": "t",
-                                          "parent_identifier": "ONE-999"})
+                                          "parent_identifier": "JIRA-999"})
     assert r.status_code == 400
     assert "not found" in r.json()["detail"]
 
 
 def test_a_known_parent_is_linked(client, create_env):
-    client.post("/api/tickets", json={"title": "t", "parent_identifier": "ONE-1"})
+    client.post("/api/tickets", json={"title": "t", "parent_identifier": "JIRA-1"})
     assert create_env["created"]["parent_id"] == 1
 
 
@@ -312,7 +312,7 @@ def test_a_failed_attachment_save_rolls_the_ticket_back(client, create_env, monk
                     json={"title": "t",
                           "attached_files": [{"name": "a.txt", "content_b64": "eA=="}]})
     assert r.status_code == 500
-    assert create_env["deleted"] == ["ONE-1"]
+    assert create_env["deleted"] == ["JIRA-1"]
 
 
 def test_a_failed_rollback_is_logged_not_raised(client, create_env, monkeypatch):
@@ -357,7 +357,7 @@ def test_a_branch_write_failure_keeps_the_derived_name(store, monkeypatch):
     monkeypatch.setattr(tk.tickets_mod, "set_branch",
                         lambda *a: (_ for _ in ()).throw(RuntimeError("db gone")))
     tk._ensure_branch(t)
-    assert t.branch.startswith("aiforge/ONE-1")
+    assert t.branch.startswith("aiforge/JIRA-1")
 
 
 # ─── reading ───────────────────────────────────────────────────────────
@@ -389,16 +389,16 @@ def test_a_ticket_detail_carries_events_children_and_timings(client, store, monk
         {"id": 2, "ticket_id": 1, "agent_role": "doer", "kind": "comment",
          "body": "hi", "metadata": {}, "created_at": now},
     ]
-    store["rows"] = [_row(identifier="ONE-2", parent_id=1)]
+    store["rows"] = [_row(identifier="JIRA-2", parent_id=1)]
     monkeypatch.setattr(tk.tickets_mod, "get_enriched", lambda ident: _row())
     from aiforge_core.tickets import subtasks
     monkeypatch.setattr(subtasks, "get_subtasks", lambda tid: [{"slug": "a"}])
     monkeypatch.setattr(subtasks, "progress",
                         lambda subs: {"total": 1, "done": 0, "counts": {},
                                       "fraction": 0.0})
-    body = client.get("/api/tickets/ONE-1").json()
+    body = client.get("/api/tickets/JIRA-1").json()
     assert len(body["events"]) == 2
-    assert [c["identifier"] for c in body["children"]] == ["ONE-2"]
+    assert [c["identifier"] for c in body["children"]] == ["JIRA-2"]
     assert body["timings"] == [{"stage": "doer", "duration_s": 12,
                                 "at": now.isoformat(), "extra": {"extra": 1}}]
     assert body["subtask_progress"]["total"] == 1
@@ -409,14 +409,14 @@ def test_a_broken_subtask_store_still_renders_the_ticket(client, store, monkeypa
     from aiforge_core.tickets import subtasks
     monkeypatch.setattr(subtasks, "get_subtasks",
                         lambda tid: (_ for _ in ()).throw(RuntimeError("db gone")))
-    body = client.get("/api/tickets/ONE-1").json()
+    body = client.get("/api/tickets/JIRA-1").json()
     assert body["subtasks"] == []
     assert body["subtask_progress"]["total"] == 0
 
 
 def test_a_missing_ticket_is_a_404(client, store, monkeypatch):
     monkeypatch.setattr(tk.tickets_mod, "get_enriched", lambda ident: None)
-    assert client.get("/api/tickets/ONE-9").status_code == 404
+    assert client.get("/api/tickets/JIRA-9").status_code == 404
 
 
 # ─── patching ──────────────────────────────────────────────────────────
@@ -436,22 +436,22 @@ def patch_env(client, store, monkeypatch):
 
 
 def test_a_status_change_is_recorded_as_human(client, patch_env):
-    client.patch("/api/tickets/ONE-1", json={"status": "done"})
+    client.patch("/api/tickets/JIRA-1", json={"status": "done"})
     assert ("done", "human", None) in patch_env["status"]
 
 
 def test_an_invalid_status_is_a_400(client, patch_env):
-    r = client.patch("/api/tickets/ONE-1", json={"status": "nope"})
+    r = client.patch("/api/tickets/JIRA-1", json={"status": "nope"})
     assert r.status_code == 400
     assert "bad status" in r.json()["detail"]
 
 
 def test_patching_a_missing_ticket_is_a_404(client, patch_env):
-    assert client.patch("/api/tickets/ONE-9", json={"body": "x"}).status_code == 404
+    assert client.patch("/api/tickets/JIRA-9", json={"body": "x"}).status_code == 404
 
 
 def test_editable_fields_are_forwarded(client, patch_env):
-    client.patch("/api/tickets/ONE-1",
+    client.patch("/api/tickets/JIRA-1",
                  json={"body": "new body", "labels": ["a"], "assignee_role": "doer"})
     fields, _md = patch_env["patched"][-1]
     assert fields == {"assignee_role": "doer", "labels": ["a"], "body": "new body"}
@@ -503,32 +503,32 @@ def route_env(monkeypatch, store):
     import aiforge_core.workflows as wf
     monkeypatch.setattr(wf, "get", lambda wid: {"id": wid} if wid == "wf-1" else None)
     monkeypatch.setattr(tk.tickets_mod, "update_route",
-                        lambda ident, **kw: _T(**kw) if ident == "ONE-1" else None)
+                        lambda ident, **kw: _T(**kw) if ident == "JIRA-1" else None)
     return store
 
 
 def test_an_override_records_the_manual_source(client, route_env):
-    body = client.put("/api/tickets/ONE-1/route",
+    body = client.put("/api/tickets/JIRA-1/route",
                       json={"route": "workflow", "route_workflow": "wf-1"}).json()
     assert body["route"] == "workflow"
     assert body["route_source"] == "manual"
 
 
 def test_a_workflow_override_needs_an_id(client, route_env):
-    r = client.put("/api/tickets/ONE-1/route", json={"route": "workflow"})
+    r = client.put("/api/tickets/JIRA-1/route", json={"route": "workflow"})
     assert r.status_code == 400
     assert "requires route_workflow" in r.json()["detail"]
 
 
 def test_an_unknown_workflow_id_is_a_400(client, route_env):
-    r = client.put("/api/tickets/ONE-1/route",
+    r = client.put("/api/tickets/JIRA-1/route",
                    json={"route": "workflow", "route_workflow": "nope"})
     assert r.status_code == 400
     assert "unknown workflow id" in r.json()["detail"]
 
 
 def test_overriding_a_missing_ticket_is_a_404(client, route_env):
-    r = client.put("/api/tickets/ONE-9/route", json={"route": "code"})
+    r = client.put("/api/tickets/JIRA-9/route", json={"route": "code"})
     assert r.status_code == 404
 
 
@@ -541,12 +541,12 @@ def test_run_parallel_starts_in_the_background(client, store, monkeypatch):
     import aiforge_core.runtime.parallel_subtasks as ps
     ran: list = []
     monkeypatch.setattr(ps, "run_subtasks_parallel", lambda t: ran.append(t.identifier))
-    r = client.post("/api/tickets/ONE-1/run-parallel")
+    r = client.post("/api/tickets/JIRA-1/run-parallel")
     assert r.status_code == 202
     assert r.json() == {"started": True,
-                                                 "identifier": "ONE-1"}
-    assert started == ["parallel-ONE-1"]
-    assert ran == ["ONE-1"]
+                                                 "identifier": "JIRA-1"}
+    assert started == ["parallel-JIRA-1"]
+    assert ran == ["JIRA-1"]
 
 
 def test_a_crash_in_the_background_run_is_logged(client, store, monkeypatch):
@@ -554,27 +554,27 @@ def test_a_crash_in_the_background_run_is_logged(client, store, monkeypatch):
     import aiforge_core.runtime.parallel_subtasks as ps
     monkeypatch.setattr(ps, "run_subtasks_parallel",
                         lambda t: (_ for _ in ()).throw(RuntimeError("no worktree")))
-    assert client.post("/api/tickets/ONE-1/run-parallel").status_code == 202
+    assert client.post("/api/tickets/JIRA-1/run-parallel").status_code == 202
 
 
 def test_run_parallel_on_a_missing_ticket_is_a_404(client, store):
-    assert client.post("/api/tickets/ONE-9/run-parallel").status_code == 404
+    assert client.post("/api/tickets/JIRA-9/run-parallel").status_code == 404
 
 
 def test_a_comment_returns_its_event_id(client, store):
-    r = client.post("/api/tickets/ONE-1/comments", json={"body": "hi"})
+    r = client.post("/api/tickets/JIRA-1/comments", json={"body": "hi"})
     assert r.status_code == 201
     assert r.json() == {"event_id": 99}
 
 
 def test_commenting_on_a_missing_ticket_is_a_404(client, store):
-    assert client.post("/api/tickets/ONE-9/comments",
+    assert client.post("/api/tickets/JIRA-9/comments",
                        json={"body": "hi"}).status_code == 404
 
 
 def test_deleting_a_ticket(client, store):
-    assert client.delete("/api/tickets/ONE-1").status_code == 204
-    assert client.delete("/api/tickets/ONE-9").status_code == 404
+    assert client.delete("/api/tickets/JIRA-1").status_code == 204
+    assert client.delete("/api/tickets/JIRA-9").status_code == 404
 
 
 def test_reset_reports_how_many_were_deleted(client, store):
@@ -587,14 +587,14 @@ def test_reset_reports_how_many_were_deleted(client, store):
 @pytest.fixture
 def task_dirs(monkeypatch, tmp_path):
     ga = tmp_path / "ga"
-    (ga / "temp" / "aiforge-ONE-1-abc").mkdir(parents=True)
-    (ga / "temp" / "aiforge-planner-ONE-1-def").mkdir(parents=True)
+    (ga / "temp" / "aiforge-JIRA-1-abc").mkdir(parents=True)
+    (ga / "temp" / "aiforge-planner-JIRA-1-def").mkdir(parents=True)
     monkeypatch.setenv("AIFORGE_GA_DIR", str(ga))
     return ga / "temp"
 
 
 def test_both_the_agent_and_planner_dirs_are_found(task_dirs):
-    dirs = tk._resolve_active_task_dirs("ONE-1")
+    dirs = tk._resolve_active_task_dirs("JIRA-1")
     assert len(dirs) == 2
     assert any("planner" in d for d in dirs)
 
@@ -602,19 +602,19 @@ def test_both_the_agent_and_planner_dirs_are_found(task_dirs):
 def test_no_ga_checkout_means_no_targets(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_GA_DIR", str(tmp_path / "gone"))
     monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path / "nope"))
-    assert tk._resolve_active_task_dirs("ONE-1") == []
+    assert tk._resolve_active_task_dirs("JIRA-1") == []
 
 
 def test_another_tickets_directory_is_not_a_target(task_dirs):
-    (task_dirs / "aiforge-ONE-2-xyz").mkdir()
-    dirs = tk._resolve_active_task_dirs("ONE-1")
+    (task_dirs / "aiforge-JIRA-2-xyz").mkdir()
+    dirs = tk._resolve_active_task_dirs("JIRA-1")
     assert len(dirs) == 2
-    assert not any("ONE-2" in d for d in dirs)
+    assert not any("JIRA-2" in d for d in dirs)
 
 
 def test_a_file_named_like_a_task_dir_is_not_a_target(task_dirs):
-    (task_dirs / "aiforge-ONE-1-note").write_text("not a task dir")
-    assert len(tk._resolve_active_task_dirs("ONE-1")) == 2
+    (task_dirs / "aiforge-JIRA-1-note").write_text("not a task dir")
+    assert len(tk._resolve_active_task_dirs("JIRA-1")) == 2
 
 
 def test_an_identifier_that_traverses_is_refused(task_dirs):
@@ -624,7 +624,7 @@ def test_an_identifier_that_traverses_is_refused(task_dirs):
     escape the temp dir even if it got this far; it is rejected anyway,
     because a ticket id containing "../" is not a ticket id with a typo.
     """
-    assert tk._resolve_active_task_dirs("../ONE-1") == []
+    assert tk._resolve_active_task_dirs("../JIRA-1") == []
     assert tk._resolve_active_task_dirs("") == []
 
 
@@ -636,13 +636,13 @@ def test_an_unreadable_temp_dir_yields_no_targets(task_dirs, monkeypatch):
             raise PermissionError("nope")
         return real(path)
     monkeypatch.setattr(os, "scandir", _denied)
-    assert tk._resolve_active_task_dirs("ONE-1") == []
+    assert tk._resolve_active_task_dirs("JIRA-1") == []
 
 
 @pytest.mark.parametrize("kind,expected", [("stop", ""), ("keyinfo", "note"),
                                            ("intervene", "note")])
 def test_a_control_file_is_written_to_every_target(client, task_dirs, kind, expected):
-    body = client.post(f"/api/tickets/ONE-1/intervene",
+    body = client.post(f"/api/tickets/JIRA-1/intervene",
                        json={"kind": kind, "body": "note"}).json()
     assert len(body["written"]) == 2
     for d in body["written"]:
@@ -650,7 +650,7 @@ def test_a_control_file_is_written_to_every_target(client, task_dirs, kind, expe
 
 
 def test_an_unknown_intervention_kind_is_a_400(client, task_dirs):
-    r = client.post("/api/tickets/ONE-1/intervene", json={"kind": "explode"})
+    r = client.post("/api/tickets/JIRA-1/intervene", json={"kind": "explode"})
     assert r.status_code == 400
     assert "must be one of" in r.json()["detail"]
 
@@ -658,7 +658,7 @@ def test_an_unknown_intervention_kind_is_a_400(client, task_dirs):
 def test_intervening_with_no_running_agent_is_a_404(client, monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_GA_DIR", str(tmp_path / "gone"))
     monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path / "nope"))
-    assert client.post("/api/tickets/ONE-1/intervene",
+    assert client.post("/api/tickets/JIRA-1/intervene",
                        json={"kind": "stop"}).status_code == 404
 
 
@@ -670,7 +670,7 @@ def test_an_unwritable_target_is_skipped(client, task_dirs, monkeypatch):
             raise PermissionError("read-only")
         return real_open(path, *a, **kw)
     monkeypatch.setattr("builtins.open", _fussy)
-    body = client.post("/api/tickets/ONE-1/intervene",
+    body = client.post("/api/tickets/JIRA-1/intervene",
                        json={"kind": "stop"}).json()
     assert len(body["written"]) == 1
 
@@ -683,21 +683,21 @@ def test_an_answer_is_folded_in_and_the_ticket_requeued(client, store, monkeypat
     monkeypatch.setattr(tk.tickets_mod, "append_body",
                         lambda tid, text: appended.append(text))
     monkeypatch.setattr(tk.tickets_mod, "add_event", lambda *a: None)
-    body = client.post("/api/tickets/ONE-1/answer",
+    body = client.post("/api/tickets/JIRA-1/answer",
                        json={"content": "  use an LRU  "}).json()
-    assert body == {"ticket": "ONE-1", "status": "todo",
-                    "trace_url": "/api/tickets/ONE-1/events/stream"}
+    assert body == {"ticket": "JIRA-1", "status": "todo",
+                    "trace_url": "/api/tickets/JIRA-1/events/stream"}
     assert "## Clarification\nuse an LRU" in appended[0]
     assert store["status"][-1][2] == {"clarified": True, "awaiting_input": False}
 
 
 def test_answering_a_missing_ticket_is_a_404(client, store):
-    assert client.post("/api/tickets/ONE-9/answer",
+    assert client.post("/api/tickets/JIRA-9/answer",
                        json={"content": "x"}).status_code == 404
 
 
 def test_an_empty_answer_is_rejected(client, store):
-    assert client.post("/api/tickets/ONE-1/answer",
+    assert client.post("/api/tickets/JIRA-1/answer",
                        json={"content": ""}).status_code == 422
 
 
@@ -715,7 +715,7 @@ def _events(gen, limit=10):
 
 def test_a_missing_ticket_streams_an_error(store, monkeypatch):
     monkeypatch.setattr(tk.tickets_mod, "get", lambda ident: None)
-    assert _events(tk._ticket_event_stream("ONE-9")) == [
+    assert _events(tk._ticket_event_stream("JIRA-9")) == [
         {"kind": "error", "body": "ticket not found"}]
 
 
@@ -723,14 +723,14 @@ def test_the_stream_closes_on_a_terminal_status(store):
     store["ticket"] = _T(status="done")
     store["events"] = [{"id": 1, "kind": "comment", "agent_role": "doer",
                         "body": "hi", "metadata": {}, "created_at": None}]
-    out = _events(tk._ticket_event_stream("ONE-1"))
+    out = _events(tk._ticket_event_stream("JIRA-1"))
     assert out[0]["kind"] == "comment"
     assert out[-1] == {"kind": "done", "status": "done"}
 
 
 def test_a_blocked_run_closes_the_stream(store):
     store["ticket"] = _T(status="blocked")
-    assert _events(tk._ticket_event_stream("ONE-1"))[-1] == {"kind": "done",
+    assert _events(tk._ticket_event_stream("JIRA-1"))[-1] == {"kind": "done",
                                                              "status": "blocked"}
 
 
@@ -738,7 +738,7 @@ def test_the_stream_pauses_when_the_run_awaits_an_answer(store):
     store["ticket"] = _T(status="in_progress",
                          metadata={"awaiting_input": True,
                                    "clarify_questions": ["which db?"]})
-    out = _events(tk._ticket_event_stream("ONE-1"))
+    out = _events(tk._ticket_event_stream("JIRA-1"))
     assert out[-1] == {"kind": "status", "status": "in_progress",
                        "awaiting_input": True, "clarify_questions": ["which db?"]}
 
@@ -759,4 +759,4 @@ def test_a_ticket_deleted_mid_stream_ends_it(store, monkeypatch):
         calls["n"] += 1
         return _T(status="in_progress") if calls["n"] == 1 else None
     monkeypatch.setattr(tk.tickets_mod, "get", _get)
-    assert _events(tk._ticket_event_stream("ONE-1")) == []
+    assert _events(tk._ticket_event_stream("JIRA-1")) == []

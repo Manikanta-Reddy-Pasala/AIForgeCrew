@@ -463,7 +463,7 @@ def test_git_commit_in_module_all() -> None:
 
 
 def test_edit_alias_delegates_to_file_patch(tmp_path, monkeypatch) -> None:
-    """ONE-7 regression: local Qwen calls `edit`; it must mutate the file
+    """JIRA-7 regression: local Qwen calls `edit`; it must mutate the file
     via file_patch instead of failing 'Tool edit not found'."""
     import os
     from aiforge_core.runtime import doer_tools as dt
@@ -497,7 +497,7 @@ def test_edit_registered_in_adk_tools() -> None:
 
 def test_meta_tool_noops_registered_and_safe() -> None:
     """Local models emit todo_write/glob/task from training; they must
-    be registered no-ops (not pipeline-killers) — ONE-7 regression."""
+    be registered no-ops (not pipeline-killers) — JIRA-7 regression."""
     from aiforge_core.runtime.doer_tools import adk_function_tools
     names = {
         getattr(t, "name", getattr(getattr(t, "func", None), "__name__", ""))

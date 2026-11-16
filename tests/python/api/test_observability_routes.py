@@ -254,80 +254,80 @@ def test_a_failed_backfill_does_not_stop_the_stream(monkeypatch, tmp_path):
 
 
 def test_a_run_for_this_ticket_opens_the_window():
-    in_ctx, emit = obs._trace_scope('{"event": "adk_runner.start", "t": "ONE-1"}',
-                                    "ONE-1", False)
+    in_ctx, emit = obs._trace_scope('{"event": "adk_runner.start", "t": "JIRA-1"}',
+                                    "JIRA-1", False)
     assert in_ctx is True
     assert emit is False
 
 
 def test_another_tickets_run_closes_the_window():
-    in_ctx, emit = obs._trace_scope('{"event": "adk_runner.start", "t": "ONE-2"}',
-                                    "ONE-1", True)
+    in_ctx, emit = obs._trace_scope('{"event": "adk_runner.start", "t": "JIRA-2"}',
+                                    "JIRA-1", True)
     assert in_ctx is False
     assert emit is False
 
 
 def test_the_closing_line_is_emitted_then_the_window_ends():
-    in_ctx, emit = obs._trace_scope('{"event": "adk_runner.done", "t": "ONE-1"}',
-                                    "ONE-1", True)
+    in_ctx, emit = obs._trace_scope('{"event": "adk_runner.done", "t": "JIRA-1"}',
+                                    "JIRA-1", True)
     assert in_ctx is False
     assert emit is True
 
 
 def test_lines_inside_the_window_are_emitted():
-    assert obs._trace_scope("Step 1: thinking", "ONE-1", True) == (True, True)
+    assert obs._trace_scope("Step 1: thinking", "JIRA-1", True) == (True, True)
 
 
 def test_lines_outside_the_window_are_not():
-    assert obs._trace_scope("Step 1: thinking", "ONE-1", False) == (False, False)
+    assert obs._trace_scope("Step 1: thinking", "JIRA-1", False) == (False, False)
 
 
 def test_the_legacy_event_names_still_scope():
-    assert obs._trace_scope('{"event":"graph_runner.start","t":"ONE-1"}',
-                            "ONE-1", False) == (True, False)
+    assert obs._trace_scope('{"event":"graph_runner.start","t":"JIRA-1"}',
+                            "JIRA-1", False) == (True, False)
 
 
 # ─── llm.call filtering ────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("raw", [
-    '{"event": "llm.call", "ticket": "ONE-1"}',
-    '{"event":"llm.call","ticket":"ONE-1"}',
+    '{"event": "llm.call", "ticket": "JIRA-1"}',
+    '{"event":"llm.call","ticket":"JIRA-1"}',
 ])
 def test_an_llm_call_for_this_ticket_matches(raw):
-    assert obs._is_llm_call_for(raw, "ONE-1") is True
+    assert obs._is_llm_call_for(raw, "JIRA-1") is True
 
 
 @pytest.mark.parametrize("raw", [
-    '{"event": "llm.call", "ticket": "ONE-2"}',
-    '{"event": "agent.step", "ticket": "ONE-1"}',
+    '{"event": "llm.call", "ticket": "JIRA-2"}',
+    '{"event": "agent.step", "ticket": "JIRA-1"}',
 ])
 def test_other_events_and_tickets_do_not(raw):
-    assert obs._is_llm_call_for(raw, "ONE-1") is False
+    assert obs._is_llm_call_for(raw, "JIRA-1") is False
 
 
 def test_the_last_n_llm_calls_are_returned(client, monkeypatch, tmp_path):
     err = tmp_path / "graph-runner.err"
     err.write_text("".join(
-        json.dumps({"event": "llm.call", "ticket": "ONE-1", "n": i}) + "\n"
-        for i in range(10)) + '{"event": "llm.call", "ticket": "ONE-2"}\n')
+        json.dumps({"event": "llm.call", "ticket": "JIRA-1", "n": i}) + "\n"
+        for i in range(10)) + '{"event": "llm.call", "ticket": "JIRA-2"}\n')
     monkeypatch.setenv("AIFORGE_GRAPH_RUNNER_ERR", str(err))
-    body = client.get("/api/llm-trace/ONE-1?limit=3").json()
+    body = client.get("/api/llm-trace/JIRA-1?limit=3").json()
     assert body["count"] == 3
     assert [e["n"] for e in body["events"]] == [7, 8, 9]
 
 
 def test_a_corrupt_line_is_skipped(client, monkeypatch, tmp_path):
     err = tmp_path / "graph-runner.err"
-    err.write_text('{"event": "llm.call", "ticket": "ONE-1"} trailing junk\n'
-                   '{"event": "llm.call", "ticket": "ONE-1", "n": 1}\n')
+    err.write_text('{"event": "llm.call", "ticket": "JIRA-1"} trailing junk\n'
+                   '{"event": "llm.call", "ticket": "JIRA-1", "n": 1}\n')
     monkeypatch.setenv("AIFORGE_GRAPH_RUNNER_ERR", str(err))
-    assert client.get("/api/llm-trace/ONE-1").json()["count"] == 1
+    assert client.get("/api/llm-trace/JIRA-1").json()["count"] == 1
 
 
 def test_a_missing_log_reports_the_path_rather_than_500ing(client, monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_GRAPH_RUNNER_ERR", str(tmp_path / "gone.err"))
-    body = client.get("/api/llm-trace/ONE-1").json()
+    body = client.get("/api/llm-trace/JIRA-1").json()
     assert body["events"] == []
     assert "not found" in body["error"]
 
@@ -346,7 +346,7 @@ def test_the_static_topology_is_a_linear_pipeline():
 def test_the_live_topology_is_preferred(monkeypatch):
     from aiforge_core.runtime import workflow_topology as wt
     monkeypatch.setattr(wt, "snapshot", lambda ticket: {"nodes": [], "ticket": ticket})
-    assert obs._topology_snapshot("ONE-1") == {"nodes": [], "ticket": "ONE-1"}
+    assert obs._topology_snapshot("JIRA-1") == {"nodes": [], "ticket": "JIRA-1"}
 
 
 def test_a_broken_topology_module_falls_back_to_static(monkeypatch):
@@ -358,7 +358,7 @@ def test_a_broken_topology_module_falls_back_to_static(monkeypatch):
 
 def test_the_topology_endpoint_serves_the_snapshot(client, monkeypatch):
     monkeypatch.setattr(obs, "_topology_snapshot", lambda ticket: {"ticket": ticket})
-    assert client.get("/api/workflow/topology?ticket=ONE-1").json() == {"ticket": "ONE-1"}
+    assert client.get("/api/workflow/topology?ticket=JIRA-1").json() == {"ticket": "JIRA-1"}
 
 
 class _StopStream(Exception):

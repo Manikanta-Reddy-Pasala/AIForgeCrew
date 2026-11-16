@@ -435,7 +435,7 @@ def test_an_oversized_turn_is_walked_in_slices_not_clipped(monkeypatch, mem):
     monkeypatch.setenv("AIFORGE_SESSION_COMPACT_CHARS", "2000")
     monkeypatch.setenv("AIFORGE_OKR_SCOPE_LLM", "0")
     from aiforge_core.runtime import chat_okr
-    big = "START " + "z" * 8000 + " ONE-999-END"
+    big = "START " + "z" * 8000 + " JIRA-999-END"
     turns = [{"role": "user", "content": "small first turn"},
              {"role": "assistant", "content": big}]
     monkeypatch.setattr("aiforge_core.runtime.chat_store.get_messages",
@@ -451,7 +451,7 @@ def test_an_oversized_turn_is_walked_in_slices_not_clipped(monkeypatch, mem):
         if not chat_okr.compact_session("big", repo="svc").get("remaining"):
             break
     blob = "".join(sent)
-    assert "ONE-999-END" in blob                 # the TAIL of the big turn too
+    assert "JIRA-999-END" in blob                 # the TAIL of the big turn too
     assert chat_okr.compact_session("big", repo="svc")["skipped"] == "no_new"
 
 

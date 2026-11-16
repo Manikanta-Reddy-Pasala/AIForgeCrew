@@ -81,7 +81,7 @@ else
     "sudo bash $UNIT_SRC/install-system-boot.sh"
 fi
 
-step "WireGuard client (tickets.oneshell.in bridge)"
+step "WireGuard client (public tickets host bridge)"
 WG_IFACE=""
 for i in wg1 wg0; do
   [[ -f "/etc/wireguard/${i}.conf" ]] && { WG_IFACE="$i"; break; }

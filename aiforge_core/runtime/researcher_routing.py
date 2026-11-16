@@ -6,7 +6,7 @@ costs 5+ LM calls upfront — graphify_lookup, memory_lookup, file_read
 across every subticket — which is a waste for greenfield work where
 nothing the Researcher could surface exists yet.
 
-ONE-117 was the canary: a brand-new FastAPI scaffold ticket spent ~4
+T-117 was the canary: a brand-new FastAPI scaffold ticket spent ~4
 minutes inside the Researcher with zero relevant_files because the
 target repo had no prior commits matching the ticket's keywords. The
 Doer would have produced the same output without the brief.

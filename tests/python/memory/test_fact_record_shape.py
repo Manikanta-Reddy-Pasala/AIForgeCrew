@@ -207,7 +207,7 @@ KEEP_ANYWAY = [
     # brackets inside prose or a code span are not a truncated line
     r"The scaffold rule rejects any line matching ^\s*[|\[] at the write door.",
     "The regex is `^\\s*[|\\[]` and it rejects table rows.",
-    "Build order is 1) oneshell-commons, 2) MongoDbService, 3) PosClientBackend.",
+    "Build order is 1) acme-commons, 2) MongoDbService, 3) OrderService.",
     "The CI runner exits 0 even when pytest fails :)",
     "A single backtick ` starts command substitution in bash.",
     # a lead word that merely starts with a pronoun, or names its subject next
@@ -226,7 +226,7 @@ DROP_ANYWAY = [
     "Final Summary",
     "Next Steps",
     "Continued in part 2",       # the compaction artifact, markup stripped
-    "2026-09-16 12:00:01 INFO  [main] Started PosClientBackend in 4.213 seconds",
+    "2026-09-16 12:00:01 INFO  [main] Started OrderService in 4.213 seconds",
     "ok thanks",
     "yes exactly",
 ]

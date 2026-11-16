@@ -196,7 +196,7 @@ def research_entry(ctx):  # type: ignore[no-untyped-def]
     re-enters here. Re-entering one node re-fires ALL outgoing branch
     edges in one scheduler wave, which is what context_join needs to
     re-arm (a JoinNode fired with only a subset of its in-branches
-    rescheduled reads stale COMPLETED status — the ONE-117
+    rescheduled reads stale COMPLETED status — the T-117
     max_concurrency note in pipeline.py). Body intentionally does
     nothing."""
     return None

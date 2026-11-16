@@ -284,7 +284,7 @@ def _commit_files(repo: Path, files: dict[str, str]) -> None:
 
 def test_classify_head_diff_test_only(tmp_path: Path) -> None:
     """Java PR that adds ONLY a JUnit test + XML fixture — exactly the
-    ONE-3 false-positive shape — comes back as test-only."""
+    JIRA-3 false-positive shape — comes back as test-only."""
     _git_init(tmp_path)
     _commit_files(tmp_path, {
         "src/test/java/com/x/FooTest.java": "class FooTest{}",

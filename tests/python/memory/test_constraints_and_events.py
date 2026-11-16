@@ -131,7 +131,7 @@ def test_learner_persists_constraint_prefix(mem):
         facts=[{"text": "CONSTRAINT: never run the suite on the laptop"},
                {"text": "DECISION: we picked NATS over Kafka"},
                {"text": "the retry service polls every 30s"}],
-        repo="demo", ticket_identifier="ONE-1", session_id="s1",
+        repo="demo", ticket_identifier="JIRA-1", session_id="s1",
         event_time=None,
     )
     assert out["written_constraints"] == 1
@@ -223,7 +223,7 @@ def test_memory_block_renders_rules_verbatim(mem, monkeypatch):
     seen: dict = {}
 
     class _Ticket:
-        identifier = "ONE-9"
+        identifier = "JIRA-9"
         title = "look at the kafka lag"
         body = ""
         project = "demo"
@@ -259,7 +259,7 @@ def test_memory_block_rules_only_still_returns_them(mem, monkeypatch):
     from aiforge_core.runtime import memory_block as mb
 
     class _Ticket:
-        identifier = "ONE-9"
+        identifier = "JIRA-9"
         title = "anything"
         body = ""
         project = "demo"

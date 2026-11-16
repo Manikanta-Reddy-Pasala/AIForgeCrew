@@ -686,7 +686,7 @@ def parallel(monkeypatch, tmp_path):
 
 
 def _ticket(tid=7):
-    return pytypes.SimpleNamespace(id=tid, identifier="ONE-7", title="t",
+    return pytypes.SimpleNamespace(id=tid, identifier="JIRA-7", title="t",
                                    body="b")
 
 
@@ -781,8 +781,8 @@ def test_a_repo_ticket_merges_into_its_own_working_branch(monkeypatch):
     from aiforge_core.runtime import workspace as ws
     monkeypatch.setattr(ws, "ensure_branch_and_worktree", lambda t: "/repo/wt")
     monkeypatch.setattr(R, "_git", lambda args, wt: pytypes.SimpleNamespace(
-        stdout="feature/one-7\n"))
-    assert R._run_workspace(_ticket(), 7) == ("/repo/wt", "feature/one-7")
+        stdout="feature/jira-7\n"))
+    assert R._run_workspace(_ticket(), 7) == ("/repo/wt", "feature/jira-7")
 
 
 def test_a_detached_checkout_falls_back_to_head(monkeypatch):
@@ -801,5 +801,5 @@ def test_a_standalone_ticket_gets_its_own_git_workspace(monkeypatch, tmp_path):
     monkeypatch.setattr(paths, "config_dir", lambda: tmp_path)
     monkeypatch.setattr(R, "_ensure_git_workspace", lambda wt: "main")
     wt, base = R._run_workspace(_ticket(), 7)
-    assert wt == os.path.join(str(tmp_path), "ticket-workspaces", "ONE-7")
+    assert wt == os.path.join(str(tmp_path), "ticket-workspaces", "JIRA-7")
     assert base == "main"

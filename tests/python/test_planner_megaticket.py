@@ -5,7 +5,7 @@ The prompt is the contract; we can't run a live model in CI, so the
 test asserts the prompt text contains the exact thresholds + JSON
 shape an upstream operator (or the planner agent) needs to read in
 order to decompose a mega-ticket. Drift here means the model loses
-the rule and ONE-117-style monolithic plans return.
+the rule and JIRA-117-style monolithic plans return.
 """
 from __future__ import annotations
 

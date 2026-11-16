@@ -187,10 +187,10 @@ def test_plain_mail_with_one_bullet_or_a_quote_stays_plain():
 def test_links_keep_their_formatting_and_urls_their_emphasis():
     from aiforge_core.runtime.tools.confluence_format import md_to_storage
     out = md_to_storage("[`src/foo.py`](https://g.io/x) and [**big**](https://g.io/y); "
-                        "see **https://jira/ONE-3** now, `__init__` and __init__")
+                        "see **https://jira/JIRA-3** now, `__init__` and __init__")
     assert '<a href="https://g.io/x"><code>src/foo.py</code></a>' in out
     assert '<a href="https://g.io/y"><strong>big</strong></a>' in out
-    assert "<strong>https://jira/ONE-3</strong>" in out
+    assert "<strong>https://jira/JIRA-3</strong>" in out
     assert "" not in out and "__init__" in out and "<strong>init</strong>" not in out
 
 

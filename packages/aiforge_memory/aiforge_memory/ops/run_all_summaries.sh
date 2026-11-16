@@ -13,31 +13,20 @@
 set -uo pipefail
 set -a; source ~/.aiforge/runtime.env; set +a
 
-REPOS=(
-  PosClientBackend
-  oneshell-commons
-  PosService
-  MongoDbService
-  PosDockerSyncService
-  BusinessService
-  NotificationService
-  Scheduler
-  StoreIntelligence
-  GstApiService
-  WhatsappApiService
-  EmailService
-  TallyConnector
-  GatewayService
-  PosServerBackend
-  PosDataSyncService
-  PosDockerPullService
-  QuartzScheduler
-  VendorIntegrationService
-  mongoEventListner
-  CacheLayer
-  memory
-  keycloak-two-factor-auth-extension
-)
+# Repos to summarise: AIFORGE_SUMMARY_REPOS (space-separated) or, when unset,
+# the file AIFORGE_SUMMARY_REPO_LIST (default ~/.aiforge/summary-repos.txt,
+# one name per line, # comments allowed). Host-specific; nothing built in.
+REPOS=()
+if [[ -n "${AIFORGE_SUMMARY_REPOS:-}" ]]; then
+  read -r -a REPOS <<< "$AIFORGE_SUMMARY_REPOS"
+else
+  LIST="${AIFORGE_SUMMARY_REPO_LIST:-$HOME/.aiforge/summary-repos.txt}"
+  [[ -f "$LIST" ]] && mapfile -t REPOS < <(grep -v '^\s*#' "$LIST" | awk 'NF')
+fi
+if [[ ${#REPOS[@]} -eq 0 ]]; then
+  echo "no repos: set AIFORGE_SUMMARY_REPOS or write ${LIST:-a repo list}" >&2
+  exit 2
+fi
 
 LOGDIR=/home/mani/.aiforge/symsum_logs
 mkdir -p "$LOGDIR"

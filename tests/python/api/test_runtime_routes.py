@@ -378,7 +378,7 @@ def test_cost_totals_are_served(client, monkeypatch):
     from aiforge_core.observability import cost
     monkeypatch.setattr(cost, "snapshot",
                         lambda ticket: {"usd": 1.25, "ticket": ticket})
-    assert client.get("/api/runtime/cost?ticket=ONE-1").json()["ticket"] == "ONE-1"
+    assert client.get("/api/runtime/cost?ticket=JIRA-1").json()["ticket"] == "JIRA-1"
 
 
 def test_a_cost_rollup_is_grouped_and_bounded(client, monkeypatch):

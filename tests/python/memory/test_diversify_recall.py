@@ -45,16 +45,16 @@ def test_diversify_single_source_via_group_key(uq):
 
 def test_diversify_multi_group_still_caps(uq):
     """>1 distinct group + per-group over cap → caps per group as before."""
-    hits = [{"source": "memory", "ticket": "ONE-1", "text": str(i)}
+    hits = [{"source": "memory", "ticket": "JIRA-1", "text": str(i)}
             for i in range(5)]
     hits += [{"source": "doc", "text": "d1"},
              {"source": "doc", "text": "d2"},
              {"source": "doc", "text": "d3"},
              {"source": "doc", "text": "d4"}]
     out = uq._diversify(hits, per_group=3)
-    # 3 from ONE-1 + 3 from doc (4th dropped) = 6
+    # 3 from JIRA-1 + 3 from doc (4th dropped) = 6
     assert len(out) == 6
-    assert len([h for h in out if h.get("ticket") == "ONE-1"]) == 3
+    assert len([h for h in out if h.get("ticket") == "JIRA-1"]) == 3
     assert len([h for h in out if h.get("source") == "doc"]) == 3
 
 

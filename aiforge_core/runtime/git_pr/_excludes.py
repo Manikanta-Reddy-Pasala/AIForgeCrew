@@ -45,7 +45,7 @@ _EXCLUDE_PATHSPECS: tuple[str, ...] = (
     ":(exclude)dist",
     ":(exclude)build",
     ":(exclude)target",
-    # Python bytecode + caches — slipped into TallyConnector#10/#11
+    # Python bytecode + caches — slipped into two PRs of one project
     # because those repos lacked a Python .gitignore. Belt-and-braces
     # at git add time so the target repo's own ignores are irrelevant.
     ":(exclude,glob)**/__pycache__/**",

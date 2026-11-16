@@ -77,8 +77,8 @@ _ENCYCLOPAEDIC = re.compile(
     r"located in|founded in|born in|invented by)\b", re.IGNORECASE)
 
 # A note carrying project signal is judged only against this floor, not against
-# ``min_substance()``. Real knowledge is often terse — "MongoDbService is
-# mandatory" is the most valuable kind of note in this codebase and would not
+# ``min_substance()``. Real knowledge is often terse — "the DbGateway is
+# mandatory" is the most valuable kind of note in a codebase and would not
 # survive an 80-character rule. Signal is the strong evidence; length is the
 # weak evidence, and the weak one must not override the strong one.
 _SIGNAL_FLOOR = 20

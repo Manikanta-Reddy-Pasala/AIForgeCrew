@@ -51,9 +51,9 @@ def test_a_record_becomes_one_json_object():
 
 
 def test_the_aiforge_context_is_merged_into_the_line():
-    out = _format(aiforge={"role": "doer", "ticket": "ONE-1"})
+    out = _format(aiforge={"role": "doer", "ticket": "JIRA-1"})
     assert out["role"] == "doer"
-    assert out["ticket"] == "ONE-1"
+    assert out["ticket"] == "JIRA-1"
 
 
 # ── scrub ───────────────────────────────────────────────────────────────────
@@ -101,7 +101,7 @@ def test_emit_carries_the_loggers_role_and_ticket_plus_the_fields():
 
     class _Log:
         _aiforge_role = "planner"
-        _aiforge_ticket = "ONE-9"
+        _aiforge_ticket = "JIRA-9"
 
         def info(self, event, extra=None):
             seen["event"] = event
@@ -110,7 +110,7 @@ def test_emit_carries_the_loggers_role_and_ticket_plus_the_fields():
     L.emit(_Log(), "stage.start", stage="plan", n=3)
     assert seen["event"] == "stage.start"
     assert seen["ctx"]["role"] == "planner"
-    assert seen["ctx"]["ticket"] == "ONE-9"
+    assert seen["ctx"]["ticket"] == "JIRA-9"
     assert seen["ctx"]["stage"] == "plan"
     assert seen["ctx"]["n"] == 3
 
@@ -118,17 +118,17 @@ def test_emit_carries_the_loggers_role_and_ticket_plus_the_fields():
 # ── per-role and per-ticket loggers ─────────────────────────────────────────
 
 def test_get_logger_stamps_the_role_and_ticket():
-    log = L.get_logger("verifier", ticket="ONE-2")
+    log = L.get_logger("verifier", ticket="JIRA-2")
     assert log._aiforge_role == "verifier"
-    assert log._aiforge_ticket == "ONE-2"
+    assert log._aiforge_ticket == "JIRA-2"
 
 
 def test_a_run_logger_writes_one_ndjson_file_per_ticket(tmp_path):
-    log = L.get_run_logger("ONE-3")
+    log = L.get_run_logger("JIRA-3")
     log.info("hello", extra={"aiforge": {"k": "v"}})
     for h in log.handlers:
         h.flush()
-    target = tmp_path / "runs" / "ONE-3.ndjson"
+    target = tmp_path / "runs" / "JIRA-3.ndjson"
     assert target.is_file()
     line = json.loads(target.read_text().splitlines()[0])
     assert line["event"] == "hello"
@@ -145,9 +145,9 @@ def test_a_ticket_id_with_separators_cannot_escape_the_runs_directory(tmp_path):
 
 
 def test_asking_twice_for_the_same_ticket_does_not_add_a_second_handler():
-    a = L.get_run_logger("ONE-4")
+    a = L.get_run_logger("JIRA-4")
     before = len(a.handlers)
-    b = L.get_run_logger("ONE-4")
+    b = L.get_run_logger("JIRA-4")
     assert a is b
     assert len(b.handlers) == before
 
@@ -159,7 +159,7 @@ def test_old_run_loggers_are_evicted_so_file_handles_do_not_accumulate(
     monkeypatch.setattr(L, "_RUN_LOGGER_CAP", 3)
     names = []
     for i in range(5):
-        log = L.get_run_logger(f"ONE-{i}")
+        log = L.get_run_logger(f"JIRA-{i}")
         names.append(log.name)
     assert len(L._run_logger_lru) == 3
     assert L._run_logger_lru == names[-3:]
@@ -170,12 +170,12 @@ def test_old_run_loggers_are_evicted_so_file_handles_do_not_accumulate(
 
 def test_eviction_survives_a_handler_that_refuses_to_close(monkeypatch):
     monkeypatch.setattr(L, "_RUN_LOGGER_CAP", 1)
-    first = L.get_run_logger("ONE-A")
+    first = L.get_run_logger("JIRA-A")
 
     class _Stubborn(logging.Handler):
         def close(self):
             raise OSError("still open")
 
     first.addHandler(_Stubborn())
-    L.get_run_logger("ONE-B")          # must not raise
-    assert L._run_logger_lru == ["aiforge.run.ONE-B"]
+    L.get_run_logger("JIRA-B")          # must not raise
+    assert L._run_logger_lru == ["aiforge.run.JIRA-B"]

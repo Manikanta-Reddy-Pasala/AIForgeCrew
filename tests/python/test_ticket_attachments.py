@@ -37,9 +37,9 @@ def test_persist_writes_files(repo_root):
         api_mod.AttachedFile(name="a.txt", size=3, content_b64=_b64(b"abc")),
         api_mod.AttachedFile(name="b.png", size=2, content_b64=_b64(b"hi")),
     ]
-    meta = api_mod._persist_ticket_attachments("ONE-1", files)
+    meta = api_mod._persist_ticket_attachments("JIRA-1", files)
     assert {m["name"] for m in meta} == {"a.txt", "b.png"}
-    d = repo_root / ".aiforge" / "ticket-files" / "ONE-1"
+    d = repo_root / ".aiforge" / "ticket-files" / "JIRA-1"
     assert (d / "a.txt").read_bytes() == b"abc"
     assert (d / "b.png").read_bytes() == b"hi"
 
@@ -49,16 +49,16 @@ def test_remove_deletes_files(repo_root):
         api_mod.AttachedFile(name="a.txt", size=3, content_b64=_b64(b"abc")),
         api_mod.AttachedFile(name="b.png", size=2, content_b64=_b64(b"hi")),
     ]
-    api_mod._persist_ticket_attachments("ONE-1", files)
-    removed = api_mod._remove_ticket_attachments("ONE-1", ["a.txt"])
+    api_mod._persist_ticket_attachments("JIRA-1", files)
+    removed = api_mod._remove_ticket_attachments("JIRA-1", ["a.txt"])
     assert removed == ["a.txt"]
-    d = repo_root / ".aiforge" / "ticket-files" / "ONE-1"
+    d = repo_root / ".aiforge" / "ticket-files" / "JIRA-1"
     assert not (d / "a.txt").exists()
     assert (d / "b.png").exists()
 
 
 def test_remove_missing_is_noop(repo_root):
-    removed = api_mod._remove_ticket_attachments("ONE-1", ["ghost.txt"])
+    removed = api_mod._remove_ticket_attachments("JIRA-1", ["ghost.txt"])
     assert removed == []
 
 
@@ -66,11 +66,11 @@ def test_remove_strips_path_traversal(repo_root):
     # A malicious name must not escape the per-ticket dir.
     sentinel = repo_root / "secret.txt"
     sentinel.write_text("keep me")
-    api_mod._remove_ticket_attachments("ONE-1", ["../../secret.txt"])
+    api_mod._remove_ticket_attachments("JIRA-1", ["../../secret.txt"])
     assert sentinel.exists()
 
 
-# ── /files/{id}/{name} serving route (ONE-174 attachment-404 fix) ──────────
+# ── /files/{id}/{name} serving route (JIRA-174 attachment-404 fix) ──────────
 
 
 def test_serve_file_from_abs_path_outside_mount(tmp_path, monkeypatch):
@@ -78,16 +78,16 @@ def test_serve_file_from_abs_path_outside_mount(tmp_path, monkeypatch):
     # file was written to a per-ticket worktree the boot-time mount root does
     # NOT cover. The ticket's metadata.abs_path records the real location; the
     # route must serve from there.
-    scattered = tmp_path / "worktrees" / "Scheduler" / ".aiforge" / "ticket-files" / "ONE-9"
+    scattered = tmp_path / "worktrees" / "Scheduler" / ".aiforge" / "ticket-files" / "JIRA-9"
     scattered.mkdir(parents=True)
     (scattered / "img.png").write_bytes(b"PNGDATA")
     monkeypatch.setattr(
         api_mod.tickets_mod, "get_enriched",
         lambda ident: {"metadata": {"attached_files": [
             {"name": "img.png", "abs_path": str(scattered / "img.png")}]}}
-        if ident == "ONE-9" else None,
+        if ident == "JIRA-9" else None,
     )
-    resp = api_mod.serve_ticket_file("ONE-9", "img.png")
+    resp = api_mod.serve_ticket_file("JIRA-9", "img.png")
     assert resp.path == str(scattered / "img.png")
 
 
@@ -96,7 +96,7 @@ def test_serve_file_404_when_missing(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_TICKET_FILES_DIR", str(tmp_path / "empty"))
     monkeypatch.setattr(api_mod.tickets_mod, "get_enriched", lambda ident: None)
     with pytest.raises(api_mod.HTTPException) as exc:
-        api_mod.serve_ticket_file("ONE-X", "nope.png")
+        api_mod.serve_ticket_file("JIRA-X", "nope.png")
     assert exc.value.status_code == 404
 
 
@@ -107,7 +107,7 @@ def test_serve_file_strips_path_traversal(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_TICKET_FILES_DIR", str(tmp_path))
     monkeypatch.setattr(api_mod.tickets_mod, "get_enriched", lambda ident: None)
     with pytest.raises(api_mod.HTTPException):
-        api_mod.serve_ticket_file("ONE-1", "../secret.txt")
+        api_mod.serve_ticket_file("JIRA-1", "../secret.txt")
     assert secret.exists()
 
 
@@ -154,7 +154,7 @@ def unwritable_base(tmp_path, monkeypatch):
 def test_persist_raises_actionable_error_when_store_unwritable(unwritable_base):
     files = [api_mod.AttachedFile(name="a.txt", size=3, content_b64=_b64(b"abc"))]
     with pytest.raises(api_mod.HTTPException) as exc:
-        api_mod._persist_ticket_attachments("ONE-1", files)
+        api_mod._persist_ticket_attachments("JIRA-1", files)
     assert exc.value.status_code == 500
     # Names the directory and the reason so the operator can fix it.
     assert str(unwritable_base) in exc.value.detail
@@ -167,7 +167,7 @@ def test_create_rolls_back_ticket_when_attachments_fail(unwritable_base, monkeyp
     created, deleted = [], []
 
     class _T:
-        id, identifier, status, metadata = 1, "ONE-1", "todo", {}
+        id, identifier, status, metadata = 1, "JIRA-1", "todo", {}
         # `priority` is read by the response serializer. It was missing, so
         # when the unwritable-store guard silently stopped firing under root
         # this test failed with "'_T' object has no attribute 'priority'" —
@@ -196,4 +196,4 @@ def test_create_rolls_back_ticket_when_attachments_fail(unwritable_base, monkeyp
     assert created, "the row is still written first"
     # The point of the fix: the failed save leaves nothing behind for the
     # runner to claim, so a retry cannot pile up duplicates.
-    assert deleted == ["ONE-1"]
+    assert deleted == ["JIRA-1"]

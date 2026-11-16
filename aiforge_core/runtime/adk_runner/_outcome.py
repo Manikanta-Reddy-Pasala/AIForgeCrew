@@ -79,7 +79,7 @@ def _apply_pr_demotions(ticket, v: _Verdict, pr_meta: dict) -> None:
     # changed NO files (clean tree → pr_skip_reason='no_changes', no PR) yet the
     # verdict came back non-fail. It narrated an edit it never wrote —
     # feedback/validator trusted the prose, not ground truth (git diff). A pass
-    # with zero file changes is never a real pass. (ONE-163/164: both "done",
+    # with zero file changes is never a real pass. (T-163/164: both "done",
     # both empty, no commit.) Escape hatch: AIFORGE_ALLOW_EMPTY_PASS=1 keeps the
     # old trust-the-narration path. NB: the verdict_attempt row was already
     # recorded; don't re-record (the test_only_diff demotion doesn't either).

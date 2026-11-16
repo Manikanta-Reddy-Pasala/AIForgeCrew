@@ -44,7 +44,7 @@ fi
 
 step "boot persistence (linger + enable units + docker + WireGuard)"
 # Previously this script restarted aiforge-api but never enabled it, and never
-# turned on linger — so a reboot left tickets.oneshell.in with no backend.
+# turned on linger — so a reboot left the public tickets host with no backend.
 bash "$UNIT_SRC/ensure-boot.sh"
 
 step "restart services"

@@ -1,6 +1,6 @@
 """LOC-delta kill switch for the Doer/Refiner/Feedback LoopAgent.
 
-The LoopAgent caps iterations at 3 by default, but ONE-117 showed
+The LoopAgent caps iterations at 3 by default, but T-117 showed
 that even a small cap doesn't bound wall-clock when each iteration
 calls dozens of tools without making real progress. The Doer would
 spend 35+ minutes polishing a near-final scaffold — file_writes that

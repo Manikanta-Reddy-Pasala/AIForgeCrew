@@ -62,12 +62,12 @@ def test_an_operator_can_reprice_a_model_at_runtime(monkeypatch):
 # ── tallying ────────────────────────────────────────────────────────────────
 
 def test_a_call_lands_in_both_the_ticket_and_the_global_total():
-    out = cost.record_call(role="doer", ticket="ONE-1", model="gpt-oss:120b",
+    out = cost.record_call(role="doer", ticket="JIRA-1", model="gpt-oss:120b",
                            prompt_tokens=1_000_000, completion_tokens=0)
     assert out["usd"] == pytest.approx(0.5)
     assert out["ticket_total"] == pytest.approx(0.5)
 
-    snap = cost.snapshot("ONE-1")
+    snap = cost.snapshot("JIRA-1")
     assert snap["calls"] == 1
     assert snap["prompt"] == 1_000_000
     assert cost.snapshot()["global"]["usd"] == pytest.approx(0.5)
@@ -75,11 +75,11 @@ def test_a_call_lands_in_both_the_ticket_and_the_global_total():
 
 def test_a_second_call_accumulates_on_the_same_ticket():
     for _ in range(3):
-        out = cost.record_call(role="doer", ticket="ONE-2",
+        out = cost.record_call(role="doer", ticket="JIRA-2",
                                model="gpt-oss:120b",
                                prompt_tokens=1_000_000, completion_tokens=0)
     assert out["ticket_total"] == pytest.approx(1.5)
-    assert cost.snapshot("ONE-2")["calls"] == 3
+    assert cost.snapshot("JIRA-2")["calls"] == 3
 
 
 def test_a_call_with_no_ticket_still_moves_the_global_total():
@@ -97,16 +97,16 @@ def test_snapshot_of_an_unknown_ticket_is_zeros_not_an_error():
 
 def test_snapshot_hands_back_a_copy(monkeypatch):
     """A caller mutating the snapshot must not edit the books."""
-    cost.record_call(role="doer", ticket="ONE-3", model="gpt-oss:120b",
+    cost.record_call(role="doer", ticket="JIRA-3", model="gpt-oss:120b",
                      prompt_tokens=1_000_000, completion_tokens=0)
-    snap = cost.snapshot("ONE-3")
+    snap = cost.snapshot("JIRA-3")
     snap["usd"] = 999.0
-    assert cost.snapshot("ONE-3")["usd"] == pytest.approx(0.5)
+    assert cost.snapshot("JIRA-3")["usd"] == pytest.approx(0.5)
 
 
 def test_the_kill_switch_stops_the_tally_entirely(monkeypatch):
     monkeypatch.setenv("AIFORGE_COST_TRACKING", "0")
-    out = cost.record_call(role="doer", ticket="ONE-4", model="gpt-oss:120b",
+    out = cost.record_call(role="doer", ticket="JIRA-4", model="gpt-oss:120b",
                            prompt_tokens=1_000_000, completion_tokens=0)
     assert out == {"usd": 0.0, "ticket_total": 0.0}
     assert cost.snapshot()["global"]["calls"] == 0
@@ -119,10 +119,10 @@ def test_a_failing_persist_does_not_lose_the_in_memory_tally(monkeypatch):
         raise RuntimeError("no database here")
 
     monkeypatch.setattr(cost, "_persist", _boom)
-    out = cost.record_call(role="doer", ticket="ONE-5", model="gpt-oss:120b",
+    out = cost.record_call(role="doer", ticket="JIRA-5", model="gpt-oss:120b",
                            prompt_tokens=1_000_000, completion_tokens=0)
     assert out["usd"] == pytest.approx(0.5)
-    assert cost.snapshot("ONE-5")["calls"] == 1
+    assert cost.snapshot("JIRA-5")["calls"] == 1
 
 
 # ── the degraded rollup ─────────────────────────────────────────────────────
@@ -140,6 +140,6 @@ def test_rollup_still_rejects_a_grouping_it_never_supported():
 
 
 def test_persist_is_a_no_op_that_does_not_raise():
-    assert cost._persist(role="doer", ticket="ONE-6", model="m",
+    assert cost._persist(role="doer", ticket="JIRA-6", model="m",
                          cost_usd=1.0, prompt_tokens=1,
                          completion_tokens=1) is None

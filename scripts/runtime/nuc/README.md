@@ -37,7 +37,7 @@ enable it by hand if you want it.
 
 ## Survive reboot (boot persistence)
 
-After a NUC reboot, `tickets.oneshell.in` needs: docker up, the `aiforge`
+After a NUC reboot, the public tickets host needs: docker up, the `aiforge`
 container on `:8799` (bound `0.0.0.0`), and WireGuard so the reverse proxy at
 `77.42.45.12:9443` can reach `10.66.66.3:8799`.
 

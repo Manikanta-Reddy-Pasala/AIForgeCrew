@@ -27,9 +27,9 @@ def no_llm(monkeypatch):
 def test_fallback_honors_repo_hint(no_llm):
     from aiforge_core.memory.md_store import classify_scope
     d = classify_scope("OrderService retries 3x on NATS timeout",
-                       hint_repo="oneshell-pos")
+                       hint_repo="acme-pos")
     assert d["scope"] == "project"
-    assert d["repo"] == "oneshell-pos"
+    assert d["repo"] == "acme-pos"
     assert d["topic"] is None
 
 
@@ -81,7 +81,7 @@ def test_llm_promotes_repo_hint_to_global(monkeypatch):
     monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _fake)
     from aiforge_core.memory.md_store import classify_scope
     d = classify_scope("always run tests before commit",
-                       hint_repo="oneshell-pos")
+                       hint_repo="acme-pos")
     assert d["scope"] == "global"
     assert d["repo"] is None
 
@@ -133,12 +133,12 @@ def test_capture_promotes_repo_fact_to_shared(monkeypatch, mem):
     monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _fake)
     from aiforge_core.memory import md_store
     res = md_store.capture("project_learning", "always run tests before commit",
-                           repo="oneshell-pos")
+                           repo="acme-pos")
     assert res["repo"] == "shared"
     assert not any(t.startswith("repo:") for t in res.get("tags", []))
     # brief maintenance landed in the shared brief, not the repo brief
     assert (md_store.brief_path("shared")).exists()
-    assert not (md_store.brief_path("oneshell-pos")).exists()
+    assert not (md_store.brief_path("acme-pos")).exists()
 
 
 def test_capture_keeps_repo_fact_when_not_promoted(monkeypatch, mem):
@@ -151,14 +151,14 @@ def test_capture_keeps_repo_fact_when_not_promoted(monkeypatch, mem):
     monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _fake)
     from aiforge_core.memory import md_store
     res = md_store.capture("project_learning", "OrderController maps /orders",
-                           repo="oneshell-pos")
-    assert res["repo"] == "oneshell-pos"
-    assert "repo:oneshell-pos" in res.get("tags", [])
+                           repo="acme-pos")
+    assert res["repo"] == "acme-pos"
+    assert "repo:acme-pos" in res.get("tags", [])
 
 
 def test_capture_no_classify_when_llm_off(mem):
     """Deterministic path (suite default LLM off): repo hint is untouched."""
     from aiforge_core.memory import md_store
     res = md_store.capture("project_learning", "always run tests before commit",
-                           repo="oneshell-pos")
-    assert res["repo"] == "oneshell-pos"
+                           repo="acme-pos")
+    assert res["repo"] == "acme-pos"

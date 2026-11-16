@@ -17,7 +17,7 @@ def test_windows_paths_map_under_host_and_back():
 
 
 def test_windows_round_trip_keeps_nested_folders():
-    original = r"D:\src\PosServerBackend\src\main"
+    original = r"D:\src\SyncService\src\main"
     assert paths.to_host(paths.to_box(original, platform="nt"), platform="nt") == original
 
 

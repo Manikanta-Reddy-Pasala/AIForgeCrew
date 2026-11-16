@@ -1,14 +1,14 @@
 """Context trimming and run setup for the ADK pipeline.
 
 The trimming exists because ADK replays every tool result and LLM response on
-every turn: ONE-117 hit an MLX GPU OOM after ~140 calls as the prompt
+every turn: JIRA-117 hit an MLX GPU OOM after ~140 calls as the prompt
 approached 131K tokens. Two things make the trim safe. The seed user message
 is always kept (the ticket + memory brief live there), and the split point is
 adjusted so a function RESPONSE is never orphaned from its call — an orphan is
 a 400 from the endpoint, not a smaller prompt.
 
 The run caps come from the same place: a local model made 383 calls over 52
-minutes on ONE-7 and wrote zero files, so the whole run has a hard call
+minutes on JIRA-7 and wrote zero files, so the whole run has a hard call
 ceiling and a deadline, and an abort recovers PARTIAL state rather than
 crashing.
 """
@@ -358,7 +358,7 @@ def test_an_unavailable_guard_is_not_fatal(monkeypatch):
 
 
 def test_the_whole_run_has_a_call_ceiling(monkeypatch):
-    """ONE-7 made 383 calls in 52 minutes and wrote zero files."""
+    """JIRA-7 made 383 calls in 52 minutes and wrote zero files."""
     monkeypatch.setenv("AIFORGE_MAX_LLM_CALLS", "42")
     assert pl._pipeline_run_config().max_llm_calls == 42
 
@@ -406,7 +406,7 @@ def test_a_failing_teardown_still_returns(monkeypatch):
 
 
 def _ticket(**kw):
-    base = {"id": 1, "identifier": "ONE-1", "title": "Fix it", "body": "details",
+    base = {"id": 1, "identifier": "JIRA-1", "title": "Fix it", "body": "details",
             "project": "app", "metadata": {}}
     base.update(kw)
     return pytypes.SimpleNamespace(**base)
@@ -423,7 +423,7 @@ def test_the_raw_ask_is_seeded_for_the_enhancer_guard(quiet_state):
     """The guard restores it when the enhancer's rewrite collapsed."""
     state = pl._ticket_state(_ticket(), [], "", "")
     assert state["raw_ask"] == "Fix it\ndetails"
-    assert state["ticket_identifier"] == "ONE-1"
+    assert state["ticket_identifier"] == "JIRA-1"
 
 
 def test_the_operators_scope_allowlist_is_seeded_and_kept(quiet_state):
@@ -626,8 +626,8 @@ def test_the_trajectory_is_dumped_for_replay(monkeypatch, session):
                         lambda tid, sid, events, state: seen.update(
                             tid=tid, sid=sid, events=events, state=state))
     monkeypatch.delenv("AIFORGE_TRAJECTORY_DUMP", raising=False)
-    pl._dump_trajectory(session, None, {"ticket_identifier": "ONE-1"})
-    assert seen["tid"] == "ONE-1"
+    pl._dump_trajectory(session, None, {"ticket_identifier": "JIRA-1"})
+    assert seen["tid"] == "JIRA-1"
     assert seen["sid"] == "sess-1"
     assert seen["state"] == {"k": "v"}
 

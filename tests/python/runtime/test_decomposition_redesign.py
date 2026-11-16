@@ -80,7 +80,7 @@ def _mk_repos(*names):
 
 
 def test_named_repo_path_does_not_pull_siblings():
-    parent = _mk_repos("AIForgeCrew", "oneshell", "random")
+    parent = _mk_repos("AIForgeCrew", "acme", "random")
     one = os.path.join(parent, "AIForgeCrew")
     repos = ap.identify_repos(f"summarize the architecture of {one}", parent)
     assert [r["name"] for r in repos] == ["AIForgeCrew"]

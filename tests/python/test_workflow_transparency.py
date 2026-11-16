@@ -106,7 +106,7 @@ def test_topology_overlay_attaches_context(monkeypatch):
     from aiforge_core.tickets import store as real_store
     monkeypatch.setattr(real_store, "get", lambda _ident: _T())
     monkeypatch.setattr(real_store, "comments", lambda _tid, _limit: events)
-    snap = wt.snapshot("ONE-1")
+    snap = wt.snapshot("JIRA-1")
     ctx = snap["context"]
     assert [s["name"] for s in ctx["skills"]] == ["s1"]  # de-duped
     assert [w["name"] for w in ctx["workflows"]] == ["w1"]

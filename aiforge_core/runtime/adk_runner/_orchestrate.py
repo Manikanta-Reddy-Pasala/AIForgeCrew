@@ -287,7 +287,7 @@ def _run_workflow_ticket(ticket) -> None:
     """A ticket routed to a named workflow (route='workflow') runs THAT
     workflow's handler — not the code pipeline. The route was stored, shown in
     the UI and validated on save, but nothing ever called
-    ``workflows.dispatch``: a Tally trial-balance ticket went through the LLM
+    ``workflows.dispatch``: a trial-balance ticket went through the LLM
     code cascade in a repo worktree instead of its deterministic handler.
 
     The handler returns a doer-outcome dict. Its report (``udiff`` is the

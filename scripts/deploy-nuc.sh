@@ -41,7 +41,7 @@ BOX=aiforge                              # docker-compose.yml's container_name
 FORCE=0
 PULL=1
 # NUC is fronted by WireGuard + the reverse proxy; without this the sandbox
-# crash-loops on the off-loopback boot guard and tickets.oneshell.in 502s.
+# crash-loops on the off-loopback boot guard and the public tickets host 502s.
 export AIFORGE_BIND_HOST="$HOST"
 case "$HOST" in
   127.0.0.1|localhost|::1) ;;

@@ -6,7 +6,7 @@ diverged branch on origin, so a push rejected as non-fast-forward retries with
 a shared branch. A second ``gh pr create`` for a branch that already has an
 open PR is not a failure: the work is shipped, so the existing URL is
 recovered rather than dead-ending the ticket as blocked. And a diff of ONLY
-test files is rejected: tests prove a fix, they are not the fix, and ONE-3
+test files is rejected: tests prove a fix, they are not the fix, and JIRA-3
 published a no-op PR that way.
 
 Every git/gh invocation is stubbed.
@@ -40,7 +40,7 @@ def git(monkeypatch):
 
 
 def _ticket(**kw):
-    base = {"identifier": "ONE-1", "title": "Fix the parser", "body": "details",
+    base = {"identifier": "JIRA-1", "title": "Fix the parser", "body": "details",
             "branch": None, "id": 1, "project": ""}
     base.update(kw)
     return types.SimpleNamespace(**base)
@@ -77,8 +77,8 @@ def test_a_broken_git_status_is_reported(git):
 def test_the_branch_is_force_reset_to_head(git):
     """`checkout -B` both creates and resets — the old delete+create pair
     failed when HEAD was already on the branch, which bricked a retry run."""
-    assert _pr._checkout_branch("/repo", "aiforge/ONE-1") == ""
-    assert git["calls"][0] == ["git", "checkout", "-B", "aiforge/ONE-1"]
+    assert _pr._checkout_branch("/repo", "aiforge/JIRA-1") == ""
+    assert git["calls"][0] == ["git", "checkout", "-B", "aiforge/JIRA-1"]
 
 
 def test_a_failed_checkout_is_a_skip_reason(git):
@@ -117,21 +117,21 @@ def test_everything_in_the_worktree_is_staged_with_artifacts_excluded(git):
 
 def test_a_commit_carries_the_ticket_and_title(git, monkeypatch, tmp_path):
     monkeypatch.setattr(_pr, "_ensure_gitignore", lambda root: None)
-    assert _pr._commit_changes(str(tmp_path), "ONE-1", "Fix the parser") == ""
+    assert _pr._commit_changes(str(tmp_path), "JIRA-1", "Fix the parser") == ""
     msg = next(c for c in git["calls"] if c[1] == "commit")[3]
-    assert msg.startswith("feat(ONE-1): Fix the parser")
+    assert msg.startswith("feat(JIRA-1): Fix the parser")
 
 
 def test_nothing_to_commit_is_not_a_failure(git, monkeypatch, tmp_path):
     monkeypatch.setattr(_pr, "_ensure_gitignore", lambda root: None)
     git["replies"]["commit"] = (1, "nothing to commit, working tree clean", "")
-    assert _pr._commit_changes(str(tmp_path), "ONE-1", "t") == ""
+    assert _pr._commit_changes(str(tmp_path), "JIRA-1", "t") == ""
 
 
 def test_a_real_commit_failure_is_a_skip_reason(git, monkeypatch, tmp_path):
     monkeypatch.setattr(_pr, "_ensure_gitignore", lambda root: None)
     git["replies"]["commit"] = (1, "", "pre-commit hook failed")
-    assert _pr._commit_changes(str(tmp_path), "ONE-1", "t") == "commit_failed"
+    assert _pr._commit_changes(str(tmp_path), "JIRA-1", "t") == "commit_failed"
 
 
 # ─── the remote probe ──────────────────────────────────────────────────
@@ -183,7 +183,7 @@ def reachable(monkeypatch):
 
 
 def test_a_clean_push(git, reachable):
-    assert _pr._push("/repo", "aiforge/ONE-1") == (True, "")
+    assert _pr._push("/repo", "aiforge/JIRA-1") == (True, "")
 
 
 def test_an_unreachable_remote_skips_the_push(git, monkeypatch):
@@ -203,7 +203,7 @@ def test_a_diverged_ticket_branch_retries_with_a_lease(git, reachable, err):
         calls["n"] += 1
         return (1, "", err) if calls["n"] == 1 else (0, "", "")
     git["replies"]["push"] = _reply
-    assert _pr._push("/repo", "aiforge/ONE-1") == (True, "")
+    assert _pr._push("/repo", "aiforge/JIRA-1") == (True, "")
     assert "--force-with-lease" in git["calls"][1]
 
 
@@ -222,7 +222,7 @@ def test_a_failed_lease_retry_reports_the_second_error(git, reachable):
         calls["n"] += 1
         return (1, "", "non-fast-forward") if calls["n"] == 1 else (1, "", "denied")
     git["replies"]["push"] = _reply
-    assert _pr._push("/repo", "aiforge/ONE-1") == (False, "denied")
+    assert _pr._push("/repo", "aiforge/JIRA-1") == (False, "denied")
 
 
 # ─── opening the PR ────────────────────────────────────────────────────
@@ -235,13 +235,13 @@ def gh(monkeypatch):
 
 def test_a_pr_is_opened(git, gh):
     git["replies"]["pr create"] = (0, "https://github.com/o/r/pull/7\n", "")
-    assert _pr._open_pr("/repo", "ONE-1", "Fix it", "body") == (
+    assert _pr._open_pr("/repo", "JIRA-1", "Fix it", "body") == (
         "https://github.com/o/r/pull/7", "")
 
 
 def test_without_the_gh_cli_the_push_still_counts(git, monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda exe: None)
-    assert _pr._open_pr("/repo", "ONE-1", "t", "b") == ("", "gh_not_installed")
+    assert _pr._open_pr("/repo", "JIRA-1", "t", "b") == ("", "gh_not_installed")
 
 
 def test_an_existing_pr_url_in_the_error_is_reused(git, gh):
@@ -249,28 +249,28 @@ def test_an_existing_pr_url_in_the_error_is_reused(git, gh):
     git["replies"]["pr create"] = (
         1, "", "a pull request for branch already exists: "
                "https://github.com/o/r/pull/3")
-    assert _pr._open_pr("/repo", "ONE-1", "t", "b") == (
+    assert _pr._open_pr("/repo", "JIRA-1", "t", "b") == (
         "https://github.com/o/r/pull/3", "")
 
 
 def test_an_existing_pr_without_a_url_is_looked_up(git, gh):
     git["replies"]["pr create"] = (1, "", "already exists for this branch")
     git["replies"]["pr view"] = (0, "https://github.com/o/r/pull/4\n", "")
-    assert _pr._open_pr("/repo", "ONE-1", "t", "b")[0] == \
+    assert _pr._open_pr("/repo", "JIRA-1", "t", "b")[0] == \
         "https://github.com/o/r/pull/4"
 
 
 def test_a_lookup_that_returns_nothing_reports_the_error(git, gh):
     git["replies"]["pr create"] = (1, "", "already exists")
     git["replies"]["pr view"] = (0, "  \n", "")
-    url, err = _pr._open_pr("/repo", "ONE-1", "t", "b")
+    url, err = _pr._open_pr("/repo", "JIRA-1", "t", "b")
     assert url == ""
     assert "already exists" in err
 
 
 def test_an_ordinary_gh_failure_is_reported(git, gh):
     git["replies"]["pr create"] = (1, "", "no upstream configured")
-    url, err = _pr._open_pr("/repo", "ONE-1", "t", "b")
+    url, err = _pr._open_pr("/repo", "JIRA-1", "t", "b")
     assert url == ""
     assert "no upstream" in err
 
@@ -304,8 +304,8 @@ def test_the_happy_path_returns_the_pr_url(flow, monkeypatch):
                         lambda **kw: flow["events"].append(kw))
     out = _pr.commit_push_open_pr(_ticket())
     assert out == {"branch_pushed": True, "pr_url": "https://github.com/o/r/pull/1"}
-    assert flow["events"][0]["branch"] == "aiforge/ONE-1"
-    assert flow["ingest"] == ["ONE-1"]
+    assert flow["events"][0]["branch"] == "aiforge/JIRA-1"
+    assert flow["ingest"] == ["JIRA-1"]
 
 
 def test_a_tree_that_is_not_a_repo(flow, monkeypatch):
@@ -331,7 +331,7 @@ def test_a_failed_commit_short_circuits(flow, monkeypatch):
 
 
 def test_a_test_only_diff_is_rejected(flow):
-    """Tests prove a fix; they are not the fix. ONE-3 published a no-op PR."""
+    """Tests prove a fix; they are not the fix. JIRA-3 published a no-op PR."""
     flow["prod"] = []
     out = _pr.commit_push_open_pr(_ticket())
     assert out["pr_skip_reason"] == "test_only_diff"

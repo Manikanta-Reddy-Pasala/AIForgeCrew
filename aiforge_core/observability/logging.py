@@ -6,7 +6,7 @@ external `logrotate` or `newsyslog` — this module only opens the file.
 
 Usage:
     from aiforge_core.observability.logging import get_logger, emit
-    log = get_logger("sr_developer", ticket="ONE-70")
+    log = get_logger("sr_developer", ticket="AF-70")
     log.info("tick.start")
     emit(log, "llm.turn", turn=3, tool="search", dur_ms=412)
 """

@@ -2,12 +2,12 @@
 
 Source of truth for work items. All business logic (supervisor
 invariants, priority claiming, status-change event writes, validation,
-the ONE-<n> counter) lives here; the raw SQL lives in a storage backend
+the <PREFIX>-<n> counter) lives here; the raw SQL lives in a storage backend
 (SQLite by default, Postgres when AIFORGE_PG_URL is set) selected by
 :mod:`aiforge_core.tickets.backend_factory`.
 
 Public surface:
-    new_identifier()                 -> str            # atomic ONE-<n>
+    new_identifier()                 -> str            # atomic <PREFIX>-<n>
     create(title, body, ...)         -> Ticket
     get(identifier | id)             -> Ticket
     claim_next_any()                 -> Ticket | None  # oldest todo across all roles
@@ -82,9 +82,14 @@ class Ticket:
         )
 
 
+def ticket_prefix() -> str:
+    """Ticket key prefix: ``AIFORGE_TICKET_PREFIX`` (default ``AF``)."""
+    return (os.environ.get("AIFORGE_TICKET_PREFIX") or "AF").strip() or "AF"
+
+
 def new_identifier() -> str:
-    """Atomic ONE-<n> allocator (counter seeded at 100)."""
-    return f"ONE-{get_backend().next_counter()}"
+    """Atomic <PREFIX>-<n> allocator (counter seeded at 100)."""
+    return f"{ticket_prefix()}-{get_backend().next_counter()}"
 
 
 _DANGEROUS_PATTERNS = [
@@ -222,15 +227,12 @@ def _aliases_for(role: str) -> list[str]:
 
 
 def _excluded_projects() -> list[str]:
-    """Projects the runner must NOT auto-claim. TallyConnector needs a
-    Windows + COM environment the Linux runner can't provide, so those
-    tickets are handled out-of-band (operator / Windows-side Claude)
-    and left in ``todo`` for visibility. Override / extend via
-    ``AIFORGE_RUNNER_EXCLUDE_PROJECTS`` (comma-separated)."""
-    raw = os.environ.get(
-        "AIFORGE_RUNNER_EXCLUDE_PROJECTS",
-        "TallyConnector,Tally Connector",
-    )
+    """Projects the runner must NOT auto-claim — e.g. a project that needs a
+    Windows-only environment the Linux runner can't provide, so its tickets
+    are handled out-of-band (operator / Windows-side agent) and left in
+    ``todo`` for visibility. Set via ``AIFORGE_RUNNER_EXCLUDE_PROJECTS``
+    (comma-separated); empty by default."""
+    raw = os.environ.get("AIFORGE_RUNNER_EXCLUDE_PROJECTS", "")
     return [p.strip() for p in raw.split(",") if p.strip()]
 
 
@@ -240,7 +242,7 @@ def claim_next_any() -> Ticket | None:
     Priority-ordered (urgent>high>medium>low), then created_at. Marks
     status='in_progress' in the same transaction and records a
     status_change event. Tickets whose ``project`` is in
-    :func:`_excluded_projects` (TallyConnector by default) are NEVER
+    :func:`_excluded_projects` (none by default) are NEVER
     claimed. A NULL project is always claimable. Returns None when no
     eligible todo tickets exist.
     """
@@ -341,7 +343,7 @@ def update_status(ticket_id: int, status: str, *, role: str | None = None,
 
 
 def delete(ident_or_id: "str | int") -> bool:
-    """Delete a ticket (and its events). Resolves an identifier (ONE-100)
+    """Delete a ticket (and its events). Resolves an identifier (AF-100)
     or numeric id. Returns True when a row was removed. Worktree / branch /
     PR are intentionally left untouched."""
     t = get(ident_or_id)
@@ -351,7 +353,7 @@ def delete(ident_or_id: "str | int") -> bool:
 
 
 def reset_all() -> int:
-    """Delete ALL tickets + events and reset the ONE-<n> counter so the next
+    """Delete ALL tickets + events and reset the <PREFIX>-<n> counter so the next
     ticket starts the sequence over. Returns the count deleted."""
     return get_backend().reset_all_tickets()
 

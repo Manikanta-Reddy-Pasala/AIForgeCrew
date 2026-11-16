@@ -2,7 +2,7 @@
 
 Design: ALL business logic (supervisor invariants, status-change event
 writes, priority ordering policy, Ticket wrapping, validation, the
-ONE-<n> counter start) lives in ``store.py``. A backend only does the
+<PREFIX>-<n> counter start) lives in ``store.py``. A backend only does the
 dialect-specific raw SQL ops below, returning plain dict rows
 (psycopg ``dict_row`` shape; SQLite parses JSON columns to match).
 
@@ -27,7 +27,7 @@ class StoreBackend(Protocol):
         """Atomically allocate and return the next ticket number.
 
         Mirrors the historical Postgres counter: seeded at 100, the
-        first allocation returns 100. store.py formats ``ONE-{n}``.
+        first allocation returns 100. store.py formats ``<PREFIX>-{n}``.
         """
         ...
 
@@ -92,7 +92,7 @@ class StoreBackend(Protocol):
         ...
 
     def reset_all_tickets(self) -> int:
-        """Delete ALL tickets + events and reset the ONE-<n> counter (and row
+        """Delete ALL tickets + events and reset the <PREFIX>-<n> counter (and row
         ids) to the seed, so identifiers start over. Returns the count deleted.
         Does NOT touch worktrees / branches / PRs."""
         ...

@@ -135,9 +135,9 @@ def test_cost_snapshot_prints_the_snapshot(monkeypatch, capsys):
     ImportError and returned 0, so the command was dead and looked fine."""
     monkeypatch.setattr("aiforge_core.observability.cost.snapshot",
                         lambda t: {"ticket": t, "usd": 1.5})
-    rc, out = _run(monkeypatch, capsys, ["cost", "snapshot", "--ticket", "ONE-1"])
+    rc, out = _run(monkeypatch, capsys, ["cost", "snapshot", "--ticket", "JIRA-1"])
     assert rc == 0
-    assert json.loads(out) == {"ticket": "ONE-1", "usd": 1.5}
+    assert json.loads(out) == {"ticket": "JIRA-1", "usd": 1.5}
 
 
 # ── the exit-code contract that actually bit ──────────────────────────

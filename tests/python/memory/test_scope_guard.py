@@ -15,7 +15,7 @@ from aiforge_core.memory import scope_guard as sg
 @pytest.mark.parametrize("text", [
     "All arithmetic functions in calc.py must include edge-case handling",
     "Controllers live in src/api/controllers",
-    "call com.oneshell.OrderService.retry() before publishing",
+    "call com.acme.OrderService.retry() before publishing",
     "update the values in config/settings.yaml",
 ])
 def test_artifact_references_cannot_be_global(text):

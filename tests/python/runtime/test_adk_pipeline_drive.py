@@ -187,7 +187,7 @@ def single(monkeypatch):
 
 
 def _ticket(**kw):
-    base = {"id": 1, "identifier": "ONE-1", "title": "Fix it", "body": "details",
+    base = {"id": 1, "identifier": "JIRA-1", "title": "Fix it", "body": "details",
             "project": "app", "metadata": {}}
     base.update(kw)
     return pytypes.SimpleNamespace(**base)
@@ -197,7 +197,7 @@ def test_a_single_agent_run_seeds_the_ticket_and_cleans_up(single):
     out = asyncio.run(pl._run_single_agent(object(), "the prompt",
                                            ticket=_ticket()))
     assert out == {"live_verdict": "PASS"}
-    assert single["svc"].created["state"] == {"ticket_identifier": "ONE-1",
+    assert single["svc"].created["state"] == {"ticket_identifier": "JIRA-1",
                                               "ticket_project": "app"}
     assert single["keyed"] == "sess-1"
     assert single["destroyed"] == ["sess-1"]
@@ -254,7 +254,7 @@ def test_the_verifier_is_seeded_with_the_pr_and_the_diff(verifier):
     prompt = verifier["prompt"]
     assert "https://github.com/o/r/pull/1" in prompt
     assert "app/store.py | 12 +++" in prompt
-    assert "# Ticket ONE-1" in prompt
+    assert "# Ticket JIRA-1" in prompt
 
 
 def test_pr_url_is_exported_for_the_recipe_then_restored(verifier):

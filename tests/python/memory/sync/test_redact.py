@@ -29,7 +29,7 @@ def node(body: str, title: str = "Invoice parser rounding", **meta) -> dict:
     "run with password=hunter2ThatIsReal",
     "export API_KEY=sk-abcdefghijklmnopqrstuvwxyz0123456789ABCD",
     "curl -H 'Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789'",
-    "psql postgres://admin:s3cr3tp4ss@db.internal:5432/oneshell",
+    "psql postgres://admin:s3cr3tp4ss@db.internal:5432/acme",
 ])
 def test_a_credential_blocks_the_whole_node(body):
     v = redact.review(node(body))
@@ -86,7 +86,7 @@ def test_an_idle_search_does_not_leave_the_machine(title, body):
 
 @pytest.mark.parametrize("title,body", [
     ("Invoice parser rounding",
-     "`PosClientBackend` rounds the item discount before tax, which leaks a "
+     "`OrderService` rounds the item discount before tax, which leaks a "
      "rupee into Round Off; the fix is in `aiforge_core/memory/sync/loop.py`."),
     ("NATS retry backoff",
      "The changestream consumer retries at 5s, 30s then 120s and after that "

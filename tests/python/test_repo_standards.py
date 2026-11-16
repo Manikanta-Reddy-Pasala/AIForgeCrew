@@ -170,7 +170,7 @@ class TestGetAutoDetect:
     def test_yaml_compile_cmd_wins_over_default(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The ONE-84 repro: Python sandbox repo + YAML compile_cmd."""
+        """The JIRA-84 repro: Python sandbox repo + YAML compile_cmd."""
         (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
         aiforge_dir = tmp_path / ".aiforge"
         aiforge_dir.mkdir()
@@ -178,5 +178,5 @@ class TestGetAutoDetect:
             "lang: python\ncompile_cmd: python -m compileall -q src\n",
             encoding="utf-8",
         )
-        std = rs.get("one84-repro", worktree=str(tmp_path))
+        std = rs.get("t84-repro", worktree=str(tmp_path))
         assert std.compile_cmd == "python -m compileall -q src"

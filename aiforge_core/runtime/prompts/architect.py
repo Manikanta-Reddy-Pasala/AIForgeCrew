@@ -6,7 +6,7 @@ Its output lands in ticket metadata as ``structural_plan`` and the
 runtime surfaces it into ADK session state under the same key so the
 Doer can look up the canonical owner of any symbol it imports.
 
-This avoids the ONE-117 class of bug where the Doer guessed
+This avoids the T-117 class of bug where the Doer guessed
 ``from app.db import StockMovement`` because nothing in session state
 told it the model actually lived in ``app/models/stock.py``. The plan
 is the SINGLE SOURCE OF TRUTH for "where does symbol X live"; the

@@ -95,8 +95,8 @@ def delete_path(name: str) -> dict:
 
 
 def _norm(s: str) -> str:
-    """Loose key: lowercase, drop every non-alphanumeric — so 'Pos Client-Backend',
-    'posclientbackend', and 'pos_client backend' all collapse to the same token."""
+    """Loose key: lowercase, drop every non-alphanumeric — so 'Order Service-Api',
+    'orderserviceapi', and 'order_service api' all collapse to the same token."""
     import re
     return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
 

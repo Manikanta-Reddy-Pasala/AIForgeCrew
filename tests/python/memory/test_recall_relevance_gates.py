@@ -106,7 +106,7 @@ def test_rank_scored_channels_are_not_floored(uq, monkeypatch):
     monkeypatch.delenv("AIFORGE_UMEM_MIN_RELEVANCE", raising=False)
     hits = [{"channel": "keyword", "text": "last bm25 row", "_raw_score": 0.0,
              "_weight": 0.9, "score": 0.0},
-            {"channel": "ticket", "text": "ONE-1", "_raw_score": 1.0,
+            {"channel": "ticket", "text": "JIRA-1", "_raw_score": 1.0,
              "_weight": 1.2, "score": 1.2}]
     assert len(uq._normalize_scores(hits)) == 2
 

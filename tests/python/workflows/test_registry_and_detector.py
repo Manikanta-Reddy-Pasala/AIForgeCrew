@@ -110,9 +110,9 @@ def test_dispatch_calls_the_handler_with_the_ticket(empty_registry, monkeypatch)
 
     monkeypatch.setattr(R, "_resolve_handler", lambda p: _handler)
     R.register(_spec("tb"))
-    out = R.dispatch("tb", {"identifier": "ONE-1"}, log="LOG", extra=1)
+    out = R.dispatch("tb", {"identifier": "JIRA-1"}, log="LOG", extra=1)
     assert out == {"applied": True}
-    assert seen["ticket"] == {"identifier": "ONE-1"}
+    assert seen["ticket"] == {"identifier": "JIRA-1"}
     assert seen["log"] == "LOG"
     assert seen["kw"] == {"extra": 1}
 
@@ -140,14 +140,14 @@ def test_a_single_keyword_scores_below_the_default_threshold(empty_registry):
 
 def test_a_keyword_plus_the_required_attachments_routes(empty_registry):
     R.register(_spec("tb", keywords_any=["trial balance"],
-                     attachments_all=["tally", "oneshell"]))
+                     attachments_all=["ledger", "acme"]))
     route = D.detect_route(body="trial balance please",
-                           attachments=["tally", "oneshell"])
+                           attachments=["ledger", "acme"])
     assert route.kind == "workflow"
     assert route.workflow_id == "tb"
     assert route.confidence == 1.0          # 0.5 + 0.5, capped
     assert "keyword:trial balance" in route.rationale
-    assert "attachments_all:tally,oneshell" in route.rationale
+    assert "attachments_all:ledger,acme" in route.rationale
 
 
 def test_a_spec_can_lower_its_own_threshold(empty_registry):
@@ -164,9 +164,9 @@ def test_keywords_all_needs_every_word(empty_registry):
 
 
 def test_attachments_any_is_weaker_than_attachments_all(empty_registry):
-    R.register(_spec("a", attachments_any=["tally"], min_confidence=0.1))
-    R.register(_spec("b", attachments_all=["tally"], min_confidence=0.1))
-    route = D.detect_route(body="x", attachments=["tally"])
+    R.register(_spec("a", attachments_any=["ledger"], min_confidence=0.1))
+    R.register(_spec("b", attachments_all=["ledger"], min_confidence=0.1))
+    route = D.detect_route(body="x", attachments=["ledger"])
     assert route.workflow_id == "b"          # 0.5 beats 0.3
 
 

@@ -84,9 +84,15 @@ def test_full_pipeline_researcher_is_parallel_branch(monkeypatch) -> None:
     assert ("researcher", "context_join", None) in edges
 
 
-def test_build_live_verifier_agent_standalone() -> None:
+def test_build_live_verifier_agent_standalone(tmp_path, monkeypatch) -> None:
     """The runner builds the live_verifier on its own, post-PR."""
-    lv = pipeline.build_live_verifier_agent(project="PosClientBackend")
+    d = tmp_path / "recipes" / "live_verify"
+    d.mkdir(parents=True)
+    (d / "OrderService.md").write_text(
+        "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health\n",
+        encoding="utf-8")
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
+    lv = pipeline.build_live_verifier_agent(project="OrderService")
     assert lv.name == "live_verifier"
     inst = lv.instruction
     assert callable(inst)  # InstructionProvider — recipe braces survive
@@ -143,7 +149,7 @@ class _StubTicket:
         self.body = body
         self.project = project
         self.metadata = None
-        self.identifier = "ONE-99"
+        self.identifier = "JIRA-99"
 
 
 def test_failure_memory_skips_on_pass() -> None:
@@ -166,7 +172,7 @@ def test_failure_memory_callback_skips_on_clean_pass(monkeypatch) -> None:
     """Both feedback=pass AND validator approve → no write."""
     cb = failure_memory.make_failure_memory_after_callback()
     state = {
-        "ticket_identifier": "ONE-1",
+        "ticket_identifier": "JIRA-1",
         "ticket_project": "TestRepo",
         "feedback_verdict": "pass",
         "validator_verdict": json.dumps({
@@ -193,7 +199,7 @@ def test_failure_memory_callback_writes_on_validator_reject(monkeypatch) -> None
     # TERMINAL reject: replan budget already spent (replan_count==MAX_REPLANS)
     # so this Validator pass is the last one → record the failure.
     state = {
-        "ticket_identifier": "ONE-2",
+        "ticket_identifier": "JIRA-2",
         "ticket_project": "TestRepo",
         "feedback_verdict": "pass",
         "replan_count": 1,
@@ -226,7 +232,7 @@ def test_failure_memory_callback_skips_non_terminal_reject(monkeypatch) -> None:
     write so the replanned attempt isn't pre-recorded as a failure."""
     cb = failure_memory.make_failure_memory_after_callback()
     state = {
-        "ticket_identifier": "ONE-3",
+        "ticket_identifier": "JIRA-3",
         "ticket_project": "TestRepo",
         "feedback_verdict": "pass",
         "replan_count": 0,  # budget remains → validator_gate will replan

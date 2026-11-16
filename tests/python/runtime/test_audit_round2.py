@@ -104,7 +104,7 @@ def test_failure_memory_two_line_pass_is_not_a_failure(monkeypatch) -> None:
     from aiforge_core.runtime import failure_memory
     cb = failure_memory.make_failure_memory_after_callback()
     state = {
-        "ticket_identifier": "ONE-9",
+        "ticket_identifier": "JIRA-9",
         "ticket_project": "Repo",
         "feedback_verdict": "pass\nLGTM, tests green.",
         "validator_verdict": json.dumps({"verdict": "approve"}),

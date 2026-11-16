@@ -1,9 +1,11 @@
 """Live-verifier archetype — boots the candidate fix end-to-end.
 
 Runs after Validator approves the diff, before ``git_pr`` opens the
-PR. Reads a per-project recipe from
-``aiforge_core/recipes/live_verify/<project>.md`` (fallback
-``_default.md``) and follows it with bash + file_read tools.
+PR. Reads a per-project recipe — first from the per-user config folder
+``$AIFORGE_CONFIG_DIR/recipes/live_verify/<project>.md`` (default
+``~/.aiforge``), then from the packaged ``aiforge_core/recipes/live_verify/``
+(which ships only ``_default.md``) — and follows it with bash + file_read
+tools. Deploy recipes resolve the same way under ``recipes/deploy/``.
 
 The pipeline builder substitutes ``{recipe_md}`` into the prompt at
 build time — same trick as the prompt-frame for other archetypes —
@@ -24,6 +26,24 @@ OUTPUT_KEY = "live_verifier_verdict"
 
 _VERIFY_DIR = Path(__file__).resolve().parent.parent / "recipes" / "live_verify"
 _DEPLOY_DIR = Path(__file__).resolve().parent.parent / "recipes" / "deploy"
+
+
+def _user_recipe_dir(kind: str) -> Path:
+    """Per-host recipe folder, checked before the packaged one. Project
+    specific recipes live here (``<config>/recipes/<kind>/<Project>.md``),
+    not in the product package."""
+    base = os.environ.get("AIFORGE_CONFIG_DIR") or os.path.expanduser("~/.aiforge")
+    return Path(base) / "recipes" / kind
+
+
+def _recipe_candidates(kind: str, pkg_dir: Path, project: str | None) -> list[Path]:
+    """User folder first, then the package; project file before ``_default.md``."""
+    user_dir = _user_recipe_dir(kind)
+    candidates: list[Path] = []
+    if project:
+        candidates += [user_dir / f"{project}.md", pkg_dir / f"{project}.md"]
+    candidates += [user_dir / "_default.md", pkg_dir / "_default.md"]
+    return candidates
 
 
 def _tools_factory() -> list:
@@ -55,12 +75,8 @@ def _read_first(paths: list[Path], fallback: str) -> str:
 
 def load_recipe(project: str | None) -> str:
     """Return the VERIFY recipe markdown for ``project``."""
-    candidates: list[Path] = []
-    if project:
-        candidates.append(_VERIFY_DIR / f"{project}.md")
-    candidates.append(_VERIFY_DIR / "_default.md")
     return _read_first(
-        candidates,
+        _recipe_candidates("live_verify", _VERIFY_DIR, project),
         (
             "# Live verify — fallback\n\n"
             "No recipe found. Run the project's standard test command "
@@ -75,12 +91,8 @@ def load_deploy_recipe(project: str | None) -> str:
     to the generic default. Returned text is injected into the
     live_verifier prompt as a ``Deploy`` section the agent runs BEFORE
     its verify section."""
-    candidates: list[Path] = []
-    if project:
-        candidates.append(_DEPLOY_DIR / f"{project}.md")
-    candidates.append(_DEPLOY_DIR / "_default.md")
     return _read_first(
-        candidates,
+        _recipe_candidates("deploy", _DEPLOY_DIR, project),
         (
             "# Deploy — fallback\n\n"
             "No deploy recipe. Skip; treat the verify step as testing "
@@ -105,7 +117,7 @@ def build(model_factory: _base.ModelFactory, project: str | None = None):
     curl ``%{http_code}``, ``$(seq 1 30)``, and JSON verdict examples
     like ``{"ok": true}``. ADK treats ``{var}`` in a *string*
     instruction as session-state placeholders and raises
-    ``Context variable not found`` (this is exactly what blocked ONE-7
+    ``Context variable not found`` (this is exactly what blocked an early ticket
     on ``%{http_code}``). Passing the prompt as an InstructionProvider
     callable makes ADK use it verbatim — no templating — so every
     brace survives.

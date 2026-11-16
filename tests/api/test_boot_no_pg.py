@@ -12,7 +12,8 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
     monkeypatch.setenv("AIFORGE_DB_PATH", str(tmp_path / "api.db"))
     monkeypatch.setenv("AIFORGE_MEMORY_DB_PATH", str(tmp_path / "memory.db"))
-    for k in ("AIFORGE_MEMORY_BACKEND", "AIFORGE_NEO4J_URI", "NEO4J_URI"):
+    for k in ("AIFORGE_MEMORY_BACKEND", "AIFORGE_NEO4J_URI", "NEO4J_URI",
+              "AIFORGE_TICKET_PREFIX"):
         monkeypatch.delenv(k, raising=False)
     import aiforge_core.config.env as envmod
     importlib.reload(envmod)
@@ -256,7 +257,7 @@ def test_chat_pipeline_ticket(client):
                json={"content": "fix the parser bug", "project": "demo"})
     assert r.status_code == 201
     body = r.json()
-    assert body["ticket"].startswith("ONE-")
+    assert body["ticket"].startswith("AF-")
     assert body["project"] == "demo"
     assert body["trace_url"].endswith("/stream")
     # ticket exists + chat got the linking messages

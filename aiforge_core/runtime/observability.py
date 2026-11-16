@@ -48,7 +48,7 @@ def _trim(text: str | None) -> str:
 def _ticket_id_from_state(state) -> int | None:
     """Resolve the Postgres ticket.id from session state.
 
-    Pipeline seeds ``state['ticket_identifier']`` (e.g. ``ONE-1``) at
+    Pipeline seeds ``state['ticket_identifier']`` (e.g. ``AF-1``) at
     runner start; we look up the row's bigint ``id`` because that's
     what ``ticket_events.ticket_id`` references."""
     try:

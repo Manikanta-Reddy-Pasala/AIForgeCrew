@@ -15,21 +15,64 @@ from pathlib import Path
 import pytest
 
 
+_VERIFY_MD = {
+    "OrderService": ("# Live verify — OrderService\n\nkubectl port-forward svc/orders "
+                     "8080:8080, then curl -s -o /dev/null -w '%{http_code}' and "
+                     "emit the verdict JSON.\n"),
+    "BillingConnector": ("# Live verify — BillingConnector\n\nThe service runs on a "
+                         "Windows host: emit a live_handoff block.\n"),
+}
+_DEPLOY_MD = {
+    "OrderService": ("# Deploy — OrderService\n\nWait for the tekton pipeline, then the "
+                     "argocd sync; skip unless ${AIFORGE_AUTO_MERGE:-0} = 1.\n"),
+    "BillingConnector": ("# Deploy — BillingConnector\n\nWindows host; hand off. "
+                         "Gated by AIFORGE_AUTO_MERGE.\n"),
+}
+
+
+@pytest.fixture(autouse=True)
+def _user_recipes(tmp_path, monkeypatch):
+    """Project recipes live in the per-user config folder, not the package."""
+    cfg = tmp_path / "cfg"
+    for kind, docs in (("live_verify", _VERIFY_MD), ("deploy", _DEPLOY_MD)):
+        d = cfg / "recipes" / kind
+        d.mkdir(parents=True)
+        for name, body in docs.items():
+            (d / f"{name}.md").write_text(body, encoding="utf-8")
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(cfg))
+    return cfg
+
+
 def test_recipe_loader_returns_project_specific_when_present() -> None:
     from aiforge_core.agents import live_verifier as lv
 
-    md = lv.load_recipe("PosClientBackend")
-    assert "PosClientBackend" in md
+    md = lv.load_recipe("OrderService")
+    assert "OrderService" in md
     assert "port-forward" in md
     assert "verdict" in md.lower()
 
 
-def test_recipe_loader_returns_tally_recipe() -> None:
+def test_recipe_loader_returns_second_project_recipe() -> None:
     from aiforge_core.agents import live_verifier as lv
 
-    md = lv.load_recipe("TallyConnector")
-    assert "TallyConnector" in md
+    md = lv.load_recipe("BillingConnector")
+    assert "BillingConnector" in md
     assert "live_handoff" in md
+
+
+def test_package_ships_only_default_recipes() -> None:
+    from aiforge_core.agents import live_verifier as lv
+
+    assert sorted(p.name for p in lv._VERIFY_DIR.glob("*.md")) == ["_default.md"]
+    assert sorted(p.name for p in lv._DEPLOY_DIR.glob("*.md")) == ["_default.md"]
+
+
+def test_user_default_overrides_packaged_default(_user_recipes) -> None:
+    from aiforge_core.agents import live_verifier as lv
+
+    (_user_recipes / "recipes" / "live_verify" / "_default.md").write_text(
+        "# host default verify\n", encoding="utf-8")
+    assert lv.load_recipe("NoSuchRepo_xyzzy") == "# host default verify\n"
 
 
 def test_recipe_loader_falls_back_to_default() -> None:
@@ -138,19 +181,19 @@ def test_resolve_stage_attribution_unknown_role_returns_safe_default() -> None:
 # ── deploy recipe loader ──────────────────────────────────────────────
 
 
-def test_load_deploy_recipe_posclient_has_tekton_steps() -> None:
+def test_load_deploy_recipe_project_has_tekton_steps() -> None:
     from aiforge_core.agents import live_verifier as lv
 
-    md = lv.load_deploy_recipe("PosClientBackend")
+    md = lv.load_deploy_recipe("OrderService")
     assert "tekton" in md.lower()
     assert "argocd" in md.lower()
     assert "AIFORGE_AUTO_MERGE" in md
 
 
-def test_load_deploy_recipe_tally_emits_windows_handoff() -> None:
+def test_load_deploy_recipe_windows_project_emits_handoff() -> None:
     from aiforge_core.agents import live_verifier as lv
 
-    md = lv.load_deploy_recipe("TallyConnector")
+    md = lv.load_deploy_recipe("BillingConnector")
     assert "windows" in md.lower()
     assert "AIFORGE_AUTO_MERGE" in md
 
@@ -165,7 +208,7 @@ def test_load_deploy_recipe_falls_back_to_default() -> None:
 def test_live_verifier_prompt_contains_both_sections() -> None:
     from aiforge_core.agents import live_verifier as lv
 
-    prompt = lv._prompt_for_project("PosClientBackend")
+    prompt = lv._prompt_for_project("OrderService")
     # Both placeholders resolved (no unfilled braces left).
     assert "{deploy_md}" not in prompt
     assert "{recipe_md}" not in prompt
@@ -173,23 +216,23 @@ def test_live_verifier_prompt_contains_both_sections() -> None:
     assert prompt.index("### Deploy") < prompt.index("### Verify")
     # Both project recipes actually inlined.
     assert "tekton" in prompt.lower()
-    assert "port-forward" in prompt.lower() or "pos-api.oneshell.in" in prompt
+    assert "port-forward" in prompt.lower()
 
 
-# ── ADK templating bypass (ONE-7 regression) ──────────────────────────
+# ── ADK templating bypass (regression) ──────────────────────────
 
 
 def test_live_verifier_instruction_is_callable_not_templated() -> None:
-    """ONE-7 blocked with 'Context variable not found: http_code' because
+    """An early ticket blocked with 'Context variable not found: http_code' because
     the recipe's ``%{http_code}`` was treated as an ADK state var. The
     live_verifier must pass its prompt as an InstructionProvider
     callable so braces survive verbatim."""
     from aiforge_core.runtime import pipeline
 
-    lv = pipeline.build_live_verifier_agent(project="PosClientBackend")
+    lv = pipeline.build_live_verifier_agent(project="OrderService")
     inst = lv.instruction
     assert callable(inst), "instruction must be a provider callable"
     rendered = inst(None)
-    # The exact tokens that broke ONE-7 must be present untouched.
+    # The exact tokens that broke that ticket must be present untouched.
     assert "%{http_code}" in rendered
     assert "${AIFORGE_AUTO_MERGE:-0}" in rendered or "AIFORGE_AUTO_MERGE" in rendered

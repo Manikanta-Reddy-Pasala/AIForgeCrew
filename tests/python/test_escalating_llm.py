@@ -417,7 +417,7 @@ def test_non_crash_error_bypasses_recovery(monkeypatch) -> None:
 
 def test_lm_recovery_flag_resets_on_primary_success() -> None:
     """After a successful primary call, lm_recovery_tried resets to
-    False so the NEXT crash gets a fresh recovery attempt. ONE-117
+    False so the NEXT crash gets a fresh recovery attempt. JIRA-117
     needed 3 recoveries across a 67min run; the original 1-shot cap
     burnt out by crash 2."""
     primary = _StubModel(model="primary", script=[_resp("ok")])

@@ -54,7 +54,7 @@ export default function Tickets() {
   const [creating, setCreating] = useState(false);
   // One create in flight at a time. With files attached the base64 upload is
   // slow, the button gave no feedback, and every extra click POSTed another
-  // copy of the ticket (ONE-337..356 were one ticket clicked 20 times). The
+  // copy of the ticket (T-337..356 were one ticket clicked 20 times). The
   // ref blocks clicks landing before the re-render; the state drives the UI.
   const submittingRef = useRef(false);
   const [submitting, setSubmitting] = useState(false);
@@ -188,9 +188,9 @@ export default function Tickets() {
           </button>
           <button type="button"
             className="danger"
-            title="Delete every ticket and reset the ONE-<n> counter. Memory, skills, workflows and rules are NOT touched."
+            title="Delete every ticket and reset the <PREFIX>-<n> counter. Memory, skills, workflows and rules are NOT touched."
             onClick={async () => {
-              if (!window.confirm('Delete ALL tickets and reset the sequence (ONE-100…)? This removes every ticket + its events. Memory, skills, workflows and rules are kept.')) return;
+              if (!window.confirm('Delete ALL tickets and reset the ticket number sequence to 100? This removes every ticket + its events. Memory, skills, workflows and rules are kept.')) return;
               try {
                 const r = await api.resetTickets();
                 toast.success(`Deleted ${r.deleted} tickets · sequence reset`);
@@ -232,7 +232,7 @@ export default function Tickets() {
               <label className="field">
                 Project{' '}
                 <input
-                  placeholder="e.g. TallyConnector"
+                  placeholder="e.g. BillingConnector"
                   value={draft.project}
                   onChange={e => setDraft({ ...draft, project: e.target.value })}
                 />
@@ -289,7 +289,7 @@ export default function Tickets() {
             <label className="field">
               Attachments (comma-separated role names){' '}
               <input
-                placeholder="e.g. tally, oneshell"
+                placeholder="e.g. ledger, export"
                 value={draft.attachments}
                 onChange={e => setDraft({ ...draft, attachments: e.target.value })}
               />

@@ -231,7 +231,7 @@ export default function Logs() {
           <div className="input-search" style={{ minWidth: 140 }}
                title="Show only events linked to this ticket identifier">
             <Icon.Search size={14} />
-            <input placeholder="ticket = ONE-…"
+            <input placeholder="ticket = AF-…"
                    value={ticketFilter}
                    onChange={e => setTicketFilter(e.target.value)} />
           </div>

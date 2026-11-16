@@ -1,4 +1,4 @@
-"""GA ToolClient — native-mode prompt suppression (2026-05, ticket ONE-87).
+"""GA ToolClient — native-mode prompt suppression (2026-05, ticket JIRA-87).
 
 Pins the contract that when the underlying GA session has native
 ``tool_choice`` (``required`` / ``auto``) plus a ``tools`` schema set,

@@ -6,7 +6,7 @@
 # server defaults (ctx=4096, ttl=1h). The v6 Doer prompt alone exceeds
 # 4096, so every JIT load = instant 400 ("tokens to keep > context
 # length") and the local pass dies until something reloads the model
-# properly (ONE-93 first-pass failure). After every idle-unload the
+# properly (T-93 first-pass failure). After every idle-unload the
 # poison path recurs — so this runs on a timer and reloads whenever a
 # loaded ctx is wrong or a model is missing.
 #

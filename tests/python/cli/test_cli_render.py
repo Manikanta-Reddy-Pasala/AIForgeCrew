@@ -20,7 +20,7 @@ def _run(events, verbosity=0):
 
 
 TRANSCRIPT = [
-    {"type": "thought", "text": "reading PosServerBackendService"},
+    {"type": "thought", "text": "reading SyncServiceClient"},
     {"type": "tool_start", "name": "read_file", "args": {"path": "A.java"}},
     {"type": "tool", "name": "read_file", "args": {"path": "A.java"},
      "result": {"lines": 312}, "duration_s": 0.4, "call_id": 1},
@@ -61,7 +61,7 @@ def test_a_changed_file_set_is_summarised():
 def test_a_whole_turn_renders_one_line_per_step():
     _, lines, streamed = _run(TRANSCRIPT)
     text = "\n".join(lines)
-    assert "● thinking reading PosServerBackendService" in text
+    assert "● thinking reading SyncServiceClient" in text
     assert "✓ read_file" in text
     assert "312 lines" in text
     assert "0.4s" in text

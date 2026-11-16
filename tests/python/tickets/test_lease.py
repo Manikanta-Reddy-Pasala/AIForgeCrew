@@ -100,11 +100,11 @@ def test_a_deferred_ticket_is_skipped_until_its_retry_after(store):
 def test_the_worktree_lock_admits_one_run_at_a_time(tmp_path, monkeypatch):
     monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path))
     from aiforge_core.tickets import lease
-    with lease.worktree_lock("ONE-7") as first:
+    with lease.worktree_lock("JIRA-7") as first:
         assert first is True
-        with lease.worktree_lock("ONE-7") as second:
+        with lease.worktree_lock("JIRA-7") as second:
             assert second is False                        # the sibling backs off
-        with lease.worktree_lock("ONE-8") as other:
+        with lease.worktree_lock("JIRA-8") as other:
             assert other is True                          # other roots unaffected
-    with lease.worktree_lock("ONE-7") as again:
+    with lease.worktree_lock("JIRA-7") as again:
         assert again is True                              # released on exit

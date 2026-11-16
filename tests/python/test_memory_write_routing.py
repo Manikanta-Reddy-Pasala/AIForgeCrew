@@ -24,7 +24,7 @@ def embedded(monkeypatch, tmp_path):
 
 @dataclass
 class _Ticket:
-    identifier: str = "ONE-100"
+    identifier: str = "JIRA-100"
     project: str = "demo"
     title: str = "broken thing"
 
@@ -34,7 +34,7 @@ def test_learner_persist_writes_to_sqlite(embedded):
     out = lp.persist_facts(
         facts=[{"text": "always cast lambda memory hints in Java"},
                {"text": "DECISION: use SQLite for embedded memory"}],
-        repo="demo", ticket_identifier="ONE-100",
+        repo="demo", ticket_identifier="JIRA-100",
     )
     assert out["written_observations"] == 1
     assert out["written_decisions"] == 1
@@ -75,6 +75,6 @@ def test_doer_memory_write_to_sqlite(embedded, monkeypatch):
 def test_learner_persist_dedupes(embedded):
     sm, lp, _ = embedded
     f = [{"text": "same learning twice"}]
-    lp.persist_facts(facts=f, repo="demo", ticket_identifier="ONE-1")
-    lp.persist_facts(facts=f, repo="demo", ticket_identifier="ONE-2")
+    lp.persist_facts(facts=f, repo="demo", ticket_identifier="JIRA-1")
+    lp.persist_facts(facts=f, repo="demo", ticket_identifier="JIRA-2")
     assert sm.stats()["total"] == 1

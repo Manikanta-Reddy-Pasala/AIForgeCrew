@@ -15,12 +15,12 @@ def sm(tmp_path, monkeypatch):
 
 
 def test_keyword_exact_id(sm):
-    sm.write_unit(text="ONE-3 first end-to-end pipeline green", kind="learning", repo="svc")
-    sm.write_unit(text="ONE-2 tally routing bug", kind="learning", repo="svc")
-    hits = sm.keyword_search("ONE-3", repo="svc")
+    sm.write_unit(text="JIRA-3 first end-to-end pipeline green", kind="learning", repo="svc")
+    sm.write_unit(text="JIRA-2 billing routing bug", kind="learning", repo="svc")
+    hits = sm.keyword_search("JIRA-3", repo="svc")
     assert hits
-    assert "ONE-3" in hits[0]["text"]
-    assert all("ONE-2" not in h["text"] for h in hits[:1])
+    assert "JIRA-3" in hits[0]["text"]
+    assert all("JIRA-2" not in h["text"] for h in hits[:1])
 
 
 def test_keyword_prefix(sm):

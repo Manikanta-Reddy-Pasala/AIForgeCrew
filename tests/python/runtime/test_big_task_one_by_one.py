@@ -237,9 +237,9 @@ def test_a_command_that_succeeded_is_evidence_and_the_note_names_it(tmp_path):
 def test_an_external_tool_call_that_returned_ok_is_evidence(tmp_path):
     st = _st(tmp_path)
     _items.ensure_started(st)
-    _items.note_evidence(st, "jira_comment", {"key": "ONE-1"}, {"ok": True, "id": 7})
+    _items.note_evidence(st, "jira_comment", {"key": "JIRA-1"}, {"ok": True, "id": 7})
     result, _ = _close(st, "a")
-    assert result["ok"] and "ran ok: jira_comment(ONE-1)" in st.board["a"]["note"]
+    assert result["ok"] and "ran ok: jira_comment(JIRA-1)" in st.board["a"]["note"]
 
 
 def test_a_failed_command_is_not_evidence(tmp_path):
@@ -247,7 +247,7 @@ def test_a_failed_command_is_not_evidence(tmp_path):
     _items.ensure_started(st)
     _items.note_evidence(st, "run_command", {"cmd": "git push origin feat"},
                          {"ok": False, "code": 1, "stderr": "fatal: rejected"})
-    _items.note_evidence(st, "jira_comment", {"key": "ONE-1"},
+    _items.note_evidence(st, "jira_comment", {"key": "JIRA-1"},
                          {"ok": False, "error": "401"})
     result, _ = _close(st, "a")
     assert result["ok"] is False and "nothing shows" in result["error"]

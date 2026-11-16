@@ -7,12 +7,12 @@ from aiforge_core.runtime.tools import _trace
 
 def test_emit_calls_observability_with_label_and_props():
     with patch("aiforge_core.runtime.tools._trace._safe_emit") as mock:
-        _trace.emit("Think", {"thought": "hi", "ticket_id": "ONE-1"})
+        _trace.emit("Think", {"thought": "hi", "ticket_id": "JIRA-1"})
     mock.assert_called_once()
     args, _kwargs = mock.call_args
     assert args[0] == "Think"
     assert args[1]["thought"] == "hi"
-    assert args[1]["ticket_id"] == "ONE-1"
+    assert args[1]["ticket_id"] == "JIRA-1"
     assert "ts" in args[1]
 
 

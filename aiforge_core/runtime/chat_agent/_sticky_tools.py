@@ -1,6 +1,6 @@
 """Tool families a chat session has already used stay on its native list.
 
-A follow-up such as "move ONE-356 to Done" may not name Jira, and the
+A follow-up such as "move PROJ-356 to Done" may not name Jira, and the
 message that did may have been compacted away. The families and tools a
 session enabled are kept here, per session, so later turns start with them.
 

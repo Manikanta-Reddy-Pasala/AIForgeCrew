@@ -87,11 +87,11 @@ def test_write_scaffold_python(tmp_path) -> None:
         "- never edits Y\n"
     )
     out = spec_to_tests.write_scaffold(
-        "ONE-99", body, repo_root=str(tmp_path), language="python",
+        "JIRA-99", body, repo_root=str(tmp_path), language="python",
     )
     assert out["ok"]
     assert out["preexisting"] is False
-    p = tmp_path / "tests" / "aiforge_spec" / "test_one_99.py"
+    p = tmp_path / "tests" / "aiforge_spec" / "test_jira_99.py"
     assert p.is_file()
     content = p.read_text(encoding="utf-8")
     assert "test_01_adds_x" in content
@@ -102,10 +102,10 @@ def test_write_scaffold_python(tmp_path) -> None:
 def test_write_scaffold_idempotent(tmp_path) -> None:
     body = "## Acceptance\n- only one\n"
     first = spec_to_tests.write_scaffold(
-        "ONE-1", body, repo_root=str(tmp_path), language="python",
+        "JIRA-1", body, repo_root=str(tmp_path), language="python",
     )
     second = spec_to_tests.write_scaffold(
-        "ONE-1", body, repo_root=str(tmp_path), language="python",
+        "JIRA-1", body, repo_root=str(tmp_path), language="python",
     )
     assert first["preexisting"] is False
     assert second["preexisting"] is True

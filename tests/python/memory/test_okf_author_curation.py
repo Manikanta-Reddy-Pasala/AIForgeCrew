@@ -35,18 +35,18 @@ def _dec(nid, decision="global", repo=""):
 
 def test_a_repo_named_in_the_learning_owns_it():
     node = _learning("L1", body="the aiforgecrew api boots in one process")
-    assert A._repo_name_match(node, {"AIForgeCrew", "PosFrontend"}) \
+    assert A._repo_name_match(node, {"AIForgeCrew", "WebFrontend"}) \
         == "AIForgeCrew"
 
 
 def test_the_category_counts_as_well_as_the_body():
-    node = _learning("L1", category="PosFrontend build")
-    assert A._repo_name_match(node, {"PosFrontend"}) == "PosFrontend"
+    node = _learning("L1", category="WebFrontend build")
+    assert A._repo_name_match(node, {"WebFrontend"}) == "WebFrontend"
 
 
 def test_a_hyphen_does_not_hide_the_name():
-    node = _learning("L1", body="in pos-frontend the vite port is 5174")
-    assert A._repo_name_match(node, {"posfrontend"}) == "posfrontend"
+    node = _learning("L1", body="in web-frontend the vite port is 5174")
+    assert A._repo_name_match(node, {"webfrontend"}) == "webfrontend"
 
 
 def test_a_short_name_cannot_false_hit():
@@ -56,9 +56,9 @@ def test_a_short_name_cannot_false_hit():
 
 
 def test_the_longest_matching_name_wins():
-    node = _learning("L1", body="see posfrontendadmin for the routes")
-    assert A._repo_name_match(node, {"posfrontend", "posfrontendadmin"}) \
-        == "posfrontendadmin"
+    node = _learning("L1", body="see webfrontendadmin for the routes")
+    assert A._repo_name_match(node, {"webfrontend", "webfrontendadmin"}) \
+        == "webfrontendadmin"
 
 
 def test_a_learning_naming_nothing_stays_unmapped():

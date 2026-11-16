@@ -15,7 +15,7 @@
 #   OUT_DIR      where to mirror per-repo graphs   default: /Users/manikanta/.aiforge/graphify-out
 #   REPO_LIST    space-separated repo names,
 #                or path to file with one per line
-#                default: built-in AIForgeCrew set
+#                default: AIForgeCrew only
 #   GRAPHIFY_BIN absolute path to graphify CLI    default: /Users/manikanta/.local/bin/graphify
 #   AIFORGE_VENV venv whose python merges graphs  default: /Users/manikanta/AIForgeCrew/.venv
 
@@ -27,24 +27,8 @@ GRAPHIFY_BIN="${GRAPHIFY_BIN:-/Users/manikanta/.local/bin/graphify}"
 AIFORGE_VENV="${AIFORGE_VENV:-/Users/manikanta/AIForgeCrew/.venv}"
 LOG_DIR="${LOG_DIR:-/Users/manikanta/.aiforge/logs}"
 
+# A host lists its own repos via REPO_LIST (a file, one name per line).
 DEFAULT_REPOS=(
-  PosClientBackend
-  PosServerBackend
-  MongoDbService
-  BusinessService
-  GatewayService
-  Scheduler
-  QuartzScheduler
-  EmailService
-  PosPythonBackend
-  oneshell-commons
-  PosService
-  WhatsappApiService
-  GstApiService
-  NotificationService
-  CacheLayer
-  PosFrontend
-  PosAdmin
   AIForgeCrew
 )
 

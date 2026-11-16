@@ -49,7 +49,7 @@ def test_role_is_lowercase_and_non_empty(mod):
 def test_prompts_non_empty_for_real_agents():
     """Every archetype now owns a non-trivial system prompt.
 
-    The architect was a no-prompt placeholder until ONE-117 surfaced
+    The architect was a no-prompt placeholder until JIRA-117 surfaced
     the need for a structural-plan contract; the prompt now documents
     the JSON shape the EXTERNAL operator session must emit so the
     Doer can read ``state['structural_plan']`` deterministically.

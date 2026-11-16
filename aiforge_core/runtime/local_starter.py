@@ -177,7 +177,7 @@ def try_start(api_base: str, model: str | None = None) -> bool:
     ssh_timeout = _int_env("AIFORGE_LMS_SSH_TIMEOUT_S", 120)
     # Mac Studio (96 GB unified memory) easily holds Qwen-Coder-Next 80B
     # at 4-bit + a 256K KV cache; 256K became the default after ticket
-    # ONE-116 needed >32K to fit the multi-file ticket body + 10 round
+    # T-116 needed >32K to fit the multi-file ticket body + 10 round
     # trips. The hard floor stays at 65536 — anything smaller risks the
     # original 4K-truncation bug, regardless of operator override.
     ctx = max(_int_env("AIFORGE_LMS_CTX", 262144), 65536)
@@ -189,7 +189,7 @@ def try_start(api_base: str, model: str | None = None) -> bool:
     # tickets that may pause between turns.
     # PARALLEL=1 by default. The pipeline only ever issues one inflight
     # request per role, so the LM Studio default PARALLEL=4 just
-    # reserves 4× the KV cache for nothing. ONE-117 surfaced this:
+    # reserves 4× the KV cache for nothing. T-117 surfaced this:
     # 131K-ctx KV × 4 lanes pushed Mac Studio's 96GB unified memory
     # past the headroom and triggered MLX Metal command-buffer aborts.
     # Override via AIFORGE_LMS_PARALLEL — bump for genuine concurrent

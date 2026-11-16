@@ -1,7 +1,7 @@
 """Finding a repo's folder from a name someone typed in chat.
 
-Nobody types "PosClientBackend" the same way twice — "pos client backend",
-"posclient", "PosClinetBackend". So the matcher normalises (lowercase, drop
+Nobody types "OrderServiceApi" the same way twice — "order service api",
+"orderserv", "OrderSevriceApi". So the matcher normalises (lowercase, drop
 every non-alphanumeric) and then tries three stages in order: exact on the
 normalised token, difflib fuzzy, and finally substring. Each stage refuses to
 guess when two DIFFERENT folders tie, because silently picking one would send
@@ -67,8 +67,8 @@ def test_a_repo_outside_the_base_folder_can_be_pinned(cfg):
 
 
 def test_a_pinned_repo_is_found_however_it_is_cased(cfg):
-    M.set_path("PosClientBackend", "/srv/pcb")
-    assert M.get_path("posclientbackend") == "/srv/pcb"
+    M.set_path("OrderServiceApi", "/srv/orders")
+    assert M.get_path("orderserviceapi") == "/srv/orders"
 
 
 def test_a_home_relative_path_is_expanded(cfg):
@@ -124,23 +124,23 @@ def test_a_config_file_holding_the_wrong_shape_is_ignored(cfg):
 # ─── the loose-name matcher ────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("typed", ["PosClientBackend", "pos client backend",
-                                   "pos_client-backend", "POSCLIENTBACKEND"])
+@pytest.mark.parametrize("typed", ["OrderServiceApi", "order service api",
+                                   "order_service-api", "ORDERSERVICEAPI"])
 def test_a_name_typed_any_way_finds_the_same_repo(typed):
-    res = M.fuzzy_pick(typed, {"PosClientBackend": "/srv/pcb"})
+    res = M.fuzzy_pick(typed, {"OrderServiceApi": "/srv/orders"})
     assert res["ok"] is True
-    assert res["value"] == "/srv/pcb"
+    assert res["value"] == "/srv/orders"
     assert res["match"] == "normalized"
 
 
 def test_a_small_typo_still_resolves():
-    res = M.fuzzy_pick("PosClinetBackend", {"PosClientBackend": "/srv/pcb"})
+    res = M.fuzzy_pick("OrderSevriceApi", {"OrderServiceApi": "/srv/orders"})
     assert res["ok"] is True
     assert res["match"] == "fuzzy"
 
 
 def test_a_fragment_of_the_name_falls_through_to_substring():
-    res = M.fuzzy_pick("client", {"PosClientBackend": "/srv/pcb"})
+    res = M.fuzzy_pick("service", {"OrderServiceApi": "/srv/orders"})
     assert res["ok"] is True
     assert res["match"] == "substring"
 
@@ -166,8 +166,8 @@ def test_a_close_fuzzy_race_is_ambiguous():
 
 
 def test_a_clear_fuzzy_winner_is_taken():
-    res = M.fuzzy_pick("posclientbackend",
-                       {"PosClientBackend": "/a", "PosServerBackend": "/b"})
+    res = M.fuzzy_pick("orderserviceapi",
+                       {"OrderServiceApi": "/a", "OrderSyncApi": "/b"})
     assert res["ok"] is True
     assert res["value"] == "/a"
 
@@ -196,13 +196,13 @@ def test_nothing_to_match_against_is_its_own_answer():
 
 def test_the_matcher_serves_other_registries_too():
     """The same code backs Jira projects and Confluence spaces."""
-    res = M.fuzzy_pick("one shell", {"OneShell": "ONE"}, value_key="key")
-    assert res["key"] == "ONE"
-    assert res["name"] == "OneShell"
+    res = M.fuzzy_pick("pay hub", {"PayHub": "PAY"}, value_key="key")
+    assert res["key"] == "PAY"
+    assert res["name"] == "PayHub"
 
 
-@pytest.mark.parametrize("a,b", [("Pos Client-Backend", "posclientbackend"),
-                                 ("pos_client backend", "posclientbackend")])
+@pytest.mark.parametrize("a,b", [("Order Service-Api", "orderserviceapi"),
+                                 ("order_service api", "orderserviceapi")])
 def test_the_normalised_token_collapses_punctuation_and_case(a, b):
     assert M._norm(a) == M._norm(b)
 
@@ -239,10 +239,10 @@ def test_a_moved_repo_is_found_under_the_base_folder(cfg, tmp_path):
 
 
 def test_the_folders_under_the_base_are_candidates(cfg, tmp_path):
-    _repos(tmp_path, "AIForgeCrew", "PosFrontend")
-    res = M.resolve("pos frontend")
+    _repos(tmp_path, "AIForgeCrew", "WebFrontend")
+    res = M.resolve("web frontend")
     assert res["ok"] is True
-    assert res["path"].endswith("PosFrontend")
+    assert res["path"].endswith("WebFrontend")
 
 
 def test_hidden_folders_are_not_repos(cfg, tmp_path):

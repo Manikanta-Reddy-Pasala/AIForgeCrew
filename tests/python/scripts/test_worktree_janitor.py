@@ -30,8 +30,8 @@ def workspace(tmp_path, monkeypatch):
         for t in tickets:
             (d / t).mkdir()
         return d
-    _mk("app", "ONE-1", "ONE-2")
-    _mk("lib", "ONE-3")
+    _mk("app", "JIRA-1", "JIRA-2")
+    _mk("lib", "JIRA-3")
     (tmp_path / "not-a-repo").mkdir()
     monkeypatch.setenv("AIFORGE_WORKTREE_ROOT", str(tmp_path))
     return tmp_path
@@ -66,21 +66,21 @@ def _removed(state):
 
 @pytest.mark.parametrize("status", ["done", "cancelled", "qa_failed"])
 def test_a_finished_tickets_worktree_is_reclaimed(workspace, store, status):
-    store["status"] = {"ONE-1": status}
+    store["status"] = {"JIRA-1": status}
     assert J.main([]) == 0
-    assert "ONE-1" in _removed(store)
+    assert "JIRA-1" in _removed(store)
 
 
 @pytest.mark.parametrize("status", ["todo", "in_progress", "in_review", "qa"])
 def test_an_active_tickets_worktree_is_left_alone(workspace, store, status):
-    store["status"] = {"ONE-1": status}
+    store["status"] = {"JIRA-1": status}
     J.main([])
     assert _removed(store) == set()
 
 
 def test_a_blocked_ticket_keeps_its_worktree(workspace, store):
     """An operator unblocks it and resumes — the old script deleted the work."""
-    store["status"] = {"ONE-1": "blocked"}
+    store["status"] = {"JIRA-1": "blocked"}
     J.main([])
     assert _removed(store) == set()
 
@@ -98,14 +98,14 @@ def test_a_store_that_cannot_be_read_keeps_everything(workspace, store):
 
 
 def test_every_repo_under_the_root_is_swept(workspace, store):
-    store["status"] = {"ONE-1": "done", "ONE-3": "cancelled",
-                       "ONE-2": "in_progress"}
+    store["status"] = {"JIRA-1": "done", "JIRA-3": "cancelled",
+                       "JIRA-2": "in_progress"}
     J.main([])
-    assert _removed(store) == {"ONE-1", "ONE-3"}
+    assert _removed(store) == {"JIRA-1", "JIRA-3"}
 
 
 def test_each_removal_runs_in_its_own_repo(workspace, store):
-    store["status"] = {"ONE-3": "done"}
+    store["status"] = {"JIRA-3": "done"}
     J.main([])
     cwd = next(c for c, argv in store["git"] if argv[1:3] == ["worktree",
                                                               "remove"])
@@ -113,7 +113,7 @@ def test_each_removal_runs_in_its_own_repo(workspace, store):
 
 
 def test_stale_refs_are_pruned_once_per_repo(workspace, store):
-    store["status"] = {"ONE-1": "done"}
+    store["status"] = {"JIRA-1": "done"}
     J.main([])
     prunes = [c for c, argv in store["git"] if argv[1:] == ["worktree",
                                                             "prune"]]
@@ -124,14 +124,14 @@ def test_stale_refs_are_pruned_once_per_repo(workspace, store):
 
 
 def test_a_dry_run_touches_nothing(workspace, store, capsys):
-    store["status"] = {"ONE-1": "done"}
+    store["status"] = {"JIRA-1": "done"}
     assert J.main(["--dry-run"]) == 0
     assert store["git"] == [], "no remove, and no prune either"
     assert "WOULD remove" in capsys.readouterr().out
 
 
 def test_a_failed_removal_is_reported_as_a_failure(workspace, store):
-    store["status"] = {"ONE-1": "done"}
+    store["status"] = {"JIRA-1": "done"}
     store["rc"] = 1
     assert J.main([]) == 1, "systemd should mark the unit failed"
 
@@ -141,7 +141,7 @@ def test_a_sweep_with_nothing_to_do_is_a_success(workspace, store):
 
 
 def test_a_git_that_will_not_run_is_survived(workspace, store, monkeypatch):
-    store["status"] = {"ONE-1": "done"}
+    store["status"] = {"JIRA-1": "done"}
     monkeypatch.setattr(J.subprocess, "run",
                         lambda *a, **k: (_ for _ in ()).throw(OSError("no git")))
     assert J.main([]) == 1
@@ -171,10 +171,10 @@ def test_the_root_comes_from_the_env_or_the_convention(monkeypatch, tmp_path):
 def test_an_explicit_root_wins_over_the_env(workspace, store, tmp_path,
                                             monkeypatch):
     other = tmp_path / "other"
-    (other / "app" / ".aiforge-worktrees" / "ONE-9").mkdir(parents=True)
-    store["status"] = {"ONE-9": "done", "ONE-1": "done"}
+    (other / "app" / ".aiforge-worktrees" / "JIRA-9").mkdir(parents=True)
+    store["status"] = {"JIRA-9": "done", "JIRA-1": "done"}
     J.main(["--root", str(other)])
-    assert _removed(store) == {"ONE-9"}
+    assert _removed(store) == {"JIRA-9"}
 
 
 def test_a_repo_with_no_worktrees_is_skipped(workspace, store):

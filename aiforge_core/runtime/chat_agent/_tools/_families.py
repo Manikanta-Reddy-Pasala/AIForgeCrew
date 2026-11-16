@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-# An issue key such as ONE-356. Case-sensitive, and common non-issue tokens
+# An issue key such as PROJ-356. Case-sensitive, and common non-issue tokens
 # of the same shape (UTF-8, SHA-256, ISO-8601) are ignored.
 _ISSUE_KEY = re.compile(r"\b([A-Z][A-Z0-9]{1,9})-\d+\b")
 _NOT_ISSUE = frozenset({

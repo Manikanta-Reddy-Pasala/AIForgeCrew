@@ -258,7 +258,7 @@ def test_inflight_guard_rejects_second_run(monkeypatch):
 
     class T:
         id = 999
-        identifier = "ONE-999"
+        identifier = "JIRA-999"
     ps._INFLIGHT.add(999)               # pretend a run is already in flight
     try:
         r = ps.run_subtasks_parallel(T())
@@ -278,10 +278,10 @@ def test_parallel_does_not_mutate_global_ticket_env(monkeypatch, tmp_path):
     # patch the imported name inside the function via the workspace module
     import aiforge_core.runtime.workspace as ws
     monkeypatch.setattr(ws, "ensure_branch_and_worktree", lambda t: None)
-    monkeypatch.setenv("AIFORGE_CURRENT_TICKET", "ONE-SENTINEL")
+    monkeypatch.setenv("AIFORGE_CURRENT_TICKET", "JIRA-SENTINEL")
 
     class T:
         id = 4242
-        identifier = "ONE-4242"
+        identifier = "JIRA-4242"
     ps.run_subtasks_parallel(T())                    # returns early (no worktree)
-    assert os.environ["AIFORGE_CURRENT_TICKET"] == "ONE-SENTINEL"  # untouched
+    assert os.environ["AIFORGE_CURRENT_TICKET"] == "JIRA-SENTINEL"  # untouched

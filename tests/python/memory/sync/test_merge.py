@@ -94,7 +94,7 @@ def test_same_rev_conflict_where_local_wins_reports_but_does_not_fetch():
 def test_same_origin_and_key_across_different_scopes_is_one_identity():
     """I1: two local files carry the identity — the highest rev is the one compared."""
     local = [dict(b("L-07", 48, "nuc", "h3"),
-                  path="okf/projects/oneshell/learnings/L-07.md"),
+                  path="okf/projects/acme/learnings/L-07.md"),
              b("L-07", 46, "nuc", "h1")]
     remote = [b("L-07", 47, "nuc", "h2")]
 

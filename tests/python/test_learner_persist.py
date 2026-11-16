@@ -61,7 +61,7 @@ def test_persist_facts_routes_to_sqlite(monkeypatch) -> None:
     out = lp.persist_facts(
         facts=[{"text": "Use ruff for lint"},
                {"text": "DECISION: drop smolagents"}],
-        repo="MyRepo", ticket_identifier="ONE-1")
+        repo="MyRepo", ticket_identifier="JIRA-1")
     assert out["written_observations"] == 1
     assert out["written_decisions"] == 1
     assert captured

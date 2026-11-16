@@ -129,7 +129,7 @@ def test_memory_brief_seeded_not_in_prompt(monkeypatch):
     from aiforge_core.runtime.adk_runner import _build_prompt
 
     class _T:
-        identifier = "ONE-1"
+        identifier = "JIRA-1"
         title = "t"
         body = "b"
         metadata = None

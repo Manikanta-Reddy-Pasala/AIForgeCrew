@@ -163,11 +163,11 @@ def test_a_drive_letter_that_is_not_one_is_refused(tmp_path, monkeypatch):
 
 
 def test_a_plain_identifier_is_a_segment():
-    assert safe_segment("ONE-1") == "ONE-1"
-    assert safe_segment("  ONE-1  ") == "ONE-1"
+    assert safe_segment("JIRA-1") == "JIRA-1"
+    assert safe_segment("  JIRA-1  ") == "JIRA-1"
 
 
-@pytest.mark.parametrize("value", ["", None, ".", "..", "../ONE-1", "a/b",
+@pytest.mark.parametrize("value", ["", None, ".", "..", "../JIRA-1", "a/b",
                                    "a\\b", "ONE\x00-1"])
 def test_anything_that_is_not_one_segment_is_refused(value):
     assert safe_segment(value) == "", "refused, not sanitised into a segment"

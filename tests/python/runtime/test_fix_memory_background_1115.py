@@ -22,11 +22,11 @@ def test_background_red_then_quiet_green_records_the_fix(tmp_path, monkeypatch):
     start = {"ok": True, "id": "bg-1", "running": True}
     assert ops_memory.fix_hook(st, "run_command", {"cmd": "mvn -o -q test"}, start, str(tmp_path)) == ""
     ops_memory.fix_hook(st, "command_wait", {"id": "bg-1"},
-                        {"ok": False, "id": "bg-1", "running": False, "code": 1}, str(tmp_path), "Pcb")
+                        {"ok": False, "id": "bg-1", "running": False, "code": 1}, str(tmp_path), "Orders")
     assert st.fix_open                                   # the failure is open
     st.file_hashes = {"src/Foo.java": "b"}               # the fix landed
     ops_memory.fix_hook(st, "command_wait", {"id": "bg-2"},
-                        {"ok": True, "id": "bg-2", "running": False, "code": 0}, str(tmp_path), "Pcb")
+                        {"ok": True, "id": "bg-2", "running": False, "code": 0}, str(tmp_path), "Orders")
     fixes = ops_memory.load()["fixes"]
     assert len(fixes) == 1
     e = next(iter(fixes.values()))
@@ -34,7 +34,7 @@ def test_background_red_then_quiet_green_records_the_fix(tmp_path, monkeypatch):
     # the same failure later in another session: the note comes back
     st2 = SimpleNamespace(file_hashes={})
     note = ops_memory.fix_hook(st2, "run_command", {"cmd": "mvn test"},
-                               {"ok": False, "output": RED}, str(tmp_path), "Pcb")
+                               {"ok": False, "output": RED}, str(tmp_path), "Orders")
     assert "seen before" in note and "src/Foo.java" in note
 
 

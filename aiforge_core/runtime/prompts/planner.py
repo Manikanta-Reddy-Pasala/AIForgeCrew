@@ -2,7 +2,7 @@
 
 The Planner now MUST decompose mega-tickets into a ``subtickets`` array
 so the Doer can run once per subticket and each chunk gets its own
-commit / milestone checkpoint. ONE-117 (a 5-file FastAPI scaffold) was
+commit / milestone checkpoint. T-117 (a 5-file FastAPI scaffold) was
 the canary: the Doer spent 35+ minutes inside the LoopAgent because
 the plan was monolithic. Splitting auth → models → routers → tests
 into independent subtickets makes progress observable and bounds

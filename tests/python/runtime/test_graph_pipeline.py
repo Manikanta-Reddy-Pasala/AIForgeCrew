@@ -143,7 +143,7 @@ def test_validator_gate_plateau_no_replan() -> None:
     # Validator wants changes, but a replan just re-runs the same local model
     # on already-attempted work and it re-plateaus — a wasted cycle. The gate
     # must NOT replan; it routes straight to done (runner ships partial+PR →
-    # in_review). Guards against the ONE-157 24-min churn on a committed diff.
+    # in_review). Guards against the JIRA-157 24-min churn on a committed diff.
     state = {
         "validator_verdict": {"verdict": "request_changes"},
         "feedback_verdict": "partial loop_budget_kill: loc_plateau:4x<3_after_900s",

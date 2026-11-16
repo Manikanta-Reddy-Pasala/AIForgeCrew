@@ -4,7 +4,7 @@ LM Studio / mlx-lm runs on a separate host (Mac Studio over the
 direct LAN). When that box is asleep or LM Studio isn't started, the
 local primary endpoint refuses every request — so the EscalatingLlm
 sticky-demotion fires on call #1 and the rest of the run pays cloud
-latency on every Doer turn (ONE-109 wall-clock 866s vs ONE-108's 81s).
+latency on every Doer turn (T-109 wall-clock 866s vs T-108's 81s).
 
 Fix: probe the local endpoint at pipeline-build time. If it doesn't
 answer ``/v1/models`` within 2 seconds, swap the primary cfg to a

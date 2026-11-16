@@ -30,14 +30,14 @@ def uq():
 
 
 def test_diversify_caps_per_group(uq) -> None:
-    hits = [{"source": "memory", "ticket": "ONE-1", "text": str(i)}
+    hits = [{"source": "memory", "ticket": "JIRA-1", "text": str(i)}
             for i in range(5)]
     hits += [{"source": "doc", "text": "d1"},
              {"source": "doc", "text": "d2"}]
     out = uq._diversify(hits, per_group=3)
-    # 3 kept from the ONE-1 flood + both doc rows = 5.
+    # 3 kept from the JIRA-1 flood + both doc rows = 5.
     assert len(out) == 5
-    one1 = [h for h in out if h.get("ticket") == "ONE-1"]
+    one1 = [h for h in out if h.get("ticket") == "JIRA-1"]
     assert len(one1) == 3
     # highest-ranked survivors kept, order preserved.
     assert [h["text"] for h in one1] == ["0", "1", "2"]
@@ -70,7 +70,7 @@ def test_diversify_passthrough_under_cap(uq) -> None:
 
 
 def test_diversify_disabled_when_per_group_zero(uq) -> None:
-    hits = [{"source": "memory", "ticket": "ONE-1", "text": str(i)}
+    hits = [{"source": "memory", "ticket": "JIRA-1", "text": str(i)}
             for i in range(5)]
     out = uq._diversify(hits, per_group=0)
     assert out == hits

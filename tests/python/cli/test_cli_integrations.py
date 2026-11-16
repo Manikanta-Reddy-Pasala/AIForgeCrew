@@ -52,9 +52,9 @@ def test_a_field_from_another_integration_is_refused():
     with pytest.raises(ValueError) as exc:
         integ.check_keys("jira", {"project": "FOO"})
     assert "no field project" in str(exc.value)
-    integ.check_keys("jira", {"default_project": "ONE"})       # the real one
+    integ.check_keys("jira", {"default_project": "JIRA"})       # the real one
 
 
 def test_a_hyperlink_is_only_emitted_when_asked():
-    assert integ.link("ONE-320", "https://j/ONE-320", enabled=False) == "ONE-320"
-    assert "\033]8;;https://j/ONE-320" in integ.link("ONE-320", "https://j/ONE-320")
+    assert integ.link("JIRA-320", "https://j/JIRA-320", enabled=False) == "JIRA-320"
+    assert "\033]8;;https://j/JIRA-320" in integ.link("JIRA-320", "https://j/JIRA-320")

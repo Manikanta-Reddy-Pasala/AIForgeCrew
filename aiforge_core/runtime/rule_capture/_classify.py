@@ -132,7 +132,7 @@ _LASTING = re.compile(r"\b(?:always|never|every|each|from\s+now\s+on|remember|wh
 
 
 def _one_off(canonical: str) -> bool:
-    """A real chain stored "Use the pcb-bugfix workflow for this." as a
+    """A real chain stored "Use the svc-bugfix workflow for this." as a
     PERMANENT project rule, injected as mandatory into every later session."""
     return bool(_ONE_OFF.search(canonical)) and not _LASTING.search(canonical)
 

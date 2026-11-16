@@ -19,7 +19,7 @@ _ARCHETYPES: tuple[str, ...] = (
     # Extended pipeline (2026-05-07).
     "triage", "researcher", "refiner",
     # Post-validator live boot (2026-05-23): runs the recipe under
-    # aiforge_core/recipes/live_verify/<project>.md.
+    # <config>/recipes/live_verify/<project>.md (or the packaged _default.md).
     "live_verifier",
     # Parallel context-gathering fan-out (ParallelAgent) — see
     # runtime.parallel_stages. Read-only gatherers, local-tier by default.

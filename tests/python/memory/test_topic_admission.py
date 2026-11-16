@@ -76,7 +76,7 @@ def test_existing_topics_excludes_repo_and_shared_briefs(monkeypatch, tmp_path):
     monkeypatch.setenv("AIFORGE_MEMORY_MD_DIR", str(tmp_path))
     from aiforge_core.memory import md_store as m
     m._brief_upsert("shared", "a global rule")
-    m._brief_upsert("oneshell-pos", "a repo fact")
+    m._brief_upsert("acme-pos", "a repo fact")
     m._brief_upsert("data-sync", "a topic fact")
-    monkeypatch.setattr(_topics, "_repo_brief_names", lambda: {"oneshell-pos"})
+    monkeypatch.setattr(_topics, "_repo_brief_names", lambda: {"acme-pos"})
     assert _topics.existing_topics() == ["data-sync"]

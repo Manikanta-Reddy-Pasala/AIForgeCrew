@@ -474,7 +474,7 @@ def test_ticket_run_keeps_failed_approaches_across_a_resume(monkeypatch):
     assert meta["doer_handoff"]["goal"] == "fix the flaky sync"
 
     # the run dies; the retry is seeded from the ticket
-    ticket = pytypes.SimpleNamespace(id=41, identifier="ONE-1", project="p",
+    ticket = pytypes.SimpleNamespace(id=41, identifier="JIRA-1", project="p",
                                      title="fix the flaky sync", body="",
                                      metadata=meta)
     from aiforge_core.runtime.adk_runner import _run_inputs as RI

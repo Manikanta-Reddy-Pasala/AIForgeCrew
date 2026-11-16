@@ -296,7 +296,7 @@ def tickets(monkeypatch):
     monkeypatch.setattr(
         C.tickets_mod, "create",
         lambda **kw: seen.update(kw) or pytypes.SimpleNamespace(
-            id=41, identifier="ONE-41"))
+            id=41, identifier="JIRA-41"))
     return seen
 
 
@@ -305,7 +305,7 @@ def test_a_chat_message_becomes_an_urgent_interactive_ticket(client, session,
     r = client.post("/api/chat/sessions/7/ticket",
                     json={"content": "add a lexer\nwith tests"})
     assert r.status_code == 201
-    assert r.json()["ticket"] == "ONE-41"
+    assert r.json()["ticket"] == "JIRA-41"
     assert r.json()["ticket_id"] == 41
     assert tickets["priority"] == "urgent"
     assert tickets["route"] == "code"
@@ -341,8 +341,8 @@ def test_the_transcript_records_the_run(client, session, tickets):
     client.post("/api/chat/sessions/7/ticket", json={"content": "go"})
     roles = [m[0] for m in session["messages"]]
     assert roles == ["user", "assistant"]
-    assert "ONE-41" in session["messages"][1][1]
-    assert session["messages"][1][2][0]["identifier"] == "ONE-41"
+    assert "JIRA-41" in session["messages"][1][1]
+    assert session["messages"][1][2][0]["identifier"] == "JIRA-41"
 
 
 def test_an_empty_ticket_is_rejected(client, session, tickets):
@@ -440,7 +440,7 @@ def test_a_shared_context_dir_is_never_clobbered(resend, monkeypatch, tmp_path):
     """Another session or the operator has uncommitted work there, and the
     checkpoint sha may not even exist in a rebound repo."""
     from aiforge_core.runtime import work_context as wc
-    monkeypatch.setattr(wc, "context_for_path", lambda p: ("jira", "ONE-7"))
+    monkeypatch.setattr(wc, "context_for_path", lambda p: ("jira", "JIRA-7"))
     C._apply_edit_resend({"cwd": str(tmp_path)}, 7, _body())
     assert resend["restored"] == []
     assert resend["truncated"] == [5], "history is truncated either way"
@@ -574,7 +574,7 @@ def rehome(monkeypatch, tmp_path):
     root = tmp_path / "chat-workspaces"
     root.mkdir()
     monkeypatch.setenv("AIFORGE_CHAT_WORKSPACE_ROOT", str(root))
-    state: dict = {"ctx": ("jira", "ONE-7"), "bound": None, "root": root}
+    state: dict = {"ctx": ("jira", "JIRA-7"), "bound": None, "root": root}
     monkeypatch.setattr(wc, "context_for_path", lambda p: None)
     monkeypatch.setattr(wc, "detect_context", lambda prompt: state["ctx"])
     monkeypatch.setattr(wc, "context_dir",
@@ -588,24 +588,24 @@ def test_an_ephemeral_scratch_moves_onto_the_named_contexts_dir(rehome):
     """So that context's scratch survives the session that opened it."""
     cwd = rehome["root"] / "session-7"
     cwd.mkdir()
-    assert C._rehome_context_workspace(str(cwd), "look at ONE-7", 7) \
-        == "/work/jira/ONE-7"
-    assert rehome["bound"] == (7, "/work/jira/ONE-7")
+    assert C._rehome_context_workspace(str(cwd), "look at JIRA-7", 7) \
+        == "/work/jira/JIRA-7"
+    assert rehome["bound"] == (7, "/work/jira/JIRA-7")
 
 
 def test_a_real_repo_is_never_hijacked(rehome, tmp_path):
     """Re-homing one would strand the user's work in an empty folder."""
-    assert C._rehome_context_workspace(str(tmp_path), "ONE-7", 7) \
+    assert C._rehome_context_workspace(str(tmp_path), "JIRA-7", 7) \
         == str(tmp_path)
     assert rehome["bound"] is None
 
 
 def test_an_already_bound_context_is_left_where_it_is(rehome, monkeypatch):
     from aiforge_core.runtime import work_context as wc
-    monkeypatch.setattr(wc, "context_for_path", lambda p: ("jira", "ONE-1"))
+    monkeypatch.setattr(wc, "context_for_path", lambda p: ("jira", "JIRA-1"))
     cwd = rehome["root"] / "session-7"
     cwd.mkdir()
-    assert C._rehome_context_workspace(str(cwd), "ONE-7", 7) == str(cwd)
+    assert C._rehome_context_workspace(str(cwd), "JIRA-7", 7) == str(cwd)
 
 
 def test_a_prompt_naming_no_context_changes_nothing(rehome):
@@ -621,7 +621,7 @@ def test_a_failing_bind_never_blocks_the_turn(rehome, monkeypatch):
                         lambda p: (_ for _ in ()).throw(RuntimeError("x")))
     cwd = rehome["root"] / "session-7"
     cwd.mkdir()
-    assert C._rehome_context_workspace(str(cwd), "ONE-7", 7) == str(cwd)
+    assert C._rehome_context_workspace(str(cwd), "JIRA-7", 7) == str(cwd)
 
 
 # ─── titling ───────────────────────────────────────────────────────────
@@ -890,7 +890,7 @@ def test_a_dossier_folder_gets_no_changes_view(monkeypatch, kind):
     """A plain READ writes ticket.md + attachments there and would otherwise
     report "N files changed"."""
     from aiforge_core.runtime import work_context as wc
-    monkeypatch.setattr(wc, "context_for_path", lambda p: (kind, "ONE-7"))
+    monkeypatch.setattr(wc, "context_for_path", lambda p: (kind, "JIRA-7"))
     assert C._commit_simple_baseline("/ctx") == ("", True)
 
 

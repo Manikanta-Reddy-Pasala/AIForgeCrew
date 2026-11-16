@@ -70,7 +70,7 @@ export function initials(s: string): string {
   return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
-/** Extract "ONE" from "ONE-46", etc. */
+/** Extract "PROJ" from "PROJ-46", etc. */
 export function identifierPrefix(id: string): string {
   const m = /^([A-Z]+)-/.exec(id || '');
   return m ? m[1] : '';

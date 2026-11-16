@@ -53,18 +53,18 @@ def embedded(monkeypatch):
 
 
 def test_a_ticket_key_in_the_text_is_picked_up(monkeypatch):
-    ctx = _ctx(monkeypatch, text="what broke in ONE-42?")
-    assert ctx.auto_ticket == "ONE-42"
+    ctx = _ctx(monkeypatch, text="what broke in JIRA-42?")
+    assert ctx.auto_ticket == "JIRA-42"
 
 
 def test_an_explicit_ticket_wins(monkeypatch):
-    ctx = _ctx(monkeypatch, text="ONE-42", ticket="ONE-9")
-    assert ctx.auto_ticket == "ONE-9"
+    ctx = _ctx(monkeypatch, text="JIRA-42", ticket="JIRA-9")
+    assert ctx.auto_ticket == "JIRA-9"
 
 
 def test_the_repo_falls_back_to_the_environment(monkeypatch):
-    monkeypatch.setenv("AIFORGE_AFM_REPO", "PosFrontend")
-    assert _ctx(monkeypatch, repo=None)._repo_or_env() == "PosFrontend"
+    monkeypatch.setenv("AIFORGE_AFM_REPO", "WebFrontend")
+    assert _ctx(monkeypatch, repo=None)._repo_or_env() == "WebFrontend"
     assert _ctx(monkeypatch, repo="Given")._repo_or_env() == "Given"
 
 
@@ -95,7 +95,7 @@ def test_keyword_search_catches_what_embeddings_blur(monkeypatch, embedded):
     from aiforge_core.memory import sqlite_memory
     monkeypatch.setattr(sqlite_memory, "keyword_search",
                         lambda text, repo=None, limit=None:
-                        [{"text": "ONE-42 fixed in a1b2c3d"}])
+                        [{"text": "JIRA-42 fixed in a1b2c3d"}])
     ctx = _ctx(monkeypatch)
     Q._src_keyword(ctx)
     assert ctx.used == ["keyword"]
@@ -168,7 +168,7 @@ def test_a_ticket_brief_is_recalled_at_full_score(monkeypatch):
     monkeypatch.setattr(pkg, "_ticket_brief",
                         lambda key: {"text": f"brief for {key}"},
                         raising=False)
-    ctx = _ctx(monkeypatch, ticket="ONE-42")
+    ctx = _ctx(monkeypatch, ticket="JIRA-42")
     Q._src_ticket(ctx)
     assert ctx.used == ["ticket"]
     assert ctx.raw_hits[0]["_raw_score"] == 1.0
@@ -220,8 +220,8 @@ def test_related_memories_are_keyed_by_ticket_symbol_or_text(monkeypatch):
                         or [{"text": "related"}], raising=False)
     monkeypatch.setattr(pkg, "_unpack_mcp_rows", lambda rows: rows,
                         raising=False)
-    Q._src_related(_ctx(monkeypatch, ticket="ONE-42"))
-    assert seen["key"] == "ONE-42"
+    Q._src_related(_ctx(monkeypatch, ticket="JIRA-42"))
+    assert seen["key"] == "JIRA-42"
     Q._src_related(_ctx(monkeypatch, text="plain question"))
     assert seen["key"] == "plain question"
 
@@ -640,6 +640,6 @@ def test_the_ticket_sources_answer_nothing_on_this_build():
     stay so recall's call site is untouched, but they say so plainly instead
     of routing through shims that could never return a row."""
     import aiforge_core.memory.unified_query as pkg
-    assert pkg._ticket_brief("ONE-1") is None
-    assert pkg._ticket_local("ONE-1") is None
-    assert pkg._mcp_call("ticket_brief", {"id": "ONE-1"}) is None
+    assert pkg._ticket_brief("JIRA-1") is None
+    assert pkg._ticket_local("JIRA-1") is None
+    assert pkg._mcp_call("ticket_brief", {"id": "JIRA-1"}) is None

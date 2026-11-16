@@ -61,8 +61,8 @@ def _fts_rows(c, toks: list[str], repo, limit: int) -> list:
         if len(parts) == 1:
             terms.append(f"{parts[0]}*")                # single word → prefix
         else:
-            # a hyphenated token (ONE-3, sha-256) tokenizes as adjacent words in
-            # FTS → match it as a phrase so "one-3" finds "ONE-3".
+            # a hyphenated token (PROJ-3, sha-256) tokenizes as adjacent words in
+            # FTS → match it as a phrase so "proj-3" finds "PROJ-3".
             terms.append('"' + " ".join(parts) + '"')
     if not terms:
         return []

@@ -12,7 +12,7 @@ WorkingDirectory=%h/AIForgeCrew
 #   --host 0.0.0.0  — fleet / WireGuard peers must reach :8799 (not loopback).
 #   AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1 — boot guard otherwise crash-loops the
 #     sandbox when bound off-loopback with no token; this box is fronted by the
-#     WG reverse proxy (77.42.45.12:9443 / tickets.oneshell.in), not exposed bare.
+#     WG reverse proxy (the public tickets host), not exposed bare.
 #   AIFORGE_BIND_HOST — compose passthrough so the guard sees the intended bind.
 Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=AIFORGE_ALLOW_UNAUTH_NONLOOPBACK=1

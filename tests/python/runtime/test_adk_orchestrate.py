@@ -3,7 +3,7 @@
 The gates after the run are the substance. Two of them are ground truth git
 can establish and a model's prose cannot: a diff of only test files is a
 demotion, and a "pass" with a CLEAN TREE is a false pass — the Doer narrated an
-edit it never wrote, which is exactly how ONE-163/164 both landed "done" with
+edit it never wrote, which is exactly how JIRA-163/164 both landed "done" with
 no commit. A third distinguishes finished-but-imperfect work: partial WITH a
 PR goes to in_review so a human looks at it, partial without one stays blocked
 because there is nothing to review.
@@ -23,7 +23,7 @@ from aiforge_core.runtime.adk_runner import _orchestrate as orc
 
 
 def _ticket(**kw):
-    base = {"id": 1, "identifier": "ONE-1", "title": "Fix the parser",
+    base = {"id": 1, "identifier": "JIRA-1", "title": "Fix the parser",
             "body": "details", "project": "app", "metadata": {}}
     base.update(kw)
     return pytypes.SimpleNamespace(**base)
@@ -60,11 +60,11 @@ def test_an_unreadable_comment_store_adds_nothing(monkeypatch):
 
 def test_attachments_are_listed_by_their_worktree_path():
     t = _ticket(metadata={"attached_files": [
-        {"path": ".aiforge/ticket-files/ONE-1/spec.pdf", "name": "spec.pdf",
+        {"path": ".aiforge/ticket-files/JIRA-1/spec.pdf", "name": "spec.pdf",
          "size": 1200},
         "not a dict"]})
     out = orc._attachments_block(t)
-    assert ".aiforge/ticket-files/ONE-1/spec.pdf" in out
+    assert ".aiforge/ticket-files/JIRA-1/spec.pdf" in out
     assert "1200 bytes" in out
     assert "file_read" in out
 
@@ -156,7 +156,7 @@ def test_the_seed_prompt_carries_the_ticket_not_the_memory_block(monkeypatch):
     monkeypatch.setattr(orc, "_playbook_prefix", lambda hay, cwd: ("", [], []))
     monkeypatch.setattr(orc, "_emit_context_injected", lambda t, s, w: None)
     out = orc._build_prompt(_ticket(), "MEMORY BLOCK")
-    assert "# Ticket ONE-1" in out
+    assert "# Ticket JIRA-1" in out
     assert "Fix the parser" in out
     assert "MEMORY BLOCK" not in out
 
@@ -281,7 +281,7 @@ def test_a_test_only_diff_demotes_the_verdict():
 
 
 def test_a_pass_with_a_clean_tree_is_a_false_pass(monkeypatch):
-    """ONE-163/164 both landed "done" with no commit — the Doer narrated an
+    """JIRA-163/164 both landed "done" with no commit — the Doer narrated an
     edit it never wrote and the feedback agent believed the prose."""
     monkeypatch.delenv("AIFORGE_ALLOW_EMPTY_PASS", raising=False)
     v = orc._Verdict("pass", "looks right")
@@ -509,7 +509,7 @@ def test_a_spec_scaffold_is_written_when_the_switch_is_on(monkeypatch, tmp_path)
                         lambda ident, body, repo_root=None, language=None:
                         seen.update(ident=ident, language=language))
     orc._write_spec_scaffold(_ticket(), str(tmp_path))
-    assert seen == {"ident": "ONE-1", "language": "python"}
+    assert seen == {"ident": "JIRA-1", "language": "python"}
 
 
 def test_the_default_does_not_plant_a_failing_test(monkeypatch, tmp_path):
@@ -693,7 +693,7 @@ def test_an_empty_queue_returns_false(loop):
 
 def test_a_claimed_ticket_runs_and_restores_the_environment(loop):
     assert orc._process_one_ticket() is True
-    assert loop["ran"] == ["ONE-1"]
+    assert loop["ran"] == ["JIRA-1"]
     assert loop["restored"] == {"env": "prior"}
     assert loop["forced"][-1] is None       # the override never leaks
 
@@ -820,7 +820,7 @@ def test_an_idle_pass_picks_up_a_ticket_that_arrives(entry, monkeypatch):
 def test_orphaned_tickets_are_requeued_before_claiming(entry):
     """Re-claim only selects 'todo', so a crash-orphaned in_progress ticket
     would stay stuck forever."""
-    entry["reaped"] = ["ONE-9"]
+    entry["reaped"] = ["JIRA-9"]
     assert orc.main() == 0
 
 

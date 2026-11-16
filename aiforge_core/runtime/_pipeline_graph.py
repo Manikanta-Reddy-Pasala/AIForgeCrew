@@ -17,7 +17,7 @@ def _set_node_modes(chat_nodes, single_turn) -> None:
     need from state-templated prompt blocks ({plan_md?} etc.), so replaying the
     full 22-node history into each of them wastes tokens massively (3 verifiers
     × full history × up to 4 planner epochs, plus the validator) and re-creates
-    the ONE-117 KV pressure.
+    the T-117 KV pressure.
     """
     for a in chat_nodes:
         # A text-doer FunctionNode is a pydantic model with no ``mode`` field
@@ -252,7 +252,7 @@ def _workflow_concurrency() -> int | None:
     """Cap concurrent graph-scheduled nodes. The 4-way context fan-out against
     a single local mlx-lm endpoint is queueing, not parallelism — the server
     processes serially while 4 in-flight chat-mode prompts multiply KV-cache
-    pressure (the ONE-117 OOM recipe). Floor is 3: with a smaller cap a replan
+    pressure (the T-117 OOM recipe). Floor is 3: with a smaller cap a replan
     pass can re-fire the 3 verify branches across two scheduler waves, and
     ADK's JoinNode then sees the not-yet-rescheduled third branch's stale
     pass-1 COMPLETED status and fires early with the old axis verdict

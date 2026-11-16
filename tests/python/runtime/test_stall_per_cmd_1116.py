@@ -14,12 +14,12 @@ def test_class_stuck_red_refuses_first_extension(monkeypatch):
     monkeypatch.delenv("AIFORGE_CHAT_STALL_RUNS", raising=False)
     st = _st()
     for f in (3, 2, 1):
-        _limits.note_test_fails(st, f, "mvn test -Dtest=CashflowTest")
-    _limits.note_test_fails(st, 0, "mvn test -Dtest=CashflowTest#one")   # green method
+        _limits.note_test_fails(st, f, "mvn test -Dtest=InvoiceTest")
+    _limits.note_test_fails(st, 0, "mvn test -Dtest=InvoiceTest#one")   # green method
     assert _limits._may_extend(st, 10) is True                           # still moving
     st.granted_at_step = None; st.extensions_used = 0; st.edits_made = 2
     for _ in range(8):
-        _limits.note_test_fails(st, 1, "mvn test -Dtest=CashflowTest")
+        _limits.note_test_fails(st, 1, "mvn test -Dtest=InvoiceTest")
     assert _limits._stuck_red(st) is True
     assert _limits._may_extend(st, 20) is False
 

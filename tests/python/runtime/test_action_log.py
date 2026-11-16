@@ -90,7 +90,7 @@ def test_each_action_is_a_line_with_its_outcome():
         _tool("file_patch", {"path": "src/gone.py"}, ok=False, error="old_text_not_found"),
         _tool("run_command", {"cmd": "npm run dev", "background": True},
               ok=True, background=True, id="bg-3", pid=41),
-        _tool("jira_create", {"summary": "Fix sync"}, ok=True, key="ONE-9"),
+        _tool("jira_create", {"summary": "Fix sync"}, ok=True, key="JIRA-9"),
     ]) == [
         "✓ run_command(npm install) — exit 0",
         "✗ run_command(pytest -q) — exit 1: E AssertionError: expected 3",
@@ -98,7 +98,7 @@ def test_each_action_is_a_line_with_its_outcome():
         "✓ file_write(src/new.py) — created",
         "✗ file_patch(src/gone.py) — old_text_not_found",
         "… run_command(npm run dev) — still running (job bg-3)",
-        "✓ jira_create — ONE-9",
+        "✓ jira_create — JIRA-9",
     ]
 
 

@@ -9,7 +9,7 @@ from aiforge_core.runtime import git_pr
 
 class _T:
     project = "SomeRepo"
-    identifier = "ONE-1"
+    identifier = "JIRA-1"
 
 
 def test_fire_delta_ingest_spawns_cli(monkeypatch) -> None:

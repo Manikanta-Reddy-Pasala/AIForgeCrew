@@ -143,7 +143,7 @@ def scrub_items(value, *, drop: "set[str] | None" = None,
     return out
 
 
-# A Key Result naming a ticket (ONE-3) is the measurable-work twin of its fact
+# A Key Result naming a ticket (PROJ-3) is the measurable-work twin of its fact
 # on purpose (md_store W2 seeds it), so cross-section dedupe leaves it alone.
 _TICKET_KEY_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,9}-\d+\b")
 

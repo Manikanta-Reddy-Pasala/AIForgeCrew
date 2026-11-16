@@ -45,7 +45,7 @@ _SCAFFOLD_RES = (
     re.compile(r"^[|\[\]{}<>#*_=~+\-–—·•`'\"\s]*$"),        # punctuation only
     re.compile(r"^\s*\|"),                                  # a table row
     # A leading bracket is a table/usage fragment ("[ -c | --clear-l") UNLESS
-    # it is a tag or ticket key followed by prose ("[ONE-321] the GSTR session
+    # it is a tag or ticket key followed by prose ("[JIRA-321] the tax-portal session
     # was never renewed").
     re.compile(r"^\s*\[(?![A-Za-z0-9][\w.-]*\]\s+\S)"),
     re.compile(r"^\s*(?:#{1,6}|-{3,}|={3,}|\*{3,})\s"),     # heading / rule
@@ -148,7 +148,7 @@ def _unbalanced(text: str) -> bool:
 
     Two things it deliberately does not do, because this reason also DELETES
     during repair:
-    * a closer with no opener is NOT unbalanced. "1) commons, 2) MongoDbService"
+    * a closer with no opener is NOT unbalanced. "1) commons, 2) DbGateway"
       and "the runner exits 0 even when pytest fails :)" are ordinary prose.
     * brackets inside a code span do not count, and an odd number of backticks
       is not itself a fault ("A single backtick ` starts a command substitution",

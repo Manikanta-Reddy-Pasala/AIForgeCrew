@@ -37,7 +37,7 @@ def test_canonical_prefers_a_word_name(monkeypatch):
     monkeypatch.setattr(M, "_common_token_prefix", lambda c: "")
     assert M._canonical_name(sorted(["mx2-5044", "pipeline", "qwen-big-pipeline"], key=len), set()) == "pipeline"
     assert M._canonical_name(["c", "cpp-tools"], set()) == "cpp-tools"
-    assert M._canonical_name(["retry", "posclientbackend"], {"posclientbackend"}) == "posclientbackend"
+    assert M._canonical_name(["retry", "orderservice"], {"orderservice"}) == "orderservice"
 
 
 def test_repage_recuts_a_rotten_split_topic(tmp_path, monkeypatch):

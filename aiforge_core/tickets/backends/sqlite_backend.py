@@ -4,7 +4,7 @@ Raw dialect-specific ops only; all business logic lives in store.py.
 JSON columns (labels, metadata) are stored as TEXT and (de)serialized
 here so returned rows match the psycopg dict_row shape (labels -> list,
 metadata -> dict, timestamps -> datetime). The counter is seeded at 100
-so the first identifier is ONE-100, matching the historical Postgres
+so the first identifier is <PREFIX>-100, matching the historical Postgres
 behavior.
 """
 from __future__ import annotations
@@ -358,7 +358,7 @@ class SqliteBackend:
             return (cur.rowcount or 0) > 0
 
     def reset_all_tickets(self) -> int:
-        """Delete ALL tickets + events and reset the ONE-<n> counter to its
+        """Delete ALL tickets + events and reset the <PREFIX>-<n> counter to its
         seed (100) and the row autoincrement, so the sequence starts over."""
         with self._conn() as c:
             n = c.execute("SELECT COUNT(*) FROM tickets").fetchone()[0]

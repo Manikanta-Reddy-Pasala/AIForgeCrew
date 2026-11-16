@@ -30,7 +30,7 @@ def _setup_ticket_workspace(ticket) -> tuple[str | None, dict]:
     # memory_lookup, impacted_tests) to THIS ticket's
     # repo — without it those sources fall back to a process-global that
     # is never set (→ dead) or, if exported once, leaks another repo's
-    # context into every ticket (the ONE-2 class bug).
+    # context into every ticket (the T-2 class bug).
     prior = {
         "AIFORGE_REPO_ROOT": os.environ.get("AIFORGE_REPO_ROOT"),
         "AIFORGE_AFM_REPO": os.environ.get("AIFORGE_AFM_REPO"),

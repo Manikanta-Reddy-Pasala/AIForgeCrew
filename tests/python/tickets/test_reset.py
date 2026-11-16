@@ -22,8 +22,8 @@ def test_reset_all_clears_and_restarts_sequence(store):
         store.create(title=f"t{i}", body="x")
     assert store.reset_all() >= 3
     assert store.list_tickets(None, None, None, 100) == []
-    # reset rewinds the counter to its seed → next ticket is ONE-100
-    assert store.create(title="fresh", body="y").identifier == "ONE-100"
+    # reset rewinds the counter to its seed → next ticket is AF-100
+    assert store.create(title="fresh", body="y").identifier == "AF-100"
 
 
 def test_chat_reset_restarts_session_ids(monkeypatch, tmp_path):

@@ -7,7 +7,7 @@ from aiforge_core.runtime.chat_agent._guards import external as X
 @pytest.mark.parametrize("text,done,missing", [
     ("I created the Confluence page for the design.", set(), ["confluence"]),
     ("The page has been published to the wiki.", set(), ["confluence"]),
-    ("I've filed the Jira ticket ONE-12 for this.", set(), ["jira"]),
+    ("I've filed the Jira ticket JIRA-12 for this.", set(), ["jira"]),
     ("I created the Confluence page.", {"confluence"}, []),
     ("I created the Confluence page and raised a Jira issue.", {"confluence"}, ["jira"]),
     ("I could not create the Confluence page.", set(), []),

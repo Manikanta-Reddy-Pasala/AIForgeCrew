@@ -217,7 +217,7 @@ def _with_images(content, ticket, _gtypes):
 def _pipeline_run_config():
     """Hard ceiling on total LLM calls for the whole pipeline run.
 
-    A local model (Qwen) can thrash — ONE-7 made 383 calls across 52 minutes and
+    A local model (Qwen) can thrash — T-7 made 383 calls across 52 minutes and
     wrote ZERO files, spinning on read/think without ever committing an edit.
     ADK's default cap is high enough that it never tripped. Bounding it means a
     stuck local Doer aborts (and lands the ticket as blocked) instead of burning

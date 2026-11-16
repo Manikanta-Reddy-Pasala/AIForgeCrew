@@ -26,7 +26,7 @@ def test_delegate_happy(monkeypatch):
             "output": "research notes ...", "state_keys": ["research_brief"],
         }
     monkeypatch.setattr(dlg, "_run_delegate_async", _fake_run)
-    out = dlg.delegate_to_agent("researcher", "context for ONE-200")
+    out = dlg.delegate_to_agent("researcher", "context for JIRA-200")
     assert out["ok"]
     assert out["role"] == "researcher"
     assert "research notes" in out["output"]

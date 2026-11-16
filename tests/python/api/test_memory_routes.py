@@ -66,7 +66,7 @@ def test_the_dag_panel_is_flagged_when_enabled(client, monkeypatch):
     ({"channel": "linked"}, "md"),
     ({"source": "compacted:topic"}, "md"),
     ({"source": "md:notes"}, "md"),
-    ({"source": "ticket:ONE-1"}, "other"),
+    ({"source": "ticket:JIRA-1"}, "other"),
     ({}, "other"),
 ])
 def test_hits_are_bucketed_by_origin(hit, origin):
@@ -119,12 +119,12 @@ def test_each_bucket_is_capped_at_top_k(client, search):
 
 def test_a_row_carries_its_metadata_and_is_text_capped(client, search):
     search["result"] = {"hits": [{"channel": "memory", "text": "x" * 2000,
-                                  "ticket": "ONE-1", "repo": "app",
+                                  "ticket": "JIRA-1", "repo": "app",
                                   "kind": "learning", "linked": True}],
                         "ranked": []}
     row = client.get("/api/memory/search?q=lru").json()["hits"][0]
     assert len(row["text"]) == 800
-    assert row["metadata"] == {"ticket": "ONE-1", "repo": "app"}
+    assert row["metadata"] == {"ticket": "JIRA-1", "repo": "app"}
     assert row["wing"] == "learning"
     assert row["linked"] is True
 

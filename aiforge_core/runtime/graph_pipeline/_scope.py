@@ -18,7 +18,7 @@ def _iter_scannable_rel_paths(base):
     p.parts. The ticket worktree lives UNDER .aiforge-worktrees/, so an absolute
     p.parts check matched '.aiforge-worktrees' on EVERY file and skipped the
     whole tree → "matches nothing" → scope wrongly cleared → empty pass
-    (ONE-163/164)."""
+    (T-163/164)."""
     for p in base.rglob("*"):
         if not p.is_file():
             continue

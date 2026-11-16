@@ -32,7 +32,7 @@ def _drain(gen):
 @pytest.fixture
 def curator(monkeypatch):
     from aiforge_core.runtime import note_curator as nc
-    state: dict = {"stale": "/ctx/ONE-7.md", "result": None, "calls": []}
+    state: dict = {"stale": "/ctx/JIRA-7.md", "result": None, "calls": []}
     monkeypatch.setattr(nc, "stale_note_path", lambda cwd: state["stale"])
 
     def _curate(path):
@@ -48,7 +48,7 @@ def test_a_note_that_actually_drifted_is_reported(curator):
     curator["result"] = {"ok": True, "changes": ["status: open → done"]}
     evs = _drain(C._note_staleness_notice("/repo"))
     assert evs[0]["role"] == "curator"
-    assert "ONE-7.md" in evs[0]["text"]
+    assert "JIRA-7.md" in evs[0]["text"]
     assert "status: open → done" in evs[0]["text"]
 
 

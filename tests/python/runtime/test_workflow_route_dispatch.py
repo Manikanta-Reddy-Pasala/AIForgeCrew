@@ -58,11 +58,11 @@ def test_material_gaps_block_with_the_reason(monkeypatch, calls):
     from aiforge_core import workflows
     monkeypatch.setattr(workflows, "dispatch", _handler(
         {"udiff": "", "blocked_by_detectors": True,
-         "problems": [{"mode": "missing_attachment", "evidence": "tally"}]}, calls))
+         "problems": [{"mode": "missing_attachment", "evidence": "ledger"}]}, calls))
     orch._run_claimed_ticket(_ticket())
     _tid, status, kw = calls["status"][-1]
     assert status == "blocked"
-    assert "missing_attachment: tally" in kw["metadata_patch"]["blocked_reason"]
+    assert "missing_attachment: ledger" in kw["metadata_patch"]["blocked_reason"]
 
 
 def test_an_unknown_workflow_blocks_instead_of_running_the_code_pipeline(monkeypatch, calls):

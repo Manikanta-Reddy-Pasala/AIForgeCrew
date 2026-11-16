@@ -25,7 +25,7 @@ _EXTRACT_SYS = (
     "  project_learning  a lesson about ONE repository/service\n"
     "  topic_learning    a lesson about a cross-cutting theme/workflow\n"
     "  user_comment      a meaningful thing the USER said to keep (intent/preference)\n"
-    "PRESERVE EXACT IDENTIFIERS verbatim — jira/issue keys (ONE-3), version "
+    "PRESERVE EXACT IDENTIFIERS verbatim — jira/issue keys (PROJ-3), version "
     "numbers, file paths, commands, config values, ports, error codes. Never "
     "generalize away or reword an id.\n"
     "Every item MUST also carry:\n"

@@ -10,7 +10,7 @@ The ``PROMPT`` constant exposes the structural-plan contract the
 external Architect must follow (file tree + symbol owners + per-file
 import allowlist). The runtime surfaces the Architect's output into
 ADK session state under ``structural_plan`` so the Doer can look up
-the canonical owner of any symbol it imports — fixing the ONE-117
+the canonical owner of any symbol it imports — fixing the T-117
 "guessed wrong location for StockMovement" class of bug.
 
 If you need the Architect's contract (tool allowlist, max_turns),

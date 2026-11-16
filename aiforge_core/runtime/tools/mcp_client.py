@@ -1,13 +1,13 @@
 """MCP (Model Context Protocol) client tool — closes EVAL-4 integration
 follow-up from 2026-04-23.
 
-The Doer can list tools on configured MCP endpoints (default = oneshell-mcp
-QA tier on NUC: mongo/k8s/tekton/tally servers) and invoke them by name.
+The Doer can list tools on configured MCP endpoints (e.g. a QA tier of
+database / k8s / CI / integration servers) and invoke them by name.
 Endpoints can be HTTP (FastMCP / SSE) or stdio (npx server-github style).
 
 Two transports:
   * **HTTP/SSE** — pure JSON-over-HTTP (FastMCP semantics, the shape
-    oneshell-mcp ships). Talks to a hosted MCP server.
+    a hosted FastMCP server speaks). Talks to a hosted MCP server.
   * **stdio** — spawns a LOCAL child process (e.g. ``npx
     @modelcontextprotocol/server-filesystem``) via the ``mcp`` python SDK.
     LOCAL-only: a subprocess on this machine, no network, no phone-home.

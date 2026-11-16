@@ -473,7 +473,7 @@ def run_subtasks_parallel(identifier: str) -> dict:
 
 @router.post("/api/tickets/reset")
 def tickets_reset() -> dict:
-    """Delete ALL tickets + events and reset the ONE-<n> counter so the next
+    """Delete ALL tickets + events and reset the <PREFIX>-<n> counter so the next
     ticket restarts the sequence. Worktrees / branches / PRs are NOT touched."""
     return {"ok": True, "deleted": tickets_mod.reset_all()}
 

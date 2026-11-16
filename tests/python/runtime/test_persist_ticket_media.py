@@ -13,7 +13,7 @@ from aiforge_core.runtime import adk_runner
 
 @dataclass
 class _Ticket:
-    identifier: str = "ONE-200"
+    identifier: str = "JIRA-200"
     project: str = "demo"
     metadata: dict = field(default_factory=lambda: {
         "attached_files": [
@@ -41,7 +41,7 @@ def test_embedded_writes_attachment_to_sqlite(monkeypatch):
 
     assert captured.get("kind") == "attachment"
     assert captured.get("repo") == "demo"
-    assert captured.get("ticket") == "ONE-200"
+    assert captured.get("ticket") == "JIRA-200"
     # only the image was captured, not the .txt
     refs = (captured.get("metadata") or {}).get("media_refs")
     assert refs == ["/w/shot.png"]

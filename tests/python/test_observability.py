@@ -43,7 +43,7 @@ def test_emit_pr_opened_calls_add_event() -> None:
         obs.emit_pr_opened(
             ticket_id=42,
             pr_url="https://github.com/x/y/pull/1",
-            branch="aiforge/ONE-1",
+            branch="aiforge/JIRA-1",
         )
     fake_add_event.assert_called_once()
     call_args = fake_add_event.call_args
@@ -69,7 +69,7 @@ def test_emit_commit_calls_add_event() -> None:
         obs.emit_commit(
             ticket_id=42,
             sha="abc1234567890",
-            message="feat(ONE-1): add serial reconciler",
+            message="feat(JIRA-1): add serial reconciler",
         )
     fake_add_event.assert_called_once()
     call_args = fake_add_event.call_args

@@ -1,7 +1,7 @@
 """Aliases, meta no-ops, and the Doer's power tools.
 
 Most of this file exists because ADK hard-errors on an unregistered tool name
-and that kills the whole ticket: ONE-7 spent 37 minutes looping "Tool 'edit'
+and that kills the whole ticket: JIRA-7 spent 37 minutes looping "Tool 'edit'
 not found" and finished with no_changes. So the aliases and the no-ops are not
 cosmetic — each one is a run that would otherwise have died, and a test that
 they still delegate to the canonical implementation is the point.
@@ -84,7 +84,7 @@ def ticket(monkeypatch):
 
     class _T:
         id = 7
-    monkeypatch.setenv("AIFORGE_CURRENT_TICKET", "ONE-1")
+    monkeypatch.setenv("AIFORGE_CURRENT_TICKET", "JIRA-1")
     monkeypatch.delenv("AIFORGE_CURRENT_SESSION", raising=False)
     monkeypatch.setattr(store, "get", lambda ident: _T())
     seen: dict = {}
@@ -108,7 +108,7 @@ def test_no_current_ticket(monkeypatch):
 
 def test_a_ticket_that_does_not_exist(monkeypatch):
     from aiforge_core.tickets import store
-    monkeypatch.setenv("AIFORGE_CURRENT_TICKET", "ONE-9")
+    monkeypatch.setenv("AIFORGE_CURRENT_TICKET", "JIRA-9")
     monkeypatch.setattr(store, "get", lambda ident: None)
     assert "ticket not found" in t.subtask_update("s", "done")["error"]
 
@@ -135,7 +135,7 @@ def test_a_failed_emit_never_breaks_the_tool(ticket, monkeypatch):
 
 def test_a_broken_store_is_reported_not_raised(monkeypatch):
     from aiforge_core.tickets import store
-    monkeypatch.setenv("AIFORGE_CURRENT_TICKET", "ONE-1")
+    monkeypatch.setenv("AIFORGE_CURRENT_TICKET", "JIRA-1")
     monkeypatch.setattr(store, "get",
                         lambda ident: (_ for _ in ()).throw(RuntimeError("db gone")))
     assert t.subtask_update("s", "done") == {"ok": False, "error": "db gone"}

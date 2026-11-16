@@ -30,8 +30,8 @@ def test_migrate_creates_tables(db) -> None:
 
 
 def test_repo_hash_round_trip(db) -> None:
-    sdb.set_repo_pack_sha(db, repo="PosClientBackend", pack_sha="abc123")
-    sha = sdb.get_repo_pack_sha(db, repo="PosClientBackend")
+    sdb.set_repo_pack_sha(db, repo="OrderService", pack_sha="abc123")
+    sha = sdb.get_repo_pack_sha(db, repo="OrderService")
     assert sha == "abc123"
 
 

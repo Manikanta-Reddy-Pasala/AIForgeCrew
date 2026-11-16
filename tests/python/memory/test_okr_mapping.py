@@ -35,7 +35,7 @@ def _write_brief(md_store, key, facts):
 def test_normalize_links_keeps_sibling_brief_link():
     from aiforge_core.runtime.work_notes import normalize_links
     out = normalize_links(["[global](compacted-shared.md)"],
-                          "knowledge", "oneshell-pos")
+                          "knowledge", "acme-pos")
     assert out == ["[global](compacted-shared.md)"]
 
 
@@ -43,7 +43,7 @@ def test_normalize_links_dedupes_sibling_brief_link():
     from aiforge_core.runtime.work_notes import normalize_links
     out = normalize_links(["[global](compacted-shared.md)",
                            "[global](compacted-shared.md)"],
-                          "knowledge", "oneshell-pos")
+                          "knowledge", "acme-pos")
     assert out == ["[global](compacted-shared.md)"]
 
 
@@ -51,11 +51,11 @@ def test_map_scopes_links_related_briefs_bidirectionally(monkeypatch, mem):
     monkeypatch.setenv("AIFORGE_OKR_SCOPE_LLM", "1")
     from aiforge_core.memory import md_store
     _write_brief(md_store, "shared", ["use && not ; to gate deploy commands"])
-    _write_brief(md_store, "oneshell-pos", ["deploy via git pull + restart"])
+    _write_brief(md_store, "acme-pos", ["deploy via git pull + restart"])
 
     def _fake(role, messages, model, *a, **k):
         return types.SimpleNamespace(
-            edges=[{"a": "shared", "b": "oneshell-pos", "reason": "deploy"}])
+            edges=[{"a": "shared", "b": "acme-pos", "reason": "deploy"}])
 
     monkeypatch.setattr("aiforge_core.llm.structured.structured_complete", _fake)
     res = md_store.map_scopes()
@@ -63,8 +63,8 @@ def test_map_scopes_links_related_briefs_bidirectionally(monkeypatch, mem):
 
     from aiforge_core.runtime.work_notes import parse_note
     shared = parse_note((md_store.brief_path("shared")).read_text())
-    pos = parse_note((md_store.brief_path("oneshell-pos")).read_text())
-    assert any("compacted-oneshell-pos.md" in l
+    pos = parse_note((md_store.brief_path("acme-pos")).read_text())
+    assert any("compacted-acme-pos.md" in l
                for l in shared["sections"].get("links", []))
     assert any("compacted-shared.md" in l
                for l in pos["sections"].get("links", []))
@@ -116,7 +116,7 @@ def test_map_scopes_strips_stale_links_keeps_urls(monkeypatch, mem):
     text = work_notes.render_note(
         "knowledge", "svc", title="svc brief", objective="Durable knowledge.",
         facts=["a repo fact"],
-        links=["[old](compacted-gone.md)", "https://jira.example/browse/ONE-1"],
+        links=["[old](compacted-gone.md)", "https://jira.example/browse/JIRA-1"],
         updated_at="2026-07-12T00:00:00+00:00")
     (md_store.brief_path("svc")).write_text(text, encoding="utf-8")
     _write_brief(md_store, "shared", ["a global fact"])
@@ -130,7 +130,7 @@ def test_map_scopes_strips_stale_links_keeps_urls(monkeypatch, mem):
         (md_store.brief_path("svc")).read_text())
     links = svc["sections"].get("links", [])
     assert not any("compacted-gone.md" in l for l in links)   # stale sibling gone
-    assert any("ONE-1" in l for l in links)                   # real URL kept
+    assert any("JIRA-1" in l for l in links)                   # real URL kept
 
 
 def test_map_scopes_noop_when_llm_off(mem):

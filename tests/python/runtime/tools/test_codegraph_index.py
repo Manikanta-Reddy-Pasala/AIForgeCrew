@@ -85,7 +85,7 @@ def test_no_binary_anywhere_means_unavailable(monkeypatch):
 @pytest.mark.parametrize("stem", [".aiforge-worktrees", ".worktrees"])
 def test_a_doers_worktree_resolves_back_to_the_parent_repo(stem):
     """The worktree has no index of its own."""
-    assert C._main_repo(f"/repos/app/{stem}/ONE-7") == "/repos/app"
+    assert C._main_repo(f"/repos/app/{stem}/JIRA-7") == "/repos/app"
 
 
 def test_a_plain_repo_path_is_left_alone():
@@ -259,7 +259,7 @@ def test_codegraph_can_be_switched_off_entirely(gate, monkeypatch, val):
 @pytest.mark.parametrize("val", [False, 0, "false", "0", "off", "no"])
 def test_one_ticket_can_opt_out(gate, monkeypatch, val):
     from aiforge_core.tickets import store
-    monkeypatch.setenv("AIFORGE_CURRENT_TICKET", "ONE-7")
+    monkeypatch.setenv("AIFORGE_CURRENT_TICKET", "JIRA-7")
     monkeypatch.setattr(store, "get",
                         lambda ident: pytypes.SimpleNamespace(
                             metadata={"codegraph": val}))
@@ -268,7 +268,7 @@ def test_one_ticket_can_opt_out(gate, monkeypatch, val):
 
 def test_a_ticket_that_says_nothing_keeps_it_on(gate, monkeypatch):
     from aiforge_core.tickets import store
-    monkeypatch.setenv("AIFORGE_CURRENT_TICKET", "ONE-7")
+    monkeypatch.setenv("AIFORGE_CURRENT_TICKET", "JIRA-7")
     monkeypatch.setattr(store, "get",
                         lambda ident: pytypes.SimpleNamespace(metadata={}))
     assert C.enabled_for_run("/repo") is True
@@ -276,7 +276,7 @@ def test_a_ticket_that_says_nothing_keeps_it_on(gate, monkeypatch):
 
 def test_a_ticket_store_hiccup_never_gates_the_run(gate, monkeypatch):
     from aiforge_core.tickets import store
-    monkeypatch.setenv("AIFORGE_CURRENT_TICKET", "ONE-7")
+    monkeypatch.setenv("AIFORGE_CURRENT_TICKET", "JIRA-7")
     monkeypatch.setattr(store, "get",
                         lambda ident: (_ for _ in ()).throw(OSError("db")))
     assert C.enabled_for_run("/repo") is True

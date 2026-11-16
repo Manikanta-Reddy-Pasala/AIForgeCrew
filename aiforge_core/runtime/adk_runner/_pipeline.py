@@ -54,7 +54,7 @@ def _build_context_plugins() -> list:
     don't blow past the LM's context window.
 
     Without this, ADK accumulates every tool result + LLM response in
-    session.events and replays the lot on every turn. ONE-117 hit
+    session.events and replays the lot on every turn. T-117 hit
     MLX GPU OOM (Metal command buffer abort → SIGABRT) after ~140
     LiteLLM calls because the prompt approached 131K tokens and the
     KV cache + 4-way parallel batches exceeded 96GB unified memory.

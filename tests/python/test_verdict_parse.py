@@ -8,7 +8,7 @@ shapes the model emits:
 * legacy strict JSON ``{"verdict": "pass", ...}`` (some models still
   output this even with the new prompt)
 * prose-wrapped garbage from chatty models that used to
-  parse-fail and silently drop into ``fail`` (ONE-107 root cause)
+  parse-fail and silently drop into ``fail`` (JIRA-107 root cause)
 """
 from __future__ import annotations
 

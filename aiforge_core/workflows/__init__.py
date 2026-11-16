@@ -1,7 +1,7 @@
 """Named workflow registry — alternative to the generic 9-stage code cascade.
 
-A *workflow* is a deterministic, domain-specific pipeline (e.g. Tally
-trial-balance reconciliation) that runs in place of the LLM cascade
+A *workflow* is a deterministic, domain-specific pipeline (e.g. a
+reconciliation of two exported reports) that runs in place of the LLM cascade
 when the ticket clearly maps to one. The registry is the single source
 of truth for which workflows exist, how to detect them from a ticket,
 and how to dispatch.
@@ -24,7 +24,8 @@ Registering a workflow:
         ...
 
 Registries auto-import bundled workflows on package load (see
-``aiforge_core.workflows._builtin``).
+``aiforge_core.workflows._builtin``), then any per-host workflow modules in
+``$AIFORGE_CONFIG_DIR/workflows/*.py`` (see ``aiforge_core.workflows._user``).
 """
 from .registry import (
     WorkflowSpec,
@@ -42,6 +43,9 @@ from .detector import (
 # Trigger built-in workflow registration. Importing this side-effect
 # module is what populates REGISTRY with the bundled handlers.
 from . import _builtin  # noqa: F401
+from ._user import load_user_workflows
+
+load_user_workflows()
 
 __all__ = [
     "WorkflowSpec",

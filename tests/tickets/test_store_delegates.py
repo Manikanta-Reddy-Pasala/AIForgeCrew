@@ -8,7 +8,8 @@ def store(monkeypatch, tmp_path):
     monkeypatch.delenv("AIFORGE_PG_URL", raising=False)
     monkeypatch.delenv("AIFORGE_FORCE_PG", raising=False)
     monkeypatch.setenv("AIFORGE_DB_PATH", str(tmp_path / "s.db"))
-    monkeypatch.setenv("AIFORGE_RUNNER_EXCLUDE_PROJECTS", "TallyConnector")
+    monkeypatch.setenv("AIFORGE_RUNNER_EXCLUDE_PROJECTS", "BillingConnector")
+    monkeypatch.delenv("AIFORGE_TICKET_PREFIX", raising=False)
     import aiforge_core.config.env as envmod
     importlib.reload(envmod)
     import aiforge_core.tickets.backend_factory as bf
@@ -22,7 +23,7 @@ def store(monkeypatch, tmp_path):
 def test_create_get_roundtrip(store):
     t = store.create(title="hello", body="body", project="demo",
                      assignee_role="doer", labels=["a"])
-    assert t.identifier == "ONE-100"
+    assert t.identifier == "AF-100"
     got = store.get(t.identifier)
     assert got.title == "hello"
     assert got.labels == ["a"]
@@ -63,8 +64,8 @@ def test_claim_priority_and_event(store):
 
 
 def test_claim_skips_excluded_project(store):
-    store.create(title="tally job", assignee_role="doer",
-                 project="TallyConnector")
+    store.create(title="billing job", assignee_role="doer",
+                 project="BillingConnector")
     keep = store.create(title="keep", assignee_role="doer", project="demo")
     assert store.claim_next_any().id == keep.id
 

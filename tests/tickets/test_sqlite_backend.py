@@ -12,7 +12,7 @@ def be(tmp_path):
 
 def _mk(be, *, priority="medium", project="demo", assignee="doer",
         title="t", parent_id=None):
-    ident = f"ONE-{be.next_counter()}"
+    ident = f"JIRA-{be.next_counter()}"
     return be.insert_ticket({
         "identifier": ident, "title": title, "body": "", "priority": priority,
         "assignee_role": assignee, "parent_id": parent_id, "project": project,
@@ -28,7 +28,7 @@ def test_counter_starts_at_100(be):
 
 
 def test_insert_and_fetch(be):
-    ident = f"ONE-{be.next_counter()}"
+    ident = f"JIRA-{be.next_counter()}"
     row = be.insert_ticket({
         "identifier": ident, "title": "hello", "body": "world",
         "priority": "high", "assignee_role": "doer", "parent_id": None,
@@ -43,7 +43,7 @@ def test_insert_and_fetch(be):
     assert be.fetch_ticket(ident)["title"] == "hello"
     assert be.fetch_ticket(row["id"])["id"] == row["id"]
     # string identifiers are not treated as ids
-    assert be.fetch_ticket("ONE-999") is None
+    assert be.fetch_ticket("JIRA-999") is None
 
 
 def test_claim_oldest_respects_priority_then_age(be):
@@ -63,14 +63,14 @@ def test_claim_oldest_age_tiebreak_same_priority(be):
 
 
 def test_claim_excludes_projects(be):
-    _mk(be, project="TallyConnector")
+    _mk(be, project="BillingConnector")
     keep = _mk(be, project="demo")
-    assert be.claim_oldest(excluded_projects=["TallyConnector"])["id"] == keep["id"]
+    assert be.claim_oldest(excluded_projects=["BillingConnector"])["id"] == keep["id"]
 
 
 def test_claim_null_project_always_claimable(be):
     t = _mk(be, project=None)
-    assert be.claim_oldest(excluded_projects=["TallyConnector"])["id"] == t["id"]
+    assert be.claim_oldest(excluded_projects=["BillingConnector"])["id"] == t["id"]
 
 
 def test_claim_returns_none_when_empty(be):

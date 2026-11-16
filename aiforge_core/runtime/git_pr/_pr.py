@@ -55,7 +55,7 @@ def _checkout_branch(repo_root: str, branch: str) -> str:
     the old ``branch -D && checkout -b`` pair which fails when HEAD
     is already on the target branch (delete blocked + create errors
     'already exists') — that's the exact failure that bricked the
-    ONE-117 retry run after MLX crashed mid-pipeline.
+    T-117 retry run after MLX crashed mid-pipeline.
     """
     rc, _, err = run_git(["git", "checkout", "-B", branch], repo_root)
     if rc != 0:
@@ -225,7 +225,7 @@ def _push(repo_root: str, branch: str) -> tuple[bool, str]:
 def _recover_existing_pr(out, err, repo_root):
     """gh pr create failed: if the branch already has an open PR, extract/resolve its URL and treat it as success; else return the error."""
     combined = f"{out}\n{err}"
-    # Re-run of a ticket whose branch already has an open PR (ONE-1
+    # Re-run of a ticket whose branch already has an open PR (T-1
     # pushed an updated fix via force-with-lease, but `gh pr create`
     # refuses a second PR for the same branch). The work IS shipped —
     # extract the existing PR URL from gh's error and treat it as
@@ -299,7 +299,7 @@ def commit_push_open_pr(ticket) -> dict:
     if err:
         return {"pr_skip_reason": err}
 
-    # Empty-production-diff guard. ONE-3 false-positive: validator
+    # Empty-production-diff guard. T-3 false-positive: validator
     # approved a PR whose only changes were a JUnit test class + an XML
     # fixture, with zero edits to ``src/main``. Tests prove a fix; they
     # are not the fix. Reject so the runner can re-loop the Doer

@@ -21,7 +21,7 @@ from ._web import fetch_url
 # ─── Hallucination-tolerant aliases ────────────────────────────────────
 #
 # Without these the Doer's "Tool 'read' not found" failure (observed in
-# ONE-105) crashes the run. Each alias delegates to the canonical
+# T-105) crashes the run. Each alias delegates to the canonical
 # implementation so behaviour stays single-sourced; the model can use
 # whichever common name it pattern-matches to without a redeploy.
 
@@ -45,7 +45,7 @@ def edit(path: str, old_text: str, new_text: str) -> dict:
 
     Local models (Qwen3-Coder) consistently emit a tool call named
     ``edit`` — the Claude/aider str-replace convention — which wasn't
-    registered. ONE-7 spent 37 minutes looping "Tool 'edit' not found",
+    registered. T-7 spent 37 minutes looping "Tool 'edit' not found",
     never wrote a file, and blocked with ``no_changes``. Registering
     the alias closes that gap so the local-model Doer can actually
     mutate files."""
@@ -167,7 +167,7 @@ def git_add_commit(message: str) -> dict:
 # Claude-Code / OpenHands meta-tools local models (Qwen3-Coder) emit
 # from training but which have no side effect in our pipeline. ADK
 # hard-errors on an unregistered function name and that BLOCKS the whole
-# ticket (ONE-7: 'Tool todo_write not found' → no_changes → blocked),
+# ticket (T-7: 'Tool todo_write not found' → no_changes → blocked),
 # so we register them as no-ops that return success and nudge the model
 # back toward the real tools. Cheaper than letting one stray call kill a
 # 30-minute run.
