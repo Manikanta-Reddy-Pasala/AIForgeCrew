@@ -51,6 +51,12 @@ def _gaps(st, cached: bool = True) -> list:
         gaps = spec_contract.missing(goal, str(cwd), key=key, base=work_base(st))
     except Exception:  # noqa: BLE001 — the check never blocks an answer
         return []
+    try:     # typed languages: the signatures the request states (Java, Kotlin, …)
+        from aiforge_core.runtime import typed_contract
+        if spec_contract.enabled():
+            gaps = gaps + [g for g in typed_contract.missing(goal, str(cwd)) if g not in gaps]
+    except Exception:  # noqa: BLE001
+        pass
     # What the user said mid-run wins over the first message: a gap whose
     # names a steer mentions ("skip the invoices module") is theirs to drop.
     said = " ".join(str(s) for s in (getattr(st, "steers", None) or [])).lower()
