@@ -295,3 +295,18 @@ def test_a_repo_wide_stash_of_own_tracked_work_ignores_the_override(repo, monkey
     st.goal = "this is wrong, start over from scratch"
     assert G.refusal(st, "run_command", {"cmd": "git stash", "discard": True},
                      str(root)) is None                         # the user asked for it
+
+
+def test_a_file_the_test_guard_flagged_may_be_restored(repo, monkeypatch):
+    """The test guard asked for an existing test file back: restoring exactly
+    that file passes; other files and repo-wide resets are still refused."""
+    root, edited = repo
+    from aiforge_core.runtime import git_target
+    monkeypatch.setattr(git_target, "command_base", lambda cwd: str(root))
+    core = str(root / "src" / "core.py")
+    st = SimpleNamespace(file_hashes=dict.fromkeys(edited, "h"), goal="",
+                         test_guard_flagged={os.path.realpath(core)})
+    assert G.refusal(st, "run_command", {"cmd": "git checkout -- src/core.py"}, str(root)) is None
+    assert G.refusal(st, "run_command", {"cmd": "git checkout ."}, str(root))
+    st2 = SimpleNamespace(file_hashes=dict.fromkeys(edited, "h"), goal="")
+    assert G.refusal(st2, "run_command", {"cmd": "git checkout -- src/core.py"}, str(root))

@@ -412,6 +412,14 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     one_file = len(lost) == 1 and _names_file(cmd, lost[0], base)
     if forced and (one_file or _USER_RESET.search(str(getattr(st, "goal", "") or ""))):
         return None
+    # The test guard said this existing test file lost an assertion and asked
+    # for it back: restoring exactly that file is what it asked for. A real
+    # PosClientBackend run was refused here and rewrote the whole 7,500-char
+    # test by hand five times (~30 s of generation each) instead.
+    flagged = getattr(st, "test_guard_flagged", None) or set()
+    if one_file and not _REPO_WIDE.search(cmd) \
+            and os.path.realpath(lost[0]) in flagged:
+        return None
     # Every file it would undo is broken right now (does not even parse): no
     # working edit is lost, and the model has no other way back (attrs n1: an
     # edit left _make.py with 12 syntax errors, 28 refused `git checkout`s,

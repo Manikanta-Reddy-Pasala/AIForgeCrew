@@ -398,6 +398,11 @@ def check(st, name, files, args, cwd=""):
                          "it passes.")
             continue
         said.update((rel, ln) for ln in lost)
+        # The discard guard lets this ONE file be restored (see
+        # _discard_guard.check): the two guards must not pull opposite ways.
+        st.__dict__.setdefault("test_guard_flagged", set()).add(os.path.realpath(full))
+        undo = (f"\nIf none of your changes to this file are needed, restore it in one step: "
+                f"git checkout {base} -- {rel}")
         shown_lines = "\n".join(f"    {ln[:200]}" for ln in lost[:_MAX_SHOWN])
         more = f"\n    (+{len(lost) - _MAX_SHOWN} more)" if len(lost) > _MAX_SHOWN else ""
         yield {"type": "thought", "role": "system",
@@ -409,13 +414,13 @@ def check(st, name, files, args, cwd=""):
         if allows_test_changes(str(getattr(st, "goal", "") or ""), rel):
             hold(st, head + "The request allows some existing tests to change. Keep "
                      "this only if it is one of those; otherwise put it back and change "
-                     "the code so the old test passes.")
+                     "the code so the old test passes." + undo)
         else:
             hold(st, head + "An existing test that fails after your change means the "
                      "change broke it. Put the assertion back (`git diff` shows the old "
                      "line) and change your code so the old test passes. Only keep the "
                      "new assertion if the user asked for that existing behaviour to "
-                     "change.")
+                     "change." + undo)
 
 
 def still_lost(st) -> list:
