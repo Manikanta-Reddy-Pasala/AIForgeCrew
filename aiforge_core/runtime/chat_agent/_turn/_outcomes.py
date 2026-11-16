@@ -514,6 +514,21 @@ def _project_python(st, cwd) -> "str | None":
 _DISPLAY_PIPE = re.compile(r"\s*(?:2>&1\s*)?\|\s*(?:tail|head|grep|egrep|less|more|cat|tee|sed|awk)\b.*$")
 
 
+_LEAD_CD_RE = re.compile(r"^(\s*cd\s+\S+\s*&&\s*)")
+_FIRST_CUT = re.compile(r"\s*(?:\d?>>?|&>|\|\|?|;|&&)")
+
+
+def _bare_test_command(cmd: str) -> str:
+    """The test command as the runner runs it: a leading ``cd X &&`` and env
+    prefix kept, cut at the first redirect, pipe, ``;`` or ``&&`` after it.
+    Re-run as typed, `mvn test 2>&1 > /tmp/o.txt; grep BUILD /tmp/o.txt` gave
+    back grep's line and exit code: no test counts, the check fell back to a
+    compile, and a real Java service turn finished with a test it broke."""
+    m = _LEAD_CD_RE.match(cmd or "")
+    head, rest = (m.group(1), (cmd or "")[m.end():]) if m else ("", cmd or "")
+    return (head + _FIRST_CUT.split(rest, maxsplit=1)[0]).strip()
+
+
 def _rerun_own_test(st, cwd) -> "tuple[bool, str] | None":
     """The turn's own last test command, run again on the final code, for a
     project the harness's guessed runner cannot run (a toolchain the command
@@ -531,7 +546,7 @@ def _rerun_own_test(st, cwd) -> "tuple[bool, str] | None":
         from ._done_watch import _run
         last = getattr(st, "last_test_cmd", None) or getattr(st, "last_full_test", None)
         cmd = command_of(last[1]) if last else ""
-        cmd = _DISPLAY_PIPE.sub("", cmd or "").strip()
+        cmd = _bare_test_command(_DISPLAY_PIPE.sub("", cmd or "").strip())
         if not cmd or not _TEST_CMD.search(cmd):
             return None
         try:
@@ -629,6 +644,10 @@ def _project_verify(st, cwd):
         own = _rerun_own_test(st, cwd)
         if own is not None:
             return own
+        if getattr(st, "last_test_cmd", None) or getattr(st, "last_full_test", None):
+            # The turn ran tests, and re-running them gave no counts: a compile
+            # that passes is not a test verdict (it vouched for a broken test).
+            return None, ""
         # No test command of its own: compile the code and the tests instead of
         # guessing the whole suite (which ran 13+ minutes on a Java service,
         # twice). A broken build is what this catches: two real jobs ended with
