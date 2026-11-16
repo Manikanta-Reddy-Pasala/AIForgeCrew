@@ -81,7 +81,7 @@ from ._errors import (
     _raise_if_model_dropped,
 )
 from ._helpers import _estimate_tokens, _float_env, _int_env, _log, _record_usage
-from ._http_stream import ReasoningOverCap  # noqa: F401  # re-exported
+from ._http_stream import ContentOverCap, ReasoningOverCap  # noqa: F401  # re-exported
 from ._http import (
     _CANCEL,
     _NON_BODY_EXTRA_KEYS,
@@ -311,6 +311,14 @@ def _complete_raw_once(role: str, messages: list[dict], *,
     return out
 
 
+_CONTENT_CAP_NOTE = (
+    "[harness — not the user] Your last reply was cut off: it was a very long "
+    "text with no tool call (code and analysis written out in the reply). Do not "
+    "write code or long analysis in the reply. Make the change now with an edit "
+    "tool call, or run the next command; if you are done, give the final answer "
+    "in a few short paragraphs.")
+
+
 def _native_post(ep, messages, temperature, max_tokens, top_p, ex,
                  payload, timeout_s, role, meter) -> dict:
     """POST one native completion.
@@ -331,6 +339,18 @@ def _native_post(ep, messages, temperature, max_tokens, top_p, ex,
                                     source="native", meter=meter)
         except _LLMCancelled:
             raise
+        except ContentOverCap:
+            _log.info("reply text over the cap with no tool call for %s — asking again "
+                      "once with a note to act through the tools", ep.model)
+            from ._http import _UNCAPPED
+            nudged = list(messages) + [{"role": "user", "content": _CONTENT_CAP_NOTE}]
+            tok = _UNCAPPED.set(True)
+            try:
+                payload = _build_body(ep, nudged, temperature, max_tokens, top_p, ex)
+                return _post_with_retry(ep, payload, timeout_s, role=role,
+                                        source="native", meter=meter)
+            finally:
+                _UNCAPPED.reset(tok)
         except ReasoningOverCap:
             _log.info("reasoning over the Low/Medium cap for %s — asking again "
                       "with thinking off", ep.model)

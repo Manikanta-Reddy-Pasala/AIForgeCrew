@@ -15,6 +15,20 @@ class ReasoningOverCap(Exception):
     again with reasoning off (see client._native_post)."""
 
 
+class ContentOverCap(Exception):
+    """The streamed reply TEXT ran past :data:`CONTENT_CAP_CHARS` before any
+    tool call started, on a request that offered tools. A real PosClientBackend
+    turn spent 188 s writing a 49,000-character monologue — whole test files
+    pasted into its reply — then called read_lines. The caller asks again once
+    with a note to act through the tools (see client._native_post)."""
+
+
+#: Reply-text characters a tool-offering stream may carry before any tool
+#: call (0 = no cap). Set per request by the transport.
+CONTENT_CAP_CHARS: "contextvars.ContextVar[int]" = contextvars.ContextVar(
+    "aiforge_content_cap_chars", default=0)
+
+
 #: Reasoning characters a stream may carry before :class:`ReasoningOverCap`
 #: (0 = no cap). Set per request by the transport from Models → Thinking.
 REASONING_CAP_CHARS: "contextvars.ContextVar[int]" = contextvars.ContextVar(
@@ -42,6 +56,8 @@ class _StreamAssembler:
         self.meta: dict = {}
         self.cap = REASONING_CAP_CHARS.get()
         self.reasoned = 0
+        self.text_cap = CONTENT_CAP_CHARS.get()
+        self.said = 0
 
     def _emit(self, kind: str, text: str) -> None:
         try:
@@ -79,6 +95,11 @@ class _StreamAssembler:
         if d.get("content"):
             self.content.append(d["content"])
             self._emit("content", d["content"])
+            self.said += len(d["content"])
+            if self.text_cap and self.said > self.text_cap and not self.tools \
+                    and not d.get("tool_calls"):
+                raise ContentOverCap(
+                    f"reply text passed {self.text_cap} characters with no tool call")
         r = d.get("reasoning_content") or d.get("reasoning")
         if r:
             self.reasoning.append(r)

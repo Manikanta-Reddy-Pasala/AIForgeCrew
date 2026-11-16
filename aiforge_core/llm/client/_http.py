@@ -7,6 +7,8 @@ Layers on the leaf helpers (:mod:`._helpers`, :mod:`._errors`) plus the sibling
 ``providers`` / ``rate_limiter`` / ``_ssl`` modules of ``aiforge_core.llm``."""
 from __future__ import annotations
 
+import os
+
 import contextvars
 import http.client
 import json
@@ -118,6 +120,30 @@ def _apply_reasoning_off(ep: Endpoint, body: dict) -> None:
             body.setdefault(k, v)
     except Exception:  # noqa: BLE001 — never break a call over this
         pass
+
+
+#: A tool-offering reply's text before any tool call (see ContentOverCap).
+_CONTENT_CAP_DEFAULT = 16000
+#: Set while a request is the re-ask after a cap: that one is never capped.
+_UNCAPPED = __import__("contextvars").ContextVar("aiforge_content_uncapped", default=False)
+
+
+def _content_cap_chars(payload) -> int:
+    """The reply-text cap for this request: only when it offers tools (the
+    agent loop), never on the re-ask after a cap. 0 = off."""
+    if _UNCAPPED.get():
+        return 0
+    try:
+        cap = int(os.environ.get("AIFORGE_LLM_CONTENT_CAP_CHARS", str(_CONTENT_CAP_DEFAULT)))
+    except ValueError:
+        cap = _CONTENT_CAP_DEFAULT
+    if cap <= 0:
+        return 0
+    try:
+        body = payload if isinstance(payload, (bytes, str)) else b""
+        return cap if b'"tools"' in (body.encode() if isinstance(body, str) else body) else 0
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def _reasoning_cap_chars(ep: Endpoint) -> int:
@@ -414,12 +440,14 @@ def _post_cancellable_once(ep: Endpoint, payload: bytes, timeout_s: int,
         if sent is not None:
             sent[0] = True
         if sink is not None:
-            from ._http_stream import REASONING_CAP_CHARS
+            from ._http_stream import CONTENT_CAP_CHARS, REASONING_CAP_CHARS
             cap_tok = REASONING_CAP_CHARS.set(_reasoning_cap_chars(ep))
+            text_tok = CONTENT_CAP_CHARS.set(_content_cap_chars(payload))
             try:
                 return _read_sse_response(conn, url, sink, payload=payload,
                                           read_timeout=timeout_s)
             finally:
+                CONTENT_CAP_CHARS.reset(text_tok)
                 REASONING_CAP_CHARS.reset(cap_tok)
         return _read_http_response(conn, url)
     except (OSError, ValueError, AttributeError, RuntimeError,
