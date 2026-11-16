@@ -137,6 +137,13 @@ def _run(pc) -> None:
             if cmd:
                 pc.prompt = rest
                 _replay_text(pc, rest)
+            if ask.get("nonblocking"):
+                # The question did not hold the request (it already ran in the
+                # default place): a message that is not a choice is just the
+                # next request — no note about the question.
+                place_override, ignore_answers = None, False
+                return _run_rest(pc, sid, text if not cmd else rest, state, notes,
+                                 place_override, ignore_answers, wake)
             notes.append("That was not one of the worktree choices (1, 2 or 3), so this chat "
                          "uses the default — its own worktree inside the project — and nothing "
                          "was saved; the next new chat here asks again.")
@@ -149,6 +156,21 @@ def _run(pc) -> None:
             pc._wt_gate = {"text": "\n\n".join(notes), "awaiting": False}
             return
 
+    return _run_rest(pc, sid, text, state, notes, place_override, ignore_answers, wake)
+
+
+def _blocking() -> bool:
+    """The "where?" question holds the request until answered (the old way).
+    Default off (owner 11-16: do not wait on the user for what is not a
+    deletion): the request runs at once in the default place and the answer,
+    when it comes, is saved for the project's next chats."""
+    return os.environ.get("AIFORGE_CHAT_WORKTREE_ASK_BLOCK", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _run_rest(pc, sid, text, state, notes, place_override, ignore_answers, wake) -> None:
+    from aiforge_core.runtime import chat_store, chat_worktree
+    from aiforge_core.runtime import worktree_prefs as wp
     # 3. The chat's worktree.
     sess = chat_store.get_session(sid)
     wd = chat_worktree.workdir_of(sess)
@@ -164,6 +186,14 @@ def _run(pc) -> None:
 
     # A harness (wake) turn neither lists nor asks: nobody is there to answer.
     old_text, old_state = ("", None) if wake else _old_list(repo, state)
+    if place is None and wp.ask_enabled() and not wake and not _blocking():
+        holder = chat_worktree.config_holder(repo)
+        q = wp.question(repo, holder, writable=os.access(repo, os.W_OK))
+        state["ask"] = {"prompt": "", "repo": repo, "at": wp.now_iso(), "nonblocking": True}
+        wp.save_session_state(sid, state)
+        notes.append(q + "\n\n(Not waiting for this: this chat uses its own worktree inside "
+                         "the project for now; your answer is saved for the next chats here.)")
+        place = "repo"
     if place is None and wp.ask_enabled() and not wake:
         holder = chat_worktree.config_holder(repo)
         q = wp.question(repo, holder, writable=os.access(repo, os.W_OK))

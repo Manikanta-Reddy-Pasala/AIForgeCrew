@@ -26,6 +26,13 @@ class _Body:
         self.content, self.mode = content, mode
 
 
+@pytest.fixture(autouse=True)
+def _question_holds_the_request(monkeypatch):
+    """These tests cover the blocking "where?" question; the default since
+    11-16 does not hold the request (test_the_question_does_not_hold_the_request)."""
+    monkeypatch.setenv("AIFORGE_CHAT_WORKTREE_ASK_BLOCK", "1")
+
+
 def _pc(env, sid, prompt):
     """A turn as _message builds it: the user's row already stored."""
     env.store.add_message(sid, "user", prompt)
@@ -210,3 +217,22 @@ def test_prefs_api(wenv):
     _dead(wenv)
     r = c.get("/api/chat/worktrees/old", params={"repo": str(wenv.repo)})
     assert [e["name"] for e in r.json()["old"]] == ["TAL-50"]
+
+
+def test_the_question_does_not_hold_the_request(wenv, monkeypatch):
+    """Default: the request runs at once in the chat's own worktree; the
+    question is shown, and an answer later is saved for the next chats."""
+    monkeypatch.setenv("AIFORGE_CHAT_WORKTREE_ASK_BLOCK", "0")
+    sid = wenv.new_chat()
+    pc, evs, done, msg = _turn(wenv, sid, "add a discount to src/cart.py", monkeypatch)
+    assert not done and msg is None                       # the agent runs this turn
+    assert "has no worktree setting yet" in _notes(evs) and "Not waiting for this" in _notes(evs)
+    wd = wenv.store.get_session(sid)["workdir"]
+    assert wd and pc.cwd == wd
+    from aiforge_core.runtime import worktree_prefs
+    assert worktree_prefs.get(wenv.real) in (None, {}) or not worktree_prefs.get(wenv.real).get("place")
+    pc, evs, done, msg = _turn(wenv, sid, "2", monkeypatch)           # answered later
+    assert worktree_prefs.get(wenv.real)["place"] == "config"
+    sid2 = wenv.new_chat()
+    pc2, evs2, done2, _ = _turn(wenv, sid2, "now fix the total", monkeypatch)
+    assert not done2 and "has no worktree setting yet" not in _notes(evs2)
