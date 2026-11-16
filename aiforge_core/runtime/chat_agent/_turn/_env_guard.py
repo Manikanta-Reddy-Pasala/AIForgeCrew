@@ -57,11 +57,76 @@ def missing_modules(text: str, top: str) -> list:
     return out
 
 
+#: The JDK running the build is older than the project's release/target.
+_JDK_TOO_OLD = re.compile(
+    r"release version (\d+) not supported|invalid (?:target|source) release:?\s*(\d+)|"
+    r"class file (?:major )?version (\d+)|Unsupported class file major version (\d+)", re.I)
+_JDK_GLOBS = ("/usr/lib/jvm/*", "~/.sdkman/candidates/java/*", "~/jdk*", "~/jdk*/*", "~/jdks/*",
+              "~/.jdks/*", "/opt/*jdk*", "/opt/*jdk*/*", "/opt/java/*",
+              "/Library/Java/JavaVirtualMachines/*/Contents/Home")
+
+
+def _jdk_major(home: str) -> "int | None":
+    try:
+        with open(os.path.join(home, "release"), encoding="utf-8", errors="replace") as fh:
+            m = re.search(r'JAVA_VERSION="(\d+)(?:\.(\d+))?', fh.read())
+    except OSError:
+        return None
+    if not m:
+        return None
+    major = int(m.group(1))
+    return int(m.group(2)) if major == 1 and m.group(2) else major   # "1.8" -> 8
+
+
+def installed_jdks() -> list:
+    """``[(major, home)]`` of the JDKs found in the usual places, newest first."""
+    import glob
+    seen, out = set(), []
+    for pat in _JDK_GLOBS:
+        for home in glob.glob(os.path.expanduser(pat)):
+            real = os.path.realpath(home)
+            if real in seen or not os.path.isfile(os.path.join(home, "bin", "java")):
+                continue
+            seen.add(real)
+            major = _jdk_major(home)
+            if major:
+                out.append((major, home))
+    return sorted(out, key=lambda t: -t[0])
+
+
+def _jdk_note(st, text: str) -> str:
+    """A build stopped because its JDK is too old: name the installed JDKs that
+    are new enough. A real PosClientBackend job (needs 24, system java 21)
+    never found the JDK 24 at ~/jdk24/... in a fresh run, never ran a test,
+    and finished with a test file that did not compile (0/8)."""
+    m = _JDK_TOO_OLD.search(text or "")
+    if not m or getattr(st, "env_guard_jdk_said", False):
+        return ""
+    raw = int(next(g for g in m.groups() if g))
+    need = raw - 44 if raw >= 45 else raw          # class-file major 68 -> Java 24
+    st.env_guard_jdk_said = True
+    fit = [(v, h) for v, h in installed_jdks() if v >= need][:4]
+    if not fit:
+        return ("[harness — not the user] The build did not run: it needs JDK "
+                f"{need} or newer and none was found in the usual places (/usr/lib/jvm, "
+                "~/.sdkman, ~/jdk*, /opt). Find or install one before changing code; until a "
+                "test run works, nothing you change is checked.")
+    lines = "\n".join(f"  JAVA_HOME={h} PATH={h}/bin:$PATH <your mvn/gradle command>   (Java {v})"
+                      for v, h in fit)
+    return ("[harness — not the user] The build did not run: the java on PATH is older than "
+            f"the JDK {need} the project needs. These installed JDKs are new enough — prefix "
+            f"every build/test command with one:\n{lines}\nUntil a test run works, nothing "
+            "you change is checked; do not edit the build files to lower the version.")
+
+
 def note(st, name, args, text: str, cwd) -> str:
     """The note for the first test run that could not start for a missing
-    module, else ""."""
+    module, or because its JDK is too old; else ""."""
     if not _on():
         return ""
+    jdk = _jdk_note(st, text)
+    if jdk:
+        return jdk
     top = str(cwd or ".")
     try:
         import subprocess
