@@ -46,7 +46,13 @@ _ASKS_TESTS = re.compile(r"\b(?:add|write|with|include|cover|create|own)\b[^.\n]
 #: Plainly asks for new tests ("add your own pytest tests"): only then is
 #: "no test yet" a gap worth naming.
 _ASKS_NEW_TESTS = re.compile(r"\b(?:add|write|create)\s+(?:\w+\s+){0,3}(?:tests?|unit\s+tests?)\b", re.I)
-_NO_TESTS = re.compile(r"\b(?:no|don'?t|do\s+not|without|skip)\s+(?:\w+\s+){0,2}tests?\b", re.I)
+#: "no tests" — but not "no test dependencies / framework / setup yet": a
+#: PosServerBackend request said "Fix it … with a unit test. The module has no
+#: test dependencies yet." and the run was told the request asked for no
+#: tests; it deleted the test it had written.
+_NO_TESTS = re.compile(r"\b(?:no|don'?t|do\s+not|without|skip)\s+(?:\w+\s+){0,2}tests?\b"
+                       r"(?![\s-]*(?:dependenc|deps\b|framework|setup|set-up|config|librar|"
+                       r"harness|runner|folder|dir|infra|support|classpath|scope))", re.I)
 _TEST_DIR = re.compile(r"(?:^|/)(?:tests?|spec|specs|__tests__|testdata|fixtures)/")
 _TEST_NAME = re.compile(r"(?:^|/)test_|_test\.|\.test\.|\.spec\.|_spec\.rb$|Test\.(?:java|kt)$")
 _SKIP_DIR = re.compile(r"(?:^|/)(?:node_modules|\.venv|venv|site-packages|\.git|dist|build)/")
