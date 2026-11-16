@@ -46,3 +46,11 @@ def test_explicit_setting_is_used_as_given(monkeypatch):
     cmd_jobs.note_duration("mvn test", 60.0)
     monkeypatch.setenv("AIFORGE_CMD_CHECKIN_S", "1")
     assert cmd_jobs.checkin_s("mvn test") == 1.0
+
+
+def test_one_duration_per_tool_and_goal(monkeypatch):
+    monkeypatch.delenv("AIFORGE_CMD_CHECKIN_S", raising=False)
+    cmd_jobs.note_duration("cd /r && JAVA_HOME=/j PATH=/j/bin:$PATH timeout 300 mvn -o -q test -Dtest=A", 40.0)
+    assert cmd_jobs.checkin_s("timeout 300 mvn -o -q test -Dtest=B 2>&1 | tail -30") == 54.0
+    assert cmd_jobs._dur_key("cargo test parse -- --nocapture") == "cargo test"
+    assert cmd_jobs._dur_key("ls -la target") == "ls -la target"

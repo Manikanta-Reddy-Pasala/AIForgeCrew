@@ -67,11 +67,33 @@ _DURATIONS_LOCK = threading.Lock()
 _MAX_KEYS = 200
 
 
+_BUILD_TOOLS = ("mvn", "mvnw", "gradle", "gradlew", "cargo", "go", "npm", "yarn", "pnpm",
+                "make", "ctest", "pytest", "tox", "dotnet", "bazel", "meson")
+
+
 def _dur_key(cmd: "str | None") -> str:
+    """A command's family for its usual duration: a build/test tool and its
+    goal ("mvn test", "cargo test", "pytest"), whatever the filter, the
+    `timeout N`, the env prefix or the `cd` around it. A real run varied
+    `timeout 300 mvn … -Dtest=X` every time, so an exact-string key never
+    matched and 15 of 77 calls went to command_wait."""
     import re as _re
     c = _re.sub(r"\s*(?:2>&1\s*)?\|\s*(?:tail|head|grep|egrep|less|more|cat|tee|sed|awk)\b.*$",
                 "", cmd or "")
-    return " ".join(c.split())
+    c = _re.sub(r"^\s*cd\s+\S+\s*&&\s*", "", c)
+    words = c.split()
+    while words and (_re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0])
+                     or words[0] in ("timeout", "env", "nice", "time")
+                     or (words and _re.match(r"^\d+[smh]?$", words[0]))):
+        words = words[1:]
+    if not words:
+        return ""
+    tool = os.path.basename(words[0])
+    if tool in _BUILD_TOOLS or tool.startswith("python") and "pytest" in words[:3]:
+        goal = next((w for w in words[1:] if not w.startswith("-") and "=" not in w
+                     and w not in ("-m",)), "")
+        return f"{tool} {goal}".strip()
+    return " ".join(words)
 
 
 def note_duration(cmd: "str | None", secs: float) -> None:
