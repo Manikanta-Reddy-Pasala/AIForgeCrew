@@ -120,6 +120,72 @@ def _jdk_note(st, text: str) -> str:
             "you change is checked; do not edit the build files to lower the version.")
 
 
+#: A test build that failed because a test framework is not a dependency.
+_NO_TEST_PKG = re.compile(
+    r"package (org\.junit(?:\.jupiter)?(?:\.api)?|org\.assertj\.core\.api|org\.mockito|"
+    r"org\.springframework\.boot\.test|org\.springframework\.test|reactor\.test)"
+    r"(?:\.[\w.]+)? does not exist")
+#: package -> (groupId, artifactId) when the project has no Spring Boot parent.
+_TEST_ARTIFACTS = {
+    "org.junit": ("org.junit.jupiter", "junit-jupiter"),
+    "org.assertj": ("org.assertj", "assertj-core"),
+    "org.mockito": ("org.mockito", "mockito-core"),
+    "reactor.test": ("io.projectreactor", "reactor-test"),
+    "org.springframework": ("org.springframework.boot", "spring-boot-starter-test"),
+}
+
+
+def _m2_has(group: str, artifact: str) -> bool:
+    d = os.path.join(os.path.expanduser("~/.m2/repository"), *group.split("."), artifact)
+    return os.path.isdir(d) and any(os.scandir(d))
+
+
+def _test_dep_note(st, text: str, top: str) -> str:
+    """A test build stopped because JUnit / AssertJ / Mockito … is not a
+    dependency (a module with no test scope yet). A PosServerBackend request
+    said "the module has no test dependencies yet"; the run wrote a test, got
+    `package org.junit.jupiter.api does not exist`, never added the
+    dependency, and neither its test nor the graded one compiled (0/3)."""
+    pkgs = sorted({m.group(1) for m in _NO_TEST_PKG.finditer(text or "")})
+    if not pkgs or getattr(st, "env_guard_testdeps_said", False):
+        return ""
+    st.env_guard_testdeps_said = True
+    pom = os.path.join(top, "pom.xml")
+    boot = False
+    try:
+        with open(pom, encoding="utf-8", errors="replace") as fh:
+            body = fh.read(200_000)
+            # a Boot parent directly, or through a company parent (its
+            # dependencies use org.springframework.boot artifacts, versionless)
+            boot = "spring-boot-starter-parent" in body or "<groupId>org.springframework.boot</groupId>" in body
+    except OSError:
+        pom = ""
+    if boot:
+        wanted = [("org.springframework.boot", "spring-boot-starter-test")]
+        if any(p.startswith("reactor.test") for p in pkgs):
+            wanted.append(("io.projectreactor", "reactor-test"))
+    else:
+        wanted = []
+        for p in pkgs:
+            ga = next((v for k, v in _TEST_ARTIFACTS.items() if p.startswith(k)), None)
+            if ga and ga not in wanted:
+                wanted.append(ga)
+    if not wanted:
+        return ""
+    cached = [ga for ga in wanted if _m2_has(*ga)]
+    blocks = "\n".join(
+        f"    <dependency>\n      <groupId>{g}</groupId>\n      <artifactId>{a}</artifactId>\n"
+        f"      <scope>test</scope>\n    </dependency>" for g, a in (cached or wanted))
+    where = ("in pom.xml's <dependencies>" if pom else "in the build file") + (
+        " (the Spring Boot parent manages the version)" if boot else "")
+    cache = (" These are in the local Maven cache, so `mvn -o` resolves them."
+             if cached else " (Not found in ~/.m2: an offline build may not resolve it.)")
+    return ("[harness — not the user] The tests did not compile: "
+            f"{', '.join(pkgs)} is not on the test classpath — the project has no test "
+            f"dependency for it. Add {where}:\n{blocks}\n{cache.strip()} Then run the tests "
+            "again; until they compile, nothing you change is checked.")
+
+
 def note(st, name, args, text: str, cwd) -> str:
     """The note for the first test run that could not start for a missing
     module, or because its JDK is too old; else ""."""
@@ -137,6 +203,9 @@ def note(st, name, args, text: str, cwd) -> str:
             top = r.stdout.strip()
     except (OSError, subprocess.SubprocessError):
         pass
+    deps = _test_dep_note(st, text, top)
+    if deps:
+        return deps
     said = getattr(st, "env_guard_said", None)
     if said is None:
         said = st.env_guard_said = set()
