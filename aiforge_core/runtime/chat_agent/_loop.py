@@ -230,8 +230,16 @@ def _step_prologue(st, n, _cwd, role, complete_fn, session_id, builder):
         return None, "return"
     if getattr(st, "goal_question", None):
         # A message that could not be placed against the chat's goals: the
-        # harness asks and the turn waits for the answer (the model would be
-        # pushed on by the steer reply and the done check).
+        # harness asks and waits; unanswered, the model takes the likeliest
+        # reading and goes on (owner 11-16) — unless it is about deleting.
+        from ._turn import _ask_wait
+        if _ask_wait.may_decide(st, st.goal_question):
+            _q, st.goal_question = st.goal_question, None
+            _sig = yield from _ask_wait.ask_and_wait(st, session_id, _q)
+            if _sig == "cancelled":
+                yield {"type": "done"}
+                return None, "return"
+            return None, "continue"
         from ._turn import _steer_reply
         _steer_reply.on_ask(st)
         try:
@@ -486,6 +494,15 @@ def _dispatch_step(st, out, n, cwd, role, _complete_fn, session_id, builder,
             _sig = yield from _done_check.gate(st, step, builder, strict_finish)
             if _sig == "continue":
                 return (yield from _idle_reply_guard(st))
+        # An unanswered question does not stop the work (owner 11-16): wait
+        # for a reply, else the model decides — never for a destructive one.
+        from ._turn import _ask_wait
+        if _ask_wait.may_decide(st, step.get("text") or ""):
+            _sig = yield from _ask_wait.ask_and_wait(st, session_id, step.get("text") or "")
+            if _sig == "cancelled":
+                yield {"type": "done"}
+                return "return"
+            return (yield from _idle_reply_guard(st))
         _steer_reply.on_ask(st)
         # Plan mode gets one question. A second one is an assumption, then
         # the plan. The reads already made are kept for the answer.

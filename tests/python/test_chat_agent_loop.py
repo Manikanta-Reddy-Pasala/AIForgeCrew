@@ -47,7 +47,11 @@ def test_loop_detection_same_action(tmp_path):
     assert evs[-1] == {"type": "done"}
 
 
-def test_agent_can_ask_a_question(tmp_path):
+def test_agent_can_ask_a_question(tmp_path, monkeypatch):
+    # the old behaviour: a question ends the turn (an unanswered one is
+    # otherwise decided by the model — see test_ask_autodecide_1116)
+    monkeypatch.setenv("AIFORGE_CHAT_ASK_WAIT_S", "0")
+
     def _fn(role, messages, **kw):
         return "THOUGHT: need detail\nASK: Which port should I use?"
     evs = _collect(ca.run_chat_agent(
