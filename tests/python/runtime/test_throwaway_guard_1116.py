@@ -47,3 +47,15 @@ def test_refused_after_the_note(monkeypatch, tmp_path):
     # the repo's own test, and non-source files, are never refused
     assert g.refusal(st, "file_write", {"path": str(tmp_path / "tests" / "t_req.rs")}) is None
     assert g.refusal(st, "run_command", {"cmd": "cat > /tmp/out.txt << 'EOF'\nEOF"}) is None
+
+
+def test_rewriting_one_probe_file_counts_each_time(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from aiforge_core.runtime.chat_agent._turn import _throwaway_guard as g
+    monkeypatch.delenv("AIFORGE_CHAT_THROWAWAY_GUARD", raising=False)
+    st = SimpleNamespace(cwd=str(tmp_path), spin_events=0)
+    probe = {"cmd": "cat > /tmp/test_unicode.cpp << 'EOF'\nint main(){}\nEOF"}
+    for _ in range(3):
+        g.check(st, "run_command", probe)
+    assert st.probe_said
+    assert g.refusal(st, "run_command", probe)["ok"] is False

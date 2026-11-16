@@ -83,10 +83,10 @@ def check(st, name: str, args: dict, cwd: str = "") -> None:
         new = [p for p in _written(name, args or {}) if _throwaway(p, root)]
         if not new:
             return
+        # Every write counts, not every new name: a C++ run rewrote the same
+        # /tmp/test_unicode.cpp 13 times and never reached three names.
         seen = st.__dict__.setdefault("probe_files", [])
-        for p in new:
-            if p not in seen:
-                seen.append(p)
+        seen.extend(new)
         if len(seen) < _LIMIT:
             return
         from ._limits import note_spin
@@ -96,7 +96,7 @@ def check(st, name: str, args: dict, cwd: str = "") -> None:
         st.probe_said = True
         note_spin(st)
         from ._notes import hold
-        shown = ", ".join(os.path.basename(p) for p in seen[-4:])
+        shown = ", ".join(dict.fromkeys(os.path.basename(p) for p in seen[-6:]))
         hold(st, "[harness — not the user] You have written "
                  f"{len(seen)} throwaway programs to try things ({shown}). Stop doing that: "
                  "put the case you are checking into the repository's own test (the "
