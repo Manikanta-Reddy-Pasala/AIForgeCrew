@@ -96,3 +96,28 @@ def test_toolchain_mismatch_reruns_the_turns_own_test_command(tmp_path, monkeypa
     monkeypatch.setattr(_done_watch, "_run", lambda cmd, cwd, timeout=0: (
         0, "[INFO] Tests run: 19, Failures: 0, Errors: 0, Skipped: 0\n[INFO] BUILD SUCCESS"))
     assert O._project_verify(st, str(tmp_path))[0] is True
+
+
+def test_non_python_project_checks_with_the_turns_own_command(tmp_path, monkeypatch):
+    from aiforge_core.runtime.chat_agent._turn import _done_watch
+    ran = []
+    monkeypatch.setattr(O, "_run_project_verify",
+                        lambda cwd, python=None: ran.append("guessed") or (False, "x"))
+    monkeypatch.setattr(O, "_project_python", lambda st, cwd: None)
+    monkeypatch.setattr(O, "_python_project", lambda cwd: False)
+    monkeypatch.setattr(_done_watch, "_run", lambda cmd, cwd, timeout=0: (
+        0, "[INFO] Tests run: 8, Failures: 0, Errors: 0, Skipped: 0\n[INFO] BUILD SUCCESS"))
+    st = _st(tmp_path, last_full_test=None, last_test_cmd=("run_command", {
+        "command": "JAVA_HOME=/j mvn -o -q test -Dtest=FooTest"}))
+    assert O._project_verify(st, str(tmp_path))[0] is True
+    assert ran == []                                  # the whole-suite guess never ran
+
+
+def test_python_project_keeps_the_full_check(tmp_path, monkeypatch):
+    ran = []
+    monkeypatch.setattr(O, "_run_project_verify",
+                        lambda cwd, python=None: ran.append("guessed") or (True, "5 passed"))
+    monkeypatch.setattr(O, "_project_python", lambda st, cwd: None)
+    monkeypatch.setattr(O, "_python_project", lambda cwd: True)
+    st = _st(tmp_path, last_full_test=None, last_test_cmd=("run_command", {"command": "pytest -q tests/a"}))
+    assert O._project_verify(st, str(tmp_path))[0] is True and ran == ["guessed"]

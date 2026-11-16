@@ -543,6 +543,16 @@ def _rerun_own_test(st, cwd) -> "tuple[bool, str] | None":
         return None
 
 
+def _python_project(cwd) -> bool:
+    """The project at ``cwd`` is a Python one (by its marker files)."""
+    try:
+        from aiforge_core.runtime import git_target
+        from aiforge_core.runtime.integration_report import _detect_lang
+        return _detect_lang(git_target.command_base(cwd) or cwd) == "python"
+    except Exception:  # noqa: BLE001
+        return True                   # unknown: keep the full check
+
+
 def _project_verify(st, cwd):
     """``(ok, output)`` of the finish check: the harness's own project runner,
     unless it could not run the tests at all (no counts, a collection error)
@@ -551,6 +561,15 @@ def _project_verify(st, cwd):
     ran green ("(999) failing", two false fix rounds). The runner's verdict
     stands whenever it ran tests: it covers the whole tree and the lint legs."""
     py = _project_python(st, cwd)
+    # A non-Python project the turn tested itself: its own command is the check
+    # (the toolchain it set up, the classes it touched). The guessed runner ran
+    # the WHOLE PosClientBackend suite ("mvn -q test", every class, online) for
+    # 10+ minutes at the end of a real job, against the user's own rule to run
+    # only the touched classes.
+    if not py and not _python_project(cwd):
+        own = _rerun_own_test(st, cwd)
+        if own is not None:
+            return own
     ok, out = _run_project_verify(cwd, python=py) if py else _run_project_verify(cwd)
     try:
         from aiforge_core.runtime.parallel_subtasks import _fail_count
