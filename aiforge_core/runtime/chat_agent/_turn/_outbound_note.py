@@ -1,8 +1,8 @@
 """After an edit: when the work adds a call to another service, remind the
 model once of what such code needs to work in production.
 
-A real job asked for a small class that tells another service when a user's
-password changes. Every attempt posted the request, and every one of them
+A real job asked for a small class that tells another service when an
+account changes. Every attempt posted the request, and every one of them
 broke the caller: an untrimmed token made an invalid header that threw, an
 empty URL threw, an error from the other side propagated into the business
 flow. The other agent's version skipped cleanly when unconfigured and did
@@ -33,7 +33,7 @@ NOTE = (
     "2. A failure of the call (refused, error status, timeout, bad header) must not "
     "throw into the caller's business flow: catch it and log it.\n"
     "3. Clean config values before use (trim whitespace and newlines).\n"
-    "4. Check the values you send (ids, phone numbers, emails) and skip ones that "
+    "4. Check the values you send (ids, account numbers, emails) and skip ones that "
     "are not valid instead of sending them.\n"
     "5. Use the endpoint you were given as it is; do not invent a path for it.\n"
     "6. Do not retry a request the other side refused (4xx).\n"

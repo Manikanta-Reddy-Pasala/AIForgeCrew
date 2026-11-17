@@ -8,18 +8,18 @@ from aiforge_core.runtime.chat_agent._tools._code import _t_read_lines
 
 CARGO_RED = """running 3 tests
 test test_basic ... ok
-test test_parse_errors ... FAILED
+test test_rejects_bad_input ... FAILED
 test test_other ... ok
 
 failures:
-    test_parse_errors
+    test_rejects_bad_input
 
 test result: FAILED. 2 passed; 1 failed; 0 ignored
 """
 
 
 def test_failing_names_of_several_runners():
-    assert br.failing_names(CARGO_RED) == {"test_parse_errors"}
+    assert br.failing_names(CARGO_RED) == {"test_rejects_bad_input"}
     assert br.failing_names("--- FAIL: TestParse (0.00s)\nFAIL") == {"TestParse"}
     mvn = "[ERROR] Failures: \n[ERROR]   OrderServiceTest.totals:42 expected: <3> but was: <2>\n"
     assert br.failing_names(mvn) == {"OrderServiceTest.totals"}
@@ -53,7 +53,7 @@ def test_same_reds_at_base_vouches_only_for_old_failures(tmp_path, monkeypatch):
     assert br.same_reds_at_base(st, str(r), cmd, CARGO_RED)
     # a failure the base does not have is the turn's own
     br._CACHE.clear()
-    new_red = CARGO_RED.replace("test_parse_errors", "test_new_bug")
+    new_red = CARGO_RED.replace("test_rejects_bad_input", "test_new_bug")
     assert not br.same_reds_at_base(st, str(r), cmd, new_red)
     # cannot name every failure: no verdict
     br._CACHE.clear()
@@ -85,7 +85,7 @@ def test_early_note_per_test_across_pipes(tmp_path, monkeypatch):
     two = CARGO_RED.replace("test test_other ... ok", "test test_other ... FAILED")
     assert br.early_note(st, str(r), base + " | tail -30", two) is None       # first time
     note = br.early_note(st, str(r), base + " | tail -40", CARGO_RED)         # same test, other pipe
-    assert note and "test_parse_errors" in note and "test_other" not in note
+    assert note and "test_rejects_bad_input" in note and "test_other" not in note
     assert br.early_note(st, str(r), base + " | grep FAIL", CARGO_RED) is None  # told once
 
 
@@ -93,6 +93,6 @@ def test_a_failing_test_the_request_names_is_the_work(tmp_path, monkeypatch):
     monkeypatch.delenv("AIFORGE_CHAT_BASE_REDS", raising=False)
     br._CACHE.clear()
     r, rev = _repo(tmp_path)
-    st = SimpleNamespace(cwd=str(r), head0=rev, goal="make test_parse_errors pass again")
+    st = SimpleNamespace(cwd=str(r), head0=rev, goal="make test_rejects_bad_input pass again")
     cmd = f"cd {r} && printf '%s' \"$(cat <<'X'\n{CARGO_RED}X\n)\""
     assert not br.same_reds_at_base(st, str(r), cmd, CARGO_RED)
