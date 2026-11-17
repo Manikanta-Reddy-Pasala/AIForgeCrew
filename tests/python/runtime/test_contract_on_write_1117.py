@@ -37,3 +37,20 @@ def test_no_note_when_it_matches_or_another_file(tmp_path, monkeypatch):
     other = tmp_path / "Other.java"
     other.write_text("class Other {}\n")
     assert list(cn.check(st, [("Other.java", str(other))], str(tmp_path))) == []
+
+
+def test_a_method_gap_on_the_written_class_is_told(tmp_path, monkeypatch):
+    monkeypatch.delenv("AIFORGE_CHAT_CONTRACT_ON_WRITE", raising=False)
+    held = []
+    from aiforge_core.runtime.chat_agent._turn import _notes
+    monkeypatch.setattr(_notes, "hold", lambda st, m: held.append(m))
+    goal = ("The test will call `Mono<Void> keep(com.acme.Settings incoming, String name)` "
+            "on `com.acme.sync.SyncImpl`.")
+    d = tmp_path / "src" / "main" / "java" / "com" / "acme" / "sync"
+    d.mkdir(parents=True)
+    f = d / "SyncImpl.java"
+    f.write_text("package com.acme.sync;\nclass SyncImpl {\n"
+                 " Mono<Void> keep(Settings incoming, String name, String action) { return null; }\n}\n")
+    st = SimpleNamespace(goal=goal, cwd=str(tmp_path))
+    assert list(cn.check(st, [("SyncImpl.java", str(f))], str(tmp_path)))
+    assert held and "keep(" in held[0]

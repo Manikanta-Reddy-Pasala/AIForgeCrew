@@ -35,8 +35,11 @@ def check(st, files, cwd):
         if not hit:
             return
         root = git_target.command_base(cwd) or cwd
+        # the gaps of the claims this class owns (a gap line names the
+        # signature, not always the class)
+        mine = [c[5] for c in typed_contract.claims(goal) if c[1] in hit]
         gaps = [g for g in typed_contract.missing(goal, root)
-                if any(o in g for o in hit)]
+                if any(o in g for o in hit) or any(t and t in g for t in mine)]
     except Exception:  # noqa: BLE001 — a check never breaks a step
         return
     said = st.__dict__.setdefault("contract_on_write_said", set())
