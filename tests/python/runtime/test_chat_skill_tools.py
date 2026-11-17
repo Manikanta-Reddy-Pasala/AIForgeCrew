@@ -228,16 +228,16 @@ def test_a_clean_batch_writes_every_file(repo):
 
 def test_a_failed_write_rolls_the_batch_back(repo, monkeypatch):
     """A half-written batch leaves the tree not compiling."""
-    import pathlib
-    real_write = pathlib.Path.write_text
+    from aiforge_core.runtime import line_endings
+    real_write = line_endings.write
     calls = {"n": 0}
 
-    def _write(self, content, **kw):
+    def _write(path, content, style=None):
         calls["n"] += 1
         if calls["n"] == 2:
             raise OSError("disk full")
-        return real_write(self, content, **kw)
-    monkeypatch.setattr(pathlib.Path, "write_text", _write)
+        return real_write(path, content, style)
+    monkeypatch.setattr(line_endings, "write", _write)
     out = sk._t_multi_edit({"edits": [_edit("a.py", "x = 1", "x = 99"),
                                       _edit("b.py", "v = 1", "v = 2",
                                             replace_all=True)]}, "/repo")
@@ -247,9 +247,9 @@ def test_a_failed_write_rolls_the_batch_back(repo, monkeypatch):
 
 
 def test_a_rollback_that_also_fails_is_not_fatal(repo, monkeypatch):
-    import pathlib
-    monkeypatch.setattr(pathlib.Path, "write_text",
-                        lambda self, content, **kw: (_ for _ in ()).throw(
+    from aiforge_core.runtime import line_endings
+    monkeypatch.setattr(line_endings, "write",
+                        lambda path, content, style=None: (_ for _ in ()).throw(
                             OSError("read-only")))
     out = sk._t_multi_edit({"edits": [_edit("a.py", "x = 1", "x = 99")]}, "/repo")
     assert out["ok"] is False

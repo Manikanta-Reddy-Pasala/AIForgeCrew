@@ -113,12 +113,13 @@ class _EditBatch:
     """The working state of a multi-edit: chained content per file, plus the
     pre-edit content each file needs for rollback."""
 
-    __slots__ = ("pending", "original", "rel_of")
+    __slots__ = ("pending", "original", "rel_of", "style")
 
     def __init__(self) -> None:
         self.pending: dict[str, str] = {}   # abs path -> working content
         self.original: dict[str, str] = {}  # abs path -> pre-edit disk content
         self.rel_of: dict[str, str] = {}    # abs path -> the path the model gave
+        self.style: dict[str, str] = {}     # abs path -> its line endings
 
     def load(self, ap: str, rel: str) -> bool:
         """Read the file once; later edits chain onto the working copy."""
@@ -131,6 +132,8 @@ class _EditBatch:
         except FileNotFoundError:
             return False
         self.original[ap] = self.pending[ap]
+        from aiforge_core.runtime import line_endings
+        self.style[ap] = line_endings.style_of(ap) or line_endings.LF
         return True
 
 
@@ -175,14 +178,15 @@ def _write_batch(batch: _EditBatch) -> tuple[list, str]:
     written: list[str] = []
     done: list[str] = []
     try:
+        from aiforge_core.runtime import line_endings
         for ap, content in batch.pending.items():
-            Path(ap).write_text(content, encoding="utf-8")
+            line_endings.write(ap, content, batch.style.get(ap))
             done.append(ap)
             written.append(batch.rel_of.get(ap, ap))
     except Exception as exc:  # noqa: BLE001 — restore the pre-edit state
         for ap in done:
             try:
-                Path(ap).write_text(batch.original[ap], encoding="utf-8")
+                line_endings.write(ap, batch.original[ap], batch.style.get(ap))
             except Exception:  # noqa: BLE001
                 pass
         return [], f"write failed, rolled back: {exc}"

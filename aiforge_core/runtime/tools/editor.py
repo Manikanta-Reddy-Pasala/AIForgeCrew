@@ -52,16 +52,16 @@ def _push_snapshot(abs_path: Path) -> Path:
     """Capture pre-mutation content (or empty for new files); prune ring."""
     snap_dir = _undo_dir_for(abs_path)
     if abs_path.is_file():
-        body = abs_path.read_text(encoding="utf-8", errors="replace")
+        body = abs_path.read_bytes()      # raw: undo restores the exact bytes
     else:
-        body = ""
+        body = b""
     ts = int(time.time() * 1000)
     snap_path = snap_dir / f"{ts}.txt"
     # Avoid collision when two snapshots land in the same millisecond.
     while snap_path.exists():
         ts += 1
         snap_path = snap_dir / f"{ts}.txt"
-    snap_path.write_text(body, encoding="utf-8")
+    snap_path.write_bytes(body)
     # Mark snapshots taken when the file DIDN'T EXIST, so undo of a `create`
     # deletes the file rather than leaving an empty one behind.
     if not abs_path.is_file():
@@ -178,7 +178,8 @@ def _str_replace(
         return {"ok": False, "error": err_msg, "path": path,
                 "hint": "fix syntax and call editor str_replace again"}
     _push_snapshot(p)
-    p.write_text(new_body, encoding="utf-8")
+    from aiforge_core.runtime import line_endings
+    line_endings.write(p, new_body)
     _record_touch(path)
     out = {"ok": True, "path": path, "replaced": True}
     if matched:
@@ -209,7 +210,8 @@ def _insert(
         return {"ok": False, "error": err_msg, "path": path,
                 "hint": "fix syntax and call editor insert again"}
     _push_snapshot(p)
-    p.write_text(new_body, encoding="utf-8")
+    from aiforge_core.runtime import line_endings
+    line_endings.write(p, new_body)
     _record_touch(path)
     return attach_oversize(
         {"ok": True, "path": path, "inserted_at": insert_line}, path, new_body)
@@ -235,8 +237,7 @@ def _undo_edit(path: str) -> dict[str, Any]:
         absent_marker.unlink(missing_ok=True)
         emit("EditorUndo", {"path": path, "deleted": True})
         return {"ok": True, "path": path, "deleted": True}
-    body = most_recent.read_text(encoding="utf-8")
-    p.write_text(body, encoding="utf-8")
+    p.write_bytes(most_recent.read_bytes())
     most_recent.unlink(missing_ok=True)
     emit("EditorUndo", {"path": path, "restored_from": most_recent.name})
     return {"ok": True, "path": path, "restored_from": most_recent.name}

@@ -394,7 +394,8 @@ def _t_file_write(args: dict, cwd: str) -> dict:
     # only what a result says was created (runtime/cleanup_detect.py).
     existed = p.exists()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content, encoding="utf-8")
+    from aiforge_core.runtime import line_endings
+    line_endings.write(p, content)        # an existing file keeps its line endings
     return attach_oversize(
         {"ok": True, "path": str(p), "bytes": len(content),
          **({} if existed else {"created": True})}, str(p), content)
@@ -445,7 +446,8 @@ def _t_file_patch(args: dict, cwd: str) -> dict:
     bad = _syntax_check(str(p), new_body, args)
     if bad:
         return syntax_refusal(str(p), new_body, bad)
-    p.write_text(new_body, encoding="utf-8")
+    from aiforge_core.runtime import line_endings
+    line_endings.write(p, new_body)
     out = {"ok": True, "path": str(p)}
     from ._tools._edit_view import view
     now = view(body, new_body)
