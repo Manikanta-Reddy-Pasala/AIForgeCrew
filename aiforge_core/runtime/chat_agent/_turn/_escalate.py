@@ -12,6 +12,8 @@ never) — with a written summary of what is done and what remains.
 """
 from __future__ import annotations
 
+import os
+
 from aiforge_core.runtime.stuck_policy import Policy
 
 from ._stuck.state import reset
@@ -90,6 +92,50 @@ def _wrong_place_hint(st, why: str) -> str:
             "earlier edits).")
 
 
+def _contract_gaps(st) -> list:
+    """What the request spells out (names, signatures, files) that the code
+    still lacks — the turn is about to give up; a real run gave up with a
+    constructor that did not match the one the request stated."""
+    try:
+        from ._contract_gate import _gaps
+        return [str(g) for g in (_gaps(st, cached=False) or [])]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _own_test_hint(st, why: str) -> str:
+    """Once per turn: the repeated failure is in a test file this turn created.
+    A real run rewrote its own mock-heavy test about fifty times (generic
+    mocking of a client builder chain did not compile) and never got back
+    to the feature."""
+    import re
+    if not hasattr(st, "__dict__") or st.__dict__.get("own_test_hinted"):
+        return ""
+    if not any(k in (why or "").lower() for k in _SAME):
+        return ""
+    new_tests = [f for f in _new_files(st) if re.search(_ASIDE_RX, f)]
+    hit = [f for f in new_tests if os.path.basename(f).rsplit(".", 1)[0] in (why or "")]
+    if not hit:
+        return ""
+    st.own_test_hinted = True
+    return ("The failure is in the test you wrote (" + ", ".join(hit[:3]) + "), not in the "
+            "feature. Do not keep rewriting it: make it the simplest test that checks the "
+            "behaviour (fewer mocks — a tiny real input, a local stub server, or a plain "
+            "call and a check on the result), or cut it down to the cases that work. The "
+            "feature code is what the request needs.")
+
+
+def _new_files(st) -> list:
+    import subprocess
+    cwd = str(getattr(st, "cwd", "") or "")
+    try:
+        r = subprocess.run(["git", "ls-files", "--others", "--exclude-standard"], cwd=cwd,
+                           capture_output=True, text=True, timeout=5)
+        return [x for x in r.stdout.splitlines() if x.strip()] if r.returncode == 0 else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _condense_on_trip() -> bool:
     """Condense the history on a stuck trip. tk-toml11 pr1a (11-13): five
     trips, each condense dropped reads the model then asked for again, which
@@ -124,9 +170,16 @@ def escalate(st, why: str):
         _condense(st)
     text = (_WRAP_UP if wrapping else _TIERS[min(n, len(_TIERS)) - 1])
     if not wrapping:
-        hint = _wrong_place_hint(st, why)
+        hint = _wrong_place_hint(st, why) or _own_test_hint(st, why)
         if hint:
             text = text + " " + hint
+    else:
+        gaps = _contract_gaps(st)
+        if gaps:
+            text = ("Before you stop: the request names these and the code does not have "
+                    "them yet — " + "; ".join(gaps[:6]) + ". Make the feature code match "
+                    "them exactly now (leave a failing test of your own aside), then " +
+                    text[0].lower() + text[1:])
     note = (f"[loop guard — not the user] {why} {text}" if not restarted
             else text)
     last = st.convo[-1] if st.convo else None
