@@ -124,10 +124,13 @@ def job_hint(key, alive: bool, why: str | None = None, cmd: str = "") -> str:
     if not alive:
         return "finished — the output above is final."
     if cmd and _BUFFERING_PIPE.search(cmd):
-        return (f"still running, and its output is piped through a command "
-                f"that shows nothing until it ends, so progress and errors "
-                f"are hidden. command_kill(id='{key}') and run it again "
-                f"without the pipe — the tool already keeps just the tail.")
+        # Do not tell the model to kill it: a real run killed the same Maven
+        # build 15 times at ~30 s and re-ran it with another `| tail` — no
+        # build ever finished. Let it end; drop the pipe next time.
+        return (f"still running; its output is piped through a command that "
+                f"shows nothing until it ends — that is not a failure. Let it "
+                f"finish: command_wait(id='{key}', max_s=300). Next time run "
+                f"it without the pipe (the tool already keeps just the tail).")
     if why and is_failure_reason(why):
         # Live: the model was told only "command_wait to wait for more" and
         # waited 45 s on a build it had already seen fail.

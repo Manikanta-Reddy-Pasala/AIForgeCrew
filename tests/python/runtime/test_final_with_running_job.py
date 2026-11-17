@@ -96,7 +96,8 @@ def test_a_buffering_pipe_is_named_as_the_reason_nothing_shows():
     hint = job_hint("bg-2", True, "check-in: still running",
                     cmd="./build.sh 2>&1 | tail -20")
     assert "without the pipe" in hint
-    assert "command_kill(id='bg-2')" in hint
+    # let it finish — a real run killed one healthy build 15 times on this advice
+    assert "command_kill" not in hint and "command_wait(id='bg-2', max_s=300)" in hint
 
 
 def test_a_pipe_into_tee_is_not_called_buffering():

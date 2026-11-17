@@ -807,7 +807,36 @@ def _test_reuse(cmd: str, cwd: str):
         return None, None, None
 
 
+#: A trailing `[2>&1] | tail [-n] N`: the tool keeps the last lines itself, and
+#: the pipe hides progress until the end and replaces the exit code with tail's.
+_TAIL_SUFFIX = re.compile(r"\s*\|\s*tail\s+(?:-n\s*)?-?\d+\s*$")
+
+
+def _drop_tail_pipe(args: dict) -> "tuple[dict, bool]":
+    if os.environ.get("AIFORGE_CHAT_KEEP_TAIL_PIPE", "0").strip().lower() in ("1", "true", "yes", "on"):
+        return args, False
+    cmd = str(args.get("cmd") or "")
+    m = _TAIL_SUFFIX.search(cmd)
+    if not m or not cmd[:m.start()].strip():
+        return args, False
+    head = re.sub(r"\s*2>&1\s*$", "", cmd[:m.start()]).rstrip()   # the tool keeps stderr too
+    return {**args, "cmd": head}, True
+
+
 def _t_run_command(args: dict, cwd: str) -> dict:
+    """``| tail -N`` at the end is dropped (see _TAIL_SUFFIX): a real run piped
+    every Maven build through it, was told to kill and re-run, and killed the
+    same healthy build 15 times without one finishing."""
+    args, dropped = _drop_tail_pipe(args)
+    res = _t_run_command_reuse(args, cwd)
+    if dropped and isinstance(res, dict):
+        res["note"] = ((str(res.get("note")) + " ") if res.get("note") else "") + (
+            "(the trailing `| tail` was dropped: the tool keeps the last lines itself, and "
+            "the exit code is now the command's own)")
+    return res
+
+
+def _t_run_command_reuse(args: dict, cwd: str) -> dict:
     """run_command, plus: a test command re-run on code that has not changed
     since its last finished run gets that run's result back at once. On a
     real Java service job the model re-ran the same Maven tests with no

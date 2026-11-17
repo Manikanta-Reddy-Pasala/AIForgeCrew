@@ -63,7 +63,10 @@ def _t_command_kill(args: dict, _cwd: str) -> dict:
     job.kill()
     res = cmd_jobs.look(job, "killed")
     res["killed"] = True
-    res["hint"] = "stopped. Fix the command and run it again."
+    res["hint"] = ("stopped. If it had failed, fix the command and run it again. If it was "
+                   "only slow (a build or a test run can take minutes), run it again and let "
+                   "it finish with command_wait(id=…, max_s=300) — killing a healthy build "
+                   "throws its progress away.")
     return res
 
 
