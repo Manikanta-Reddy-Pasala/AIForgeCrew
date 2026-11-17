@@ -37,7 +37,11 @@ CORE_OFF = {
     "AIFORGE_CHAT_STRUCTURE_CHECK": "0",   # moved/dropped functions note
     "AIFORGE_CHAT_STUB_NOTE": "0",         # stub functions note
     "AIFORGE_CHAT_TRACE_HINT": "0",        # line trace after a repeated failure
-    "AIFORGE_CHAT_EXAMPLE_GATE": "0",      # "examples have no test" send-back
+    # AIFORGE_CHAT_EXAMPLE_GATE stays ON (11-17 A/B, same code, interleaved):
+    # a real Java service ticket quoting "1 year", "2 years" — gate off 7/8 in
+    # 3 of 3 runs (one label left "1 - 1 year"), gate on 8/8 in 3 of 3; a C++
+    # ticket quoting two entity strings: 517/517 either way, no slower. It
+    # fires only when the request quotes example results the tests lack.
     # the board stays (panel); the harness stops re-opening and parking items
     "AIFORGE_CHAT_ITEM_VERIFY": "0",
     "AIFORGE_CHAT_ITEM_TIMEBOX_S": "0",    # also turns off parking (history reset)
