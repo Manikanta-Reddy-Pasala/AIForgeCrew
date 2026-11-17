@@ -18,7 +18,10 @@ import os
 import re
 
 _LIMIT = 3
-_NAME = re.compile(r"^(?:test_?bug|debug|analy[sz]e|probe|repro|try|scratch|tmp|check_|quick)",
+#: Probe names, also behind a ``test``/``tmp`` prefix (a real Rust run wrote
+#: test_debug1..18.rs and test_verify1..3.rs; only test_bug matched).
+_NAME = re.compile(r"^(?:(?:test|tmp|my)_?)?(?:bug|debug|analy[sz]e|probe|repro|try|"
+                   r"scratch|tmp|check_|quick|verify|trial|experiment|sanity|demo_bug)",
                    re.I)
 _SHELL_WRITE = re.compile(r"(?:cat|tee)\s+(?:-a\s+)?>?\s*>?\s*['\"]?([^\s'\"<|;&]+\.\w{1,5})")
 _WRITE_TOOLS = ("file_write", "write_file", "create_file", "file_create")

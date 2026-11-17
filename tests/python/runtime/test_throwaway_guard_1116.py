@@ -90,3 +90,13 @@ def test_a_script_that_produces_a_file_is_never_a_probe(monkeypatch, tmp_path):
     chart = {"path": "/tmp/plot.py", "content": "import matplotlib\nplt.savefig('c.png')"}
     assert g.refusal(st, "run_command", deck) is None
     assert g.refusal(st, "file_write", chart) is None
+
+
+def test_probe_names_behind_a_test_prefix():
+    from aiforge_core.runtime.chat_agent._turn import _throwaway_guard as g
+    for n in ("test_debug3.rs", "test_verify2.rs", "tmp_check_x.py", "testdebug.cpp",
+              "debug_parse.py", "test_bug.rs", "verify_fix.py"):
+        assert g._NAME.search(n), n
+    for n in ("test_parser.rs", "test_version_req.rs", "OrderServiceTest.java",
+              "test_cart.py", "tests.rs", "test_utils.py"):
+        assert not g._NAME.search(n), n
