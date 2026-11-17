@@ -498,6 +498,10 @@ def _dispatch_step(st, out, n, cwd, role, _complete_fn, session_id, builder,
         # An unanswered question does not stop the work (owner 11-16): wait
         # for a reply, else the model decides — never for a destructive one.
         from ._turn import _ask_wait
+        if _ask_wait.bounce_if_answered(st, step.get("text") or ""):
+            yield {"type": "thought", "role": "system",
+                   "text": "↺ you already answered that while it worked — continuing with your answer"}
+            return (yield from _idle_reply_guard(st))
         if _ask_wait.may_decide(st, step.get("text") or ""):
             _sig = yield from _ask_wait.ask_and_wait(st, session_id, step.get("text") or "")
             if _sig == "cancelled":

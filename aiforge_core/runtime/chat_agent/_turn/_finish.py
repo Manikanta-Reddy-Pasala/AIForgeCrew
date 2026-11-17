@@ -125,6 +125,11 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
     _sig = yield from _do_what_you_said(st, step, builder, strict_finish)
     if _sig:
         return _sig
+    # An answer that asks the user to choose what they already chose this turn.
+    from . import _ask_wait
+    _sig = yield from _ask_wait.answered_gate(st, step, builder, strict_finish)
+    if _sig:
+        return _sig
     # What the request spells out (names, signatures, files) must be in the
     # code: checked with ast, before the model is asked.
     from . import _contract_gate

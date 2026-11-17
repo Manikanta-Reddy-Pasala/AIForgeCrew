@@ -99,4 +99,65 @@ def ask_and_wait(st, session_id, question: str):
     return "continue"
 
 
-__all__ = ["DECIDE_NOTE", "ask_and_wait", "destructive", "may_decide", "wait_for_answer", "wait_s"]
+# ── a question the user already answered this turn ───────────────────────
+_MAX_BOUNCES = 2
+#: A reply that hands the choice back to the user ("Which do you want — 1 or
+#: 2?", "Should I …?", "Do you prefer A or B?").
+_CHOICE_Q = re.compile(
+    r"(?:\bwhich\b[^?\n]{0,80}\?|\b(?:should|shall|do you want|would you like|do you prefer|"
+    r"want me to|let me know|tell me)\b[^?\n]{0,160}\?|\b(?:1|2|a|b)\b[^?\n]{0,40}\bor\b[^?\n]{0,80}\?)",
+    re.I)
+
+
+def asks_a_choice(text: str) -> bool:
+    tail = (text or "").strip()[-700:]
+    return bool(_CHOICE_Q.search(tail))
+
+
+def unread_answers(st) -> list:
+    """The user's messages sent during this turn since the agent last asked
+    and was bounced — the answers it has had and not yet acted on."""
+    steers = [str(x) for x in (getattr(st, "steers", None) or []) if str(x).strip()]
+    seen = int(getattr(st, "answered_seen", 0) or 0)
+    return steers[seen:] if len(steers) > seen else []
+
+
+def bounce_if_answered(st, question: str):
+    """``"continue"`` (and the note queued) when the user already answered
+    during this turn; else None. A real chat: the user sent "try both
+    versions", "try both versions and I will choose", "generate both
+    versions" while the agent worked; it replied "Understood — I'll build
+    both" and still ended asking "Which do you want — 1 or 2?"."""
+    if int(getattr(st, "answered_bounces", 0) or 0) >= _MAX_BOUNCES:
+        return None
+    got = unread_answers(st)
+    if not got:
+        return None
+    st.answered_bounces = int(getattr(st, "answered_bounces", 0) or 0) + 1
+    st.answered_seen = len(getattr(st, "steers", None) or [])
+    said = "\n".join(f"- \"{g.strip()[:400]}\"" for g in got[-4:])
+    if question:
+        st.convo.append({"role": "assistant", "content": question})
+    st.convo.append({"role": "user", "content":
+        "[harness — not the user] Do not ask this: the user already answered while you "
+        f"worked:\n{said}\nAct on that answer now. If it covers more than one option "
+        "(\"both\", \"all\", \"try each\"), do each one."})
+    return "continue"
+
+
+def answered_gate(st, step, builder=None, strict_finish=False):
+    """Finish gate: an answer that ends by asking the user to choose, when the
+    user's messages during the turn already chose."""
+    if builder or strict_finish:
+        return None
+    text = str(step.get("text") or "")
+    if not asks_a_choice(text):
+        return None
+    sig = bounce_if_answered(st, text)
+    if sig:
+        yield {"type": "thought", "role": "system",
+               "text": "↺ you already answered that while it worked — continuing with your answer"}
+    return sig
+
+
+__all__ = ["answered_gate", "asks_a_choice", "bounce_if_answered", "unread_answers", "DECIDE_NOTE", "ask_and_wait", "destructive", "may_decide", "wait_for_answer", "wait_s"]
