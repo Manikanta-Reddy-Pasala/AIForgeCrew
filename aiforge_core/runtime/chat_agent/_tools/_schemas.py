@@ -111,7 +111,7 @@ CATALOG: dict = {
                   "charts. Optional slides (\"2-4\", \"1,3\") limits it.",
                   {"path": "s", "slides": "s"}, ("path",)),
     "pptx_create": ("Create a new .pptx deck from an outline. slides = "
-                    "[{title, bullets: [\"text\", [\"sub-point\"], "
+                    "[{title, subtitle? (title slide: big centred title + subtitle; also the first slide when it has only a title), bullets: [\"text\", [\"sub-point\"], "
                     "{\"text\": .., \"level\": 2}], notes?, image? (local "
                     "file), table? ([[\"head\", ..], [\"cell\", ..]]), "
                     "layout? (layout name)}]. Plain 16:9 look (white, Calibri, "

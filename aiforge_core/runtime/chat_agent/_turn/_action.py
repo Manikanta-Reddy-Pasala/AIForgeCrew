@@ -1043,6 +1043,10 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
     _safely(note_command, st, name, result, cwd)
     # files the shell wrote get the edit checks (syntax/import) and count as an
     # edit for the regression watch (_shell_writes)
+    if name in ("pptx_create", "pptx_edit") and isinstance(result, dict) and result.get("ok"):
+        # a deck written is a file changed (it is not a text edit tool, so the
+        # edit counter missed it and the done check said "no file was changed")
+        st.edits_made = int(getattr(st, "edits_made", 0) or 0) + 1
     try:
         from ._shell_writes import shell_edits
         _sh_files = shell_edits(st, name, result, cwd)

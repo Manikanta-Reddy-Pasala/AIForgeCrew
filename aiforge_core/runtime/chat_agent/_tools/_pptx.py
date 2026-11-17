@@ -27,9 +27,12 @@ _BODY = "333333"
 _WHITE = "FFFFFF"
 _ACCENT = "1F4E79"
 _FONT = "Calibri"
-_TITLE_PT = 32
-_BODY_PT = (22, 19, 17, 15)
-_TABLE_PT = 14
+_TITLE_PT = 36
+_BODY_PT = (26, 22, 20, 18)
+_TABLE_PT = 18
+#: Title-slide sizes: the big title and the line under it.
+_COVER_PT, _SUBTITLE_PT = 44, 24
+_MUTED = "595959"
 _ACCENT_BAR = "Accent bar"
 _READ_BUDGET = 60_000
 _EMU_IN = 914400
@@ -292,6 +295,11 @@ def _write_bullets(tf, items: list[tuple[str, int]], *, plain: bool,
                    styles: dict | None = None) -> None:
     tf.clear()
     tf.word_wrap = True
+    if plain:
+        # the default master shrinks text on overflow: sub-points set to 22 pt
+        # rendered at ~60%; the plain style shows the sizes it sets
+        from pptx.enum.text import MSO_AUTO_SIZE
+        tf.auto_size = MSO_AUTO_SIZE.NONE
     for i, (text, level) in enumerate(items):
         para = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
         para.level = level
@@ -411,7 +419,7 @@ def _add_table(slide, rows: list[list[str]], box, *, plain: bool,
                accent: str, exact: bool = False):
     x, y, w, h = box
     ncols = max(len(r) for r in rows)
-    row_h = int(0.42 * _EMU_IN)
+    row_h = int(0.55 * _EMU_IN)
     height = h if exact else min(h, row_h * len(rows))
     gf = slide.shapes.add_table(len(rows), ncols, x, y, w, height)
     tbl = gf.table
@@ -442,8 +450,75 @@ def _outline(spec) -> dict:
     return spec
 
 
-def _build_slide(prs, spec: dict, *, plain: bool, accent: str, cwd: str):
+def _is_cover(spec: dict, *, first: bool) -> bool:
+    """A title slide: asked for (``layout: title`` / a ``subtitle``), or the
+    deck's first slide with only a title (a real chat asked for a title slide
+    "Q3 Review" with a subtitle; the tool had no subtitle, dropped it, and drew
+    a small heading on an empty page)."""
+    lay = str(spec.get("layout") or "").strip().lower()
+    if lay in ("title", "title slide", "cover"):
+        return True
+    if lay:
+        return False
+    has_content = any(spec.get(k) for k in ("bullets", "body", "table", "image"))
+    return not has_content and (bool(spec.get("subtitle")) or first)
+
+
+def _build_cover(prs, spec: dict, *, plain: bool, accent: str):
+    """Big centred title, accent bar, subtitle under it."""
+    slide = prs.slides.add_slide(_pick_layout(prs, with_body=False))
+    w, h = int(prs.slide_width), int(prs.slide_height)
+    mx = int(w * 0.08)
+    title = str(spec.get("title") or "")
+    sub = str(spec.get("subtitle") or "")
+    if plain:
+        slide.background.fill.solid()
+        slide.background.fill.fore_color.rgb = _rgb(_WHITE)
+    from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+    sh = _title_shape(slide, create=True, plain=plain, geo=_geometry(prs))
+    if plain:
+        _place(sh, (mx, int(h * 0.28), w - 2 * mx, int(h * 0.22)))
+        tf = sh.text_frame
+        tf.clear()
+        tf.word_wrap = True
+        tf.vertical_anchor = MSO_ANCHOR.BOTTOM
+        run = tf.paragraphs[0].add_run()
+        run.text = title
+        _style_run(run, size=_COVER_PT, color=_DARK, bold=True)
+        tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+        from pptx.enum.shapes import MSO_SHAPE
+        bw = int(w * 0.12)
+        bar = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, (w - bw) // 2, int(h * 0.52),
+                                     bw, max(int(h * 0.01), 1))
+        bar.name = _ACCENT_BAR
+        bar.fill.solid()
+        bar.fill.fore_color.rgb = _rgb(accent)
+        bar.line.fill.background()
+        if sub:
+            box = slide.shapes.add_textbox(mx, int(h * 0.56), w - 2 * mx, int(h * 0.12))
+            tfs = box.text_frame
+            tfs.word_wrap = True
+            r = tfs.paragraphs[0].add_run()
+            r.text = sub
+            _style_run(r, size=_SUBTITLE_PT, color=_MUTED)
+            tfs.paragraphs[0].alignment = PP_ALIGN.CENTER
+    else:
+        _write_title(sh, title, plain=False)
+        if sub:
+            body = _body_shape(slide, create=True, plain=False, box=_geometry(prs)["body"])
+            _write_bullets(body.text_frame, [(sub, 0)], plain=False)
+    notes = spec.get("notes")
+    if notes:
+        slide.notes_slide.notes_text_frame.text = str(notes)
+    _drop_empty_placeholders(slide)
+    return slide
+
+
+def _build_slide(prs, spec: dict, *, plain: bool, accent: str, cwd: str,
+                 first: bool = False):
     spec = _outline(spec)
+    if _is_cover(spec, first=first):
+        return _build_cover(prs, spec, plain=plain, accent=accent)
     title = str(spec.get("title") or "")
     bullets = _flatten(spec.get("bullets") or spec.get("body") or [])
     img_raw = spec.get("image")
@@ -704,7 +779,7 @@ def _t_pptx_create(args: dict, cwd: str) -> dict:
         _rgb(accent)
         for n, spec in enumerate(slides, 1):
             try:
-                _build_slide(prs, spec, plain=plain, accent=accent, cwd=cwd)
+                _build_slide(prs, spec, plain=plain, accent=accent, cwd=cwd, first=n == 1)
             except _OpError as exc:
                 raise _OpError(f"slide {n}: {exc}") from exc
         existed = dest.exists()

@@ -310,3 +310,19 @@ def test_tools_are_registered_and_described():
                                   text="read the deck")
     plan_names = {s["function"]["name"] for s in plan}
     assert "pptx_read" in plan_names and "pptx_edit" not in plan_names
+
+
+def test_title_slide_with_subtitle_and_first_title_only_slide(tmp_path):
+    pytest.importorskip("pptx")
+    from aiforge_core.runtime.chat_agent._tools import _pptx as P
+    out = P._t_pptx_create({"path": str(tmp_path / "c.pptx"), "slides": [
+        {"title": "Q3 Review", "subtitle": "Sales team"},
+        {"title": "Highlights", "bullets": ["a", "b"]}]}, str(tmp_path))
+    assert out["ok"]
+    r = P._t_pptx_read({"path": str(tmp_path / "c.pptx")}, str(tmp_path))
+    texts = " ".join(str(s) for s in r["slides"][0]["shapes"])
+    assert "Q3 Review" in texts and "Sales team" in texts
+    from pptx import Presentation
+    t = [sh for sh in Presentation(str(tmp_path / "c.pptx")).slides[0].shapes
+         if sh.has_text_frame and sh.text_frame.text == "Q3 Review"][0]
+    assert t.text_frame.paragraphs[0].runs[0].font.size.pt == 44
