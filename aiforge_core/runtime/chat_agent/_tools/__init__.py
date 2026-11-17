@@ -123,6 +123,8 @@ from ._pptx import (
     _t_pptx_read,
     _t_pptx_create,
     _t_pptx_edit,
+    _t_pptx_save_template,
+    _t_pptx_templates,
 )
 from ._skills import (
     _t_skill_search,

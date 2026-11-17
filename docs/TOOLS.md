@@ -1,7 +1,7 @@
 # Tool Reference
 
 Complete reference for every agent tool. Sources of truth:
-`runtime/chat_agent/_registry.py` (`TOOLS`, **128 tools**),
+`runtime/chat_agent/_registry.py` (`TOOLS`, **130 tools**),
 `runtime/chat_agent/_tools/_schemas.py` (the model-facing descriptions),
 `runtime/doer_tools/` (pipeline `FunctionTool` registry),
 `agents/agents.yaml` (per-role allowlists),
@@ -48,8 +48,10 @@ because their blast radius ends at the box: `execute_ipython_cell`,
 | `rename_symbol` | `{path, old, new}` | project-wide symbol rename | EDIT |
 | `summarize_doc` | `{path, pages}` | summarize an attached pdf/docx/xlsx/pptx; `pages` narrows it | RO |
 | `pptx_read` | `{path, slides?}` | a .pptx deck as JSON: per slide layout, title, shape texts (id/name), notes, image/table/chart flags | RO |
-| `pptx_create` | `{path, slides: [{title, bullets, notes?, image?, table?, layout?}], template?, accent?}` | new deck; plain 16:9 look, or a template's layouts/theme | allow |
-| `pptx_edit` | `{path, ops: [...], out_path?}` | `replace_text`, `set_title`, `set_bullets`, `set_notes`, `add_slide`, `delete_slide`, `move_slide`, `add_image`, `add_table`; all or nothing | allow |
+| `pptx_create` | `{path, slides: [{title, subtitle?, bullets, notes?, image?, table?, layout?}], style?, template?, accent?}` | new 16:9 deck; `style` = `plain` (default) / `classic` / `business` / `modern`, remembered in the deck; or a template's layouts/theme (`template` = a .pptx path or a saved template name) | allow |
+| `pptx_edit` | `{path, ops: [...], out_path?}` | `replace_text`, `set_title`, `set_bullets`, `set_notes`, `add_slide`, `delete_slide`, `move_slide`, `add_image`, `add_table`; all or nothing; `add_slide` keeps the deck's remembered style | allow |
+| `pptx_save_template` | `{path, name, overwrite?}` | save a deck's layouts/theme (slides left out) as `$AIFORGE_CONFIG_DIR/pptx-templates/<name>.pptx` | allow |
+| `pptx_templates` | `{}` | saved deck templates (name, path, slide size, layouts) + built-in style names | RO |
 
 ### Search & navigation
 

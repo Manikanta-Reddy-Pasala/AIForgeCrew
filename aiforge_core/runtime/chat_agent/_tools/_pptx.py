@@ -8,32 +8,85 @@ starts and runs every other tool as before; these three return
 Slide numbers are 1-based everywhere (``slide: 1`` is the first slide), the
 way a person names them. Positions and sizes in ops are inches.
 
-The default look of a new deck is plain: 16:9, white background, Calibri,
-dark text and one accent colour (a short bar under each title and the table
-header row). With ``template`` the template's layouts and theme are used and
-no styling is forced.
+A new deck gets one of the built-in looks (``style``, see ``_STYLES``):
+``plain`` (the default: white, Calibri, dark text, one accent bar under each
+title), ``classic``, ``business`` or ``modern``. The style and accent are
+remembered in the deck's core-properties keywords, so ``pptx_edit``'s
+``add_slide`` draws new slides the same way. With ``template`` (a .pptx path
+or the name of a template saved with ``pptx_save_template``) the template's
+layouts and theme are used and no styling is forced, unless the template
+remembers a style or ``style`` is given.
 """
 from __future__ import annotations
 
 import contextlib
 import json
 import os
+import re
 from pathlib import Path
 
 MISSING = "python-pptx is not installed: pip install 'aiforgecrew[pptx]'"
 
-_DARK = "1F1F1F"
-_BODY = "333333"
+#: The built-in looks. Every one is 16:9 with titles >= 36 pt, level-0
+#: bullets >= 24 pt and tables >= 16 pt. The pptx_create ``accent`` arg
+#: replaces ``accent``; the other colours stay. ``title`` None = whichever of
+#: white/near-black reads best on the accent (a title drawn on an accent band).
+_STYLES: dict[str, dict] = {
+    "plain": {
+        "desc": "white, Calibri, dark bold titles, a short accent bar under each title",
+        "bg": "FFFFFF", "title_font": "Calibri", "body_font": "Calibri",
+        "title": "1F1F1F", "body": "333333", "muted": "595959",
+        "accent": "1F4E79", "title_pt": 36, "title_bold": True,
+        "body_pt": (26, 22, 20, 18), "table_pt": 18,
+        "cover_pt": 44, "subtitle_pt": 24,
+        "row_a": "FFFFFF", "row_b": "FFFFFF", "row_text": "333333",
+    },
+    "classic": {
+        "desc": "warm off-white, Georgia serif, navy titles over a thin full-width rule",
+        "bg": "FAF7F0", "title_font": "Georgia", "body_font": "Georgia",
+        "title": "1B2A4A", "body": "2B2B2B", "muted": "6B6B6B",
+        "accent": "1B2A4A", "title_pt": 40, "title_bold": False,
+        "body_pt": (26, 22, 20, 18), "table_pt": 18,
+        "cover_pt": 50, "subtitle_pt": 26,
+        "row_a": "FFFFFF", "row_b": "EFEBE2", "row_text": "2B2B2B",
+    },
+    "business": {
+        "desc": "white, a dark-blue title band across the top, Calibri",
+        "bg": "FFFFFF", "title_font": "Calibri", "body_font": "Calibri",
+        "title": None, "body": "262626", "muted": "595959",
+        "accent": "1F3864", "stripe": "4A90D9", "title_pt": 36, "title_bold": True,
+        "body_pt": (26, 22, 20, 18), "table_pt": 18,
+        "cover_pt": 48, "subtitle_pt": 24,
+        "row_a": "FFFFFF", "row_b": "E9EFF7", "row_text": "262626",
+    },
+    "modern": {
+        "desc": "dark charcoal, light Arial text, one bright teal accent",
+        "bg": "1E1F26", "title_font": "Arial", "body_font": "Arial",
+        "title": "FFFFFF", "body": "E4E6EB", "muted": "A9B0BC",
+        "accent": "14B8A6", "title_pt": 40, "title_bold": True,
+        "body_pt": (26, 22, 20, 18), "table_pt": 18,
+        "cover_pt": 56, "subtitle_pt": 26,
+        "row_a": "2A2C35", "row_b": "343744", "row_text": "E4E6EB", "grid": "1E1F26",
+    },
+}
+for _k, _v in _STYLES.items():
+    _v["name"] = _k
+_PLAIN = _STYLES["plain"]
+_DARK = _PLAIN["title"]
+_BODY = _PLAIN["body"]
 _WHITE = "FFFFFF"
-_ACCENT = "1F4E79"
-_FONT = "Calibri"
-_TITLE_PT = 36
-_BODY_PT = (26, 22, 20, 18)
-_TABLE_PT = 18
+_ACCENT = _PLAIN["accent"]
+_FONT = _PLAIN["body_font"]
+_TITLE_PT = _PLAIN["title_pt"]
+_BODY_PT = _PLAIN["body_pt"]
+_TABLE_PT = _PLAIN["table_pt"]
 #: Title-slide sizes: the big title and the line under it.
-_COVER_PT, _SUBTITLE_PT = 44, 24
-_MUTED = "595959"
+_COVER_PT, _SUBTITLE_PT = _PLAIN["cover_pt"], _PLAIN["subtitle_pt"]
+_MUTED = _PLAIN["muted"]
 _ACCENT_BAR = "Accent bar"
+#: Where a deck remembers its look: tokens in the core-properties keywords.
+_META_STYLE, _META_ACCENT = "aiforge-style:", "aiforge-accent:"
+_TPL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _READ_BUDGET = 60_000
 _EMU_IN = 914400
 
@@ -171,12 +224,73 @@ def _flatten(items, level: int = 0) -> list[tuple[str, int]]:
     return out
 
 
-def _style_run(run, *, size: int, color: str, bold: bool = False) -> None:
+def _style_run(run, *, size: int, color: str, bold: bool = False,
+               font: str = _FONT, italic: bool | None = None) -> None:
     f = run.font
-    f.name = _FONT
+    f.name = font
     f.size = _pt(size)
     f.bold = bold
+    if italic is not None:
+        f.italic = italic
     f.color.rgb = _rgb(color)
+
+
+def _lum(hexstr: str) -> float:
+    """WCAG relative luminance of a 6-digit hex colour."""
+    s = str(hexstr).lstrip("#")
+    out = []
+    for i in (0, 2, 4):
+        c = int(s[i:i + 2], 16) / 255
+        out.append(c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2]
+
+
+def _on(fill: str) -> str:
+    """White or near-black: whichever has more contrast on ``fill``."""
+    lum = _lum(fill)
+    return _WHITE if (1.05 / (lum + 0.05)) >= ((lum + 0.05) / 0.0627) else "1A1A1A"
+
+
+def _mix(a: str, b: str, t: float) -> str:
+    """``a`` moved ``t`` (0..1) of the way to ``b``."""
+    a, b = a.lstrip("#"), b.lstrip("#")
+    return "".join(f"{round(int(a[i:i + 2], 16) * (1 - t) + int(b[i:i + 2], 16) * t):02X}"
+                   for i in (0, 2, 4))
+
+
+def _title_color(st: dict, accent: str) -> str:
+    return st["title"] or _on(accent)
+
+
+# ── remembered style ─────────────────────────────────────────────────────
+def _get_meta(prs) -> dict:
+    """``{"style", "accent"}`` the deck remembers (empty when none)."""
+    out: dict = {}
+    try:
+        kw = prs.core_properties.keywords or ""
+    except Exception:  # noqa: BLE001 — a deck without core properties
+        return out
+    for tok in re.split(r"[;,]", kw):
+        tok = tok.strip()
+        if tok.startswith(_META_STYLE):
+            out["style"] = tok[len(_META_STYLE):].strip().lower()
+        elif tok.startswith(_META_ACCENT):
+            acc = tok[len(_META_ACCENT):].strip().lstrip("#")
+            if re.fullmatch(r"[0-9A-Fa-f]{6}", acc):
+                out["accent"] = acc.upper()
+    return out
+
+
+def _set_meta(prs, style: str, accent: str) -> None:
+    kw = prs.core_properties.keywords or ""
+    keep = [t.strip() for t in re.split(r"[;,]", kw)
+            if t.strip() and not t.strip().startswith((_META_STYLE, _META_ACCENT))]
+    prs.core_properties.keywords = "; ".join(
+        keep + [f"{_META_STYLE}{style}", f"{_META_ACCENT}{accent.upper()}"])
+
+
+def _unknown_style(name: str) -> str:
+    return f"unknown style {name}; one of: " + ", ".join(_STYLES)
 
 
 def _pt(n):
@@ -185,18 +299,36 @@ def _pt(n):
 
 
 # ── geometry ─────────────────────────────────────────────────────────────
-def _geometry(prs) -> dict:
-    """Title, accent-bar and content boxes for the slide size (EMU)."""
+def _geometry(prs, st: dict | None = None) -> dict:
+    """Title, accent-bar and content boxes for the slide size (EMU), for the
+    style's title treatment (plain/template: a short bar under the title)."""
     w, h = int(prs.slide_width), int(prs.slide_height)
     mx = int(w * 0.045)
     title_top, title_h = int(h * 0.05), int(h * 0.135)
     body_top = int(h * 0.235)
-    return {
+    geo = {
         "title": (mx, title_top, w - 2 * mx, title_h),
         "bar": (mx, title_top + title_h + int(h * 0.006), int(w * 0.09),
                 max(int(h * 0.008), 1)),
         "body": (mx, body_top, w - 2 * mx, h - body_top - int(h * 0.07)),
     }
+    name = (st or {}).get("name")
+    if name == "classic":
+        # a thin rule the full content width under the title
+        geo["bar"] = (mx, title_top + title_h + int(h * 0.006), w - 2 * mx,
+                      max(int(h * 0.0035), 1))
+    elif name == "business":
+        band_h = int(h * 0.165)
+        geo["band"] = (0, 0, w, band_h)
+        geo["stripe"] = (0, band_h, w, max(int(h * 0.008), 1))
+        geo["title"] = (mx, int(h * 0.015), w - 2 * mx, band_h - int(h * 0.03))
+        geo.pop("bar")
+    elif name == "modern":
+        sw = max(int(w * 0.009), 1)
+        geo["bar"] = (mx, title_top + int(title_h * 0.2), sw, int(title_h * 0.6))
+        shift = sw + int(w * 0.016)
+        geo["title"] = (mx + shift, title_top, w - 2 * mx - shift, title_h)
+    return geo
 
 
 def _split(box, parts: int, *, horizontal: bool):
@@ -227,6 +359,9 @@ def _needs_fit(prs) -> bool:
 
 
 def _deck_accent(prs) -> str:
+    acc = _get_meta(prs).get("accent")
+    if acc:
+        return acc
     for slide in prs.slides:
         for sh in slide.shapes:
             if sh.name == _ACCENT_BAR:
@@ -291,13 +426,15 @@ def _capture_styles(tf) -> dict:
     return styles
 
 
-def _write_bullets(tf, items: list[tuple[str, int]], *, plain: bool,
+def _write_bullets(tf, items: list[tuple[str, int]], *, st: dict | None,
                    styles: dict | None = None) -> None:
+    """Bullets in the style's body font/sizes (``st`` None: a template's own
+    look, keeping the per-level ``styles`` the text had)."""
     tf.clear()
     tf.word_wrap = True
-    if plain:
+    if st:
         # the default master shrinks text on overflow: sub-points set to 22 pt
-        # rendered at ~60%; the plain style shows the sizes it sets
+        # rendered at ~60%; a built-in style shows the sizes it sets
         from pptx.enum.text import MSO_AUTO_SIZE
         tf.auto_size = MSO_AUTO_SIZE.NONE
     for i, (text, level) in enumerate(items):
@@ -305,9 +442,10 @@ def _write_bullets(tf, items: list[tuple[str, int]], *, plain: bool,
         para.level = level
         run = para.add_run()
         run.text = text
-        if plain:
-            _style_run(run, size=_BODY_PT[min(level, len(_BODY_PT) - 1)],
-                       color=_BODY)
+        if st:
+            sizes = st["body_pt"]
+            _style_run(run, size=sizes[min(level, len(sizes) - 1)],
+                       color=st["body"], font=st["body_font"])
         elif styles:
             st = styles.get(level) or styles.get(min(styles, key=lambda k: abs(k - level)))
             name, size, bold, rgb = st
@@ -321,16 +459,21 @@ def _write_bullets(tf, items: list[tuple[str, int]], *, plain: bool,
                 run.font.color.rgb = rgb
 
 
-def _write_title(sh, text: str, *, plain: bool) -> None:
+def _write_title(sh, text: str, *, st: dict | None, accent: str = _ACCENT) -> None:
     tf = sh.text_frame
-    if plain or not tf.paragraphs[0].runs:
+    if st or not tf.paragraphs[0].runs:
         tf.clear()
         run = tf.paragraphs[0].add_run()
         run.text = text
-        if plain:
-            _style_run(run, size=_TITLE_PT, color=_DARK, bold=True)
-            from pptx.enum.text import PP_ALIGN
+        if st:
+            _style_run(run, size=st["title_pt"], color=_title_color(st, accent),
+                       bold=st["title_bold"], font=st["title_font"])
+            from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
             tf.paragraphs[0].alignment = PP_ALIGN.LEFT
+            if st["name"] != "plain":
+                tf.word_wrap = True
+                tf.vertical_anchor = (MSO_ANCHOR.BOTTOM if st["name"] == "classic"
+                                      else MSO_ANCHOR.MIDDLE)
         return
     para = tf.paragraphs[0]
     para.runs[0].text = text
@@ -340,7 +483,7 @@ def _write_title(sh, text: str, *, plain: bool) -> None:
         extra._p.getparent().remove(extra._p)
 
 
-def _title_shape(slide, *, create: bool, plain: bool, geo: dict):
+def _title_shape(slide, *, create: bool, st: dict | None, geo: dict):
     sh = slide.shapes.title
     if sh is not None or not create:
         return sh
@@ -353,12 +496,61 @@ def _title_shape(slide, *, create: bool, plain: bool, geo: dict):
         sh.name = "Title"
         return sh
     sh = slide.shapes.title
-    if plain:
+    if st:
         _place(sh, geo["title"])
     return sh
 
 
-def _body_shape(slide, *, create: bool, plain: bool, box):
+def _rect(slide, box, color: str, *, name: str = "", back: bool = False,
+          flat: bool = True):
+    """A filled rectangle with no outline; ``back`` puts it behind the rest
+    (a band or block the title text sits on)."""
+    from pptx.enum.shapes import MSO_SHAPE
+    sh = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, *(int(v) for v in box))
+    if name:
+        sh.name = name
+    sh.fill.solid()
+    sh.fill.fore_color.rgb = _rgb(color)
+    sh.line.fill.background()
+    if flat:
+        sh.shadow.inherit = False
+    if back:
+        tree = slide.shapes._spTree
+        tree.remove(sh._element)
+        tree.insert(2, sh._element)   # after nvGrpSpPr + grpSpPr
+    return sh
+
+
+def _text_box(slide, box, text: str, *, font: str, size: int, color: str,
+              align=None, italic: bool | None = None, bold: bool = False):
+    tb = slide.shapes.add_textbox(*(int(v) for v in box))
+    tf = tb.text_frame
+    tf.word_wrap = True
+    r = tf.paragraphs[0].add_run()
+    r.text = text
+    _style_run(r, size=size, color=color, font=font, italic=italic, bold=bold)
+    if align is not None:
+        tf.paragraphs[0].alignment = align
+    return tb
+
+
+def _background(slide, st: dict) -> None:
+    slide.background.fill.solid()
+    slide.background.fill.fore_color.rgb = _rgb(st["bg"])
+
+
+def _title_deco(slide, st: dict, geo: dict, accent: str) -> None:
+    """The style's mark around a slide title: plain's short bar, classic's
+    rule, business's band (+ stripe under it), modern's stripe at the left."""
+    if st["name"] == "business":
+        _rect(slide, geo["band"], accent, name=_ACCENT_BAR, back=True)
+        _rect(slide, geo["stripe"], st.get("stripe") or _mix(accent, _WHITE, 0.45),
+              name="Accent stripe")
+        return
+    _rect(slide, geo["bar"], accent, name=_ACCENT_BAR, flat=st["name"] != "plain")
+
+
+def _body_shape(slide, *, create: bool, st: dict | None, box):
     for sh in slide.placeholders:
         if sh.placeholder_format.idx != 0 and _ph_type(sh) in (
                 "body", "object", "subtitle") and sh.has_text_frame:
@@ -370,7 +562,7 @@ def _body_shape(slide, *, create: bool, plain: bool, box):
             slide.shapes.clone_placeholder(ph)
             sh = next(s for s in slide.placeholders
                       if s.placeholder_format.idx == ph.placeholder_format.idx)
-            if plain:
+            if st:
                 _place(sh, box)
             return sh
     sh = slide.shapes.add_textbox(*box)
@@ -415,29 +607,59 @@ def _table_rows(raw) -> list[list[str]]:
     return out
 
 
-def _add_table(slide, rows: list[list[str]], box, *, plain: bool,
+def _cell_grid(cell, color: str) -> None:
+    """Thin cell borders in ``color`` (the default table style draws white
+    lines, harsh on a dark slide). python-pptx has no API: tcPr XML."""
+    from pptx.oxml.ns import qn
+    tc_pr = cell._tc.get_or_add_tcPr()
+    for tag in ("a:lnL", "a:lnR", "a:lnT", "a:lnB"):
+        for old in tc_pr.findall(qn(tag)):
+            tc_pr.remove(old)
+    fill = tc_pr.find(qn("a:solidFill"))
+    for i, tag in enumerate(("a:lnL", "a:lnR", "a:lnT", "a:lnB")):
+        ln = tc_pr.makeelement(qn(tag), {"w": "12700", "cmpd": "sng"})
+        sf = ln.makeelement(qn("a:solidFill"), {})
+        sf.append(sf.makeelement(qn("a:srgbClr"), {"val": color}))
+        ln.append(sf)
+        # schema order: borders come before the cell fill
+        if fill is not None:
+            fill.addprevious(ln)
+        else:
+            tc_pr.append(ln)
+
+
+def _add_table(slide, rows: list[list[str]], box, *, st: dict | None,
                accent: str, exact: bool = False):
+    """A table; with a style: accent header (text in the colour that reads
+    on it), body rows in the style's two banding fills."""
     x, y, w, h = box
     ncols = max(len(r) for r in rows)
     row_h = int(0.55 * _EMU_IN)
     height = h if exact else min(h, row_h * len(rows))
     gf = slide.shapes.add_table(len(rows), ncols, x, y, w, height)
     tbl = gf.table
-    if plain:
+    if st:
         tbl.horz_banding = False
+    head_text = _on(accent)
     for ri, row in enumerate(rows):
         for ci in range(ncols):
             cell = tbl.cell(ri, ci)
             cell.text = row[ci] if ci < len(row) else ""
-            if not plain:
+            if not st:
                 continue
             head = ri == 0
             cell.fill.solid()
-            cell.fill.fore_color.rgb = _rgb(accent if head else _WHITE)
+            fill = accent if head else (st["row_a"] if ri % 2 else st["row_b"])
+            cell.fill.fore_color.rgb = _rgb(fill)
+            if st["name"] != "plain":
+                from pptx.enum.text import MSO_ANCHOR
+                cell.vertical_anchor = MSO_ANCHOR.MIDDLE
+                if st.get("grid"):
+                    _cell_grid(cell, st["grid"])
             for para in cell.text_frame.paragraphs:
                 for run in para.runs:
-                    _style_run(run, size=_TABLE_PT,
-                               color=_WHITE if head else _BODY, bold=head)
+                    _style_run(run, size=st["table_pt"], font=st["body_font"],
+                               color=head_text if head else st["row_text"], bold=head)
     return gf
 
 
@@ -464,49 +686,84 @@ def _is_cover(spec: dict, *, first: bool) -> bool:
     return not has_content and (bool(spec.get("subtitle")) or first)
 
 
-def _build_cover(prs, spec: dict, *, plain: bool, accent: str):
-    """Big centred title, accent bar, subtitle under it."""
+def _cover_title(sh, box, title: str, st: dict, *, color: str, align, anchor) -> None:
+    _place(sh, box)
+    tf = sh.text_frame
+    tf.clear()
+    tf.word_wrap = True
+    tf.vertical_anchor = anchor
+    run = tf.paragraphs[0].add_run()
+    run.text = title
+    _style_run(run, size=st["cover_pt"], color=color,
+               bold=st["title_bold"] or st["name"] != "classic", font=st["title_font"])
+    tf.paragraphs[0].alignment = align
+
+
+def _build_cover(prs, spec: dict, *, st: dict | None, accent: str):
+    """The title slide in the style's cover layout:
+    plain    — big centred title, short accent bar, grey subtitle;
+    classic  — centred serif title between two thin rules, italic subtitle;
+    business — an accent block over the left 40% holding title + subtitle;
+    modern   — big left-aligned title, accent bar under it, tinted subtitle."""
     slide = prs.slides.add_slide(_pick_layout(prs, with_body=False))
     w, h = int(prs.slide_width), int(prs.slide_height)
     mx = int(w * 0.08)
     title = str(spec.get("title") or "")
     sub = str(spec.get("subtitle") or "")
-    if plain:
-        slide.background.fill.solid()
-        slide.background.fill.fore_color.rgb = _rgb(_WHITE)
     from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
-    sh = _title_shape(slide, create=True, plain=plain, geo=_geometry(prs))
-    if plain:
-        _place(sh, (mx, int(h * 0.28), w - 2 * mx, int(h * 0.22)))
-        tf = sh.text_frame
-        tf.clear()
-        tf.word_wrap = True
-        tf.vertical_anchor = MSO_ANCHOR.BOTTOM
-        run = tf.paragraphs[0].add_run()
-        run.text = title
-        _style_run(run, size=_COVER_PT, color=_DARK, bold=True)
-        tf.paragraphs[0].alignment = PP_ALIGN.CENTER
-        from pptx.enum.shapes import MSO_SHAPE
+    sh = _title_shape(slide, create=True, st=st, geo=_geometry(prs, st))
+    name = (st or {}).get("name")
+    if st:
+        _background(slide, st)
+    if name == "plain":
+        _cover_title(sh, (mx, int(h * 0.28), w - 2 * mx, int(h * 0.22)), title, st,
+                     color=st["title"], align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.BOTTOM)
         bw = int(w * 0.12)
-        bar = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, (w - bw) // 2, int(h * 0.52),
-                                     bw, max(int(h * 0.01), 1))
-        bar.name = _ACCENT_BAR
-        bar.fill.solid()
-        bar.fill.fore_color.rgb = _rgb(accent)
-        bar.line.fill.background()
+        _rect(slide, ((w - bw) // 2, int(h * 0.52), bw, max(int(h * 0.01), 1)),
+              accent, name=_ACCENT_BAR, flat=False)
         if sub:
-            box = slide.shapes.add_textbox(mx, int(h * 0.56), w - 2 * mx, int(h * 0.12))
-            tfs = box.text_frame
-            tfs.word_wrap = True
-            r = tfs.paragraphs[0].add_run()
-            r.text = sub
-            _style_run(r, size=_SUBTITLE_PT, color=_MUTED)
-            tfs.paragraphs[0].alignment = PP_ALIGN.CENTER
+            _text_box(slide, (mx, int(h * 0.56), w - 2 * mx, int(h * 0.12)), sub,
+                      font=st["body_font"], size=st["subtitle_pt"], color=st["muted"],
+                      align=PP_ALIGN.CENTER)
+    elif name == "classic":
+        rw, rh = int(w * 0.56), max(int(h * 0.0035), 1)
+        _rect(slide, ((w - rw) // 2, int(h * 0.29), rw, rh), accent, name=_ACCENT_BAR)
+        _cover_title(sh, (mx, int(h * 0.31), w - 2 * mx, int(h * 0.22)), title, st,
+                     color=st["title"], align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+        _rect(slide, ((w - rw) // 2, int(h * 0.55), rw, rh), accent, name="Accent rule")
+        if sub:
+            _text_box(slide, (mx, int(h * 0.585), w - 2 * mx, int(h * 0.12)), sub,
+                      font=st["body_font"], size=st["subtitle_pt"], color=st["muted"],
+                      align=PP_ALIGN.CENTER, italic=True)
+    elif name == "business":
+        bw = int(w * 0.4)
+        _rect(slide, (0, 0, bw, h), accent, name=_ACCENT_BAR, back=True)
+        _rect(slide, (bw, 0, max(int(w * 0.012), 1), h),
+              st.get("stripe") or _mix(accent, _WHITE, 0.45), name="Accent stripe")
+        on = _on(accent)
+        px = int(w * 0.05)
+        _cover_title(sh, (px, int(h * 0.2), bw - 2 * px, int(h * 0.36)), title, st,
+                     color=on, align=PP_ALIGN.LEFT, anchor=MSO_ANCHOR.BOTTOM)
+        _rect(slide, (px, int(h * 0.585), int(w * 0.06), max(int(h * 0.008), 1)),
+              st.get("stripe") or _mix(accent, _WHITE, 0.45), name="Accent dash")
+        if sub:
+            _text_box(slide, (px, int(h * 0.61), bw - 2 * px, int(h * 0.2)), sub,
+                      font=st["body_font"], size=st["subtitle_pt"],
+                      color=_mix(on, accent, 0.22), align=PP_ALIGN.LEFT)
+    elif name == "modern":
+        _cover_title(sh, (mx, int(h * 0.24), w - 2 * mx, int(h * 0.28)), title, st,
+                     color=st["title"], align=PP_ALIGN.LEFT, anchor=MSO_ANCHOR.BOTTOM)
+        _rect(slide, (mx, int(h * 0.545), int(w * 0.1), max(int(h * 0.016), 1)),
+              accent, name=_ACCENT_BAR)
+        if sub:
+            _text_box(slide, (mx, int(h * 0.59), w - 2 * mx, int(h * 0.12)), sub,
+                      font=st["body_font"], size=st["subtitle_pt"],
+                      color=_mix(st["muted"], accent, 0.35), align=PP_ALIGN.LEFT)
     else:
-        _write_title(sh, title, plain=False)
+        _write_title(sh, title, st=None)
         if sub:
-            body = _body_shape(slide, create=True, plain=False, box=_geometry(prs)["body"])
-            _write_bullets(body.text_frame, [(sub, 0)], plain=False)
+            body = _body_shape(slide, create=True, st=None, box=_geometry(prs)["body"])
+            _write_bullets(body.text_frame, [(sub, 0)], st=None)
     notes = spec.get("notes")
     if notes:
         slide.notes_slide.notes_text_frame.text = str(notes)
@@ -514,11 +771,12 @@ def _build_cover(prs, spec: dict, *, plain: bool, accent: str):
     return slide
 
 
-def _build_slide(prs, spec: dict, *, plain: bool, accent: str, cwd: str,
+def _build_slide(prs, spec: dict, *, st: dict | None, accent: str, cwd: str,
                  first: bool = False):
+    """One slide from an outline entry; ``st`` None = the template's look."""
     spec = _outline(spec)
     if _is_cover(spec, first=first):
-        return _build_cover(prs, spec, plain=plain, accent=accent)
+        return _build_cover(prs, spec, st=st, accent=accent)
     title = str(spec.get("title") or "")
     bullets = _flatten(spec.get("bullets") or spec.get("body") or [])
     img_raw = spec.get("image")
@@ -533,10 +791,9 @@ def _build_slide(prs, spec: dict, *, plain: bool, accent: str, cwd: str,
     layout = _pick_layout(prs, with_body=bool(bullets),
                           name=str(spec.get("layout") or ""))
     slide = prs.slides.add_slide(layout)
-    geo = _geometry(prs)
-    if plain:
-        slide.background.fill.solid()
-        slide.background.fill.fore_color.rgb = _rgb(_WHITE)
+    geo = _geometry(prs, st)
+    if st:
+        _background(slide, st)
 
     side = [k for k, v in (("table", rows), ("image", image)) if v]
     body_box = geo["body"]
@@ -545,26 +802,21 @@ def _build_slide(prs, spec: dict, *, plain: bool, accent: str, cwd: str,
         body_box, side_box = _split(geo["body"], 2, horizontal=True)
 
     if title:
-        sh = _title_shape(slide, create=True, plain=plain, geo=geo)
-        if plain:
+        sh = _title_shape(slide, create=True, st=st, geo=geo)
+        if st:
             _place(sh, geo["title"])
-        _write_title(sh, title, plain=plain)
-        if plain:
-            from pptx.enum.shapes import MSO_SHAPE
-            bar = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, *geo["bar"])
-            bar.name = _ACCENT_BAR
-            bar.fill.solid()
-            bar.fill.fore_color.rgb = _rgb(accent)
-            bar.line.fill.background()
+        _write_title(sh, title, st=st, accent=accent)
+        if st:
+            _title_deco(slide, st, geo, accent)
     if bullets:
-        body = _body_shape(slide, create=True, plain=plain, box=body_box)
-        if plain:
+        body = _body_shape(slide, create=True, st=st, box=body_box)
+        if st:
             _place(body, body_box)
-        _write_bullets(body.text_frame, bullets, plain=plain)
+        _write_bullets(body.text_frame, bullets, st=st)
     boxes = _split(side_box, len(side), horizontal=False) if side else []
     for kind, box in zip(side, boxes, strict=True):
         if kind == "table":
-            _add_table(slide, rows, box, plain=plain, accent=accent)
+            _add_table(slide, rows, box, st=st, accent=accent)
         else:
             _add_picture(slide, image, box)
     notes = spec.get("notes")
@@ -739,6 +991,11 @@ def _t_pptx_read(args: dict, cwd: str) -> dict:
                              round(int(prs.slide_height) / _EMU_IN, 2)],
            "layouts": [lo.name for lo in prs.slide_layouts],
            "slides": slides}
+    meta = _get_meta(prs)
+    if meta.get("style") in _STYLES:
+        out["style"] = meta["style"]
+        if meta.get("accent"):
+            out["accent"] = meta["accent"]
     if truncated:
         out["truncated"] = (f"stopped after slide {slides[-1]['index']}: pass "
                             "slides (e.g. \"10-20\") to read the rest")
@@ -748,8 +1005,9 @@ def _t_pptx_read(args: dict, cwd: str) -> dict:
 # ── pptx_create ──────────────────────────────────────────────────────────
 def _t_pptx_create(args: dict, cwd: str) -> dict:
     """A new deck from an outline: ``slides`` = [{title, bullets[], notes?,
-    image?, table?, layout?}]. Plain 16:9 look by default; ``template`` (a
-    .pptx) reuses that deck's layouts and theme instead."""
+    image?, table?, layout?}]. ``style`` picks a built-in look (plain by
+    default); ``template`` (a .pptx path or a saved template's name) reuses
+    that deck's layouts and theme instead."""
     Presentation = _lib()
     if Presentation is None:
         return _missing()
@@ -761,27 +1019,37 @@ def _t_pptx_create(args: dict, cwd: str) -> dict:
         slides = _json_list(args.get("slides"), "slides")
         if not slides:
             raise _OpError("slides is empty: give at least one {title, bullets}")
+        style_arg = str(args.get("style") or "").strip()
+        if style_arg and style_arg.lower() not in _STYLES:
+            raise _OpError(_unknown_style(style_arg))
+        style_arg = style_arg.lower()
         tpl_raw = _arg_path(args, "template")
+        meta: dict = {}
         if tpl_raw:
-            tpl = _resolve_existing(cwd, tpl_raw)
-            if tpl is None:
-                raise _OpError(f"template not found: {tpl_raw}")
+            tpl = _find_template(cwd, tpl_raw)
             prs = Presentation(str(tpl))
             for i in range(len(prs.slides) - 1, -1, -1):
                 _delete(prs, i)
-            plain = False
+            # a template saved from a styled deck keeps drawing that style
+            meta = _get_meta(prs)
+            sname = style_arg or (meta.get("style") if meta.get("style") in _STYLES else "")
         else:
             from pptx.util import Inches
             prs = Presentation()
             prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
-            plain = True
-        accent = str(args.get("accent") or _ACCENT).lstrip("#")
+            sname = style_arg or "plain"
+        st = _STYLES[sname] if sname else None
+        kept = meta.get("accent") if sname and sname == meta.get("style") else None
+        accent = str(args.get("accent") or kept
+                     or (st["accent"] if st else _ACCENT)).lstrip("#")
         _rgb(accent)
         for n, spec in enumerate(slides, 1):
             try:
-                _build_slide(prs, spec, plain=plain, accent=accent, cwd=cwd, first=n == 1)
+                _build_slide(prs, spec, st=st, accent=accent, cwd=cwd, first=n == 1)
             except _OpError as exc:
                 raise _OpError(f"slide {n}: {exc}") from exc
+        if st:
+            _set_meta(prs, sname, accent)
         existed = dest.exists()
         _save(prs, dest)
     except (_OpError, PermissionError) as exc:
@@ -789,9 +1057,125 @@ def _t_pptx_create(args: dict, cwd: str) -> dict:
     except Exception as exc:  # noqa: BLE001 — bad template / unreadable image
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
     out = {"ok": True, "path": str(dest), "slides": len(prs.slides),
-           "style": "template" if tpl_raw else "plain 16:9"}
+           "style": sname or "template"}
+    if tpl_raw:
+        out["template"] = str(tpl)
     if not existed:
         out["created"] = True
+    return out
+
+
+# ── templates ────────────────────────────────────────────────────────────
+def _templates_dir() -> Path:
+    base = os.environ.get("AIFORGE_CONFIG_DIR") or os.path.expanduser("~/.aiforge")
+    return Path(base) / "pptx-templates"
+
+
+def _template_names() -> list[str]:
+    d = _templates_dir()
+    if not d.is_dir():
+        return []
+    return sorted(p.stem for p in d.glob("*.pptx")
+                  if p.is_file() and _TPL_NAME.match(p.stem))
+
+
+def _find_template(cwd: str, raw: str) -> Path:
+    """A template: an existing .pptx path first, else a saved template of that
+    name (``$AIFORGE_CONFIG_DIR/pptx-templates/<name>.pptx``)."""
+    denied = None
+    try:
+        p = _resolve_existing(cwd, raw)
+    except PermissionError as exc:
+        p, denied = None, exc
+    if p is not None:
+        return p
+    name = raw[:-5] if raw.lower().endswith(".pptx") else raw
+    if _TPL_NAME.match(name):
+        cand = _templates_dir() / f"{name}.pptx"
+        if cand.is_file():
+            return cand
+    elif denied is not None:
+        raise denied
+    names = _template_names()
+    raise _OpError(f"template not found: {raw}; saved templates: "
+                   + (", ".join(names) if names
+                      else "none (save one with pptx_save_template)"))
+
+
+def _truthy(v) -> bool:
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "y", "on")
+    return bool(v)
+
+
+def _t_pptx_save_template(args: dict, cwd: str) -> dict:
+    """Save a deck's layouts and theme as a named template (its slides are
+    left out) for ``pptx_create`` ``template: <name>``."""
+    Presentation = _lib()
+    if Presentation is None:
+        return _missing()
+    raw = _arg_path(args, "path", "file", "file_path")
+    name = str(args.get("name") or "").strip()
+    if not raw:
+        return {"ok": False, "error": "need the .pptx path to save as a template"}
+    if name.lower().endswith(".pptx"):
+        name = name[:-5]
+    if not _TPL_NAME.match(name):
+        return {"ok": False, "error": f"bad template name {name!r}: use 1-64 letters, "
+                                      "digits, - or _"}
+    try:
+        src = _resolve_existing(cwd, raw)
+        if src is None:
+            raise _OpError(f"file not found: {raw}")
+        dest = _templates_dir() / f"{name}.pptx"
+        if dest.exists() and not _truthy(args.get("overwrite")):
+            raise _OpError(f"template {name!r} already exists; pass overwrite: true "
+                           "to replace it")
+        prs = Presentation(str(src))
+        dropped = len(prs.slides)
+        for i in range(dropped - 1, -1, -1):
+            _delete(prs, i)
+        _save(prs, dest)
+    except (_OpError, PermissionError) as exc:
+        return {"ok": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 — not a pptx / unwritable folder
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    out = {"ok": True, "name": name, "path": str(dest),
+           "layouts": [lo.name for lo in prs.slide_layouts],
+           "slides_left_out": dropped}
+    style = _get_meta(prs).get("style")
+    if style in _STYLES:
+        out["style"] = style
+    return out
+
+
+def _t_pptx_templates(args: dict, cwd: str) -> dict:
+    """The saved templates (name, path, slide size, layouts) and the built-in
+    style names."""
+    styles = [{"name": k, "look": v["desc"]} for k, v in _STYLES.items()]
+    out: dict = {"ok": True, "folder": str(_templates_dir()), "styles": styles,
+                 "templates": []}
+    names = _template_names()
+    if not names:
+        return out
+    Presentation = _lib()
+    for name in names:
+        p = _templates_dir() / f"{name}.pptx"
+        info: dict = {"name": name, "path": str(p)}
+        if Presentation is None:
+            info["error"] = MISSING
+        else:
+            try:
+                prs = Presentation(str(p))
+                info["slide_size_in"] = [round(int(prs.slide_width) / _EMU_IN, 2),
+                                         round(int(prs.slide_height) / _EMU_IN, 2)]
+                info["layouts"] = [lo.name for lo in prs.slide_layouts]
+                style = _get_meta(prs).get("style")
+                if style in _STYLES:
+                    info["style"] = style
+            except Exception as exc:  # noqa: BLE001 — a broken file in the folder
+                info["error"] = f"cannot open: {exc}"
+        out["templates"].append(info)
     return out
 
 
@@ -828,8 +1212,9 @@ def _op_replace_text(prs, op, ctx) -> str:
 def _op_set_title(prs, op, ctx) -> str:
     i = _op_slide(prs, op)
     slide = prs.slides[i]
-    sh = _title_shape(slide, create=True, plain=ctx["plain"], geo=ctx["geo"])
-    _write_title(sh, str(op.get("text", op.get("title", ""))), plain=ctx["plain"])
+    sh = _title_shape(slide, create=True, st=ctx["st"], geo=ctx["geo"])
+    _write_title(sh, str(op.get("text", op.get("title", ""))), st=ctx["st"],
+                 accent=ctx["accent"])
     return f"slide {i + 1}: title set"
 
 
@@ -837,9 +1222,9 @@ def _op_set_bullets(prs, op, ctx) -> str:
     i = _op_slide(prs, op)
     slide = prs.slides[i]
     items = _flatten(_json_list(op.get("bullets", []), "bullets"))
-    body = _body_shape(slide, create=True, plain=ctx["plain"], box=ctx["geo"]["body"])
-    styles = None if ctx["plain"] else _capture_styles(body.text_frame)
-    _write_bullets(body.text_frame, items, plain=ctx["plain"], styles=styles)
+    body = _body_shape(slide, create=True, st=ctx["st"], box=ctx["geo"]["body"])
+    styles = None if ctx["st"] else _capture_styles(body.text_frame)
+    _write_bullets(body.text_frame, items, st=ctx["st"], styles=styles)
     return f"slide {i + 1}: {len(items)} bullet(s) set"
 
 
@@ -859,7 +1244,7 @@ def _op_add_slide(prs, op, ctx) -> str:
         pos = op.get("slide")
     dst = _slide_no(prs, pos, what="index", allow_end=True) if pos is not None \
         else len(prs.slides)
-    _build_slide(prs, spec, plain=ctx["plain"], accent=ctx["accent"], cwd=ctx["cwd"])
+    _build_slide(prs, spec, st=ctx["st"], accent=ctx["accent"], cwd=ctx["cwd"])
     if dst != len(prs.slides) - 1:
         _move(prs, len(prs.slides) - 1, dst)
     return f"slide added at {dst + 1}"
@@ -914,7 +1299,7 @@ def _op_add_table(prs, op, ctx) -> str:
         x, y, w, h = box
         box = (x, y, w or bw, h or bh)
         exact = bool(_inches(op.get("height")))
-    _add_table(prs.slides[i], rows, box, plain=ctx["plain"], accent=ctx["accent"],
+    _add_table(prs.slides[i], rows, box, st=ctx["st"], accent=ctx["accent"],
                exact=exact)
     return f"slide {i + 1}: {len(rows)}x{max(len(r) for r in rows)} table added"
 
@@ -952,9 +1337,14 @@ def _t_pptx_edit(args: dict, cwd: str) -> dict:
         if not ops:
             raise _OpError("ops is empty")
         prs = Presentation(str(src))
-        plain = _needs_fit(prs)
-        ctx = {"plain": plain, "geo": _geometry(prs), "cwd": cwd,
-               "accent": _deck_accent(prs) if plain else _ACCENT}
+        # the style the deck remembers; an older plain deck (no memory, 4:3
+        # master in a 16:9 deck) is plain; else the template's own look
+        sname = _get_meta(prs).get("style")
+        if sname not in _STYLES:
+            sname = "plain" if _needs_fit(prs) else ""
+        st = _STYLES.get(sname) if sname else None
+        ctx = {"st": st, "geo": _geometry(prs, st), "cwd": cwd,
+               "accent": _deck_accent(prs) if st else _ACCENT}
         for n, op in enumerate(ops, 1):
             kind = str((op or {}).get("op") or (op or {}).get("type")
                        or (op or {}).get("action") or "") if isinstance(op, dict) else ""
@@ -977,4 +1367,5 @@ def _t_pptx_edit(args: dict, cwd: str) -> dict:
             "changes": done}
 
 
-__all__ = ["MISSING", "_t_pptx_read", "_t_pptx_create", "_t_pptx_edit"]
+__all__ = ["MISSING", "_t_pptx_read", "_t_pptx_create", "_t_pptx_edit",
+           "_t_pptx_save_template", "_t_pptx_templates"]

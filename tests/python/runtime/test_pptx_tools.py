@@ -107,9 +107,20 @@ def test_template_reuses_layouts_and_drops_its_slides(deck):
     r = P._t_pptx_create({"path": "t.pptx", "template": "out/deck.pptx",
                           "slides": [{"title": "Only", "bullets": ["one"]}]},
                          str(deck))
-    assert r["ok"] and r["style"] == "template" and r["slides"] == 1
+    # the deck was made here, so it remembers its style and keeps drawing it
+    assert r["ok"] and r["style"] == "plain" and r["slides"] == 1
+    assert r["template"].endswith("deck.pptx")
     out = _read(deck, "t.pptx")
     assert out["slide_count"] == 1 and out["slides"][0]["title"] == "Only"
+    # a foreign template (no remembered style) keeps its own look
+    from pptx import Presentation
+    prs = Presentation(str(deck / "out" / "deck.pptx"))
+    prs.core_properties.keywords = ""
+    prs.save(str(deck / "foreign.pptx"))
+    r = P._t_pptx_create({"path": "f.pptx", "template": "foreign.pptx",
+                          "slides": [{"title": "Only", "bullets": ["one"]}]}, str(deck))
+    assert r["ok"] and r["style"] == "template"
+    assert "style" not in _read(deck, "f.pptx")
 
 
 def test_read_slide_range_and_attachment_lookup(deck):
@@ -294,12 +305,15 @@ def test_tools_are_registered_and_described():
     from aiforge_core.runtime.chat_agent._tools import _schemas
     from aiforge_core.runtime.chat_agent._tools._families import family_of, named_families
     from aiforge_core.runtime.tools.tool_policy import _READONLY_ALWAYS_ALLOW
-    for name in ("pptx_read", "pptx_create", "pptx_edit"):
+    for name in ("pptx_read", "pptx_create", "pptx_edit", "pptx_save_template",
+                 "pptx_templates"):
         assert name in TOOLS and name in _schemas.CATALOG
         assert name in _schemas.NATIVE_TOOL_NAMES
         assert family_of(name) == "pptx"
     assert "pptx_read" in _READONLY_TOOLS and "pptx_read" in _READONLY_ALWAYS_ALLOW
     assert "pptx_edit" not in _READONLY_TOOLS
+    assert "pptx_templates" in _READONLY_TOOLS and "pptx_templates" in _READONLY_ALWAYS_ALLOW
+    assert "pptx_save_template" not in _READONLY_TOOLS
     assert "pptx" in named_families("make me a slide deck from these notes")
     assert "pptx" in named_families("edit report.pptx")
     picked = _schemas.filter_native(_schemas.NATIVE_TOOL_SCHEMAS,
@@ -326,3 +340,154 @@ def test_title_slide_with_subtitle_and_first_title_only_slide(tmp_path):
     t = [sh for sh in Presentation(str(tmp_path / "c.pptx")).slides[0].shapes
          if sh.has_text_frame and sh.text_frame.text == "Q3 Review"][0]
     assert t.text_frame.paragraphs[0].runs[0].font.size.pt == 44
+
+
+# ── named styles ────────────────────────────────────────────────────────
+STYLE_DECK = [
+    {"title": "Q3 Review", "subtitle": "Sales team"},
+    {"title": "Highlights", "bullets": ["Up 12%", ["August best"], "Two partners"]},
+    {"title": "By region", "table": [["Region", "Revenue"], ["North", "4.2"]]},
+]
+
+
+@pytest.mark.parametrize("style,font,bg,title_rgb", [
+    ("plain", "Calibri", "FFFFFF", "1F1F1F"),
+    ("classic", "Georgia", "FAF7F0", "1B2A4A"),
+    ("business", "Calibri", "FFFFFF", "FFFFFF"),   # white on the title band
+    ("modern", "Arial", "1E1F26", "FFFFFF"),
+])
+def test_each_style_creates_and_reads_back(tmp_path, style, font, bg, title_rgb):
+    from pptx import Presentation
+    r = P._t_pptx_create({"path": "s.pptx", "style": style, "slides": STYLE_DECK},
+                         str(tmp_path))
+    assert r["ok"] and r["style"] == style, r
+    back = _read(tmp_path, "s.pptx")
+    assert back["style"] == style and back["slide_count"] == 3
+    assert back["slides"][1]["title"] == "Highlights"
+    prs = Presentation(str(tmp_path / "s.pptx"))
+    st = P._STYLES[style]
+    for slide in prs.slides:
+        assert str(slide.background.fill.fore_color.rgb) == bg
+    run = prs.slides[1].shapes.title.text_frame.paragraphs[0].runs[0]
+    assert run.font.name == font and str(run.font.color.rgb) == title_rgb
+    assert run.font.size.pt >= 36 and st["cover_pt"] >= 36
+    body = next(sh for sh in prs.slides[1].placeholders if sh.placeholder_format.idx)
+    lv0 = body.text_frame.paragraphs[0].runs[0].font
+    assert lv0.size.pt >= 24 and lv0.name == font
+    tbl = next(sh for sh in prs.slides[2].shapes if sh.has_table).table
+    head = tbl.cell(0, 0).text_frame.paragraphs[0].runs[0].font
+    assert head.size.pt >= 16 and str(tbl.cell(0, 0).fill.fore_color.rgb) == st["accent"]
+    # nothing drawn off the slide
+    for slide in prs.slides:
+        for sh in slide.shapes:
+            assert sh.left >= 0 and sh.top >= 0
+            assert sh.left + sh.width <= prs.slide_width
+            assert sh.top + sh.height <= prs.slide_height
+
+
+def test_plain_is_still_the_default_look(tmp_path):
+    r = P._t_pptx_create({"path": "d.pptx", "slides": STYLE_DECK}, str(tmp_path))
+    assert r["ok"] and r["style"] == "plain"
+    assert _read(tmp_path, "d.pptx")["style"] == "plain"
+    assert (P._DARK, P._BODY, P._ACCENT, P._FONT, P._TITLE_PT, P._BODY_PT,
+            P._TABLE_PT, P._COVER_PT, P._SUBTITLE_PT, P._MUTED) == (
+        "1F1F1F", "333333", "1F4E79", "Calibri", 36, (26, 22, 20, 18), 18, 44, 24,
+        "595959")
+
+
+def test_accent_overrides_the_style_accent(tmp_path):
+    from pptx import Presentation
+    r = P._t_pptx_create({"path": "a.pptx", "style": "modern", "accent": "#E8590C",
+                          "slides": STYLE_DECK}, str(tmp_path))
+    assert r["ok"]
+    assert _read(tmp_path, "a.pptx")["accent"] == "E8590C"
+    prs = Presentation(str(tmp_path / "a.pptx"))
+    bars = [sh for sh in prs.slides[1].shapes if sh.name == P._ACCENT_BAR]
+    assert bars and str(bars[0].fill.fore_color.rgb) == "E8590C"
+
+
+def test_add_slide_keeps_the_remembered_style(tmp_path):
+    from pptx import Presentation
+    assert P._t_pptx_create({"path": "c.pptx", "style": "classic",
+                             "slides": STYLE_DECK}, str(tmp_path))["ok"]
+    e = P._t_pptx_edit({"path": "c.pptx", "ops": [
+        {"op": "add_slide", "title": "Later", "bullets": ["more"]},
+        {"op": "add_table", "slide": 4, "rows": [["a", "b"], ["1", "2"]],
+         "top": 4.5, "height": 1.2}]}, str(tmp_path))
+    assert e["ok"], e
+    prs = Presentation(str(tmp_path / "c.pptx"))
+    new = prs.slides[3]
+    assert str(new.background.fill.fore_color.rgb) == "FAF7F0"
+    run = new.shapes.title.text_frame.paragraphs[0].runs[0]
+    assert run.font.name == "Georgia" and str(run.font.color.rgb) == "1B2A4A"
+    body = next(sh for sh in new.placeholders if sh.placeholder_format.idx)
+    assert body.text_frame.paragraphs[0].runs[0].font.name == "Georgia"
+    tbl = next(sh for sh in new.shapes if sh.has_table).table
+    assert str(tbl.cell(0, 0).fill.fore_color.rgb) == "1B2A4A"
+    assert _read(tmp_path, "c.pptx")["style"] == "classic"
+
+
+def test_unknown_style_is_refused(tmp_path):
+    r = P._t_pptx_create({"path": "x.pptx", "style": "fancy", "slides": STYLE_DECK},
+                         str(tmp_path))
+    assert r == {"ok": False,
+                 "error": "unknown style fancy; one of: plain, classic, business, modern"}
+    assert not (tmp_path / "x.pptx").exists()
+
+
+# ── named templates ─────────────────────────────────────────────────────
+def test_save_list_and_use_a_named_template(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    assert P._t_pptx_create({"path": "b.pptx", "style": "business",
+                             "slides": STYLE_DECK}, str(tmp_path))["ok"]
+    s = P._t_pptx_save_template({"path": "b.pptx", "name": "demo"}, str(tmp_path))
+    assert s["ok"] and s["name"] == "demo" and s["slides_left_out"] == 3
+    saved = tmp_path / "cfg" / "pptx-templates" / "demo.pptx"
+    assert s["path"] == str(saved) and saved.is_file()
+    # the source deck is untouched
+    assert _read(tmp_path, "b.pptx")["slide_count"] == 3
+    again = P._t_pptx_save_template({"path": "b.pptx", "name": "demo"}, str(tmp_path))
+    assert not again["ok"] and "overwrite" in again["error"]
+    assert P._t_pptx_save_template({"path": "b.pptx", "name": "demo",
+                                    "overwrite": True}, str(tmp_path))["ok"]
+    listed = P._t_pptx_templates({}, str(tmp_path))
+    assert listed["ok"] and [s["name"] for s in listed["styles"]] == list(P._STYLES)
+    (tpl,) = listed["templates"]
+    assert tpl["name"] == "demo" and tpl["slide_size_in"] == [13.33, 7.5]
+    assert tpl["layouts"] and tpl["style"] == "business"
+    r = P._t_pptx_create({"path": "n.pptx", "template": "demo",
+                          "slides": STYLE_DECK}, str(tmp_path))
+    assert r["ok"] and r["template"] == str(saved) and r["style"] == "business"
+    assert _read(tmp_path, "n.pptx")["slide_count"] == 3
+    # an explicit style wins over the template's remembered one
+    r = P._t_pptx_create({"path": "m.pptx", "template": "demo", "style": "modern",
+                          "slides": STYLE_DECK}, str(tmp_path))
+    assert r["ok"] and r["style"] == "modern"
+    assert _read(tmp_path, "m.pptx")["accent"] == P._STYLES["modern"]["accent"]
+
+
+def test_unknown_template_lists_the_saved_names(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    r = P._t_pptx_create({"path": "x.pptx", "template": "nope", "slides": STYLE_DECK},
+                         str(tmp_path))
+    assert not r["ok"] and "none" in r["error"]
+    assert P._t_pptx_templates({}, str(tmp_path))["templates"] == []
+    assert P._t_pptx_create({"path": "a.pptx", "slides": STYLE_DECK}, str(tmp_path))["ok"]
+    for name in ("beta", "alpha"):
+        assert P._t_pptx_save_template({"path": "a.pptx", "name": name},
+                                       str(tmp_path))["ok"]
+    r = P._t_pptx_create({"path": "x.pptx", "template": "nope", "slides": STYLE_DECK},
+                         str(tmp_path))
+    assert r == {"ok": False,
+                 "error": "template not found: nope; saved templates: alpha, beta"}
+
+
+@pytest.mark.parametrize("name", ["", "../up", "a b", "x/y", "a" * 65, "dot.name"])
+def test_template_name_is_validated(tmp_path, monkeypatch, name):
+    monkeypatch.setenv("AIFORGE_CONFIG_DIR", str(tmp_path / "cfg"))
+    assert P._t_pptx_create({"path": "a.pptx", "slides": STYLE_DECK}, str(tmp_path))["ok"]
+    r = P._t_pptx_save_template({"path": "a.pptx", "name": name}, str(tmp_path))
+    assert not r["ok"] and "template name" in r["error"]
+    assert not (tmp_path / "cfg" / "pptx-templates").exists()
+    ok = P._t_pptx_save_template({"path": "a.pptx", "name": "Brand_v2-1"}, str(tmp_path))
+    assert ok["ok"]

@@ -114,11 +114,15 @@ CATALOG: dict = {
                     "[{title, subtitle? (title slide: big centred title + subtitle; also the first slide when it has only a title), bullets: [\"text\", [\"sub-point\"], "
                     "{\"text\": .., \"level\": 2}], notes?, image? (local "
                     "file), table? ([[\"head\", ..], [\"cell\", ..]]), "
-                    "layout? (layout name)}]. Plain 16:9 look (white, Calibri, "
-                    "one accent colour; accent = hex to change it). template = "
-                    "an existing .pptx whose layouts and theme are reused.",
+                    "layout? (layout name)}]. style = plain (default: white, "
+                    "Calibri, one accent bar) | classic (off-white, Georgia, navy "
+                    "titles over a rule) | business (white, dark-blue title band) "
+                    "| modern (dark charcoal, light text, teal accent); accent = "
+                    "hex to change the style's accent colour. template = an "
+                    "existing .pptx path or a saved template's name (see "
+                    "pptx_templates) whose layouts and theme are reused.",
                     {"path": "s", "slides": "arr", "template": "s",
-                     "accent": "s"}, ("path", "slides")),
+                     "style": "s", "accent": "s"}, ("path", "slides")),
     "pptx_edit": ("Edit an existing .pptx in place (or save to out_path). "
                   "ops run in order, all or nothing; slide numbers are 1-based. "
                   "{op: replace_text, find, replace, slides?, notes?} | "
@@ -131,6 +135,15 @@ CATALOG: dict = {
                   "width?, height?}. Read the deck with pptx_read first.",
                   {"path": "s", "ops": "arr", "out_path": "s"},
                   ("path", "ops")),
+    "pptx_save_template": ("Save a .pptx's layouts and theme (not its slides) "
+                           "as a named deck template, for pptx_create "
+                           "template: <name>. name = letters, digits, - or _; "
+                           "an existing name needs overwrite: true.",
+                           {"path": "s", "name": "s", "overwrite": "b"},
+                           ("path", "name")),
+    "pptx_templates": ("List the saved deck templates (name, path, slide "
+                       "size, layout names) and the built-in pptx_create "
+                       "style names.", {}, ()),
     "format": ("Auto-format a file.", {"path": "s"}, ()),
     "rename_symbol": ("Rename a symbol across the project.",
                       {"path": "s", "old_name": "s", "new_name": "s"}, ()),

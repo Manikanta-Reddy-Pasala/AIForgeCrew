@@ -98,8 +98,8 @@ _READONLY_ALWAYS_ALLOW = {
     "show_logs",
     # The harness's own record of what this chat did.
     "session_actions",
-    # Reads a .pptx; writes nothing.
-    "pptx_read",
+    # Read a .pptx / list saved deck templates; write nothing.
+    "pptx_read", "pptx_templates",
 }
 
 _DEFAULT_ASK = {"confluence_create", "confluence_update",
