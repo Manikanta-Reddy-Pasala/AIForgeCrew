@@ -144,6 +144,9 @@ def _final_nudges(st, step, builder, strict_finish, _asks):
     _sig = yield from _test_guard.missing_tests_gate(st, step, builder, strict_finish)
     if _sig:
         return _sig
+    _sig = yield from _test_guard.unrun_tests_gate(st, step, builder, strict_finish)
+    if _sig:
+        return _sig
     # ... and they must hold when RUN: the request's call examples, and an
     # import of each changed module, in the turn's own test environment.
     from . import _spec_run

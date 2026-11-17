@@ -304,6 +304,79 @@ def _tests_written(cwd, base) -> "bool | None":
     return any(_TEST_FILE.search(p) for p in others.splitlines())
 
 
+_JVM_TEST = re.compile(r"(?:^|/)src/test/.*\.(?:java|kt)$|[A-Za-z0-9](?:Test|Tests|IT)\.(?:java|kt)$")
+_RUNNER_MARK = re.compile(r"@(?:Test|ParameterizedTest|RepeatedTest|TestFactory|org\.junit|org\.testng)\b")
+
+
+def _unrun_jvm_tests(cwd, base) -> list:
+    """New JVM test files since ``base`` the build will never run: no @Test
+    (a `public static void main` "test" passes no build)."""
+    top = (_git(cwd, "rev-parse", "--show-toplevel") or "").strip()
+    if not top or not base:
+        return []
+    new = (_git(top, "ls-files", "--others", "--exclude-standard") or "").splitlines()
+    added = (_git(top, "diff", "--name-only", "--diff-filter=A", base) or "").splitlines()
+    out = []
+    for rel in dict.fromkeys(new + added):
+        if not _JVM_TEST.search(rel):
+            continue
+        try:
+            with open(os.path.join(top, rel), encoding="utf-8", errors="replace") as fh:
+                body = fh.read(200_000)
+        except OSError:
+            continue
+        if "class " in body and not _RUNNER_MARK.search(body):
+            out.append(rel)
+    return out
+
+
+def unrun_tests_gate(st, step, builder=None, strict_finish=False):
+    """Once, before the answer: the request asks for tests and the turn's new
+    test file is one the build never runs. A real Java service request said
+    "Fix it … with a unit test. The module has no test dependencies yet."; the
+    run wrote a `main()` "test" with no JUnit ("simple unit tests without
+    external dependencies"), never added the dependency, and the graded test
+    could not compile (0/3). Off: AIFORGE_CHAT_UNRUN_TESTS_GATE=0."""
+    if os.environ.get("AIFORGE_CHAT_UNRUN_TESTS_GATE", "1").strip().lower() in (
+            "0", "false", "no", "off"):
+        return None
+    if (builder or strict_finish or getattr(st, "unrun_tests_sent", False)
+            or getattr(st, "edits_made", 0) <= 0
+            or not asks_for_tests(str(getattr(st, "goal", "") or ""))):
+        return None
+    try:
+        from ._contract_gate import work_base
+        cwd = getattr(st, "cwd", None) or "."
+        bad = _unrun_jvm_tests(cwd, work_base(st))
+    except Exception:  # noqa: BLE001
+        return None
+    if not bad:
+        return None
+    st.unrun_tests_sent = True
+    deps = ""
+    try:
+        from types import SimpleNamespace
+        from ._env_guard import _test_dep_note
+        top = (_git(cwd, "rev-parse", "--show-toplevel") or "").strip()
+        pom = os.path.join(top, "pom.xml")
+        body = open(pom, encoding="utf-8", errors="replace").read() if os.path.isfile(pom) else ""
+        if body and not re.search(r"junit|spring-boot-starter-test|testng", body):
+            deps = "\n" + _test_dep_note(SimpleNamespace(), "package org.junit.jupiter.api does not exist\n"
+                                          "package org.assertj.core.api does not exist", top)
+    except Exception:  # noqa: BLE001
+        deps = ""
+    if step.get("text"):
+        yield {"type": "thought", "text": step["text"]}
+    yield {"type": "thought", "role": "system",
+           "text": "▶ the new test is not one the build runs (no @Test) — continuing"}
+    st.convo.append({"role": "user", "content":
+        "[harness — not the user] The request asks for a unit test, and "
+        f"{', '.join(bad[:3])} is not one the build will run: it has no @Test (a main() or a "
+        "plain class passes no build). Write it as a JUnit test (@Test methods) and run it "
+        "with the project's test command (e.g. `mvn -o -q test -Dtest=<Class>`)." + deps})
+    return "continue"
+
+
 def missing_tests_gate(st, step, builder=None, strict_finish=False):
     """Before the answer, once: the request asks for tests and the turn wrote
     none. sqlglot-trigger, 3 runs: "add your own tests ... plus fall-back
