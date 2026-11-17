@@ -71,6 +71,19 @@ def _types(params: str) -> "list | None":
     return out
 
 
+_QUALIFIED = re.compile(r"\b((?:[a-z_][\w]*\.){2,})([A-Z][\w$]*)\b")
+
+
+def packages(request: str) -> dict:
+    """``{ClassName: package}`` for classes the request names fully qualified
+    in backticks (``com.x.health.Detector`` -> Detector: com.x.health)."""
+    out = {}
+    for m in _TICK.finditer(request or ""):
+        for q in _QUALIFIED.finditer(m.group(1)):
+            out.setdefault(q.group(2), q.group(1).rstrip("."))
+    return out
+
+
 def claims(request: str) -> list:
     """``[(kind, cls, name, types, ret, text)]`` the request states."""
     out, seen = [], set()
@@ -197,6 +210,18 @@ def missing(request: str, root: str) -> list:
         return texts[p]
 
     gaps = []
+    pkgs = packages(request)
+    for owner, pkg in pkgs.items():
+        if not any(c[1] == owner for c in cl):
+            continue
+        files_named = [p for p in files if os.path.splitext(os.path.basename(p))[0] == owner]
+        if not files_named:
+            continue                      # not declared at all: the claims below say so
+        declared = {m.group(1) for p in files_named
+                    for m in [re.search(r"^\s*package\s+([\w.]+)", text(p), re.M)] if m}
+        if declared and pkg not in declared:
+            gaps.append(f"`{pkg}.{owner}` — the code declares {owner} in package "
+                        f"{', '.join(sorted(declared))}, not {pkg}")
     for kind, cls, name, ts, ret, shown in cl:
         owner = cls if kind == "ctor" else cls
         cands = [p for p in files if owner and os.path.splitext(os.path.basename(p))[0] == owner]

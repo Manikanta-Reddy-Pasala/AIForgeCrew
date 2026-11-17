@@ -38,3 +38,14 @@ def test_wrong_types_and_return_are_named(tmp_path):
 
 def test_no_typed_signature_no_claims():
     assert T.claims("The GST summary shows too much tax. Fix it with a unit test.") == []
+
+
+def test_a_qualified_class_in_the_wrong_package_is_named(tmp_path):
+    req = ("The unit test will call: `static Optional<Found> com.x.health.Detector.find(ThreadInfo[] t)`.")
+    p = tmp_path / "src" / "main" / "java" / "com" / "x" / "lock" / "Detector.java"
+    p.parent.mkdir(parents=True)
+    p.write_text("package com.x.lock;\nclass Detector { static Optional<Found> find(ThreadInfo[] t) { return null; } }")
+    gaps = T.missing(req, str(tmp_path))
+    assert any("package com.x.lock, not com.x.health" in g for g in gaps)
+    p.write_text(p.read_text().replace("package com.x.lock;", "package com.x.health;"))
+    assert not any("package" in g for g in T.missing(req, str(tmp_path)))
