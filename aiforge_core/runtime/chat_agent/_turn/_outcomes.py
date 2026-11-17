@@ -162,6 +162,11 @@ def _note_green_tests(st, name, args, result, cwd) -> None:
             _env = _env_guard.note(st, name, args, result_text(result), cwd)
             if _env:
                 hold(st, _env)
+            from aiforge_core.runtime.shell_writes import command_of as _cmd_of
+            from ._base_reds import early_note
+            _old = early_note(st, cwd, _cmd_of(args or {}) or "", result_text(result))
+            if _old:
+                hold(st, _old)
         except Exception:  # noqa: BLE001 — a hint never breaks a step
             pass
     known = _only_known_failures(st, result)

@@ -69,3 +69,24 @@ def test_read_past_the_end_shows_the_end(tmp_path):
     r = _t_read_lines({"path": str(f), "offset": 700}, str(tmp_path))
     assert r["total_lines"] == 426 and r["end"] == 426 and "line 426" in r["text"]
     assert "only 426 lines" in r["note"]
+
+
+def test_early_note_on_the_second_same_red_run(tmp_path, monkeypatch):
+    monkeypatch.delenv("AIFORGE_CHAT_BASE_REDS", raising=False)
+    br._CACHE.clear()
+    r, rev = _repo(tmp_path)
+    st = SimpleNamespace(cwd=str(r), head0=rev, goal="fix the version matching bug")
+    cmd = f"cd {r} && printf '%s' \"$(cat <<'X'\n{CARGO_RED}X\n)\""
+    assert br.early_note(st, str(r), cmd, CARGO_RED) is None          # first red run
+    note = br.early_note(st, str(r), cmd, CARGO_RED)                   # same reds again
+    assert note and "test_parse_errors" in note and "original code" in note
+    assert br.early_note(st, str(r), cmd, CARGO_RED) is None          # told once
+
+
+def test_a_failing_test_the_request_names_is_the_work(tmp_path, monkeypatch):
+    monkeypatch.delenv("AIFORGE_CHAT_BASE_REDS", raising=False)
+    br._CACHE.clear()
+    r, rev = _repo(tmp_path)
+    st = SimpleNamespace(cwd=str(r), head0=rev, goal="make test_parse_errors pass again")
+    cmd = f"cd {r} && printf '%s' \"$(cat <<'X'\n{CARGO_RED}X\n)\""
+    assert not br.same_reds_at_base(st, str(r), cmd, CARGO_RED)
