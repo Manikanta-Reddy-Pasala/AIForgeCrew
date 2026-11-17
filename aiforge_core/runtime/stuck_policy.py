@@ -102,7 +102,9 @@ class Policy:
     #: restore the old "stop and ask" instead of changing approach
     pause_on_stuck: bool = False
     #: change-of-approach trips before the wrap-up (0 = never)
-    stuck_escalations: int = 20
+    # 11-17 audit of 78 real runs: every run that gained finished within 4
+    # "change approach" escalations; the 7 that went to 7-22 gained nothing.
+    stuck_escalations: int = 6
     #: on: a long job that gets stuck restarts from a fresh context with a
     #: handoff (turning it off kept multi-day runs near a full window and
     #: re-boosting reasoning; AIFORGE_CHAT_STUCK_RESTART=0 turns it off)
@@ -136,7 +138,7 @@ class Policy:
             monologue_repeats=_int("monologue_repeats", 3, floor=0),
             monologue_similarity=min(1.0, max(0.5, sim)),
             pause_on_stuck=_flag("pause_on_stuck", False),
-            stuck_escalations=_int("stuck_escalations", 20, floor=0),
+            stuck_escalations=_int("stuck_escalations", 6, floor=0),
             stuck_restart=_flag("stuck_restart", True),
             context_error_restart=_flag("context_error_restart", True),
             goal_loop=_flag("goal_loop", True),
