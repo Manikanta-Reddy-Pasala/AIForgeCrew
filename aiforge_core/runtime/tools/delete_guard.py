@@ -501,6 +501,31 @@ def outside_targets(cmd: str, root: "str | None") -> list:
     return out
 
 
+def inside_targets(cmd: str, root: "str | None") -> list:
+    """Absolute paths an ``rm``-family command in ``cmd`` would delete INSIDE
+    ``root`` (the mirror of :func:`outside_targets`), following ``cd X &&``."""
+    if not cmd or not root:
+        return []
+    root = os.path.realpath(os.path.expanduser(root))
+    out, base = [], root
+    for seg in _split_segments(_strip_heredocs(cmd)):
+        verb, args = _verb_and_args(_words(seg))
+        if verb == "cd" and args:
+            nxt = os.path.expanduser(args[0])
+            base = os.path.realpath(nxt if os.path.isabs(nxt) else os.path.join(base, nxt))
+            continue
+        if verb not in _REMOVE_VERBS:
+            continue
+        for a in args:
+            if not a or _is_option(a):
+                continue
+            path = os.path.expanduser(a)
+            full = os.path.realpath(path if os.path.isabs(path) else os.path.join(base, path))
+            if full == root or full.startswith(root.rstrip("/") + "/"):
+                out.append(full)
+    return out
+
+
 OUTSIDE_REFUSAL = (
     "refused: this deletes files OUTSIDE the project ({paths}) and approvals "
     "are off, so nobody can confirm it. Shared caches and other folders are "
