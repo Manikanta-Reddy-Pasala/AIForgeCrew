@@ -43,6 +43,53 @@ _WRAP_UP = ("Stop retrying. Write `FINAL:` now: what is done, what remains, and 
             "what you would do next. Be specific.")
 
 
+_SAME = ("same failure", "without progress", "no progress")
+_ASIDE_RX = r"(?:^|/)(?:tests?|__tests__|spec|specs)/|(?:^|/)(?:test_[^/]*|[^/]*_test\.[a-z]+|[^/]*Tests?\.[a-zA-Z]+|[^/]*\.(?:test|spec)\.[a-z]+)$"
+
+
+def _edited_sources(st) -> list:
+    """Non-test source files the work changed (git, against its base)."""
+    import re
+    import subprocess
+    cwd = str(getattr(st, "cwd", "") or "")
+    if not cwd:
+        return []
+    try:
+        from ._contract_gate import work_base
+        base = work_base(st) or "HEAD"
+        out = []
+        for args in (["diff", "--name-only", base], ["ls-files", "--others", "--exclude-standard"]):
+            r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=5)
+            if r.returncode == 0:
+                out += [x for x in r.stdout.splitlines() if x.strip()]
+    except Exception:  # noqa: BLE001
+        return []
+    code = re.compile(r"\.(?:java|kt|scala|py|js|jsx|ts|tsx|go|rs|rb|cs|cpp|cc|c|h|hpp|php|swift)$")
+    return sorted({f for f in out if code.search(f) and not re.search(_ASIDE_RX, f)})
+
+
+def _wrong_place_hint(st, why: str) -> str:
+    """Once per turn, on a same-failure trip after source edits: the fixes may
+    be in the wrong place. A real job described a wrong total; every fix went
+    into one later adjustment step while the wrong number was made where the
+    amounts are summed, and the same check stayed red through five trips."""
+    if not hasattr(st, "__dict__") or st.__dict__.get("wrong_place_hinted"):
+        return ""
+    if not any(k in (why or "").lower() for k in _SAME):
+        return ""
+    files = _edited_sources(st)
+    if not files:
+        return ""
+    st.wrong_place_hinted = True
+    shown = ", ".join(files[:4]) + (" …" if len(files) > 4 else "")
+    return ("Your fixes so far are all in " + shown + ", and the result did not change: "
+            "the wrong value is probably produced somewhere else. Trace it back before "
+            "editing again: take the value the failing check reads, search the code for "
+            "every place that computes, sets or adds to it, list those places, and fix "
+            "the one on the path the request describes (that may mean undoing your "
+            "earlier edits).")
+
+
 def _condense_on_trip() -> bool:
     """Condense the history on a stuck trip. tk-toml11 pr1a (11-13): five
     trips, each condense dropped reads the model then asked for again, which
@@ -76,6 +123,10 @@ def escalate(st, why: str):
         # default): the long repeating history is what keeps the loop going
         _condense(st)
     text = (_WRAP_UP if wrapping else _TIERS[min(n, len(_TIERS)) - 1])
+    if not wrapping:
+        hint = _wrong_place_hint(st, why)
+        if hint:
+            text = text + " " + hint
     note = (f"[loop guard — not the user] {why} {text}" if not restarted
             else text)
     last = st.convo[-1] if st.convo else None
