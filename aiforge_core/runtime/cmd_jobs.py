@@ -335,10 +335,21 @@ def _forget(job: Job) -> None:
     with _LOCK:
         if _JOBS.get(job.key) is job:
             _JOBS.pop(job.key, None)
+    try:
+        from aiforge_core.runtime import job_reaper
+        job_reaper.forget(job)
+    except Exception:  # noqa: BLE001
+        pass
     job.close()
 
 
 def _register(job: Job) -> Job:
+    try:
+        from aiforge_core.runtime import job_reaper
+        job_reaper.sweep()                # groups a dead server left behind
+        job_reaper.record(job)
+    except Exception:  # noqa: BLE001
+        pass
     with _LOCK:
         _JOBS[job.key] = job
         over = len(_JOBS) - _MAX_JOBS
