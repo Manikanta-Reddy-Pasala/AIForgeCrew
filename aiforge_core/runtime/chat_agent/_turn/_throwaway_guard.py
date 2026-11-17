@@ -40,7 +40,24 @@ def _throwaway(path: str, root: str) -> bool:
     return bool(_NAME.search(os.path.basename(p)))
 
 
+#: A script that writes a document, image or data file is producing something
+#: the user asked for (a deck, a chart, a report), not probing the code.
+_PRODUCES = re.compile(
+    r"\.(?:pptx|xlsx|xls|docx|pdf|png|jpe?g|svg|gif|csv|tsv|html?|json|xml|parquet|md)\b"
+    r"|\b(?:savefig|to_excel|to_csv|to_parquet|to_html|to_json|write_image|\.save)\s*\(", re.I)
+
+
+def _produces_output(name: str, args: dict) -> bool:
+    body = str((args or {}).get("content") or (args or {}).get("text") or "")
+    if name not in _WRITE_TOOLS:
+        body = str((args or {}).get("cmd") or (args or {}).get("command") or "")
+    return bool(_PRODUCES.search(body))
+
+
 def _written(name: str, args: dict) -> list:
+    """Throwaway SOURCE writes — not a script that produces an output file."""
+    if _produces_output(name, args):
+        return []
     if name in _WRITE_TOOLS:
         path = str(args.get("path") or args.get("file") or "")
         return [path] if path else []

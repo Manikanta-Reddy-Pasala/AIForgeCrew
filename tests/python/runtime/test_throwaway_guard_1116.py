@@ -75,3 +75,18 @@ def test_rewriting_one_file_whole_again_and_again_is_spin(monkeypatch, tmp_path)
     assert st.spin_events == 2
     g.check(st, "file_patch", {"path": f})                    # a patch is not a rewrite
     assert st.spin_events == 2
+
+
+def test_a_script_that_produces_a_file_is_never_a_probe(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from aiforge_core.runtime.chat_agent._turn import _throwaway_guard as g
+    monkeypatch.delenv("AIFORGE_CHAT_THROWAWAY_GUARD", raising=False)
+    st = SimpleNamespace(cwd=str(tmp_path), spin_events=0)
+    probe = {"cmd": "cat > /tmp/p.py << 'EOF'\nprint(1)\nEOF"}
+    for _ in range(3):
+        g.check(st, "run_command", probe)
+    assert st.probe_said                                   # probes still limited
+    deck = {"cmd": "cat > /tmp/make_deck.py << 'EOF'\nprs.save('out/q3.pptx')\nEOF"}
+    chart = {"path": "/tmp/plot.py", "content": "import matplotlib\nplt.savefig('c.png')"}
+    assert g.refusal(st, "run_command", deck) is None
+    assert g.refusal(st, "file_write", chart) is None
