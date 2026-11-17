@@ -563,7 +563,14 @@ def _rerun_own_test(st, cwd) -> "tuple[bool, str] | None":
         if not _TESTS_RAN.search(out):
             return None
         fails = _fail_count(out)
-        return (code == 0 and fails == 0), out
+        green = code == 0 and fails == 0
+        if not green:
+            from ._base_reds import same_reds_at_base
+            if same_reds_at_base(st, str(getattr(st, "cwd", "") or cwd), cmd, out, limit):
+                st.base_reds_note = (f"{fails} failing test(s) fail the same way on the "
+                                     "original code (not caused by this change)")
+                return True, out
+        return green, out
     except Exception:  # noqa: BLE001 — the finish check must never break a turn
         return None
 

@@ -59,7 +59,9 @@ def test_read_lines_shows_the_lines_with_their_numbers(tmp_path, monkeypatch):
 def test_read_lines_past_the_end_says_so(tmp_path):
     (tmp_path / "a.txt").write_text("one\n")
     result = _t_read_lines({"path": "a.txt", "start": 9}, str(tmp_path))
-    assert "file has 1 lines" in render_observation("read_lines", result, 80000)
+    shown = render_observation("read_lines", result, 80000)
+    # past the end: the file's end with its real length, not an empty text
+    assert "only 1 lines" in shown and "one" in shown
 
 
 def test_outline_lists_classes_and_methods_with_ranges(big_py):

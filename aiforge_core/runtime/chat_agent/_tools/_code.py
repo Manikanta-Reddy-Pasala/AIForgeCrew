@@ -67,7 +67,17 @@ def _t_read_lines(args: dict, cwd: str) -> dict:
         return _read_ranges(path, lines, ranges)
     s, e = _line_range(args, n)
     if s > n:
-        return {"ok": True, "path": path, "total_lines": n, "text": ""}
+        # Past the end: the file's last part with its real length, not an
+        # empty text (a real run asked for line 700 of a 426-line file and
+        # tried four more offsets before reading the end).
+        if n == 0:
+            return {"ok": True, "path": path, "total_lines": 0, "text": ""}
+        s0 = s
+        s, e = max(1, n - 199), n
+        return {"ok": True, "path": path, "start": s, "end": e, "total_lines": n,
+                "text": "".join(lines[s - 1:e])[:60000],
+                "note": f"the file has only {n} lines (asked from line {s0}); "
+                        f"showing lines {s}-{n}"}
     s, e, widened = _widen(s, e, n)
     out = {"ok": True, "path": path, "start": s, "end": e, "total_lines": n,
            "text": "".join(lines[s - 1:e][:5000])[:60000]}
