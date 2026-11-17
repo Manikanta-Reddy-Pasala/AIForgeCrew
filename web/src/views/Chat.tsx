@@ -2765,7 +2765,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
         {/* Shared hidden file input — used by the attach button in either
             composer (active session or brand-new chat). */}
         <input ref={mediaInputRef} type="file" multiple
-               accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.md,.json,.log,.yaml,.yml"
+               accept="image/*,.pdf,.doc,.docx,.pptx,.xls,.xlsx,.csv,.txt,.md,.json,.log,.yaml,.yml"
                style={{ display: 'none' }}
                onChange={e => { uploadMedia(e.target.files); e.target.value = ''; }} />
 

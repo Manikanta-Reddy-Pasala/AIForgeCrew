@@ -4,7 +4,8 @@ This module was split (grouped by concern) into private submodules —
 ``_shared`` (cross-cutting helpers), ``_memory`` (memory/rules), ``_grep``
 (find/grep),
 ``_jira`` / ``_confluence`` / ``_gitlab`` / ``_git`` / ``_web`` (integrations),
-``_code`` (codegraph/read/rename), ``_skills`` (skill/workflow + strong
+``_code`` (codegraph/read/rename), ``_pptx`` (PowerPoint read/create/edit),
+``_skills`` (skill/workflow + strong
 editor tools), ``_pipeline`` (mcp/browser/ipython/delegate) and ``_misc``.
 This package re-exports the full former top-level surface so
 ``from ._tools import <name>`` (used by ``__init__``, ``_registry``, ``_turn``,
@@ -117,6 +118,11 @@ from ._code import (
     _t_read,
     _t_rename_symbol,
     _t_summarize_doc,
+)
+from ._pptx import (
+    _t_pptx_read,
+    _t_pptx_create,
+    _t_pptx_edit,
 )
 from ._skills import (
     _t_skill_search,

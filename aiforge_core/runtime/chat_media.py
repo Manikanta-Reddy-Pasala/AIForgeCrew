@@ -49,7 +49,7 @@ def _safe_name(name: str) -> str:
 _MAX_FILE_BYTES = 50 * 1024 * 1024     # docs can be bigger than images
 _DESC_CAP = 6000                       # extracted-text excerpt cap per doc
 
-# Document → text extraction (pdf/docx/xlsx text, tables, page segmentation)
+# Document → text extraction (pdf/docx/xlsx/pptx text, tables, page segmentation)
 # lives in its own module; this file keeps storage + vision + OCR. Re-exported
 # so existing callers keep using ``chat_media.extract_text`` / config unchanged.
 from .doc_extract import (  # noqa: E402
@@ -365,15 +365,16 @@ def describe_bytes(raw: bytes, role: str = "doer", *,
 
 def supported_attachment(mime: str, filename: str) -> bool:
     """Is this attachment one we can analyse — an image, or a document we can
-    extract text from (pdf / xlsx / docx / text)?"""
+    extract text from (pdf / xlsx / docx / pptx / text)?"""
     mime = (mime or "").lower()
     ext = os.path.splitext(filename or "")[1].lower()
     if mime.startswith(_IMAGE):
         return True
     if mime in (_APPLICATION_PDF,) or "spreadsheet" in mime or \
-            "wordprocessing" in mime or mime.startswith("text/"):
+            "wordprocessing" in mime or "presentationml" in mime or \
+            mime.startswith("text/"):
         return True
-    return ext in {".pdf", ".xlsx", ".docx"} | _TEXT_EXTS
+    return ext in {".pdf", ".xlsx", ".docx", ".pptx"} | _TEXT_EXTS
 
 
 def _extract_document_text(tmp: str, mime: str, role: str) -> str:

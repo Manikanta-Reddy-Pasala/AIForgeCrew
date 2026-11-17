@@ -52,6 +52,9 @@ FAMILY_CUE = (
         r"\b(?:show|see|watch|follow|stream|display)\b[^.?!\n]{0,40}\boutput\b",
         re.I)),
     ("ui", re.compile(r"\bui_check\b|\bscreenshot\b", re.I)),
+    ("pptx", re.compile(
+        r"\bpptx\b|\bpower ?points?\b|\bslide ?decks?\b|\bdecks?\b|"
+        r"\bslides?\b", re.I)),
     ("codegraph", re.compile(
         r"\bcodegraph\b|\bcallers\b|\bcallees\b|\bcall graph\b|\bwho calls\b|"
         r"\bblast radius\b|\bcode_search\b|\bsemantic search\b|"
@@ -72,7 +75,7 @@ FAMILY_TOOLS = {
 FAMILY_PREFIX = {
     "jira": "jira_", "confluence": "confluence_", "gitlab": "gitlab_",
     "sonar": "sonar_", "blackduck": "blackduck_",
-    "email": "email_", "web": "web_",
+    "email": "email_", "web": "web_", "pptx": "pptx_",
 }
 SHARED_WHEN = {
     "jira": ("context_gather", "set_integration_default"),
@@ -94,6 +97,7 @@ FAMILY_BLURB = {
     "logs": "show a command's or a file's live log to the user",
     "ui": "screenshot a running page and check it",
     "codegraph": "symbol callers, callees, impact, and semantic code search",
+    "pptx": "read, create and edit PowerPoint (.pptx) decks",
 }
 FAMILIES = tuple(name for name, _ in FAMILY_CUE)
 

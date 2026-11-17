@@ -99,12 +99,38 @@ CATALOG: dict = {
                    "20-40 line slices; a range you already read is still in "
                    "this conversation — do not read it again.",
                    {"path": "s", "start": "i", "end": "i", "ranges": "arr"}, ("path",)),
-    "summarize_doc": ("Summarize an attached/loaded document (pdf/docx/xlsx). "
+    "summarize_doc": ("Summarize an attached/loaded document (pdf/docx/xlsx/pptx). "
                       "Give the file name/path. Optional `pages` selects a page "
                       "range to summarize ONLY those pages/sections — e.g. "
                       "\"10-20\" or \"3,5,7-9\"; omit for the whole document. "
                       "Handles tables, embedded images, and OCRs scanned PDFs.",
                       {"path": "s", "pages": "s"}, ("path",)),
+    "pptx_read": ("Read a PowerPoint deck (.pptx): each slide's index (1 = "
+                  "first), layout, title, every shape's text with its id and "
+                  "name, speaker notes, and whether it holds images, tables or "
+                  "charts. Optional slides (\"2-4\", \"1,3\") limits it.",
+                  {"path": "s", "slides": "s"}, ("path",)),
+    "pptx_create": ("Create a new .pptx deck from an outline. slides = "
+                    "[{title, bullets: [\"text\", [\"sub-point\"], "
+                    "{\"text\": .., \"level\": 2}], notes?, image? (local "
+                    "file), table? ([[\"head\", ..], [\"cell\", ..]]), "
+                    "layout? (layout name)}]. Plain 16:9 look (white, Calibri, "
+                    "one accent colour; accent = hex to change it). template = "
+                    "an existing .pptx whose layouts and theme are reused.",
+                    {"path": "s", "slides": "arr", "template": "s",
+                     "accent": "s"}, ("path", "slides")),
+    "pptx_edit": ("Edit an existing .pptx in place (or save to out_path). "
+                  "ops run in order, all or nothing; slide numbers are 1-based. "
+                  "{op: replace_text, find, replace, slides?, notes?} | "
+                  "{op: set_title, slide, text} | {op: set_bullets, slide, "
+                  "bullets} | {op: set_notes, slide, text} | {op: add_slide, "
+                  "index?, title, bullets, notes?, image?, table?} | "
+                  "{op: delete_slide, slide} | {op: move_slide, slide, to} | "
+                  "{op: add_image, slide, image, left?, top?, width?, height? "
+                  "(inches)} | {op: add_table, slide, rows, left?, top?, "
+                  "width?, height?}. Read the deck with pptx_read first.",
+                  {"path": "s", "ops": "arr", "out_path": "s"},
+                  ("path", "ops")),
     "format": ("Auto-format a file.", {"path": "s"}, ()),
     "rename_symbol": ("Rename a symbol across the project.",
                       {"path": "s", "old_name": "s", "new_name": "s"}, ()),

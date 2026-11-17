@@ -41,9 +41,10 @@ _CODE_EXT = {
 }
 # Text-readable document files (read straight off disk).
 _DOC_EXT = {".md", ".markdown", ".mdx", ".txt", ".rst", ".adoc", ".csv"}
-# Binary document files that need a text-extraction pass (pypdf / python-docx,
-# via chat_media.extract_text). Soft-skipped if the extractor/dep is absent.
-_BINARY_DOC_EXT = {".pdf", ".docx"}
+# Binary document files that need a text-extraction pass (pypdf / python-docx /
+# the stdlib pptx reader, via chat_media.extract_text). Soft-skipped if the
+# extractor/dep is absent.
+_BINARY_DOC_EXT = {".pdf", ".docx", ".pptx"}
 # Everything the "docs" layer of a repo/dir walk considers.
 _ALL_DOC_EXT = _DOC_EXT | _BINARY_DOC_EXT
 _NOISE_DIRS = {

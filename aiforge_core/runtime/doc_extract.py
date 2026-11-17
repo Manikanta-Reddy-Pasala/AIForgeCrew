@@ -1,6 +1,7 @@
 """Document → text extraction, page-aware.
 
-Owns everything that turns a pdf / docx / xlsx / text file into readable text:
+Owns everything that turns a pdf / docx / xlsx / pptx / text file into readable
+text:
 per-page text, structured tables, page segmentation, and page-range selection.
 Vision-dependent bits (image captions, scanned-page OCR) live in ``chat_media``
 — this module is pure text and has no LLM/vision dependency.
@@ -13,6 +14,9 @@ Pages:
             carries no breaks → we fall back to fixed-size character "pages" so
             page selection still works (approximate, flagged).
   • xlsx  — each worksheet is treated as a "page".
+  • pptx  — each slide is a "page": title, body text, tables, an image count
+            and the speaker notes. Read straight from the package XML
+            (stdlib), so it needs no optional library.
   • text  — one page, or char-approx pages when large.
 
 Everything is bounded (page cap + char budget) so a 400-page document folds
@@ -26,6 +30,7 @@ from pathlib import Path
 
 _TEXT_PLAIN = 'text/plain'
 _XLSX = '.xlsx'
+_PPTX = '.pptx'
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 _DRAWING = _W + "drawing"
@@ -39,6 +44,7 @@ _EXT_MIME = {
     _XLSX: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".xls": "application/vnd.ms-excel",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    _PPTX: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ".csv": "text/csv", ".txt": _TEXT_PLAIN, ".md": "text/markdown",
     ".json": "application/json", ".log": _TEXT_PLAIN, ".yaml": "text/yaml",
     ".yml": "text/yaml", ".py": "text/x-python", ".js": "text/javascript",
@@ -81,6 +87,11 @@ def _is_pdf(path: str, mime: str) -> bool:
 def _is_docx(path: str, mime: str) -> bool:
     return os.path.splitext(path)[1].lower() == ".docx" \
         or "wordprocessing" in (mime or "")
+
+
+def _is_pptx(path: str, mime: str) -> bool:
+    return os.path.splitext(path)[1].lower() == _PPTX \
+        or "presentationml" in (mime or "")
 
 
 # ── PDF ──────────────────────────────────────────────────────────────────
@@ -204,6 +215,115 @@ def _xlsx_pages(path: str) -> list[str]:
     return pages
 
 
+# ── pptx ─────────────────────────────────────────────────────────────────
+_PML = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
+_DML = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+_ODR = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+_PKR = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+_TITLE_PH = ("title", "ctrTitle")
+_CHROME_PH = ("dt", "ftr", "sldNum", "hdr")
+
+
+def _zip_xml(z, name: str):
+    import xml.etree.ElementTree as ET
+    with z.open(name) as f:
+        return ET.parse(f).getroot()
+
+
+def _part_rels(z, part: str) -> dict[str, tuple[str, str]]:
+    """``{rId: (type, part name)}`` for one package part; {} when it has none."""
+    import posixpath
+    folder, base = posixpath.split(part)
+    try:
+        root = _zip_xml(z, posixpath.join(folder, "_rels", base + ".rels"))
+    except KeyError:
+        return {}
+    rels = {}
+    for r in root.iter(_PKR + "Relationship"):
+        if r.get("TargetMode") == "External":
+            continue
+        tgt = r.get("Target") or ""
+        name = tgt.lstrip("/") if tgt.startswith("/") \
+            else posixpath.normpath(posixpath.join(folder, tgt))
+        rels[r.get("Id") or ""] = (r.get("Type") or "", name)
+    return rels
+
+
+def _pml_paras(elem) -> list[str]:
+    out = []
+    for p in elem.iter(_DML + "p"):
+        t = "".join(x.text or "" for x in p.iter(_DML + "t")).strip()
+        if t:
+            out.append(t)
+    return out
+
+
+def _pml_ph(sp) -> str | None:
+    """The placeholder type of a ``p:sp`` (None for a plain shape)."""
+    ph = sp.find(f"{_PML}nvSpPr/{_PML}nvPr/{_PML}ph")
+    return None if ph is None else ph.get("type", "obj")
+
+
+def _pptx_notes(z, slide_part: str) -> list[str]:
+    for typ, name in _part_rels(z, slide_part).values():
+        if typ.endswith("/notesSlide"):
+            try:
+                root = _zip_xml(z, name)
+            except KeyError:
+                return []
+            return [t for sp in root.iter(_PML + "sp") if _pml_ph(sp) == "body"
+                    for t in _pml_paras(sp)]
+    return []
+
+
+def _pptx_slide(z, part: str, number: int) -> str:
+    root = _zip_xml(z, part)
+    title, body, rows, pics = "", [], [], 0
+    for el in root.iter():
+        if el.tag == _PML + "sp":
+            ph = _pml_ph(el)
+            if ph in _CHROME_PH:
+                continue
+            paras = _pml_paras(el)
+            if ph in _TITLE_PH and not title:
+                title = " ".join(paras)
+            else:
+                body.extend(paras)
+        elif el.tag == _DML + "tbl":
+            for tr in el.iter(_DML + "tr"):
+                rows.append(" | ".join(" ".join(_pml_paras(tc))
+                                       for tc in tr.iter(_DML + "tc")))
+        elif el.tag == _PML + "pic":
+            pics += 1
+    out = [f"# slide {number}: {title}".rstrip(": ").rstrip()]
+    out += body
+    if rows:
+        out += ["[table]", *rows]
+    if pics:
+        out.append(f"[{pics} image(s)]")
+    notes = _pptx_notes(z, part)
+    if notes:
+        out += ["[notes]", *notes]
+    return "\n".join(out)
+
+
+def _pptx_pages(path: str) -> list[str]:
+    """One text entry per slide, in presentation order, bounded by the page
+    cap. stdlib only (zipfile + ElementTree)."""
+    import zipfile
+    pages: list[str] = []
+    with zipfile.ZipFile(path) as z:
+        pres = "ppt/presentation.xml"
+        rels = _part_rels(z, pres)
+        lst = _zip_xml(z, pres).find(_PML + "sldIdLst")
+        ids = [] if lst is None else list(lst)
+        for n, sid in enumerate(ids[:_pdf_page_cap()], 1):
+            target = rels.get(sid.get(_ODR + "id") or "")
+            if target:
+                pages.append(_pptx_slide(z, target[1], n))
+    return pages
+
+
 # ── page model / char approximation ────────────────────────────────────────
 def _approx_pages(text: str, size: int) -> list[str]:
     """Split a page-less document into fixed-size character "pages" (on line
@@ -299,9 +419,11 @@ def _docx_paginate(path: str) -> tuple[list[str], str]:
 
 
 def paginate(path: str, mime: str = "") -> tuple[list[str], str]:
-    """(pages, kind) for a document. kind ∈ {exact, approx, sheets, none}.
+    """(pages, kind) for a document. kind ∈ {exact, approx, sheets, slides,
+    none}.
     PDF → real pages ("exact"); docx → break-segmented when dense enough else
-    char-approx; xlsx → per-sheet ("sheets"); text → char-approx when large.
+    char-approx; xlsx → per-sheet ("sheets"); pptx → per-slide ("slides");
+    text → char-approx when large.
     Never raises → ([], "none") on any failure."""
     ext = os.path.splitext(path)[1].lower()
     try:
@@ -309,6 +431,8 @@ def paginate(path: str, mime: str = "") -> tuple[list[str], str]:
             return _pdf_pages(path), "exact"
         if ext == _XLSX or "spreadsheet" in (mime or ""):
             return _xlsx_pages(path), "sheets"
+        if _is_pptx(path, mime):
+            return _pptx_pages(path), "slides"
         if _is_docx(path, mime):
             return _docx_paginate(path)
         if (mime or "").startswith("text/") or ext in _TEXT_EXTS:
@@ -330,7 +454,8 @@ def document_pages(path: str, mime: str = "") -> list[str]:
 def pagination_kind(path: str, mime: str = "") -> str:
     """How page numbers were derived: "exact" (PDF pages / dense docx breaks),
     "word" (docx total is Word's own count; per-page content mapped
-    proportionally), "approx" (char-estimated), "sheets" (xlsx), or "none"."""
+    proportionally), "approx" (char-estimated), "sheets" (xlsx), "slides"
+    (pptx), or "none"."""
     return paginate(path, mime)[1]
 
 
@@ -357,7 +482,7 @@ def extract_text(path: str, mime: str = "") -> str:
     char budget. Best-effort, never raises."""
     ext = os.path.splitext(path)[1].lower()
     try:
-        if _is_pdf(path, mime) or _is_docx(path, mime) \
+        if _is_pdf(path, mime) or _is_docx(path, mime) or _is_pptx(path, mime) \
                 or ext == _XLSX or "spreadsheet" in (mime or ""):
             pages = document_pages(path, mime)
             return _join_pages(pages, _doc_char_budget())

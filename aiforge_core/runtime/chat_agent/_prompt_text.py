@@ -14,7 +14,10 @@ ARGS_JSON: <a single-line JSON object of the tool's arguments>
 
 Tool arguments:
 - file_read    {{"path": "rel/or/abs"}}   (a big source file returns its OUTLINE — symbols with line ranges; then {{"path": ..., "symbol": "Class.method"}} reads just that part, "full": true the whole file)
-- summarize_doc {{"path": "report.pdf", "pages": "10-20"}}   (summarize an ATTACHED document — pdf/docx/xlsx — reading tables, images, and OCR'ing scanned PDFs. "pages" is OPTIONAL: a range like "10-20" or "3,5,7-9" summarizes ONLY those pages/sections; omit for the whole doc. Use this for large docs instead of file_read.)
+- summarize_doc {{"path": "report.pdf", "pages": "10-20"}}   (summarize an ATTACHED document — pdf/docx/xlsx/pptx — reading tables, images, and OCR'ing scanned PDFs. "pages" is OPTIONAL: a range like "10-20" or "3,5,7-9" summarizes ONLY those pages/sections; omit for the whole doc. Use this for large docs instead of file_read.)
+- pptx_read    {{"path": "deck.pptx", "slides": "2-4"}}   (a PowerPoint deck as JSON: per slide its layout, title, each shape's text with id/name, notes, image/table/chart flags; slide numbers are 1-based)
+- pptx_create  {{"path": "out.pptx", "slides": [{{"title": "Plan", "bullets": ["Goal", ["sub-point"]], "notes": "...", "table": [["Item", "Owner"], ["A", "B"]], "image": "chart.png"}}], "template": "brand.pptx"}}   (new deck; plain 16:9 white/Calibri look unless a template is given)
+- pptx_edit    {{"path": "deck.pptx", "ops": [{{"op": "replace_text", "find": "2025", "replace": "2026"}}, {{"op": "set_bullets", "slide": 2, "bullets": ["..."]}}], "out_path": "new.pptx"}}   (ops: replace_text, set_title, set_bullets, set_notes, add_slide, delete_slide, move_slide, add_image, add_table; all or nothing)
 - read_files   {{"paths": ["a.java", "b.java", "c.java"]}}   (read MANY files in ONE call — ALWAYS use this instead of many file_read calls when you need several files; reading one at a time over many turns loses track and stalls)
 - file_write   {{"path": "...", "content": "..."}}      (creates/overwrites; code is syntax-checked before it lands — pass "force": true to override)
                ONLY for a NEW file, or when you are genuinely replacing the whole

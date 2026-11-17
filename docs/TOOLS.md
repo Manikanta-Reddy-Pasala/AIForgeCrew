@@ -1,7 +1,7 @@
 # Tool Reference
 
 Complete reference for every agent tool. Sources of truth:
-`runtime/chat_agent/_registry.py` (`TOOLS`, **112 tools**),
+`runtime/chat_agent/_registry.py` (`TOOLS`, **128 tools**),
 `runtime/chat_agent/_tools/_schemas.py` (the model-facing descriptions),
 `runtime/doer_tools/` (pipeline `FunctionTool` registry),
 `agents/agents.yaml` (per-role allowlists),
@@ -46,7 +46,10 @@ because their blast radius ends at the box: `execute_ipython_cell`,
 | `editor` | `{command: view\|create\|str_replace\|insert\|undo_edit, path, …}` | structured editor with undo; view is RO | EDIT (writes) |
 | `multi_edit` | `{edits: [{path, old_str, new_str}…]}` | batch edits across files, validated then all-or-nothing | EDIT |
 | `rename_symbol` | `{path, old, new}` | project-wide symbol rename | EDIT |
-| `summarize_doc` | `{path, pages}` | summarize an attached pdf/docx/xlsx; `pages` narrows it | RO |
+| `summarize_doc` | `{path, pages}` | summarize an attached pdf/docx/xlsx/pptx; `pages` narrows it | RO |
+| `pptx_read` | `{path, slides?}` | a .pptx deck as JSON: per slide layout, title, shape texts (id/name), notes, image/table/chart flags | RO |
+| `pptx_create` | `{path, slides: [{title, bullets, notes?, image?, table?, layout?}], template?, accent?}` | new deck; plain 16:9 look, or a template's layouts/theme | allow |
+| `pptx_edit` | `{path, ops: [...], out_path?}` | `replace_text`, `set_title`, `set_bullets`, `set_notes`, `add_slide`, `delete_slide`, `move_slide`, `add_image`, `add_table`; all or nothing | allow |
 
 ### Search & navigation
 

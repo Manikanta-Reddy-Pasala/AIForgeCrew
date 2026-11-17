@@ -97,7 +97,7 @@ def validate_path(location: str) -> dict:
 
 
 def _read_source(f: Path) -> "str | None":
-    """Read a file to text. Binary docs (pdf/docx) go through
+    """Read a file to text. Binary docs (pdf/docx/pptx) go through
     ``chat_media.extract_text`` (pypdf / python-docx); text files are read
     straight off disk. Returns None on any failure (soft-skip)."""
     pkg = _pkg()

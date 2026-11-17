@@ -151,6 +151,10 @@ dev = [
   "ruff>=0.4",
 ]
 xlsx = ["openpyxl>=3.1"]
+# PowerPoint tools (pptx_read / pptx_create / pptx_edit). Optional: the tools
+# import it per call and return an install hint without it; reading an
+# attached .pptx as text (doc_extract) needs nothing extra.
+pptx = ["python-pptx>=1.0"]
 # CI-only tooling. These used to be injected with `uv run --with build`,
 # `--with pytest-cov`, `--with cyclonedx-bom`, each of which RESOLVES AGAINST
 # THE INDEX at job time — three network round-trips a `--offline` runner

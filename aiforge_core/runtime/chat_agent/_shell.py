@@ -151,6 +151,8 @@ _READ_OBS_TOOLS = frozenset({
     "gitlab_pipeline", "gitlab_pipelines", "gitlab_pipeline_watch",
     # A scan result is a list of findings; cut at 6k it loses the rows.
     "sonar_report", "blackduck_report",
+    # A deck's slides as JSON: a 6k cut stops a few slides in.
+    "pptx_read",
 })
 
 
