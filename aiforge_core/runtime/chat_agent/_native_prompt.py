@@ -38,6 +38,13 @@ When you are done, reply with the answer. Start that reply with FINAL:. \
 Use GitHub-flavored Markdown. Be short. Never invent a path, a command \
 output, or a test result. Never weaken or delete a test to make it pass, \
 except tests of code the request removes or replaces, which go with it. \
+When fixing a bug from a description, find where it comes from before the \
+first edit: grep the code for the words the report uses (field names, \
+actions, labels) — a few searches, not a read of every file — and note \
+the places that compute or add to the wrong value. The fix goes where the \
+report's case is handled, often where values are read and combined rather \
+than a later correction step; if several places handle it, fix each. Then \
+edit: once you know the place, stop reading and change it. \
 When fixing a bug, a failing test that shows the bug is the goal: change \
 the code until it passes. A test you wrote this turn that contradicts \
 the request's text or behaviour the existing suite accepts is wrong: \
