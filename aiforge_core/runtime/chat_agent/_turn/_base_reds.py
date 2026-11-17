@@ -68,26 +68,60 @@ def _asked_about(st, names: set) -> bool:
 
 
 def early_note(st, cwd: str, cmd: str, out: str) -> "str | None":
-    """A note for the model when the SAME failing tests show on two runs of a
-    test command in a row and they fail on the original code too (a real Rust
-    run chased an old failure through two stuck warnings). Once per set."""
+    """A note for the model when a test fails on two runs of the same test
+    command (the command up to its first pipe or redirect) and it fails on
+    the original code too. A real Rust run chased an old failure through two
+    stuck warnings; its runs differed only in ``| tail -30`` / ``| grep``
+    and in which other tests were still red. Once per test name."""
     names = failing_names(out)
     if not names or not hasattr(st, "__dict__"):
         return None
-    last = st.__dict__.setdefault("red_names_by_cmd", {})
-    prev = last.get(cmd)
-    last[cmd] = names
+    try:
+        from .._shell import test_identity
+        key = test_identity(cmd) or cmd
+    except Exception:  # noqa: BLE001
+        key = cmd
+    seen = st.__dict__.setdefault("red_counts", {}).setdefault(key, {})
+    for n in names:
+        seen[n] = seen.get(n, 0) + 1
     told = st.__dict__.setdefault("base_reds_told", set())
-    key = frozenset(names)
-    if prev != names or key in told:
+    twice = {n for n in names if seen[n] >= 2 and n not in told}
+    if not twice or _asked_about(st, twice):
         return None
-    told.add(key)
-    if not same_reds_at_base(st, cwd, cmd, out):
+    at_base = base_failing(st, cwd, key)
+    told.update(twice)                    # asked once, whatever the answer
+    old = sorted(twice & (at_base or set()))
+    if not old:
         return None
-    shown = ", ".join(sorted(names)[:8])
     return (f"These failing tests fail the same way on the original code, before any "
-            f"change in this turn: {shown}. Your change did not cause them; leave them "
-            f"alone unless the request is about them, and judge your work by the other tests.")
+            f"change in this turn: {', '.join(old[:8])}. Your change did not cause them; "
+            f"leave them alone unless the request is about them, and judge your work by "
+            f"the other tests.")
+
+
+def base_failing(st, cwd: str, cmd: str, timeout: int = 600) -> "set | None":
+    """Failing test names of ``cmd`` run on the commit the work started from
+    (a throwaway worktree); None when it cannot be run. Once per command."""
+    if not _enabled() or not cmd:
+        return None
+    try:
+        from aiforge_core.runtime import repo_ident
+        from ._contract_gate import work_base
+        from ._done_watch import _run
+        top = repo_ident.git_toplevel(cwd)
+        base = work_base(st)
+        if not top or not base:
+            return None
+        rev = subprocess.run(["git", "-C", top, "rev-parse", "--verify", f"{base}^{{commit}}"],
+                             capture_output=True, text=True, timeout=10).stdout.strip()
+    except Exception:  # noqa: BLE001
+        return None
+    if not rev:
+        return None
+    key = (top, rev, cmd)
+    if key not in _CACHE:
+        _CACHE[key] = _base_names(top, rev, cwd, cmd, timeout, _run)
+    return _CACHE[key]
 
 
 def same_reds_at_base(st, cwd: str, cmd: str, out: str, timeout: int = 600) -> bool:
@@ -98,24 +132,7 @@ def same_reds_at_base(st, cwd: str, cmd: str, out: str, timeout: int = 600) -> b
     names = failing_names(out)
     if not _all_named(out, names) or _asked_about(st, names):
         return False
-    try:
-        from aiforge_core.runtime import repo_ident
-        from ._contract_gate import work_base
-        from ._done_watch import _run
-        top = repo_ident.git_toplevel(cwd)
-        base = work_base(st)
-        if not top or not base:
-            return False
-        rev = subprocess.run(["git", "-C", top, "rev-parse", "--verify", f"{base}^{{commit}}"],
-                             capture_output=True, text=True, timeout=10).stdout.strip()
-    except Exception:  # noqa: BLE001
-        return False
-    if not rev:
-        return False
-    key = (top, rev, cmd)
-    if key not in _CACHE:
-        _CACHE[key] = _base_names(top, rev, cwd, cmd, timeout, _run)
-    at_base = _CACHE[key]
+    at_base = base_failing(st, cwd, cmd, timeout)
     return at_base is not None and names <= at_base
 
 

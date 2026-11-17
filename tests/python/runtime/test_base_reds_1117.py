@@ -71,16 +71,22 @@ def test_read_past_the_end_shows_the_end(tmp_path):
     assert "only 426 lines" in r["note"]
 
 
-def test_early_note_on_the_second_same_red_run(tmp_path, monkeypatch):
+def test_early_note_per_test_across_pipes(tmp_path, monkeypatch):
     monkeypatch.delenv("AIFORGE_CHAT_BASE_REDS", raising=False)
     br._CACHE.clear()
-    r, rev = _repo(tmp_path)
+    r, _ = _repo(tmp_path)
+    (r / "out.txt").write_text(CARGO_RED)            # the base prints the old failure
+    subprocess.run(["git", "-C", str(r), "add", "."], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(r), "commit", "-qm", "out"], check=True, capture_output=True)
+    rev = subprocess.run(["git", "-C", str(r), "rev-parse", "HEAD"], capture_output=True,
+                         text=True).stdout.strip()
     st = SimpleNamespace(cwd=str(r), head0=rev, goal="fix the version matching bug")
-    cmd = f"cd {r} && printf '%s' \"$(cat <<'X'\n{CARGO_RED}X\n)\""
-    assert br.early_note(st, str(r), cmd, CARGO_RED) is None          # first red run
-    note = br.early_note(st, str(r), cmd, CARGO_RED)                   # same reds again
-    assert note and "test_parse_errors" in note and "original code" in note
-    assert br.early_note(st, str(r), cmd, CARGO_RED) is None          # told once
+    base = f"cd {r} && cat out.txt"
+    two = CARGO_RED.replace("test test_other ... ok", "test test_other ... FAILED")
+    assert br.early_note(st, str(r), base + " | tail -30", two) is None       # first time
+    note = br.early_note(st, str(r), base + " | tail -40", CARGO_RED)         # same test, other pipe
+    assert note and "test_parse_errors" in note and "test_other" not in note
+    assert br.early_note(st, str(r), base + " | grep FAIL", CARGO_RED) is None  # told once
 
 
 def test_a_failing_test_the_request_names_is_the_work(tmp_path, monkeypatch):
