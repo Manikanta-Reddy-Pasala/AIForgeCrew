@@ -84,6 +84,9 @@ def packages(request: str) -> dict:
     return out
 
 
+_ON_OWNER = re.compile(r"\s+(?:on|in|of)\s+(?:class\s+)?`([A-Za-z_][\w.$]*[A-Z][\w$]*)`")
+
+
 def claims(request: str) -> list:
     """``[(kind, cls, name, types, ret, text)]`` the request states."""
     out, seen = [], set()
@@ -105,6 +108,9 @@ def claims(request: str) -> list:
             hit = True
         if hit:
             continue
+        # "`<signature>` on `pkg.Owner`": the class named right after the span
+        after = _ON_OWNER.match(request[m.end():m.end() + 160])
+        owner = after.group(1).rsplit(".", 1)[-1] if after else None
         for c in _BARE.finditer(span):
             ret = c.group(1)
             if ret in _NOT_TYPES:
@@ -112,7 +118,7 @@ def claims(request: str) -> list:
             ts = _types(c.group(3))
             if ts is None:
                 continue
-            out.append(("method", None, c.group(2), ts, _base(ret), c.group(0).strip()))
+            out.append(("method", owner, c.group(2), ts, _base(ret), c.group(0).strip()))
     uniq = []
     for c in out:
         k = c[:5] if not isinstance(c[3], list) else (c[0], c[1], c[2], tuple(c[3]), c[4])
