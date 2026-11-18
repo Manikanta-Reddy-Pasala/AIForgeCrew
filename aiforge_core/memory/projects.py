@@ -54,9 +54,34 @@ def _int_env(key: str, default: int) -> int:
 
 
 def memory_cap() -> int:
-    """Chars of knowledge a project brief may hold before it is compacted
-    (``AIFORGE_PROJECT_MEMORY_CAP``)."""
-    return max(2000, _int_env("AIFORGE_PROJECT_MEMORY_CAP", 24000))
+    """Chars of knowledge a project brief may hold (``AIFORGE_PROJECT_MEMORY_CAP``,
+    default 40,000)."""
+    return max(2000, _int_env("AIFORGE_PROJECT_MEMORY_CAP", 40000))
+
+
+def _pct_env(key: str, default: int) -> float:
+    return min(100, max(10, _int_env(key, default))) / 100.0
+
+
+def compact_at() -> int:
+    """Compaction starts here, before the cap is reached
+    (``AIFORGE_PROJECT_COMPACT_AT``, percent of the cap, default 85)."""
+    return int(memory_cap() * _pct_env("AIFORGE_PROJECT_COMPACT_AT", 85))
+
+
+def compact_target() -> int:
+    """What a compaction aims for, so the brief has room to grow again
+    (``AIFORGE_PROJECT_COMPACT_TARGET``, percent of the cap, default 60)."""
+    return int(memory_cap() * _pct_env("AIFORGE_PROJECT_COMPACT_TARGET", 60))
+
+
+def _fit(text: str, limit: int) -> str:
+    """Cut a too-long summary at the last paragraph break under ``limit``
+    (the full previous brief is in the archive)."""
+    if len(text) <= limit:
+        return text
+    cut = text.rfind("\n\n", 0, limit)
+    return text[:cut if cut > limit // 2 else limit].rstrip() + "\n"
 
 
 def _compact_role() -> str:
@@ -834,12 +859,22 @@ def compact(slug: str, *, force: bool = False) -> dict:
     out: dict = {"ok": True, "stale": sweep_stale(slug).get("moved", 0)}
     text = _knowledge(slug)
     out["chars_before"] = len(text)
-    if not text or (not force and len(text) <= memory_cap()):
+    if not text or (not force and len(text) <= compact_at()):
         out["compacted"] = False
         return out
     from aiforge_core.memory.md_store import _compact_summarize
     try:
         summary = _compact_summarize._summarize_notes([text], _compact_role())
+        # A brief compacted to just under the cap is full again after the next
+        # few chats (projects sat at "100% of cap"): one more pass when the
+        # summary is still over the target, then a cut at a paragraph break
+        # so it never stays over the cap.
+        if summary and len(summary) > compact_target():
+            again = _compact_summarize._summarize_notes([summary], _compact_role())
+            if again and again.strip() and len(again) < len(summary):
+                summary = again
+        if summary:
+            summary = _fit(summary, memory_cap())
     except Exception as exc:  # noqa: BLE001
         summary = None
         out["error"] = f"summarize failed: {exc}"
@@ -864,7 +899,7 @@ def compact(slug: str, *, force: bool = False) -> dict:
 
 def compact_over_cap() -> dict:
     """The periodic pass: every registered project, stale sweep always,
-    compaction only past the cap."""
+    compaction once a brief passes ``compact_at()`` (85% of the cap)."""
     done: dict = {}
     for slug in list(registered()):
         done[slug] = _quiet(compact, slug)

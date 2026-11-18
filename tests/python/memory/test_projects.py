@@ -420,3 +420,38 @@ def test_opening_in_the_background_returns_before_the_sync(env, monkeypatch):
     assert str(env / "shop") in projects.opened()
     assert started.wait(2)
     gate.set()
+
+
+def test_compact_starts_before_the_cap_and_aims_below_it(env, monkeypatch):
+    """Compaction starts at 85% of the cap and lands under 60% (a second pass
+    when the first summary is still long, then a cut at a paragraph break)."""
+    from aiforge_core.memory import md_store, projects
+    from aiforge_core.memory.md_store import _compact_summarize
+    monkeypatch.setenv("AIFORGE_PROJECT_MEMORY_CAP", "4000")
+    assert projects.compact_at() == 3400 and projects.compact_target() == 2400
+    ent = projects.open_project(str(env / "shop"))
+    slug = ent["slug"]
+    i = 0
+    while len(projects._knowledge(slug)) < 3500:          # over 85%, under the cap
+        md_store._brief_upsert("shop", f"Rule {i}: batch {i} settles after region {i} closes")
+        i += 1
+    assert len(projects._knowledge(slug)) < 4000
+    calls = []
+
+    def fake(blocks, role):
+        calls.append(len(blocks[0]))
+        # first pass still long (3000 > target 2400), second pass short
+        return ("Para one.\n\n" + "x" * 2990) if len(calls) == 1 else "Settles after close."
+    monkeypatch.setattr(_compact_summarize, "_summarize_notes", fake)
+    res = projects.compact(slug)
+    assert res["compacted"] is True and len(calls) == 2
+    assert "Settles after close." in projects.read(slug)["text"]
+
+
+def test_a_summary_over_the_cap_is_cut_at_a_paragraph(env, monkeypatch):
+    from aiforge_core.memory import projects
+    monkeypatch.setenv("AIFORGE_PROJECT_MEMORY_CAP", "2000")
+    text = ("a" * 900 + "\n\n") * 4
+    out = projects._fit(text, 2000)
+    assert len(out) <= 2000 and out.endswith("a\n")
+    assert projects._fit("short", 2000) == "short"
