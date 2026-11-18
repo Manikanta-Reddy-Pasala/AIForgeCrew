@@ -825,12 +825,52 @@ def _drop_tail_pipe(args: dict) -> "tuple[dict, bool]":
     return {**args, "cmd": head}, True
 
 
+#: A Maven invocation that compiles (compile/test/verify/package/install, or
+#: a plugin goal like surefire:test run after a compile).
+_MVN = re.compile(r"(?:^|[;&|(]\s*|\b(?:then|do)\s+)"
+                  r"(?:\w+=\S+\s+)*(?:(?:timeout\s+\S+|time|nice|env)\s+)*"
+                  r"(mvn|\./mvnw|mvnw)(?=\s)")
+_MVN_GOAL = re.compile(r"\b(?:compile|test-compile|test|verify|package|install)\b")
+_MVN_FAST_FLAG = "-Dmaven.compiler.useIncrementalCompilation=false"
+
+
+def _fast_maven(args: dict) -> "tuple[dict, str]":
+    """The model's own Maven runs compile only stale files, and use the Maven
+    daemon (mvnd) when it is installed. On a real Java service (1,546 sources,
+    annotation processors) every `mvn test` recompiled everything: 30 s for
+    0.1 s of tests. With the flag 6 s, with mvnd 2 s. Only the model's inner
+    loop: the finish check and graders run the command as the model wrote it
+    (a full compile), so a stale class can never vouch for the result.
+    AIFORGE_CHAT_FAST_MAVEN=0 turns it off; AIFORGE_CHAT_MVND=0 keeps mvn."""
+    off = ("0", "false", "no", "off")
+    if os.environ.get("AIFORGE_CHAT_FAST_MAVEN", "1").strip().lower() in off:
+        return args, ""
+    cmd = str(args.get("cmd") or "")
+    m = _MVN.search(cmd)
+    if not m or not _MVN_GOAL.search(cmd[m.end():]) or "useIncrementalCompilation" in cmd:
+        return args, ""
+    new = cmd[:m.end()] + f" {_MVN_FAST_FLAG}" + cmd[m.end():]
+    used = "only stale files recompiled"
+    if m.group(1) == "mvn" and os.environ.get("AIFORGE_CHAT_MVND", "1").strip().lower() not in off:
+        import shutil
+        mvnd = shutil.which("mvnd") or (os.path.expanduser("~/.local/bin/mvnd")
+                                         if os.path.isfile(os.path.expanduser("~/.local/bin/mvnd")) else "")
+        if mvnd:
+            new = new[:m.start(1)] + mvnd + new[m.end(1):]
+            used += ", Maven daemon"
+    return {**args, "cmd": new}, used
+
+
 def _t_run_command(args: dict, cwd: str) -> dict:
     """``| tail -N`` at the end is dropped (see _TAIL_SUFFIX): a real run piped
     every Maven build through it, was told to kill and re-run, and killed the
     same healthy build 15 times without one finishing."""
     args, dropped = _drop_tail_pipe(args)
+    args, fast = _fast_maven(args)
     res = _t_run_command_reuse(args, cwd)
+    if fast and isinstance(res, dict):
+        res["note"] = ((str(res.get("note")) + " ") if res.get("note") else "") + (
+            f"(fast Maven run: {fast}; the final check builds in full)")
     if dropped and isinstance(res, dict):
         res["note"] = ((str(res.get("note")) + " ") if res.get("note") else "") + (
             "(the trailing `| tail` was dropped: the tool keeps the last lines itself, and "

@@ -1,5 +1,11 @@
 """A JVM build that fails on a too-old JDK is re-run once with an installed
 JDK that fits, and says how to run commands from then on."""
+import pytest as _pt
+
+
+@_pt.fixture(autouse=True)
+def _plain_maven(monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_FAST_MAVEN", "0")
 from aiforge_core.runtime.chat_agent import _shell
 from aiforge_core.runtime.chat_agent._turn import _env_guard
 

@@ -1,4 +1,10 @@
 """A trailing `| tail -N` is dropped before a command runs."""
+import pytest as _pt
+
+
+@_pt.fixture(autouse=True)
+def _plain_maven(monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_FAST_MAVEN", "0")
 from aiforge_core.runtime import cmd_signals
 from aiforge_core.runtime.chat_agent import _shell
 
