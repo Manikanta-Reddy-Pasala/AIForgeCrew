@@ -528,7 +528,13 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     flagged = getattr(st, "test_guard_flagged", None) or set()
     if one_file and not _REPO_WIDE.search(cmd) \
             and os.path.realpath(lost[0]) in flagged:
-        return None
+        # once per file: a real Kotlin run restored its flagged test 13 times,
+        # undoing each new attempt, and ended with nothing changed
+        done = st.__dict__.setdefault("flagged_restored", set()) if hasattr(st, "__dict__") else set()
+        key = os.path.realpath(lost[0])
+        if key not in done:
+            done.add(key)
+            return None
     # Every file it would undo is broken right now (does not even parse): no
     # working edit is lost, and the model has no other way back (attrs n1: an
     # edit left _make.py with 12 syntax errors, 28 refused `git checkout`s,

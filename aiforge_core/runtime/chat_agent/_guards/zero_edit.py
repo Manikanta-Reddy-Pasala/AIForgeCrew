@@ -169,8 +169,12 @@ class ZeroEditGuard:
         a seed the harness wrote, its finals are refused unless explicit (a bare
         SAME would cost two more rounds), and the pipeline has its own no-edit
         rule."""
+        # Edits that were all undone again count as none: a real Kotlin run
+        # wrote its test, put the file back 13 times, and answered "tests
+        # added, all pass" with nothing changed on disk.
         return not (self.strict or self.readonly_mode or self.plan_mode or self.builder
-                    or st.edits_made != 0 or not _no_change_guard_enabled())
+                    or (st.edits_made != 0 and self.evidence(st))
+                    or not _no_change_guard_enabled())
 
     def evidence(self, st) -> bool:
         """True when the disk shows work, or cannot be asked. The dirty state

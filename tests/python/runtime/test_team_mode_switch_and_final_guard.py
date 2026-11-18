@@ -265,7 +265,16 @@ def test_nothing_was_changed_can_be_the_answer(clean_tree):
     assert "(No file was changed" not in step["text"]
 
 
-def test_a_turn_that_edited_is_left_alone(clean_tree):
+def test_edits_that_were_all_undone_are_checked(clean_tree):
+    """Counted edits with the same clean tree and the same commit as at the
+    start were all undone again: the answer is checked like a no-edit turn
+    (a real run wrote its test, put it back 13 times, answered "tests added")."""
+    step = {"text": "done"}
+    assert _guard(_st(edits=2), step)[1] == "continue"
+
+
+def test_a_turn_whose_edits_landed_is_left_alone(clean_tree, monkeypatch):
+    monkeypatch.setattr(zero_edit, "_worktree_fingerprint", lambda cwd: "other")
     step = {"text": "done"}
     assert _guard(_st(edits=2), step)[1] is None
     assert step["text"] == "done"
