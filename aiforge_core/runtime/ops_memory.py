@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import threading
 import time
 
@@ -447,8 +448,34 @@ def _hunk_name(header: str) -> str:
     return words[0] if words and len(words[0]) > 1 else ""
 
 
+def _parts(sig: str) -> list[str]:
+    """The separate errors of a signature ("a|b|c" lists several)."""
+    return [p.strip() for p in (sig or "").split("|") if p.strip()]
+
+
+def _change_summary(root: str, files: list[str], limit: int = 800) -> str:
+    """What the fix changed: the added/removed lines of ``git diff`` for those
+    files (no context), so a later run reads the fix, not only where it was."""
+    if not root or not files:
+        return ""
+    try:
+        p = subprocess.run(["git", "-C", root, "diff", "-U0", "--no-color", "HEAD", "--", *files[:8]],
+                           capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    out: list[str] = []
+    for ln in (p.stdout or "").splitlines():
+        if ln.startswith("+++ "):
+            out.append("# " + ln[6:] if ln.startswith("+++ b/") else ln)
+        elif (ln.startswith("+") or ln.startswith("-")) and not ln.startswith("---"):
+            if ln[1:].strip():
+                out.append(ln[:160])
+    text = "\n".join(out)
+    return text if len(text) <= limit else text[:limit].rsplit("\n", 1)[0] + "\n…"
+
+
 def record_fix(sig: str, headline: str, *, repo: str, files: list[str],
-               functions: list[str]) -> dict:
+               functions: list[str], change: str = "") -> dict:
     if not sig or not files:
         return {"ok": False}
     k = _sig_key(sig)
@@ -456,7 +483,10 @@ def record_fix(sig: str, headline: str, *, repo: str, files: list[str],
         data = load()
         e = data["fixes"].get(k) or {"signature": sig[:400], "count": 0}
         e.update({"headline": headline[:200], "repo": repo, "files": files[:8],
-                  "functions": functions[:6], "updated": time.strftime("%Y-%m-%d")})
+                  "functions": functions[:6], "updated": time.strftime("%Y-%m-%d"),
+                  "parts": [_sig_key(x) for x in _parts(sig)][:12]})
+        if change:
+            e["change"] = change
         e["count"] = int(e.get("count") or 0) + 1
         data["fixes"][k] = e
         if len(data["fixes"]) > _MAX_FIXES:      # oldest first out
@@ -468,17 +498,37 @@ def record_fix(sig: str, headline: str, *, repo: str, files: list[str],
 
 
 def known_fix(sig: str, repo: str = "") -> "dict | None":
-    e = load()["fixes"].get(_sig_key(sig)) if sig else None
-    if not e:
+    """The fix recorded for this failure: the same signature, else the fix
+    sharing the most separate errors with it (same repo first). A signature
+    lists several errors; one extra or missing error used to make a known
+    fix unfindable."""
+    if not sig:
         return None
-    return e
+    fixes = load()["fixes"]
+    e = fixes.get(_sig_key(sig))
+    if e:
+        return e
+    mine = {_sig_key(x) for x in _parts(sig)}
+    if not mine:
+        return None
+    best, score = None, (0, 0)
+    for cand in fixes.values():
+        shared = len(mine & set(cand.get("parts") or []))
+        if not shared:
+            continue
+        rank = (shared, 1 if (repo and cand.get("repo") == repo) else 0)
+        if rank > score:
+            best, score = cand, rank
+    return best
 
 
 def fix_note(e: dict, repo: str) -> str:
     where = "" if not e.get("repo") or e.get("repo") == repo else f" (in {e['repo']})"
     fn = f" — {', '.join(e['functions'])}" if e.get("functions") else ""
+    change = (e.get("change") or "").strip()
     return (f"This failure was seen before{where} and went green after changing "
-            f"{', '.join(e.get('files') or [])}{fn}. Check that change first.")
+            f"{', '.join(e.get('files') or [])}{fn}. Check that change first."
+            + (f" What changed then:\n{change}" if change else ""))
 
 
 def fix_hook(st, name: str, args: dict, result, cwd: str, repo: str = "") -> str:
@@ -527,7 +577,8 @@ def fix_hook(st, name: str, args: dict, result, cwd: str, repo: str = "") -> str
             if files:
                 rel = [_rel(f, root) for f in files]
                 record_fix(sig, headline, repo=repo, files=rel,
-                           functions=_functions_touched(root, rel))
+                           functions=_functions_touched(root, rel),
+                           change=_change_summary(root, rel))
             open_.pop(sig, None)
     return ""
 
