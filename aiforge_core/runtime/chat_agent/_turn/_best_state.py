@@ -205,6 +205,49 @@ def _revert_crash(st):
                       if kept_sha else "")}
 
 
+def _revert_regression(st):
+    """At a give-up: the turn's last test command, widened to its package
+    (``_widen_to_package``), fails MORE tests now than on the starting commit.
+    A real Kotlin run gave up with 10 tests of a neighbouring class broken
+    (406 where the start had 416) — it only ever ran its own new class. The
+    changed files go back to the start; the changed version is kept."""
+    last = getattr(st, "last_test_cmd", None)
+    cwd = str(getattr(st, "cwd", "") or "")
+    if not last or not cwd:
+        return
+    from aiforge_core.runtime.shell_writes import command_of
+    from ._outcomes import _widen_to_package
+    from ._base_reds import base_failing, failing_names
+    from ._done_watch import _run
+    cmd = _widen_to_package(_PIPE.sub("", command_of(last[1]) or "").strip())
+    if not cmd or cmd == _PIPE.sub("", command_of(last[1]) or "").strip():
+        return                                 # nothing wider to check
+    _code, out = _run(cmd, cwd, timeout=600)
+    now = failing_names(out or "")
+    base = base_failing(st, cwd, cmd)
+    if base is None or not now or len(now - base) == 0:
+        return
+    from ._contract_gate import work_base
+    top, start = _top(cwd), work_base(st)
+    if not top or not start:
+        return
+    d = _git(top, "diff", "--name-only", start)
+    files = [f for f in (d.stdout.splitlines() if d is not None and d.returncode == 0 else []) if f]
+    if not files:
+        return
+    kept = _git(top, "stash", "create")
+    kept_sha = kept.stdout.strip() if kept is not None and kept.returncode == 0 else ""
+    p = _git(top, "checkout", start, "--", *files, timeout=60)
+    if p is None or p.returncode != 0:
+        return
+    st.best_restored = (key_of(cmd), len(base), len(now))
+    yield {"type": "thought", "role": "system",
+           "text": f"↩ gave back the original code of {len(files)} file(s): `{key_of(cmd)[:80]}` "
+                   f"has {len(now - base)} newly failing test(s) after this turn's changes"
+                   + (f" (the changed version is kept: `git stash apply {kept_sha[:12]}`)"
+                      if kept_sha else "")}
+
+
 def restore_if_worse(st):
     """Generator, at a limit stop: put back the best tested state when the
     code as it stands tests worse."""
@@ -216,6 +259,11 @@ def restore_if_worse(st):
         except Exception:  # noqa: BLE001
             pass
         return
+    if not getattr(st, "best_restored", None):
+        try:
+            yield from _revert_regression(st)
+        except Exception:  # noqa: BLE001
+            pass
     try:
         best = getattr(st, "best_state", None) or {}
         last = getattr(st, "best_last", None) or {}

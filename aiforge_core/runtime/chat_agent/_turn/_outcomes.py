@@ -538,6 +538,26 @@ def _bare_test_command(cmd: str) -> str:
     return (head + _FIRST_CUT.split(rest, maxsplit=1)[0]).strip()
 
 
+#: A JVM test filter naming one fully qualified class (Gradle --tests, Maven -Dtest).
+_ONE_CLASS = re.compile(r"""(--tests[ =]|-Dtest=)(["']?)((?:[a-z_][\w]*\.)+)([A-Z][\w$]*)(?:[#.][\w*]+)?\2""")
+
+
+def _widen_to_package(cmd: str) -> str:
+    """The finish check runs the whole package of a single-class test filter:
+    a real Kotlin run tested only the class it wrote (45 runs), and its change
+    broke 10 tests of the existing class next to it that it never ran.
+    AIFORGE_CHAT_FINISH_PACKAGE_TESTS=0 keeps the command as it was."""
+    if os.environ.get("AIFORGE_CHAT_FINISH_PACKAGE_TESTS", "1").strip().lower() in (
+            "0", "false", "no", "off"):
+        return cmd
+    hits = list(_ONE_CLASS.finditer(cmd))
+    if len(hits) != 1:
+        return cmd                       # none, or several filters: keep as written
+    m = hits[0]
+    pkg = m.group(3).rstrip(".")
+    return cmd[:m.start()] + f"{m.group(1)}{m.group(2)}{pkg}.*{m.group(2)}" + cmd[m.end():]
+
+
 def _rerun_own_test(st, cwd) -> "tuple[bool, str] | None":
     """The turn's own last test command, run again on the final code, for a
     project the harness's guessed runner cannot run (a toolchain the command
@@ -558,6 +578,7 @@ def _rerun_own_test(st, cwd) -> "tuple[bool, str] | None":
         cmd = _bare_test_command(_DISPLAY_PIPE.sub("", cmd or "").strip())
         if not cmd or not _TEST_CMD.search(cmd):
             return None
+        cmd = _widen_to_package(cmd)
         try:
             limit = int(os.environ.get("AIFORGE_CHAT_FINISH_RERUN_S", "600"))
         except ValueError:
