@@ -208,8 +208,14 @@ def _host_line(h: dict) -> str:
         det.append(f"password/token: {_secret_use(h['secret'])} (never print it)")
     if det:
         line += " — " + ", ".join(det)
-    if h.get("recipe"):
+    lw = h.get("last_ok") or {}
+    if lw.get("cmd"):
+        line += f"\n  LAST WORKED ({lw.get('at', '')}): `{lw['cmd']}` — use this first"
+    elif h.get("recipe"):
         line += f"\n  works: `{h['recipe']}`"
+    lf = h.get("last_fail") or {}
+    if lf.get("cmd") and lf.get("at", "") > lw.get("at", ""):
+        line += f"\n  last failed ({lf.get('at', '')}): `{lf['cmd']}` — {lf.get('error', '')}"
     for a in h.get("avoid") or []:
         line += f"\n  do not: {a}"
     if h.get("notes"):
@@ -387,6 +393,29 @@ _NOT_USER = {"and", "or", "password", "pass", "name", "names", "the", "is", "wit
              "for", "a", "an", "pwd", "passwd", "credentials", "credential", "and/password"}
 
 
+_PASS_VALUE = re.compile(
+    r"\b(?:password|passwd|pwd|pass)\s*(?:is|=|:)\s*['\"`]?([^\s'\"`]{1,128})", re.I)
+
+
+def _store_secret(name: str, value: str, purpose: str = "") -> str:
+    """Write a password the user typed into the secret store (0600 file in
+    the 0700 security folder). Returns the secret's NAME; "" on failure.
+    Only the name is ever kept in this memory."""
+    value = (value or "").strip().rstrip(".,;")
+    if not value or not re.fullmatch(r"[\w.-]{1,64}", name):
+        return ""
+    try:
+        from aiforge_core.config import _atomic, secure_store
+        folder = secure_store.security_dir(create=True) / "secrets"
+        folder.mkdir(mode=0o700, exist_ok=True)
+        path = folder / name
+        _atomic.write_text(str(path), value)
+        os.chmod(path, 0o600)
+        return name
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _says(rx: "re.Pattern", clause: str) -> bool:
     """``rx`` occurs in ``clause`` not right after a negation."""
     return any(not _NEGATED.search(clause[:m.start()]) for m in rx.finditer(clause))
@@ -410,6 +439,7 @@ def capture_from_text(text: str) -> int:
         if key == pw:                       # neither, or both: not a clear statement
             continue
         method = "ssh_key" if key else "password"
+        pw_val = _PASS_VALUE.search(clause)
         named = next((u for u in (m.group(1).rstrip(".-") for m in _USER_NAMED.finditer(clause))
                       if u.lower() not in _NOT_USER), "")
         for host, user in targets.items():
@@ -421,9 +451,115 @@ def capture_from_text(text: str) -> int:
                 fields["addresses"] = [host]
             if user or named:
                 fields["user"] = user or named
+            if pw_val and method == "password":
+                sec = _store_secret(f"host-{_key(name)}-password", pw_val.group(1),
+                                    f"password for {name}")
+                if sec:
+                    fields["secret"] = sec
             if upsert_host(name, fields, source="user").get("changed"):
                 changed += 1
     return changed
+
+
+# ── per step: what reached a host, and what did not ──────────────────────
+_ACCESS_FAIL = re.compile(
+    r"permission denied|authentication failed|auth(?:entication)? fail|connection (?:refused|timed out|reset|closed)|"
+    r"no route to host|could not resolve|host key verification failed|too many authentication|"
+    r"timed out|password:\s*$|incorrect password|access denied|unreachable", re.I | re.M)
+_INLINE_PW = re.compile(r"(sshpass\s+-p\s*)(\S+)|(password\s*=\s*)(['\"])[^'\"]*\4", re.I)
+
+
+def _redact(cmd: str) -> str:
+    def rep(m):
+        if m.group(1):
+            return m.group(1) + "<password>"
+        return m.group(3) + m.group(4) + "<password>" + m.group(4)
+    return _INLINE_PW.sub(rep, cmd)
+
+
+def _shape(cmd: str) -> str:
+    """The reusable form of a command that reached a host: ssh target kept,
+    the remote command replaced; passwords never kept."""
+    from aiforge_core.runtime.session_ledger import _ssh_target
+    cmd = " ".join(_redact(cmd).split())
+    target = _ssh_target(cmd) if _SSH.search(cmd) else None
+    if target:
+        pre = cmd.split("ssh ", 1)[0] if cmd.lstrip().startswith("sshpass") else ""
+        return f"{pre}ssh {target} '<command>'".strip()
+    q = min([i for i in (cmd.find("'"), cmd.find('"')) if i > 0] or [len(cmd)])
+    head = cmd[:q].rstrip()
+    return (head + " '<command>'" if q < len(cmd) else head)[:240]
+
+
+def _targets(cmd: str) -> list:
+    """(name, address) of hosts this command reaches: an ssh target, an
+    address or a saved host's name/alias in the text."""
+    from aiforge_core.runtime.session_ledger import _ssh_target
+    out: dict = {}
+    t = _ssh_target(cmd) if _SSH.search(cmd) else None
+    if t:
+        host = t.split()[-1].rpartition("@")[2]
+        out[host_for_address(host) or host] = host
+    for h in find_hosts(cmd):
+        out.setdefault(_key(h.get("name") or ""), "")
+    if _SSH.search(cmd) or _PARAMIKO.search(cmd) or re.search(r"\b(?:scp|rsync|sftp)\b", cmd):
+        for a in _ADDR.findall(cmd):
+            out.setdefault(host_for_address(a) or a, a)
+    return [(k, v) for k, v in out.items() if k]
+
+
+def host_hook(name: str, args: dict, result) -> int:
+    """After a shell step: for each host it reached, keep what LAST WORKED;
+    an access failure is kept as last failed (and avoided). Returns changes."""
+    if not enabled() or name not in _FIX_TOOLS or not isinstance(result, dict):
+        return 0
+    try:
+        from aiforge_core.runtime.shell_writes import command_of
+        cmd = command_of(args or {}) or ""
+    except Exception:  # noqa: BLE001
+        return 0
+    if not cmd.strip():
+        return 0
+    targets = _targets(cmd)
+    if not targets:
+        return 0
+    code = result.get("code", result.get("exit_code"))
+    ok = bool(result.get("ok", True)) and code in (0, None) and not result.get("timed_out")
+    out = str(result.get("stderr") or "") + "\n" + str(result.get("stdout") or "")[-2000:]
+    shape, today = _shape(cmd), time.strftime("%Y-%m-%d %H:%M:%S")
+    n = 0
+    for key, addr in targets:
+        with _LOCK:
+            data = load()
+            entry = data["hosts"].get(_key(key)) or {"name": key}
+            if addr and _ADDR.fullmatch(addr):
+                entry.setdefault("addresses", [])
+                if addr not in entry["addresses"]:
+                    entry["addresses"].append(addr)
+            if ok:
+                entry["last_ok"] = {"cmd": shape, "at": today}
+                entry["avoid"] = [a for a in entry.get("avoid") or [] if not a.startswith(shape)]
+                src = entry.setdefault("_source", {})
+                if src.get("method") != "user":
+                    m = ("password" if "sshpass" in cmd else "paramiko" if _PARAMIKO.search(cmd)
+                         else "ssh_key" if _SSH.search(cmd) else entry.get("method"))
+                    if m:
+                        entry["method"] = m
+                        src.setdefault("method", "learned")
+            else:
+                hit = _ACCESS_FAIL.search(out)
+                if not hit:
+                    continue                 # the host was reached; the command itself failed
+                err = out[max(0, hit.start() - 40):hit.end() + 40].strip().splitlines()
+                err = (err[-1] if err else hit.group(0))[:120]
+                entry["last_fail"] = {"cmd": shape, "at": today, "error": err}
+                av = [a for a in entry.get("avoid") or [] if not a.startswith(shape)]
+                entry["avoid"] = (av + [f"{shape}: {err}"])[-_MAX_AVOID:]
+            entry["updated"] = today[:10]
+            data["hosts"][_key(key)] = entry
+            _save(data)
+            n += 1
+    return n
 
 
 # ── the prompt block ──────────────────────────────────────────────────────
@@ -438,8 +574,10 @@ def context_block(repo: str, text: str) -> str:
     parts = []
     hosts = find_hosts(text)
     if hosts:
-        parts.append("Hosts named in this request (how to reach them — saved "
-                     "operational memory; the user's settings win over anything else):\n"
+        parts.append("Hosts named in this chat (how to reach them — saved operational "
+                     "memory). For each host try, in order: what LAST WORKED for it, "
+                     "then the access method set for it; never repeat what is listed "
+                     "as failing. Each host keeps its own method:\n"
                      + "\n".join("- " + _host_line(h) for h in hosts[:6]))
     r = data["repos"].get(_key(repo)) if repo else None
     if r:
@@ -780,6 +918,6 @@ def learn_repo_location(repo: str, cwd: str) -> bool:
 
 __all__ = ["enabled", "load", "upsert_host", "upsert_repo", "find_hosts",
            "learn_repo_command", "learn_from_items", "context_block", "METHODS",
-           "capture_from_text",
+           "capture_from_text", "host_hook",
            "fix_hook", "record_fix", "known_fix", "fixes_for", "forget_fix",
            "learn_repo_location"]

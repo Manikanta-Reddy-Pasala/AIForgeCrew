@@ -1143,6 +1143,7 @@ def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
         from aiforge_core.runtime import ops_memory as _ops
         from .._tools import _chat_repo_key as _rk
         _seen = _ops.fix_hook(st, name, args, result, cwd, _rk(cwd))
+        _ops.host_hook(name, args, result)       # what last reached each host
         if _seen and isinstance(model_result, dict):
             model_result = {**model_result, "seen_before": _seen}
     except Exception:  # noqa: BLE001 — memory never breaks a step
