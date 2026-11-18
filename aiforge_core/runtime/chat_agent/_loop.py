@@ -626,6 +626,7 @@ def run_chat_agent(
     inner = _drive(st, cwd, role, complete_fn, session_id, builder, strict_finish)
     _answer = None
     _unfinished = False
+    _tidied = False
     try:
         _started: dict = {}
         for ev in inner:
@@ -642,6 +643,16 @@ def run_chat_agent(
                     and ev.get("type") in ("tool", "tool_start")
                     and ev.get("name") == _said[0] and not ev.get("description")):
                 ev["description"] = _said[1]
+            if isinstance(ev, dict) and ev.get("type") == "done" and not _tidied:
+                _tidied = True       # the turn's own throwaway files leave the repo first
+                try:
+                    from ._turn._scratch_tidy import tidy
+                    _t = tidy(st, cwd)
+                    if _t:
+                        action_log.observe(_alog_run, _t)
+                        yield _t
+                except Exception:  # noqa: BLE001 — tidying never breaks a turn
+                    pass
             action_log.observe(_alog_run, ev)
             rec.observe(ev)
             if isinstance(ev, dict):
