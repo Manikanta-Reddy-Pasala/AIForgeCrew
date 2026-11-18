@@ -15,7 +15,9 @@ import type { JobPreview, JobDraft, Job } from './jobs';
 export type EgressHosts = {
   /** Isolated docker mode: the NETWORK allowlist as the box sees it
    *  (read-only mount). Edited through /egress-admin/ (networkAllowlist…). */
-  network?: { isolated: boolean; mode?: 'guarded' | 'isolated'; hosts: string[] } | null;
+  network?: { isolated: boolean; mode?: 'guarded' | 'isolated'; hosts: string[]; allow_all?: boolean } | null;
+  /** Admin switch: any host may be reached (reads). Writes stay limited. */
+  allow_all?: boolean;
   derived: string[];
   extra_hosts: string[];
   env: string[];
@@ -93,10 +95,10 @@ export const api = {
   // endpoint). The screen has to show them or an operator re-adds their Jira
   // host by hand and then finds that deleting it changes nothing.
   egressHosts: () => j<EgressHosts>('/runtime/egress_hosts'),
-  setEgressHosts: (extra_hosts: string[]) =>
+  setEgressHosts: (extra_hosts: string[], allow_all?: boolean) =>
     j<EgressHosts & { ok: boolean }>('/runtime/egress_hosts', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ extra_hosts }),
+      body: JSON.stringify(allow_all === undefined ? { extra_hosts } : { extra_hosts, allow_all }),
     }),
   // ── Local certificate authority ─────────────────────────────────
   // An internal CA has to be trustable from the screen: the alternative is
@@ -498,10 +500,10 @@ export const api = {
 // under /api: the box's API cannot change it.
 export type NetworkAllowChange = { at: string; by: string; added: string[]; removed: string[] };
 
-export async function setNetworkAllowlist(hosts: string[]): Promise<string[]> {
+export async function setNetworkAllowlist(hosts: string[], allowAll?: boolean): Promise<string[]> {
   const r = await fetch('/egress-admin/api/hosts', {
     method: 'PUT', headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ hosts }),
+    body: JSON.stringify(allowAll === undefined ? { hosts } : { hosts, allow_all: allowAll }),
   });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d?.error || `${r.status} ${r.statusText}`);

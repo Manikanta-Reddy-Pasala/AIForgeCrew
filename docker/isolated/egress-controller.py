@@ -145,6 +145,19 @@ def load() -> list[str] | None:
         return None
 
 
+def load_allow_all() -> bool:
+    """The saved "allow every host" switch (off when unreadable)."""
+    try:
+        with open(HOSTS) as f:
+            return bool((json.load(f) or {}).get("allow_all"))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+#: The proxy filter line that lets every host through (tinyproxy, extended regex).
+ANY_HOST = "^.*$"
+
+
 def _write(path: str, text: str) -> None:
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
@@ -177,7 +190,12 @@ def required_hosts() -> list[str]:
     return out
 
 
-def save(hosts: list[str], who: str = "") -> list[str]:
+def save(hosts: list[str], who: str = "", allow_all: "bool | None" = None) -> list[str]:
+    """Save the list; ``allow_all`` True writes a filter that lets every host
+    through (the list is kept for when it is turned off again), None keeps the
+    saved switch as it is."""
+    if allow_all is None:
+        allow_all = load_allow_all()
     clean: list[str] = []
     for raw in [*hosts, *required_hosts()]:
         h = normalise(raw)
@@ -187,8 +205,15 @@ def save(hosts: list[str], who: str = "") -> list[str]:
         raise ValueError(f"too many hosts (max {MAX_HOSTS})")
     with _LOCK:
         before = load() or []
-        _write(HOSTS, json.dumps({"hosts": clean, "updated": time.time()}, indent=1))
-        _write(ALLOW, "".join(pattern(h) + "\n" for h in clean))
+        was_all = load_allow_all()
+        _write(HOSTS, json.dumps({"hosts": clean, "allow_all": bool(allow_all),
+                                  "updated": time.time()}, indent=1))
+        _write(ALLOW, ANY_HOST + "\n" if allow_all else "".join(pattern(h) + "\n" for h in clean))
+        if bool(allow_all) != was_all:
+            with open(CHANGES, "a") as f:
+                f.write(json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "by": who,
+                                    "added": ["* (allow all)"] if allow_all else [],
+                                    "removed": [] if allow_all else ["* (allow all)"]}) + "\n")
         added = [h for h in clean if h not in before]
         removed = [h for h in before if h not in clean]
         if added or removed:
@@ -225,7 +250,8 @@ def seed() -> None:
             good.append(normalise(h))
         except ValueError:
             print(f"egress-controller: skipping {h!r}", file=sys.stderr)
-    save(good, who="AIFORGE_EGRESS_ALLOW_HOSTS")
+    everything = os.environ.get("AIFORGE_EGRESS_ALLOW_ALL", "").strip().lower() in ("1", "true", "yes", "on")
+    save(good, who="AIFORGE_EGRESS_ALLOW_HOSTS", allow_all=everything)
 
 
 def changes(n: int = 50) -> list[dict]:
@@ -299,7 +325,8 @@ class Handler(BaseHTTPRequestHandler):
             hosts = load()
             if hosts is None:
                 return self._send(500, {"error": "the saved list is unreadable; save a new one"})
-            return self._send(200, {"hosts": hosts, "enforced": True})
+            return self._send(200, {"hosts": hosts, "enforced": True,
+                                    "allow_all": load_allow_all()})
         if p == "/api/changes":
             return self._send(200, {"changes": changes()})
         return self._send(404, {"error": "not found"})
@@ -322,11 +349,15 @@ class Handler(BaseHTTPRequestHandler):
         hosts = body.get("hosts") if isinstance(body, dict) else None
         if not isinstance(hosts, list):
             return self._send(400, {"error": "'hosts' must be a list"})
+        flag = body.get("allow_all")
+        if flag is not None and not isinstance(flag, bool):
+            return self._send(400, {"error": "'allow_all' must be true or false"})
         try:
-            saved = save([str(h) for h in hosts], who="settings")
+            saved = save([str(h) for h in hosts], who="settings", allow_all=flag)
         except ValueError as exc:
             return self._send(400, {"error": str(exc)})
-        return self._send(200, {"ok": True, "hosts": saved, "enforced": True})
+        return self._send(200, {"ok": True, "hosts": saved, "enforced": True,
+                                "allow_all": load_allow_all()})
 
 
 def main() -> None:

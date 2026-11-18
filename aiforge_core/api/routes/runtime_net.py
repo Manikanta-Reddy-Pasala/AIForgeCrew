@@ -9,6 +9,9 @@ router = APIRouter()
 
 
 class EgressHostsBody(BaseModel):
+    allow_all: "bool | None" = Field(
+        default=None, description="Admin switch: any host may be reached (reads); "
+                                  "None leaves it as it is")
     extra_hosts: list[str] = Field(
         default_factory=list,
         description="Hosts to allow in ADDITION to the configured integrations. "
@@ -127,6 +130,8 @@ def egress_hosts_put(body: EgressHostsBody) -> dict:
                                 detail=f"host too long: {str(raw)[:40]}…")
     try:
         saved = egress_hosts.set_stored_hosts(body.extra_hosts)
+        if body.allow_all is not None:
+            egress_hosts.set_allow_all(body.allow_all)
     except ValueError as exc:
         # A rejected shape is the operator's typo, not a server fault — and the
         # message names what is wrong with which entry.
@@ -176,6 +181,8 @@ def runtime_mounts_remove(path: str) -> dict:
 class NetworkAllowBody(BaseModel):
     hosts: list[str] = Field(default_factory=list,
                              description="hosts (or URLs) the box may reach on the internet")
+    allow_all: "bool | None" = Field(default=None,
+                                     description="open the network to every host (admin)")
 
 
 def _egress_admin(method: str, path: str, body: dict | None = None) -> dict:
@@ -230,7 +237,10 @@ def _same_origin(request: Request) -> None:
                                                   403: {"description": "Cross-origin"}})
 def network_allowlist_put(body: NetworkAllowBody, request: Request) -> dict:
     _same_origin(request)
-    return _egress_admin("PUT", "/api/hosts", {"hosts": body.hosts})
+    payload: dict = {"hosts": body.hosts}
+    if body.allow_all is not None:
+        payload["allow_all"] = body.allow_all
+    return _egress_admin("PUT", "/api/hosts", payload)
 
 
 @router.get("/egress-admin/api/changes")

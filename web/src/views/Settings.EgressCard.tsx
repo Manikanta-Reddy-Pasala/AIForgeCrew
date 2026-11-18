@@ -14,7 +14,7 @@
  * and lose their own dev server.
  */
 import { useEffect, useState } from 'react';
-import { api } from '../api/client';
+import { api, setNetworkAllowlist } from '../api/client';
 import type { EgressHosts } from '../api/client';
 import { NetworkAllowlist } from './Settings.NetworkAllowlist';
 
@@ -66,11 +66,45 @@ export default function EgressCard() {
     }
   }
 
+  async function toggleAll(on: boolean) {
+    if (on && !window.confirm('Allow this machine to reach EVERY internet host?\n\n'
+      + 'The agent can then read any web page or API. Sending data still goes only to '
+      + 'your configured integrations, with approval. Your host lists are kept and apply '
+      + 'again when you turn this off.')) return;
+    setBusy(true);
+    setMsg('');
+    try {
+      const extras = data?.extra_hosts || [];
+      if (data?.network) await setNetworkAllowlist(data.network.hosts || [], on);
+      const d = await api.setEgressHosts(extras, on);
+      setData(d);
+      setMsg(on ? 'all outbound hosts allowed' : 'back to the allowlist');
+    } catch (e) {
+      setMsg(`change failed: ${e}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (!data) return <div className="card">Egress — {msg || 'loading…'}</div>;
 
   return (
     <div className="card">
       <h3>Egress allowlist</h3>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '4px 0 10px' }}>
+        <input type="checkbox" checked={!!data.allow_all} disabled={busy}
+               onChange={e => toggleAll(e.target.checked)} />
+        <strong>Allow all outbound hosts</strong>
+        <span style={{ fontSize: 12, opacity: 0.75 }}>
+          (admin — reads any host; sending data still only to configured integrations)
+        </span>
+      </label>
+      {data.allow_all && (
+        <p style={{ fontSize: 13, margin: '0 0 10px' }} className="warn">
+          Every internet host is reachable right now. The lists below are kept and apply
+          again when you turn this off.
+        </p>
+      )}
       <NetworkAllowlist
         network={data.network}
         suggest={data.derived.filter(h => !/^(127\.|localhost$|model$|host\.docker\.internal$)/.test(h))}

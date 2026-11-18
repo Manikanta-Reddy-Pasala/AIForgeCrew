@@ -195,6 +195,38 @@ def stored_hosts() -> list[str]:
     return [h for h in (_host_of(str(x)) for x in hosts) if h]
 
 
+def stored_allow_all() -> bool:
+    """The admin's "Allow all outbound hosts" switch from Settings."""
+    try:
+        p = _path()
+        if not p.exists():
+            return False
+        return bool((json.loads(p.read_text()) or {}).get("allow_all"))
+    except Exception:  # noqa: BLE001 — unreadable: the list decides
+        return False
+
+
+def set_allow_all(flag: bool) -> bool:
+    """Turn "Allow all outbound hosts" on or off (the extras list is kept)."""
+    from aiforge_core.config import _atomic
+    _atomic.write_text(_path(create=True),
+                       json.dumps({"extra_hosts": stored_hosts(), "allow_all": bool(flag)},
+                                  indent=2))
+    return bool(flag)
+
+
+def allow_all() -> bool:
+    """Any host may be REACHED: the admin turned it on in Settings, set
+    AIFORGE_EGRESS_ALLOW_ALL=1, or the network allowlist (isolated mode) is
+    open. Writes still go only to configured integrations (``write_hosts``)."""
+    if str(os.environ.get("AIFORGE_EGRESS_ALLOW_ALL", "")).strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    if stored_allow_all():
+        return True
+    pol = network_policy()
+    return bool(pol and pol.get("allow_all"))
+
+
 def set_stored_hosts(hosts: list[str]) -> list[str]:
     """Replace the Settings extras. Returns what was saved (normalised to bare
     hostnames, deduped, order preserved)."""
@@ -225,7 +257,7 @@ def set_stored_hosts(hosts: list[str]) -> list[str]:
                         "your own domain, not a public suffix like github.io", h)
         clean.append(h)
     _atomic.write_text(_path(create=True),
-                       json.dumps({"extra_hosts": clean}, indent=2))
+                       json.dumps({"extra_hosts": clean, "allow_all": stored_allow_all()}, indent=2))
     _invalidate()
     return clean
 
@@ -257,15 +289,18 @@ def network_policy() -> dict | None:
     root = (os.environ.get("AIFORGE_EGRESS_POLICY_RO") or "").strip()
     if not root:
         return None
+    everything = False
     try:
         with open(os.path.join(root, "hosts.json")) as f:
-            hosts = [str(h) for h in (json.load(f).get("hosts") or [])]
+            data = json.load(f) or {}
+        hosts = [str(h) for h in (data.get("hosts") or [])]
+        everything = bool(data.get("allow_all"))
     except FileNotFoundError:
         hosts = []
     except (OSError, ValueError, AttributeError):
         hosts = []
     mode = "guarded" if os.environ.get("AIFORGE_GUARDED") == "1" else "isolated"
-    return {"isolated": True, "mode": mode, "hosts": hosts}
+    return {"isolated": True, "mode": mode, "hosts": hosts, "allow_all": everything}
 
 
 def network_hosts() -> set[str]:
@@ -343,8 +378,9 @@ def describe() -> dict:
             # adds one expecting the agent to be able to post to it.
             "writable": derived,
             # Isolated docker mode: the network's own list (read-only here).
-            "network": network_policy()}
+            "network": network_policy(),
+            "allow_all": allow_all()}
 
 
-__all__ = ["allowed_hosts", "describe", "network_hosts", "network_policy",
+__all__ = ["allow_all", "allowed_hosts", "describe", "set_allow_all", "stored_allow_all", "network_hosts", "network_policy",
            "set_stored_hosts", "stored_hosts", "write_hosts"]

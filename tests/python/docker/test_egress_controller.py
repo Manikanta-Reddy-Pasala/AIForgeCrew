@@ -121,7 +121,7 @@ def api(ctl):
 
 
 def test_http_api(api):
-    assert api("GET", "/api/hosts")[:2] == (200, {"hosts": [], "enforced": True})
+    assert api("GET", "/api/hosts")[:2] == (200, {"hosts": [], "enforced": True, "allow_all": False})
     code, out, headers = api("PUT", "/api/hosts", {"hosts": ["pypi.org", "pypi.org"]})
     assert code == 200 and out["hosts"] == ["pypi.org"]
     assert not any(k.lower().startswith("access-control-") for k in headers)   # no CORS

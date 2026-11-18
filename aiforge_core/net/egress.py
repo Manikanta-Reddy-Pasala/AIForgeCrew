@@ -258,9 +258,10 @@ def _is_blocked_address(url: str) -> bool:
 def host_allowed(url: str) -> bool:
     """Whether ``url``'s host may be reached. DEFAULT DENY.
 
-    The allowlist is not optional and cannot be emptied into "allow all": it is
-    seeded from the integrations the operator already configured (see
-    config/egress_hosts.py), extended in Settings, and anything else is refused.
+    The allowlist is seeded from the integrations the operator already
+    configured (see config/egress_hosts.py), extended in Settings, and
+    anything else is refused — unless an admin turned on "Allow all outbound
+    hosts" (``egress_hosts.allow_all``).
     An unparseable host is refused too — we cannot match what we cannot read.
 
     Loopback and the LAN bypass the list entirely; they are not egress.
@@ -271,7 +272,12 @@ def host_allowed(url: str) -> bool:
     if is_local_host(host):
         return True
     try:
-        from aiforge_core.config.egress_hosts import allowed_hosts
+        from aiforge_core.config.egress_hosts import allow_all, allowed_hosts
+        # The admin's "Allow all outbound hosts" (Settings, or
+        # AIFORGE_EGRESS_ALLOW_ALL=1): any host may be read. Writes are still
+        # limited to configured integrations and need approval.
+        if allow_all():
+            return True
         allow = allowed_hosts()
     except Exception as exc:  # noqa: BLE001
         # Fail CLOSED. Everywhere else a broken probe fails open so a turn is
@@ -370,6 +376,12 @@ def fetch_allowed() -> bool:
     """True only when page fetching is switched on AND not hard-off."""
     if hard_off():
         return False
+    try:
+        from aiforge_core.config.egress_hosts import allow_all
+        if allow_all():
+            return True                  # the admin opened egress to every host
+    except Exception:  # noqa: BLE001 — the env switch below decides
+        pass
     return str(os.environ.get("AIFORGE_ALLOW_WEB_FETCH", "0")).strip().lower() \
         in _TRUE
 
