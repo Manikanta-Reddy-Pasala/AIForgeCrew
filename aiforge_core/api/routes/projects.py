@@ -131,6 +131,15 @@ def _slug_or_404(name: str) -> str:
     """The registered project for ``name``; opens it on first use so a project
     that already has memory can be managed before any chat is started."""
     from aiforge_core.memory import projects
+    # A registered project by its slug or its name: memory can be managed
+    # without its folder (the Projects page sends the slug; a project whose
+    # folder moved still has memory to compact). Folder lookup otherwise.
+    reg = projects.registered()
+    if name in reg:
+        return name
+    for slug, e in reg.items():
+        if e.get("name") == name:
+            return slug
     ent = projects.register(_path_or_404(name))
     if not ent:
         raise HTTPException(404, f"{name!r} cannot be a project")

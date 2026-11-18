@@ -478,3 +478,20 @@ def test_compact_all_route(env, monkeypatch):
     app = FastAPI(); app.include_router(route.router)
     r = TestClient(app).post("/api/memory/projects/compact-all").json()
     assert r["compacted"] == 1 and r["saved_chars"] == 600
+
+
+def test_compact_route_takes_the_slug_even_without_the_folder(env, monkeypatch):
+    import shutil
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from aiforge_core.api.routes import projects as route
+    from aiforge_core.memory import md_store, projects
+    ent = projects.open_project(str(env / "shop"))
+    md_store._brief_upsert("shop", "Payments settle nightly")
+    app = FastAPI(); app.include_router(route.router)
+    c = TestClient(app)
+    assert c.post(f"/api/memory/projects/{ent['slug']}/compact?force=false").status_code == 200
+    assert c.post(f"/api/memory/projects/{ent['name']}/compact?force=false").status_code == 200
+    shutil.rmtree(env / "shop")                                    # folder gone, memory stays
+    assert c.post(f"/api/memory/projects/{ent['slug']}/compact?force=false").status_code == 200
+    assert c.post("/api/memory/projects/nosuch/compact").status_code == 404
