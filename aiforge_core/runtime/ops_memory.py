@@ -216,7 +216,8 @@ def _host_line(h: dict) -> str:
         line += f"\n  note: {h['notes']}"
     src = h.get("_source") or {}
     if src.get("method") == "user":
-        line += "\n  (access method set by the user — use it as given)"
+        line += ("\n  (access method set by the user — use exactly this for this host, "
+                 "do not try another method first; other hosts keep their own)")
     return line
 
 
@@ -363,6 +364,64 @@ def learn_from_items(items: list[dict], *, repo: str = "", root: str = "") -> in
             continue
         if ok and repo:
             if learn_repo_command(repo, root, cmd).get("changed"):
+                changed += 1
+    return changed
+
+
+# ── what the user says about a host ───────────────────────────────────────
+# "10.0.0.5 use the ssh key; the other one 10.0.0.6 username/password": the
+# model was trusted to call remember_host, and often wrote a loose note or
+# nothing, so the next turn mixed the two hosts up. Each user clause naming
+# an address and ONE access method is saved as the user's setting — no
+# model call, and nothing learned from a command can overwrite it.
+_USER_AT = re.compile(r"\b([A-Za-z_][\w.-]{0,31})@([A-Za-z0-9][\w.-]*[A-Za-z0-9])\b")
+_KEY_WORDS = re.compile(
+    r"\b(?:ssh[- ]?keys?|key[- ]?based|private[- ]key|keys?|pem|id_rsa|id_ed25519|"
+    r"identity[- ]file|pubkey|public[- ]key)\b", re.I)
+_PASS_WORDS = re.compile(
+    r"\b(?:passwords?|passwd|pass|pwd|user\s*name\s*(?:and|&|/)\s*pass\w*|"
+    r"user\s*/\s*pass\w*|credentials?|sshpass)\b", re.I)
+_NEGATED = re.compile(r"\b(?:not|no|never|without|instead\s+of|don'?t\s+use)\s+(?:\w+\s+){0,2}$", re.I)
+_USER_NAMED = re.compile(r"\b(?:user(?:name)?|login)\s*(?:is|=|:|-)?\s*([A-Za-z_][\w.-]{0,31})", re.I)
+_NOT_USER = {"and", "or", "password", "pass", "name", "names", "the", "is", "with", "to",
+             "for", "a", "an", "pwd", "passwd", "credentials", "credential", "and/password"}
+
+
+def _says(rx: "re.Pattern", clause: str) -> bool:
+    """``rx`` occurs in ``clause`` not right after a negation."""
+    return any(not _NEGATED.search(clause[:m.start()]) for m in rx.finditer(clause))
+
+
+def capture_from_text(text: str) -> int:
+    """Save the access method the user states for each host named in
+    ``text`` (their own words). Returns how many hosts changed."""
+    if not enabled() or not text:
+        return 0
+    changed = 0
+    for clause in re.split(r"(?<=[!?;])\s+|\.\s+(?=[^\d])|\n+", text):
+        targets: dict = {}
+        for m in _USER_AT.finditer(clause):
+            targets[m.group(2).rstrip(".")] = m.group(1)
+        for a in _ADDR.findall(clause):
+            targets.setdefault(a, "")
+        if not targets:
+            continue
+        key, pw = _says(_KEY_WORDS, clause), _says(_PASS_WORDS, clause)
+        if key == pw:                       # neither, or both: not a clear statement
+            continue
+        method = "ssh_key" if key else "password"
+        named = next((u for u in (m.group(1).rstrip(".-") for m in _USER_NAMED.finditer(clause))
+                      if u.lower() not in _NOT_USER), "")
+        for host, user in targets.items():
+            if not (_ADDR.fullmatch(host) or "." in host or host_for_address(host)):
+                continue                    # "me@home" in prose is not a host
+            name = host_for_address(host) or host
+            fields = {"method": method}
+            if _ADDR.fullmatch(host):
+                fields["addresses"] = [host]
+            if user or named:
+                fields["user"] = user or named
+            if upsert_host(name, fields, source="user").get("changed"):
                 changed += 1
     return changed
 
@@ -721,5 +780,6 @@ def learn_repo_location(repo: str, cwd: str) -> bool:
 
 __all__ = ["enabled", "load", "upsert_host", "upsert_repo", "find_hosts",
            "learn_repo_command", "learn_from_items", "context_block", "METHODS",
+           "capture_from_text",
            "fix_hook", "record_fix", "known_fix", "fixes_for", "forget_fix",
            "learn_repo_location"]

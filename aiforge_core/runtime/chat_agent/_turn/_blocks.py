@@ -55,9 +55,16 @@ def _append_session_blocks(add, cwd, messages, session_id, role):
     # user's own settings first (runtime/ops_memory.py).
     try:
         from aiforge_core.runtime import ops_memory
-        _q = next((m.get("content") or "" for m in reversed(messages or [])
-                   if m.get("role") == "user"), "")
-        add("ops", ops_memory.context_block(_chat_repo_key(cwd), str(_q)))
+        # The user's own words across the WHOLE chat, not only the last
+        # message: a follow-up ("deploy it again") does not repeat the IP, and
+        # the host's access method must still be in front of the model.
+        from .._native_select import _convo_text
+        _q = _convo_text(messages or [])
+        if not _q.strip():
+            _q = str(next((m.get("content") or "" for m in reversed(messages or [])
+                           if m.get("role") == "user"), ""))
+        ops_memory.capture_from_text(_q[-20000:])
+        add("ops", ops_memory.context_block(_chat_repo_key(cwd), _q))
     except Exception:  # noqa: BLE001 — never breaks a turn
         pass
     # OKR-DAG: surgical goal context for the ACTIVE Key Result — the separate
