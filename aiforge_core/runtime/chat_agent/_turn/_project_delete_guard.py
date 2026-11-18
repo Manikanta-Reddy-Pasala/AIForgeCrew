@@ -53,10 +53,52 @@ def _tracked(top: str, paths: list) -> list:
     return out
 
 
+#: Shared dependency caches: every project on the machine builds from them.
+_CACHE_DIRS = re.compile(
+    r"(?:~|\$HOME|\$\{HOME\}|/home/[^/\s]+|/Users/[^/\s]+|/root)?/"
+    r"(?:\.m2(?:/repository)?|\.gradle(?:/caches)?|\.cargo/(?:registry|git)|\.npm|"
+    r"\.cache/(?:pip|yarn|go-build)|go/pkg/mod|\.nuget/packages|\.ivy2(?:/cache)?|"
+    r"\.pnpm-store|\.local/share/pnpm)(?=[/\s'\"]|$)")
+_DELETES = re.compile(r"(?:^|[;&|(]\s*|\s)(?:sudo\s+)?(?:rm|rmdir|unlink|shred)\s|-delete\b")
+_PURGES = re.compile(
+    r"dependency:purge-local-repository|\bgo\s+clean\s+[^;&|]*-modcache|"
+    r"\bnpm\s+cache\s+(?:clean|rm|clear)|\bpip3?\s+cache\s+(?:purge|remove)|"
+    r"\byarn\s+cache\s+clean|\bpnpm\s+store\s+prune|\bnuget\s+locals\b[^;&|]*--?clear|"
+    r"\bcargo\s+cache\b", re.I)
+_ASKS_CACHE = re.compile(r"\b(?:cache|\.m2|local repository|purge)\b", re.I)
+
+
+def _cache_refusal(st, cmd: str):
+    """Refuse wiping a shared dependency cache. A real run, unable to find a
+    class, ran `rm ~/.m2/.../commons-model.jar` and
+    `mvn dependency:purge-local-repository`: the machine's Maven cache lost
+    versions other projects pinned, and every offline build there broke."""
+    if _ASKS_CACHE.search(str(getattr(st, "goal", "") or "")):
+        return None
+    wipes = bool(_DELETES.search(cmd) and _CACHE_DIRS.search(cmd))
+    if not wipes and not _PURGES.search(cmd):
+        return None
+    return {"ok": False, "blocked": "shared_dependency_cache",
+            "error": ("refused: this deletes or purges a shared dependency cache "
+                      "(~/.m2, ~/.gradle, ~/.cargo, ~/.npm, pip, go, nuget …) that every "
+                      "project on this machine builds from — other projects pin versions "
+                      "that cannot be fetched again offline. Leave it alone: read the jar "
+                      "or sources you need (unzip -l, a sources jar), or ask the user if "
+                      "the cache really has to be cleared.")}
+
+
 def refusal(st, name: str, args: dict, cwd: str = ""):
     """The result to return INSTEAD of running this call, or None."""
     if not _on():
         return None
+    try:
+        from aiforge_core.runtime.shell_writes import SHELL_TOOLS, command_of
+        if name in SHELL_TOOLS:
+            cache = _cache_refusal(st, command_of(args or {}) or "")
+            if cache:
+                return cache
+    except Exception:  # noqa: BLE001
+        pass
     try:
         from aiforge_core.runtime.shell_writes import SHELL_TOOLS, command_of
         from aiforge_core.runtime.tools import delete_guard
