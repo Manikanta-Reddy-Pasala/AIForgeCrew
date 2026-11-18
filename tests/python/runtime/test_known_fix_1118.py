@@ -39,3 +39,32 @@ def test_change_summary_and_note(tmp_path):
                   repo="shop", files=["pom.xml"], functions=[], change=ch)
     note = om.fix_note(om.known_fix("build:T.java: package org.junit does not exist", "shop"), "shop")
     assert "What changed then" in note and "junit-jupiter" in note
+
+
+def _repo(tmp_path):
+    r = tmp_path / "proj"
+    r.mkdir()
+    g = lambda *a: subprocess.run(["git", "-C", str(r), *a], check=True, capture_output=True)
+    g("init", "-q"); g("config", "user.email", "t@t"); g("config", "user.name", "t")
+    (r / "Calc.java").write_text("int total() { return 1; }\n")
+    g("add", "."); g("commit", "-qm", "base")
+    return r
+
+
+def test_a_fix_in_a_later_turn_is_recorded(tmp_path):
+    from types import SimpleNamespace
+    r = _repo(tmp_path)
+    cmd = {"cmd": f"cd {r} && mvn -o -q test -Dtest=CalcTest"}
+    red = {"ok": False, "code": 1, "stdout": "[ERROR] Failures:\n[ERROR]   CalcTest.total:5 expected: <2> but was: <1>\n"
+           "[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0\n"}
+    green = {"ok": True, "code": 0, "stdout": "[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0\n"}
+    turn1 = SimpleNamespace(file_hashes={})
+    om.fix_hook(turn1, "run_command", cmd, red, str(r), "proj")        # turn 1 ends red
+    assert om.load()["pending"]
+    (r / "Calc.java").write_text("int total() { return 2; }\n")          # fixed in turn 2
+    turn2 = SimpleNamespace(file_hashes={})
+    om.fix_hook(turn2, "run_command", cmd, green, str(r), "proj")
+    fx = om.fixes_for("proj")
+    assert fx and fx[0]["files"] == ["Calc.java"] and "return 2" in fx[0]["change"]
+    assert not om.load()["pending"]
+    assert om.forget_fix(fx[0]["id"]) and om.fixes_for("proj") == []

@@ -213,6 +213,40 @@ def memory_project_compact(name: str, force: bool = True) -> dict:
     return projects.compact(_slug_or_404(name), force=force)
 
 
+def _fix_repo_keys(slug: str) -> set:
+    """The repo keys a project's known fixes are filed under."""
+    from aiforge_core.memory import projects
+    from aiforge_core.runtime import chat_scope
+    ent = projects.entry(slug) or {}
+    keys = {ent.get("key") or ""}
+    if ent.get("path"):
+        try:
+            keys.add(chat_scope.project_key(ent["path"]))
+        except Exception:  # noqa: BLE001
+            pass
+    return {k for k in keys if k}
+
+
+@router.get("/api/memory/projects/{name}/fixes")
+def memory_project_fixes(name: str) -> dict:
+    """Solved issues of this project: failures that went green, what changed."""
+    from aiforge_core.runtime import ops_memory
+    keys = _fix_repo_keys(_slug_or_404(name))
+    fixes = [f for f in ops_memory.fixes_for() if f.get("repo") in keys]
+    return {"fixes": fixes, "count": len(fixes)}
+
+
+@router.delete("/api/memory/projects/{name}/fixes/{fix_id}",
+               responses={404: {"description": "Not found"}})
+def memory_project_fix_forget(name: str, fix_id: str) -> dict:
+    """Remove a known fix that is wrong or no longer applies."""
+    from aiforge_core.runtime import ops_memory
+    keys = _fix_repo_keys(_slug_or_404(name))
+    if not any(f["id"] == fix_id for f in ops_memory.fixes_for() if f.get("repo") in keys):
+        raise HTTPException(404, "no such fix in this project")
+    return {"ok": ops_memory.forget_fix(fix_id)}
+
+
 @router.post("/api/memory/projects/{name}/promote", responses={400: {"description": "Bad request"}})
 def memory_project_promote(name: str, body: _TextBody) -> dict:
     """Move the given lines from this project's memory into global memory."""

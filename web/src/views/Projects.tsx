@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { NavLink, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import { projectsApi, type FolderHit, type Project, type ProjectList } from '../api';
+import type { KnownFix } from '../api/projects';
 import { Icon } from '../icons';
 import Chat from './Chat';
 
@@ -183,6 +184,26 @@ export default function Projects() {
     finally { setCompacting(''); }
   }
 
+  const [fixesOf, setFixesOf] = useState<string>('');           // slug whose solved issues show
+  const [fixes, setFixes] = useState<KnownFix[]>([]);
+
+  async function showFixes(p: Project) {
+    const key = p.slug || p.name;
+    if (fixesOf === key) { setFixesOf(''); return; }
+    try {
+      const r = await projectsApi.fixes(key);
+      setFixes(r.fixes); setFixesOf(key);
+    } catch (e: any) { toast.error(e.message); }
+  }
+
+  async function forgetFix(id: string) {
+    if (!window.confirm('Remove this solved issue? AIForge will no longer suggest it.')) return;
+    try {
+      await projectsApi.forgetFix(fixesOf, id);
+      setFixes(f => f.filter(x => x.id !== id));
+    } catch (e: any) { toast.error(e.message); }
+  }
+
   async function remove(p: Project) {
     if (!window.confirm(`Remove “${p.name}” from your projects?\n\nIts chats and memory are kept. `
       + 'You can add it again with Add project.')) return;
@@ -248,11 +269,36 @@ export default function Projects() {
                 {compacting === (p.slug || p.name) ? 'Compacting…' : 'Compact'}
               </button>
             )}
+            <button type="button" className="ghost sm" onClick={() => showFixes(p)}
+                    title="Failures this project fixed before, and what changed"
+                    aria-label={`Solved issues of ${p.name}`}>
+              {fixesOf === (p.slug || p.name) ? 'Hide solved' : 'Solved issues'}
+            </button>
             <button type="button" className="projects-row-x" onClick={() => remove(p)}
                     title="Remove from your projects (chats and memory are kept)"
                     aria-label={`Remove ${p.name}`}>✕</button>
             <button type="button" className="projects-row-go" onClick={() => select(p.path)}
                     aria-label={`Open ${p.name}`}>›</button>
+            {fixesOf === (p.slug || p.name) && (
+              <div className="projects-add" style={{ flexBasis: '100%' }}>
+                {fixes.length === 0 && <div className="muted small">No solved issues recorded yet.</div>}
+                {fixes.map(f => (
+                  <div key={f.id} style={{ borderTop: '1px solid var(--border-1)', padding: '6px 0' }}>
+                    <div className="row" style={{ gap: 8, alignItems: 'baseline' }}>
+                      <strong style={{ flex: 1 }}>{f.headline || f.signature}</strong>
+                      <span className="muted xs">×{f.count || 1} · {f.updated}</span>
+                      <button type="button" className="ghost sm" onClick={() => forgetFix(f.id)}>Remove</button>
+                    </div>
+                    <div className="muted xs">changed: {(f.files || []).join(', ')}
+                      {f.functions && f.functions.length ? ` — ${f.functions.join(', ')}` : ''}</div>
+                    {f.change && (
+                      <pre className="xs" style={{ whiteSpace: 'pre-wrap', margin: '4px 0 0', maxHeight: 160,
+                                                   overflow: 'auto', fontFamily: 'var(--font-mono)' }}>{f.change}</pre>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         ))}
         <div className="projects-row">

@@ -71,6 +71,7 @@ def load() -> dict:
     data.setdefault("hosts", {})
     data.setdefault("repos", {})
     data.setdefault("fixes", {})
+    data.setdefault("pending", {})
     return data
 
 
@@ -453,13 +454,13 @@ def _parts(sig: str) -> list[str]:
     return [p.strip() for p in (sig or "").split("|") if p.strip()]
 
 
-def _change_summary(root: str, files: list[str], limit: int = 800) -> str:
+def _change_summary(root: str, files: list[str], limit: int = 800, base: str = "HEAD") -> str:
     """What the fix changed: the added/removed lines of ``git diff`` for those
     files (no context), so a later run reads the fix, not only where it was."""
     if not root or not files:
         return ""
     try:
-        p = subprocess.run(["git", "-C", root, "diff", "-U0", "--no-color", "HEAD", "--", *files[:8]],
+        p = subprocess.run(["git", "-C", root, "diff", "-U0", "--no-color", base or "HEAD", "--", *files[:8]],
                            capture_output=True, text=True, timeout=15)
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -495,6 +496,109 @@ def record_fix(sig: str, headline: str, *, repo: str, files: list[str],
                 data["fixes"].pop(old, None)
         _save(data)
     return {"ok": True, "fix": k}
+
+
+#: Failures still open after their turn: resolved by a later green run.
+_MAX_PENDING = 50
+_PENDING_DAYS = 7
+
+
+def _snapshot(root: str) -> str:
+    """A ref for the code as it is now (uncommitted edits included)."""
+    try:
+        p = subprocess.run(["git", "-C", root, "stash", "create"], capture_output=True,
+                           text=True, timeout=10)
+        ref = p.stdout.strip()
+        if not ref:
+            h = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"], capture_output=True,
+                               text=True, timeout=10)
+            ref = h.stdout.strip()
+        return ref
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _cmd_key(args: dict) -> str:
+    try:
+        from aiforge_core.runtime.shell_writes import command_of
+        cmd = command_of(args or {}) or ""
+        from aiforge_core.runtime.chat_agent._shell import test_identity
+        return test_identity(cmd) or cmd
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _pending_add(sig: str, headline: str, repo: str, root: str, cmd: str) -> None:
+    """Keep a failure that is still open, with a ref of the code at that point."""
+    if not (sig and repo and root and cmd):
+        return
+    k = _sig_key(sig)
+    with _LOCK:
+        data = load()
+        pend = data["pending"]
+        if k in pend and pend[k].get("repo") == repo:
+            return                                   # the first sighting is the base
+        ref = _snapshot(root)
+        if not ref:
+            return
+        pend[k] = {"signature": sig[:400], "headline": headline[:200], "repo": repo,
+                   "cmd": cmd[:300], "ref": ref, "at": time.time()}
+        if len(pend) > _MAX_PENDING:
+            for old in sorted(pend, key=lambda x: pend[x].get("at", 0))[:len(pend) - _MAX_PENDING]:
+                pend.pop(old, None)
+        _save(data)
+
+
+def _pending_resolve(repo: str, root: str, cmd: str, skip: set) -> int:
+    """A green run of the same command in the same repo, in a later turn:
+    record each still-open failure of it as fixed by what changed since."""
+    if not (repo and root and cmd):
+        return 0
+    with _LOCK:
+        data = load()
+        pend = data["pending"]
+        due = [(k, e) for k, e in pend.items()
+               if e.get("repo") == repo and e.get("cmd") == cmd and k not in skip]
+    n = 0
+    for k, e in due:
+        with _LOCK:
+            data = load()
+            data["pending"].pop(k, None)
+            _save(data)
+        if time.time() - float(e.get("at") or 0) > _PENDING_DAYS * 86400:
+            continue
+        try:
+            p = subprocess.run(["git", "-C", root, "diff", "--name-only", e["ref"]],
+                               capture_output=True, text=True, timeout=15)
+            files = [f for f in p.stdout.splitlines() if f.strip()] if p.returncode == 0 else []
+        except (OSError, subprocess.SubprocessError):
+            files = []
+        if files:
+            record_fix(e["signature"], e.get("headline", ""), repo=repo, files=files[:8],
+                       functions=_functions_touched(root, files[:8]),
+                       change=_change_summary(root, files[:8], base=e["ref"]))
+            n += 1
+    return n
+
+
+def fixes_for(repo: str = "") -> list:
+    """Known fixes (one repo, or all), newest first, for the UI."""
+    out = []
+    for k, e in load()["fixes"].items():
+        if repo and e.get("repo") != repo:
+            continue
+        out.append({"id": k, **{x: e.get(x) for x in (
+            "headline", "repo", "files", "functions", "change", "count", "updated", "signature")}})
+    return sorted(out, key=lambda x: str(x.get("updated") or ""), reverse=True)
+
+
+def forget_fix(fix_id: str) -> bool:
+    with _LOCK:
+        data = load()
+        if data["fixes"].pop(fix_id, None) is None:
+            return False
+        _save(data)
+    return True
 
 
 def known_fix(sig: str, repo: str = "") -> "dict | None":
@@ -560,6 +664,10 @@ def fix_hook(st, name: str, args: dict, result, cwd: str, repo: str = "") -> str
         if not fail.signature:
             return ""
         open_.setdefault(fail.signature, (fail.headline, dict(getattr(st, "file_hashes", {}) or {})))
+        try:   # kept past this turn: a later turn may fix it
+            _pending_add(fail.signature, fail.headline, repo, repo_root(cwd), _cmd_key(args))
+        except Exception:  # noqa: BLE001
+            pass
         e = known_fix(fail.signature, repo)
         said = st.__dict__.setdefault("fix_said", set())
         if e and fail.signature not in said:        # once per failure per turn
@@ -570,8 +678,9 @@ def fix_hook(st, name: str, args: dict, result, cwd: str, repo: str = "") -> str
     # ("mvn -q test" prints nothing at all when every test passes).
     green = runner_green(text) or (result.get("ok") is True
                                    and not failure_of(text).signature)
-    if open_ and green:
+    if green:
         root = repo_root(cwd)
+        done = set()
         for sig, (headline, snap) in list(open_.items()):
             files = _changed_since(st, snap)
             if files:
@@ -580,6 +689,15 @@ def fix_hook(st, name: str, args: dict, result, cwd: str, repo: str = "") -> str
                            functions=_functions_touched(root, rel),
                            change=_change_summary(root, rel))
             open_.pop(sig, None)
+            done.add(_sig_key(sig))
+            with _LOCK:
+                d = load()
+                if d["pending"].pop(_sig_key(sig), None) is not None:
+                    _save(d)
+        try:   # failures left open by EARLIER turns, fixed now
+            _pending_resolve(repo, root, _cmd_key(args), done)
+        except Exception:  # noqa: BLE001
+            pass
     return ""
 
 
@@ -603,4 +721,5 @@ def learn_repo_location(repo: str, cwd: str) -> bool:
 
 __all__ = ["enabled", "load", "upsert_host", "upsert_repo", "find_hosts",
            "learn_repo_command", "learn_from_items", "context_block", "METHODS",
-           "fix_hook", "record_fix", "known_fix", "learn_repo_location"]
+           "fix_hook", "record_fix", "known_fix", "fixes_for", "forget_fix",
+           "learn_repo_location"]

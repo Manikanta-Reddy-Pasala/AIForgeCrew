@@ -1,6 +1,11 @@
 // ── Chat projects + per-project memory ────────────────────────────
 import { j } from './core';
 
+export type KnownFix = {
+  id: string; headline?: string; repo?: string; files?: string[]; functions?: string[];
+  change?: string; count?: number; updated?: string; signature?: string;
+};
+
 export interface Project {
   name: string;
   path: string;
@@ -83,6 +88,10 @@ export const projectsApi = {
     j<{ ok: boolean; compacted?: boolean; stale?: number; error?: string;
         chars_before?: number; chars_after?: number }>(
       `/memory/projects/${enc(name)}/compact`, { method: 'POST' }),
+  fixes: (name: string) =>
+    j<{ count: number; fixes: KnownFix[] }>(`/memory/projects/${enc(name)}/fixes`),
+  forgetFix: (name: string, id: string) =>
+    j<{ ok: boolean }>(`/memory/projects/${enc(name)}/fixes/${enc(id)}`, { method: 'DELETE' }),
   compactAll: () =>
     j<{ compacted: number; saved_chars: number; projects: Record<string, unknown>;
         dedupe?: { removed: number }; storage?: { rewritten: number; vacuumed: boolean } }>(

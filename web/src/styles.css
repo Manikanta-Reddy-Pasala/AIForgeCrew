@@ -1170,7 +1170,7 @@ button.run-ov-note:active:not(:disabled), button.run-ov-text:active:not(:disable
 .projects-list {
   border: 1px solid var(--border-1); border-radius: 12px; background: var(--bg-0); overflow: hidden;
 }
-.projects-row { display: flex; align-items: center; border-bottom: 1px solid var(--border-1); }
+.projects-row { display: flex; flex-wrap: wrap; align-items: center; border-bottom: 1px solid var(--border-1); }
 .projects-row:last-child { border-bottom: 0; }
 .projects-row:hover { background: var(--bg-1); }
 .projects-row-main {
