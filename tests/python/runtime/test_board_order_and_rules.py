@@ -236,3 +236,52 @@ def test_remember_rule_project_scope_writes_into_the_project(cfg, tmp_path, monk
     from aiforge_core.runtime import repo_rules
     assert not list((repo_rules._global_rules_dir()).glob("*.md")) \
         if repo_rules._global_rules_dir().exists() else True
+
+
+# ── false alarms (11-18): a rule the command text cannot show ────────────────
+
+def test_check_prompt_needs_the_text_to_prove_the_break():
+    from aiforge_core.runtime.chat_agent._guards import rules as rg
+    assert "does not show" in rg._SYSTEM and "not a break" in rg._SYSTEM
+
+
+def test_nudge_keeps_the_agent_going():
+    from aiforge_core.runtime.chat_agent._guards import rules as rg
+    n = rg.RuleBreakGuard("/x", False, "", False).nudge([("git push origin x", "HTTPS only")])
+    assert "do not stop" in n and "does not count" not in n and "do NOT report the task" not in n
+
+
+def _pushed(monkeypatch, verdict):
+    from aiforge_core.runtime.chat_agent._guards import base
+    from aiforge_core.runtime.chat_agent._guards import rules as rg
+    from aiforge_core.runtime.chat_agent._tools import _memory
+    monkeypatch.setattr(_memory, "user_rule_lines",
+                        lambda cwd, session_id=None: ["- push to GitLab over HTTPS token, not SSH"])
+    monkeypatch.setattr(rg, "_commands", lambda sid, since=0: ["git push origin feat"][since:])
+    monkeypatch.setattr(rg, "breaks", lambda role, rules, cmds, sid:
+                        [(c, "HTTPS token, not SSH") for c in cmds])
+    monkeypatch.setattr(_plan_llm, "_ask", lambda *a, **k: verdict)
+
+    class St:
+        session_id = 7
+        role = "chat"
+    st = St()
+    st.convo = []
+    g = rg.RuleBreakGuard("/x", False, "", False)
+    list(base._check(g, st, {"text": "Pushed."}))
+    step = {"text": "Re-checked: origin is https://oauth2:<token>@gitlab.example/x.git, "
+                    "so the rule was followed. Pushed."}
+    list(base._check(g, st, step))
+    return step
+
+
+def test_a_shown_compliance_clears_the_flag(monkeypatch):
+    assert not _pushed(monkeypatch, "[]")["text"].startswith("⚠")
+
+
+def test_a_rebuttal_the_check_rejects_keeps_the_label(monkeypatch):
+    assert _pushed(monkeypatch, "[1]")["text"].startswith("⚠ **Harness rule check:**")
+
+
+def test_a_failed_confirm_keeps_the_label(monkeypatch):
+    assert _pushed(monkeypatch, None)["text"].startswith("⚠ **Harness rule check:**")

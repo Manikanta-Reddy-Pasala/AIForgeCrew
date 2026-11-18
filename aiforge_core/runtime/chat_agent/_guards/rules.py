@@ -35,7 +35,11 @@ _SYSTEM = (
     "uses a tool, branch, account or place the rule forbids). Trying to follow "
     "a rule and failing (an ssh that could not connect) is NOT a break. "
     "Reading files, listing, git status and the like break nothing unless a "
-    "rule says so. Reply with ONLY a JSON array: "
+    "rule says so. The command TEXT must prove the break: when following the "
+    "rule depends on something the text does not show (which URL a git remote "
+    "points at, a config file, an env var, an ssh host alias, a credential "
+    "helper), it is NOT a break — `git push origin` does not show whether origin "
+    "is HTTPS or SSH. When unsure, it is not a break. Reply with ONLY a JSON array: "
     '[{"action": <number>, "rule": "<the rule it breaks, in a few words>"}] '
     "— [] when no command breaks a rule.")
 
@@ -53,6 +57,43 @@ _BLOCKED = re.compile(
 def _says_blocked(text: str) -> bool:
     """The answer says the work could not be done as the rule asks."""
     return bool(_BLOCKED.search(text or ""))
+
+
+_REBUTS = re.compile(
+    r"\b(?:followed|complied|compl(?:y|ies)|not\s+a\s+(?:rule\s+)?break|no\s+break|"
+    r"did\s+not\s+break|didn't\s+break|false\s+(?:alarm|positive)|was\s+used|"
+    r"https?://|re-?check(?:ed)?|verified)\b", re.IGNORECASE)
+
+_CONFIRM_SYSTEM = (
+    "A rule check flagged some of an AI agent's shell commands as breaking the "
+    "user's rules. The agent then answered, saying why. For each flagged "
+    "command decide if it STILL plainly breaks the rule given what the agent "
+    "showed (for example the remote URL it printed, the config it read). "
+    "Facts the agent shows from the command output count; a bare claim with no "
+    "evidence does not. Reply with ONLY a JSON array of the numbers that still "
+    "break a rule — [] when the agent showed every one was followed.")
+
+
+def still_broken(role: str, rules: list, pending: list, answer: str, session_id) -> list:
+    """The flagged pairs the agent's answer does not clear; all of them when
+    the check fails (a break found stays found)."""
+    from .._turn._plan_llm import _ask
+    flagged = "\n".join(f"{i}. `{' '.join(c.split())[:300]}` — rule: {r}"
+                         for i, (c, r) in enumerate(pending, 1))
+    raw = _ask(role, _CONFIRM_SYSTEM,
+               f"THE USER'S RULES:\n{chr(10).join(rules)[:_MAX_RULES_CHARS]}\n\n"
+               f"FLAGGED:\n{flagged}\n\nTHE AGENT'S ANSWER:\n{(answer or '')[-4000:]}",
+               session_id, max_tokens=120)
+    got = _parse(raw)
+    if got is None:
+        return list(pending)
+    keep = set()
+    for x in got:
+        try:
+            keep.add(int(x if not isinstance(x, dict) else x.get("action")))
+        except (TypeError, ValueError):
+            continue
+    return [p for i, p in enumerate(pending, 1) if i in keep]
 
 
 def _commands(session_id, since: int = 0) -> list[str]:
@@ -148,9 +189,16 @@ class RuleBreakGuard:
             pending = getattr(st, "rule_breaks_pending", None) or []
             if pending and not cmds:
                 # Sent back, ran nothing new, and answers again: unless the
-                # answer now says the work is blocked, it still stands on
-                # the commands that broke the rule.
-                return [] if _says_blocked(text) else list(pending)
+                # answer now says the work is blocked, or shows the rule was
+                # followed after all, it still stands on those commands.
+                if _says_blocked(text):
+                    return []
+                if _REBUTS.search(text or ""):
+                    left = still_broken(getattr(st, "role", "chat") or "chat", rules,
+                                        list(pending), text, st.session_id)
+                    st.rule_breaks_pending = left
+                    return left
+                return list(pending)
             key = hash((tuple(rules), tuple(cmds)))
             cache = getattr(st, "rule_check_cache", None)
             if cache is None:
@@ -182,12 +230,18 @@ class RuleBreakGuard:
 
     def nudge(self, claims) -> str:
         lines = "\n".join(f"- `{c[:200]}` breaks: {r}" for c, r in claims)
-        return ("[rule check — not the user] These commands of this turn did what "
-                f"the user's rules forbid:\n{lines}\nWhat they produced does not "
-                "count. Do the work the way the rules say. If a rule cannot be "
-                "followed (the host is unreachable, a tool is missing), stop and "
-                "tell the user exactly what blocks it, and do NOT report the task "
-                "as done.")
+        return ("[rule check — not the user] These commands of this turn may have "
+                f"done what the user's rules forbid:\n{lines}\nCheck it, then keep "
+                "going with the task — do not stop:\n"
+                "- If it really broke the rule, redo that step the way the rule says "
+                "and continue.\n"
+                "- If it did not (the rule was followed in a way the command text "
+                "does not show — e.g. the remote is already HTTPS), confirm it with "
+                "one quick read-only check (e.g. `git remote -v`), say so in one "
+                "line, and continue.\n"
+                "- Only if the rule cannot be followed at all (host unreachable, "
+                "tool missing), tell the user what blocks it instead of reporting "
+                "that step as done.")
 
     def disclaimer(self, claims) -> str:
         lines = "\n".join(f"- `{c[:160]}` — your rule: {r}" for c, r in claims)
