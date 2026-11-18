@@ -495,3 +495,27 @@ def test_compact_route_takes_the_slug_even_without_the_folder(env, monkeypatch):
     shutil.rmtree(env / "shop")                                    # folder gone, memory stays
     assert c.post(f"/api/memory/projects/{ent['slug']}/compact?force=false").status_code == 200
     assert c.post("/api/memory/projects/nosuch/compact").status_code == 404
+
+
+def test_compact_merges_duplicate_bullets_without_a_model(env, monkeypatch):
+    """Duplicates go first, no model; the OKF Facts section stays bullets."""
+    import pytest as _pt
+    from aiforge_core.memory import md_store, projects
+    from aiforge_core.memory.md_store import _compact_summarize
+    ent = projects.open_project(str(env / "shop"))
+    slug = ent["slug"]
+    for t in ("Refunds go through the payment gateway",
+              "Payments settle nightly after the regional ledger closes",
+              "Payments settle nightly after the regional ledger closes, then post"):
+        md_store._brief_upsert("shop", t)
+    monkeypatch.setattr(_compact_summarize, "_summarize_notes",
+                        lambda *_a, **_k: _pt.fail("no model needed under the threshold"))
+    res = projects.compact(slug)
+    assert res["merged"] >= 1 and res["compacted"] is True
+    facts = _facts(slug)
+    assert sum("settle nightly" in f.lower() for f in facts) == 1
+    assert any("Refunds" in f for f in facts)
+    rep = projects._state_dir() / f"{slug}.merges.md"
+    assert rep.is_file() and "merged:" in rep.read_text()
+    again = projects.compact(slug)                     # nothing new: nothing compared
+    assert again["merged"] == 0 and again["compared"] == 0

@@ -847,6 +847,70 @@ def _archive_brief(slug: str, reason: str) -> "str | None":
     return str(out)
 
 
+def _seen_path(slug: str) -> Path:
+    return _state_dir() / f"{slug}.items.json"
+
+
+def _consolidate_items(slug: str, ent: dict) -> dict:
+    """Merge duplicate Facts and Learnings (``memory.consolidate``), drop
+    Learnings that repeat a Fact, write the brief when anything changed and
+    append the merges to ``<slug>.merges.md``. Items checked before are not
+    compared again (``<slug>.items.json``)."""
+    from aiforge_core.memory import consolidate as cons
+    from aiforge_core.runtime.work_notes import item_key
+    sec = _current_sections(slug)
+    try:
+        import json as _json
+        known = set(_json.loads(_read(_seen_path(slug)) or "[]"))
+    except ValueError:
+        known = set()
+    facts = cons.consolidate(sec.get("facts") or [], known)
+    learn = cons.consolidate(sec.get("learnings") or [], known)
+    fact_keys = {item_key(f) for f in facts.kept}
+    repeats = [x for x in learn.kept if item_key(x) in fact_keys]
+    learnings = [x for x in learn.kept if item_key(x) not in fact_keys]
+    n = facts.removed + learn.removed + len(repeats)
+    if n:
+        sec["facts"], sec["learnings"] = facts.kept, learnings
+        _write_brief(slug, ent["key"], sec)
+        lines = [f"\n## {time.strftime('%Y-%m-%d %H:%M')} — {n} merged"]
+        lines += cons.report_lines("fact", facts) + cons.report_lines("learning", learn)
+        lines += [f"- **learning** dropped (same as a fact): {x}" for x in repeats]
+        try:
+            with open(_state_dir() / f"{slug}.merges.md", "a", encoding="utf-8") as fh:
+                fh.write("\n".join(lines) + "\n")
+        except OSError:
+            pass
+    try:
+        import json as _json
+        ids = sorted({cons.item_id(x) for x in facts.kept + learnings})
+        _atomic.write_text(str(_seen_path(slug)), _json.dumps(ids))
+    except Exception:  # noqa: BLE001 — only a speed-up
+        pass
+    return {"merged": n, "compared": facts.compared + learn.compared}
+
+
+def _fold_body(slug: str, ent: dict) -> "int | None":
+    """Fold the brief's free body (prose, "Older facts" pages) with the model,
+    leaving Facts and Learnings as bullets. Chars saved, or None when there is
+    no body worth folding or no model answered."""
+    sec = _current_sections(slug)
+    body = (sec.get("body") or "").strip()
+    if len(body) < 2000:
+        return None
+    from aiforge_core.memory.md_store import _compact_summarize, _compact_sweep
+    try:
+        summary = _compact_summarize._summarize_notes([body], _compact_role())
+    except Exception:  # noqa: BLE001
+        return None
+    if not summary or not summary.strip() or len(summary) >= len(body):
+        return None
+    _archive_brief(slug, "body-fold")
+    sec["body"] = _compact_sweep._demote_headings(summary.strip())
+    _write_brief(slug, ent["key"], sec)
+    return len(body) - len(sec["body"])
+
+
 def compact(slug: str, *, force: bool = False) -> dict:
     """Keep one project's memory in shape: sweep stale facts, then, when the
     brief is over its cap (or ``force``), fold it into a shorter one with the
@@ -859,9 +923,24 @@ def compact(slug: str, *, force: bool = False) -> dict:
     out: dict = {"ok": True, "stale": sweep_stale(slug).get("moved", 0)}
     text = _knowledge(slug)
     out["chars_before"] = len(text)
+    # 1. Merge duplicate bullets, no model (OKF sections kept as they are)
+    merged = _consolidate_items(slug, ent)
+    out.update(merged)
+    text = _knowledge(slug)
     if not text or (not force and len(text) <= compact_at()):
-        out["compacted"] = False
+        out["compacted"] = bool(merged.get("merged"))
+        out["chars_after"] = len(text)
         return out
+    # 2. Fold only the free body with the model; the bullets stay bullets
+    folded = _fold_body(slug, ent)
+    if folded is not None:
+        out["body_folded"] = folded
+        text = _knowledge(slug)
+        if len(text) <= memory_cap():
+            out["compacted"] = True
+            out["chars_after"] = len(text)
+            return out
+    # 3. Still over the cap: the whole brief is folded as before (archived first)
     from aiforge_core.memory.md_store import _compact_summarize
     try:
         summary = _compact_summarize._summarize_notes([text], _compact_role())
