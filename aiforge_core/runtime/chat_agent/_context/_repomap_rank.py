@@ -296,11 +296,12 @@ def map_budget_chars(role=None, history_chars: int = 0,
     text (and bust the server prompt cache) every turn."""
     from ._repomap import _repomap_max_chars
     from ._window import (_CTX_BUDGET_FLOOR_CHARS, _SYSTEM_PROMPT_CHARS,
-                          _history_fraction, _window_scaled, _window_tokens)
-    env = os.environ.get("AIFORGE_REPOMAP_MAX_CHARS")
+                          _history_fraction, _window_tokens)
+    # _repomap_max_chars is already window-relative (4000 + 1%). Scaling it
+    # again here (x4%) undid that cut: a 125K-token window gave a 20K-char
+    # map — 18.5K chars of mostly names-only files on every request of a
+    # real Java job, against OpenCode's none.
     hard = _repomap_max_chars()
-    if env is None:
-        hard = _window_scaled(hard, 0.04, role)       # room to grow when roomy
     if hard == 0:
         return 0
     win = _window_tokens(role) or 131072

@@ -61,10 +61,10 @@ def test_an_end_past_the_last_line_stops_at_the_end(src):
     assert T._t_read_lines({"path": "app.py", "end": 99}, str(src))["end"] == 10
 
 
-def test_a_start_past_the_end_answers_empty_rather_than_failing(src):
+def test_a_start_past_the_end_shows_the_last_part_rather_than_failing(src):
     res = T._t_read_lines({"path": "app.py", "start": 50}, str(src))
     assert res["ok"] is True
-    assert res["text"] == ""
+    assert res["text"].endswith("line 10\n") and "only 10 lines" in res["note"]
     assert res["total_lines"] == 10
 
 

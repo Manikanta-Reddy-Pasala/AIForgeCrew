@@ -159,3 +159,13 @@ def test_pagerank_basic():
     r = rr.pagerank(3, {0: {2: 1.0}, 1: {2: 1.0}})
     assert r[2] > r[0] and abs(sum(r) - 1) < 1e-6
     assert rr.pagerank(0, {}) == []
+
+
+def test_budget_is_not_scaled_twice(monkeypatch):
+    """The map cap is already window-relative (4000 + 1%); a second x4% scale
+    gave a 125K-token window an ~20K-char map on every request."""
+    from aiforge_core.runtime.chat_agent._context import _window as w
+    monkeypatch.delenv("AIFORGE_REPOMAP_MAX_CHARS", raising=False)
+    monkeypatch.setattr(w, "_window_tokens", lambda role=None: 125000)
+    monkeypatch.setattr(w, "_resolved_window", lambda role=None: 125000)
+    assert rr.map_budget_chars() <= 5000

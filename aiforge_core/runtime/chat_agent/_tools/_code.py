@@ -164,8 +164,10 @@ def _normalize_read_args(args: dict) -> "tuple[dict, str]":
     return a, ""
 
 
-#: The most ranges one call reads, and the most text it returns.
-_MAX_RANGES, _RANGES_CHARS = 8, 60000
+#: The most ranges one call reads, and the most text it returns. 24K chars
+#: (~400 lines): a real run asked for 35 ranges of 200 lines — a whole
+#: 6,921-line file — and 67K chars of it rode in every later request.
+_MAX_RANGES, _RANGES_CHARS = 8, 24000
 
 
 def _ranges(raw) -> "list[tuple[int, int]]":
@@ -188,19 +190,35 @@ def _read_ranges(path: str, lines: list, ranges: list) -> dict:
     """Several parts of one file in one call. Bench (attrs-inspect, 11-08):
     77 of 151 reads came right after another read of the same file, about 30
     lines each — a model call per slice."""
-    n, parts, used = len(lines), [], 0
+    n, parts, used, cut = len(lines), [], 0, None
     for s, e in sorted(set(ranges)):
         if s > n:
             continue
         e = min(e, n)
-        text = "".join(lines[s - 1:e])
-        if used + len(text) > _RANGES_CHARS:
-            text = text[:max(0, _RANGES_CHARS - used)]
-        used += len(text)
-        parts.append({"start": s, "end": e, "text": text})
         if used >= _RANGES_CHARS:
+            cut = cut or s
             break
-    return {"ok": True, "path": path, "total_lines": n, "parts": parts}
+        chunk = lines[s - 1:e]
+        size = sum(len(x) for x in chunk)
+        if used + size > _RANGES_CHARS:            # whole lines only, then stop
+            keep, room = [], _RANGES_CHARS - used
+            for x in chunk:
+                if len(x) > room:
+                    break
+                keep.append(x)
+                room -= len(x)
+            if keep:
+                parts.append({"start": s, "end": s + len(keep) - 1, "text": "".join(keep)})
+            used, cut = _RANGES_CHARS, s + len(keep)
+            break
+        used += size
+        parts.append({"start": s, "end": e, "text": "".join(chunk)})
+    out = {"ok": True, "path": path, "total_lines": n, "parts": parts}
+    if cut:
+        out["note"] = (f"stopped at line {cut}: one call returns at most {_RANGES_CHARS} chars. "
+                       f"The file has {n} lines — grep for the names you need, or read the "
+                       "outline (file_read), then read only those parts")
+    return out
 
 
 def _num(v):
