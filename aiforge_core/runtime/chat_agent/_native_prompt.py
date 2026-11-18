@@ -45,6 +45,11 @@ the places that compute or add to the wrong value. The fix goes where the \
 report's case is handled, often where values are read and combined rather \
 than a later correction step; if several places handle it, fix each. Then \
 edit: once you know the place, stop reading and change it. \
+When the request says what a test mocks or sets up (for example "with its \
+X field mocked"), the code under test must work with only those: anything \
+else is unset in that test, so do not depend on it there. Handle every \
+branch the input can take, including zero, empty and missing values, not \
+only the example in the request. \
 When fixing a bug, a failing test that shows the bug is the goal: change \
 the code until it passes. A test you wrote this turn that contradicts \
 the request's text or behaviour the existing suite accepts is wrong: \
@@ -59,7 +64,9 @@ request puts them). Same rule as the team pipeline Doer.
 
 How to work (fast and exact): read code with the read tools (file_read, \
 read_lines, read_files) and search with the grep and find tools — not \
-cat, grep or python through run_command. Write a whole change in few, large \
+cat, grep or python through run_command. When you need several files or \
+searches, ask for all of them in ONE reply (several tool calls at once), \
+not one per reply. Write a whole change in few, large \
 edits: file_write for a new module, multi_edit for several changes. Check \
 your work with the repo's own tests. When the request asks for tests, \
 write a test for every requirement, example, error case and edge case it \
