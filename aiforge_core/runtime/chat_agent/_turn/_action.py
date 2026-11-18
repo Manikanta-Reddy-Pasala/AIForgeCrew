@@ -2,6 +2,8 @@
 workspace jail, and read/edit bookkeeping."""
 from __future__ import annotations
 
+import re
+
 import json
 import os
 
@@ -207,9 +209,13 @@ def _action_stall_guard(st, name, args, sig, _long_chain_help):
     from ._probe_guard import _shell_tools, is_shell_read
     shell_read = is_shell_read(args, name)
     shell_seen = getattr(st, "shell_read_sigs", None) or set()
-    if name in _shell_tools() and not shell_read and shell_seen:
+    if name in _shell_tools() and not shell_read and shell_seen \
+            and not _runs_tests_only(args):
         # any other shell command may have changed files (sed -i, git
-        # checkout, a codegen script): earlier shell reads are stale
+        # checkout, a codegen script): earlier shell reads are stale.
+        # A test or build run is not one: a real Kotlin run re-read its source
+        # with `cat` 60 times, each right after a Gradle test run had cleared
+        # this memory.
         shell_seen.clear()
     duplicate = (_long_chain_help and (
         (name in _READ_OBS_TOOLS
@@ -1001,6 +1007,26 @@ def _note_target_compare(st, name, args, result) -> list:
         pass
     return [{"type": "subtask_update", "slug": tid, "status": "done",
              **({"evidence": ev} if ev else {})}]
+
+
+#: A command that only builds/tests (it does not rewrite source files).
+_TEST_ONLY = re.compile(
+    r"^\s*(?:cd\s+\S+\s*&&\s*)?(?:\w+=\S+\s+)*(?:(?:timeout\s+\S+|time|nice)\s+)*"
+    r"(?:\S*/)?(?:gradlew|gradle|mvn|mvnw|mvnd|cargo\s+(?:test|build|check)|go\s+(?:test|build|vet)|"
+    r"pytest|python3?\s+-m\s+pytest|ctest|npm\s+(?:test|run\s+test)|yarn\s+test|dotnet\s+test)\b")
+_CHANGES_FILES = re.compile(r"\b(?:spotless\w*|ktfmt\w*|ktlint\w*Format|format\w*|fmt|"
+                            r"--fix|-i\b|generate\w*|openapi\w*|clean)\b", re.I)
+
+
+def _runs_tests_only(args) -> bool:
+    try:
+        from aiforge_core.runtime.shell_writes import command_of
+        cmd = command_of(args or {}) or ""
+    except Exception:  # noqa: BLE001
+        return False
+    first = re.split(r"\s*(?:;|&&(?!\s*\S+\s*=)|\|\|)\s*", re.sub(r"^\s*cd\s+\S+\s*&&\s*", "", cmd))
+    return bool(cmd) and all(_TEST_ONLY.match(part) or not part.strip() for part in first) \
+        and not _CHANGES_FILES.search(cmd)
 
 
 def _post_tool(st, name, args, result, cwd, sig, n, _long_chain_help, _bundle):
