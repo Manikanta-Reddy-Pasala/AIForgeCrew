@@ -357,7 +357,7 @@ _SSH_ARG_FLAGS = {
 }
 # A command worth remembering for this project. ls and echo are not.
 _PROJECT_CMD_RE = re.compile(
-    r"\b(pytest|mvn|mvnw|npm|yarn|pnpm|gradle|cargo|make|docker|podman|"
+    r"\b(pytest|mvnd|mvn|mvnw|npm|yarn|pnpm|gradle|cargo|make|docker|podman|"
     r"git|python3?|node|go|bundle|composer)\b",
     re.IGNORECASE)
 # The remote side of an ssh command ran through a login shell.

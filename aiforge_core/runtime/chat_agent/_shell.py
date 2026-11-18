@@ -602,7 +602,10 @@ def _label_job(res: dict, args: dict) -> dict:
     return res
 
 
-_JVM_BUILD = re.compile(r"(?:^|[\s;&|(/])(?:mvn|mvnw|gradle|gradlew|javac|java|sbt|lein|kotlinc)\b")
+#: ``mvnd`` too: the fast Maven loop runs a model's plain ``mvn`` as mvnd, and
+#: without it here that build never got its JDK picked (a Java 24 service then
+#: failed every compile with "class file has wrong version 68.0").
+_JVM_BUILD = re.compile(r"(?:^|[\s;&|(/])(?:mvnd|mvn|mvnw|gradle|gradlew|javac|java|sbt|lein|kotlinc)\b")
 _LEAD_CD = re.compile(r"^(\s*cd\s+\S+\s*&&\s*)")
 
 

@@ -249,7 +249,7 @@ _CD = re.compile(r"^\s*cd\s+(\S+)\s*&&")
 # "JAVA_HOME=... mvn -o test" was never learned, so every session rediscovered it.
 _TEST = re.compile(
     r"(?:-m\s+pytest|\bpytest\b|-m\s+unittest|\btox\b"
-    r"|(?:\bmvn|\bmvnw|\./mvnw)\b[^|;&]*\b(?:test|verify)\b"
+    r"|(?:\bmvnd|\bmvn|\bmvnw|\./mvnw)\b[^|;&]*\b(?:test|verify)\b"
     r"|(?:\bgradle|\bgradlew|\./gradlew)\b[^|;&]*\b(?:test|check)\b"
     r"|\b(?:npm|yarn|pnpm|bun)\s+(?:run\s+)?test\b"
     r"|\bgo\s+test\b|\bcargo\s+(?:test|nextest)\b|\bdotnet\s+test\b"
