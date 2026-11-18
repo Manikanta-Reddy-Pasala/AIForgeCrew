@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 
+from ._vecfmt import vec_json
+
 from ._schema import _LOCK, _conn, _safe_embed
 
 _DELETE_FROM_MEMORY_UNITS_WHE = 'DELETE FROM memory_units WHERE id = ?'
@@ -45,7 +47,7 @@ def write_unit(
             (
                 kind, wing, source, title, text,
                 json.dumps(tags or []), json.dumps(metadata or {}),
-                repo, ticket, json.dumps(vec), event_time,
+                repo, ticket, vec_json(vec), event_time,
             ),
         )
         return int(cur.lastrowid)

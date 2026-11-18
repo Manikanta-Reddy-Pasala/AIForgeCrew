@@ -218,6 +218,8 @@ def _dedupe_memory() -> None:
             return
         from aiforge_core.memory import sqlite_memory
         _pkg()._af_log.info("memory dedup: %s", sqlite_memory.dedupe())
+        # short stored vectors + VACUUM: the file shrinks after the deletes
+        _pkg()._af_log.info("memory storage: %s", sqlite_memory.compact_storage())
     except Exception as exc:  # noqa: BLE001
         _pkg()._af_log.warning("memory dedup failed: %s", exc)
 

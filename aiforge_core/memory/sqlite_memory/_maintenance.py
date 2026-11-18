@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+import re
+
+from ._vecfmt import vec_json
 import sqlite3
 
 from aiforge_core.memory import local_embed
@@ -75,7 +78,7 @@ def reembed_all() -> dict:
                 failed += 1                       # leave the existing vector intact,
                 continue                          # don't abort the whole batch
             c.execute("UPDATE memory_units SET embedding = ? WHERE id = ?",
-                      (json.dumps(v), r["id"]))
+                      (vec_json(v), r["id"]))
             n += 1
         # stamp WHICH embedder these vectors came from, so a later backend/model
         # switch (even at the same dim) is detected + triggers another reembed.
@@ -107,8 +110,49 @@ def _dedupe_query(repo: "str | None", max_scan: int) -> "tuple[str, tuple]":
     if repo is not None:
         where += " AND (repo IS ? OR repo = ?)"
         params = (*params, repo, repo)
-    return (f"SELECT id, kind, repo, embedding FROM memory_units {where} "
+    return (f"SELECT id, kind, repo, embedding, text FROM memory_units {where} "
             "ORDER BY id DESC LIMIT ?", (*params, max_scan))
+
+
+#: Word overlap at which two units of the same kind and repo are one fact.
+_TEXT_DUP = 0.9
+
+
+def _words(text) -> frozenset:
+    return frozenset(re.findall(r"[a-z0-9_]{2,}", (text or "").lower()))
+
+
+def _jaccard(a: frozenset, b: frozenset) -> float:
+    return len(a & b) / len(a | b) if (a and b) else 0.0
+
+
+def compact_storage() -> dict:
+    """Rewrite stored vectors in the short form (``vec_json``) and give the freed
+    pages back to the file system. Idempotent; best-effort."""
+    rewritten = 0
+    with _LOCK, _conn() as c:
+        rows = c.execute("SELECT id, embedding FROM memory_units "
+                         "WHERE length(embedding) > 2").fetchall()
+        for r in rows:
+            try:
+                short = vec_json(json.loads(r["embedding"]))
+            except (TypeError, ValueError):
+                continue
+            if len(short) < len(r["embedding"]):
+                c.execute("UPDATE memory_units SET embedding = ? WHERE id = ?", (short, r["id"]))
+                rewritten += 1
+    vacuumed = False
+    try:
+        import sqlite3
+        v = sqlite3.connect(_db_path(), isolation_level=None)
+        try:
+            v.execute("VACUUM")
+            vacuumed = True
+        finally:
+            v.close()
+    except Exception:  # noqa: BLE001 — a busy file is fine; next pass
+        pass
+    return {"rewritten": rewritten, "vacuumed": vacuumed}
 
 
 def _is_near_dup(kind: str, repo, vec: list, kept: list, threshold: float) -> bool:
@@ -151,7 +195,16 @@ def dedupe(*, repo: str | None = None, threshold: float = 0.95,
         # rows are newest-first; keep the first of each near-duplicate cluster.
         kept: list[tuple[int, str, "str | None", list]] = []
         remove: list[int] = []
+        words_kept: list = []
         for r in rows:
+            words = _words(r["text"])
+            # same wording (>= 90% of the words shared), same kind and repo: the
+            # embedding threshold misses reworded copies of one fact
+            if words and any(k == r["kind"] and rp == r["repo"] and _jaccard(words, w) >= _TEXT_DUP
+                             for k, rp, w in words_kept):
+                remove.append(r["id"])
+                continue
+            words_kept.append((r["kind"], r["repo"], words))
             vec = _row_vector(r)
             if not vec:
                 continue                     # no vector → can't compare, keep

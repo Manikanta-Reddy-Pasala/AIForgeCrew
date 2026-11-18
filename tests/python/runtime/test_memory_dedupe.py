@@ -58,3 +58,31 @@ def test_dedupe_different_kind_not_merged(cfg):
     _insert("decision", "x", v)          # same vector, different kind → both kept
     r = m.dedupe(threshold=0.9)
     assert r["removed"] == 0
+
+
+def test_reworded_copies_of_one_fact_merge_by_words(cfg):
+    """Same wording (>= 90% shared words), same kind and repo: one fact, even
+    when the embeddings are far apart; a different repo keeps its own copy."""
+    from aiforge_core.memory import sqlite_memory as m
+    _insert("note", "the settlement batch runs after the regional ledger closes each day", [1.0, 0.0, 0.0])
+    _insert("note", "The settlement batch runs after the regional ledger closes, each day.", [0.0, 1.0, 0.0])
+    _insert("note", "the settlement batch runs after the regional ledger closes each day", [0.0, 0.0, 1.0], repo="other")
+    _insert("note", "refunds go through the payment gateway", [0.5, 0.5, 0.0])
+    r = m.dedupe(threshold=0.95)
+    assert r["removed"] == 1
+    with m._conn() as c:
+        assert c.execute("SELECT COUNT(*) FROM memory_units").fetchone()[0] == 3
+
+
+def test_compact_storage_shortens_vectors_and_keeps_them_usable(cfg):
+    from aiforge_core.memory import sqlite_memory as m
+    from aiforge_core.memory.sqlite_memory._vecfmt import vec_json
+    long_vec = [0.123456789012345, -0.0000123456789, 0.987654321098765]
+    _insert("note", "a fact", long_vec)
+    r = m.compact_storage()
+    assert r["rewritten"] == 1 and r["vacuumed"] is True
+    with m._conn() as c:
+        stored = c.execute("SELECT embedding FROM memory_units").fetchone()[0]
+    assert stored == vec_json(long_vec) == "[0.123457,-1.23457e-05,0.987654]"
+    assert max(abs(a - b) for a, b in zip(json.loads(stored), long_vec)) < 1e-6
+    assert m.compact_storage()["rewritten"] == 0        # idempotent

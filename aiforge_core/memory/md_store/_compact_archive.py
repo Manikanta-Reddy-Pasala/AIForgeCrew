@@ -67,7 +67,7 @@ def archive_covered_captures() -> dict:
 # removed. Everything in there has already been folded into a brief, so this is
 # a copy — but it is the copy you reach for when a fold went wrong, which is why
 # the default is months rather than days. 0 disables the sweep entirely.
-_ARCHIVE_KEEP_DAYS = 180
+_ARCHIVE_KEEP_DAYS = 30
 # archive/<stamp>/ — written by _now_iso() with the colons stripped. Only a
 # folder shaped like that is ever removed; anything else a human put in
 # archive/ is left alone.

@@ -63,7 +63,7 @@ from ._recall import (
 )
 from ._maintenance import (
     _get_meta,
-    dedupe,
+    compact_storage, dedupe,
     reembed_all,
     stats,
     stored_dim_mismatch,
@@ -90,7 +90,7 @@ __all__ = [
     "source_text_unchanged",
     "delete_by_source",
     "delete_by_text_contains",
-    "dedupe",
+    "compact_storage", "dedupe",
     "clear",
     "stats",
     "prune_vec_orphans",
