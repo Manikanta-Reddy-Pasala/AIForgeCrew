@@ -197,6 +197,26 @@ def _raw_of(h: dict) -> float:
         return 0.0
 
 
+#: A reranker that timed out is skipped for a while: it runs on the CPU and a
+#: busy box (a build, a test run) made every recall wait the full timeout for
+#: nothing — 8 s a turn, measured. The fused ranking is used meanwhile.
+_RERANK_DOWN_UNTIL: list = [0.0]
+
+
+def _rerank_timeout() -> float:
+    try:
+        return max(0.5, float(os.environ.get("AIFORGE_RERANK_TIMEOUT_S", "2.5")))
+    except ValueError:
+        return 2.5
+
+
+def _rerank_backoff() -> float:
+    try:
+        return max(0.0, float(os.environ.get("AIFORGE_RERANK_BACKOFF_S", "300")))
+    except ValueError:
+        return 300.0
+
+
 def _fetch_rerank_scores(url: str, query: str, hits: list[dict]) -> "list | None":
     """POST hits to the reranker sidecar and return its per-hit scores, or None
     on any failure / unexpected shape (accepts ``{scores:[...]}`` or a list of
@@ -209,7 +229,7 @@ def _fetch_rerank_scores(url: str, query: str, hits: list[dict]) -> "list | None
     rerank_url = url.rstrip("/") + "/rerank"
     req = _ur.Request(rerank_url, data=body,
                       headers={"Content-Type": "application/json"})
-    with _ur.urlopen(req, timeout=8, context=_ssl_context_for(rerank_url)) as r:
+    with _ur.urlopen(req, timeout=_rerank_timeout(), context=_ssl_context_for(rerank_url)) as r:
         resp = _json.loads(r.read())
     if isinstance(resp, dict) and "scores" in resp:
         return resp["scores"]
@@ -240,11 +260,16 @@ def _rerank_top(hits: list[dict], *, query: str) -> list[dict] | None:
     url = os.environ.get("AIFORGE_RERANK_URL", "http://127.0.0.1:8765")
     if not url or os.environ.get("AIFORGE_RERANK_DISABLE", "0") == "1":
         return None
+    import time as _time
+    if _time.monotonic() < _RERANK_DOWN_UNTIL[0]:
+        return None
     try:
         scores = _fetch_rerank_scores(url, query, hits)
         if scores is None or len(scores) != len(hits):
             return None
         _apply_rerank_scores(hits, scores)
         return hits
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        if isinstance(exc, TimeoutError) or "timed out" in str(exc).lower():
+            _RERANK_DOWN_UNTIL[0] = _time.monotonic() + _rerank_backoff()
         return None

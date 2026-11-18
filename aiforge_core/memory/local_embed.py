@@ -74,6 +74,19 @@ def embed_signature() -> str:
 _SIDECAR = ("sidecar", "bge", "bge-m3")
 _SIDE_DIM: list = []
 
+#: The last few texts embedded over the network: one recall embedded the same
+#: query twice (~1.4 s each on a busy box). Small, process-local.
+from collections import OrderedDict as _OD
+_RECENT: "_OD" = _OD()
+_RECENT_MAX = 64
+
+
+def _remember(key, vec) -> None:
+    _RECENT[key] = list(vec)
+    _RECENT.move_to_end(key)
+    while len(_RECENT) > _RECENT_MAX:
+        _RECENT.popitem(last=False)
+
 
 def embed(text: str) -> list[float]:
     """The active embedder (RAISES on failure for the real backends — no silent
@@ -93,8 +106,13 @@ def embed(text: str) -> list[float]:
         from aiforge_core.integrations import api_embed as _ae
         return _ae.embed(text)
     if b in _SIDECAR:
+        key = (b, text or "")
+        hit = _RECENT.get(key)
+        if hit is not None:
+            return list(hit)
         from aiforge_core.memory import embed as _side
         v = _side.embed(text if (text or "").strip() else ".")
+        _remember(key, v)
         if not _SIDE_DIM:
             _SIDE_DIM.append(len(v))
         return v
