@@ -379,3 +379,36 @@ def test_repeated_start_over_is_let_go_after_a_snapshot(repo, monkeypatch):
     shown = subprocess.run(["git", "-C", str(root), "show", f"{sha}:src/core.py"],
                            capture_output=True, text=True).stdout
     assert "line_39 = 39" in shown                       # the edits are recoverable
+
+
+def test_restoring_from_a_snapshot_of_own_work_goes_through_and_saves_the_current(repo, monkeypatch):
+    """A real Rust run was refused `git checkout <snapshot> -- file`, the very
+    command a harness note had given it. Restoring a version that is not the
+    original loses nothing: allowed, the current state saved first."""
+    monkeypatch.setattr(G, "_SNAPSHOT_AFTER", 999)
+    root, st = _st_for(repo, monkeypatch)
+    core = root / "src" / "core.py"
+    core.write_text("x = 'good edit'\n")
+    snap = subprocess.run(["git", "-C", str(root), "stash", "create"], capture_output=True,
+                          text=True).stdout.strip()
+    core.write_text("x = 'later broken edit'\n")
+    held = []
+    monkeypatch.setattr("aiforge_core.runtime.chat_agent._turn._notes.hold",
+                        lambda st, text: held.append(text))
+    for cmd in (f"git checkout {snap[:12]} -- src/core.py",
+                f"git show {snap[:12]}:src/core.py > src/core.py"):
+        assert G.refusal(st, "run_command", {"cmd": cmd}, str(root)) is None, cmd
+    assert held and "snapshot" in held[-1]
+    # the original (HEAD) version is still a discard: refused
+    head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True,
+                          text=True).stdout.strip()
+    assert G.refusal(st, "run_command", {"cmd": f"git checkout {head[:12]} -- src/core.py"},
+                     str(root))
+
+
+@pytest.mark.parametrize("cmd,wide", [
+    ("git checkout -f main", True), ("git checkout -f", True), ("git stash", True),
+    ("git checkout --force src/eval.rs", False), ("git checkout -f -- src/core.py", False),
+])
+def test_force_checkout_of_a_named_file_is_not_repo_wide(cmd, wide):
+    assert bool(G._REPO_WIDE.search(cmd)) is wide

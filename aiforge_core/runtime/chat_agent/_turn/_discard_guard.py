@@ -35,9 +35,17 @@ import re
 _ONE_FILE_TRIES = 2
 _MAX_RELEASED = 1
 #: Commands that act on the whole repo: never released one file at a time.
+#: (`git checkout --force <file>` names its file: it is not repo-wide.)
 _REPO_WIDE = re.compile(r"\bgit\b[^|;&\n]*\b(?:stash|reset\s+[^|;&\n]*--hard|clean\b|"
-                        r"switch\b|checkout\s+(?:-f|--force)\b|checkout\s+(?:--\s+)?\.(?:\s|$)|"
+                        r"switch\b|checkout\s+(?:-f|--force)\b(?!\s+(?:--\s+)?[^\s|;&]*[./][^\s|;&]*\.\w)|"
+                        r"checkout\s+(?:(?:-f|--force)\s+)?(?:--\s+)?\.(?:\s|$)|"
                         r"restore\s+(?:--\s+)?\.(?:\s|$))")
+#: A restore FROM a given version: `git checkout <rev> -- f`, `git show
+#: <rev>:f > f`, `git restore --source <rev> f`.
+_FROM_REV = re.compile(
+    r"\bgit\s+checkout\s+(?:(?:-f|--force)\s+)?([0-9a-f]{7,40}|stash@\{\d+\})\s+--\s|"
+    r"\bgit\s+show\s+([0-9a-f]{7,40}|stash@\{\d+\}):\S+\s*>|"
+    r"\bgit\s+restore\s+[^|;&\n]*--source[= ]([0-9a-f]{7,40}|stash@\{\d+\})")
 
 
 def _names_file(cmd: str, path: str, base: str) -> bool:
@@ -476,6 +484,48 @@ def _asked_tests(st, lost, base) -> list:
     return out
 
 
+def _restores_own_version(st, cmd: str, lost, base) -> bool:
+    """The command restores the files from a version that is not their
+    original (a snapshot or an earlier commit holding this turn's edits): the
+    model is choosing between its own versions, nothing it made is lost. The
+    current state is saved first and named in a note. A real Rust run was
+    refused 13 times, including `git checkout <snapshot> -- file`, the very
+    command a harness note had just given it."""
+    revs = [g for m in _FROM_REV.finditer(cmd) for g in m.groups() if g]
+    if not revs or not lost:
+        return False
+    git = _Git()
+    top = git.top(os.path.dirname(os.path.realpath(lost[0])) or ".") or base
+    import subprocess
+
+    def show(spec):
+        r = subprocess.run(["git", "-C", top, "show", spec], capture_output=True, text=True,
+                           timeout=10)
+        return r.stdout if r.returncode == 0 else None
+    for p in lost:
+        rel = os.path.relpath(os.path.realpath(p), top).replace(os.sep, "/")
+        orig = show(f"HEAD:{rel}")
+        for rev in revs:
+            got = show(f"{rev}:{rel}")
+            if got is None or (orig is not None and got == orig):
+                return False          # unknown version, or the original itself
+    try:
+        from . import _best_state
+        snap = _best_state._snapshot(top)
+    except Exception:  # noqa: BLE001
+        snap = None
+    if not snap or not snap.get("sha"):
+        return False
+    try:
+        from ._notes import hold
+        sha = snap["sha"][:12]
+        hold(st, f"[harness — not the user] The version you replaced was saved (snapshot {sha}); "
+                 f"`git checkout {sha} -- <file>` brings it back.")
+    except Exception:  # noqa: BLE001
+        pass
+    return True
+
+
 def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     """The result to hand back instead of running ``args``, or None."""
     if not _on() or not isinstance(args, dict):
@@ -513,6 +563,8 @@ def refusal(st, name: str, args: dict, cwd) -> "dict | None":
     # git stash to compare with the original — to protect a 1-line edit, then
     # fought whole-file-write refusals too, and ended on the starting score).
     if _small_loss(lost):
+        return None
+    if _restores_own_version(st, cmd, lost, base):
         return None
     # The override is for one file the model means to drop — not for a
     # repo-wide stash/reset of its own tracked work (attrs n5: 14/18 at 25
