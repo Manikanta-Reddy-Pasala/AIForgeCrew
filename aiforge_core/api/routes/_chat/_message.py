@@ -48,6 +48,7 @@ class _SessionMsgBody(BaseModel):
     edit_from_message_id: int | None = Field(None, description="Edit-and-resend: truncate history at this user message (restoring the workspace to that turn's checkpoint) before running this new content")
     builder: str | None = Field(None, description="task builder charter: job|skill|workflow|rule — runs an interactive single-agent builder that ends by calling the matching finalize tool (bypasses the enhancer/team pipeline)")
     quick: bool = Field(False, description="Quick mode: one doer, a hard step cap (AIFORGE_CHAT_QUICK_STEPS, default 6) instead of an open-ended ReAct loop. For small asks — a rename, a one-line fix, a question — where the agent's own exploration costs more than the change.")
+    persist: bool = Field(False, description="Keep going (big tasks): instead of stopping when it is stuck or out of step/time budget, the turn starts over from a fresh context with a handoff and keeps working on the goal. Bounded by AIFORGE_CHAT_PERSIST_RETRIES fresh starts (default 8) and AIFORGE_CHAT_PERSIST_MAX_S seconds (default 4 h).")
     single_agent: bool = Field(False, description="Execute with the one chat agent. An approved plan sets this so a build-shaped plan is not auto-escalated into the team pipeline.")
     context: Literal["one", "split"] | None = Field(None, description="How the chat holds its context: 'one' (one agent, one rolling context, kept across messages — the default) | 'split' (a multi-file build is split into subtasks, each in a fresh context). Unset: AIFORGE_CHAT_CONTEXT, else 'one'.")
     resume: bool | None = Field(None, description="Resume the previous STOPPED turn instead of redoing it: prepends a brief of what already landed and what is still pending. null = decide automatically (re-sending the same words after a stopped turn resumes); true = resume even though the wording changed; false = FORCE a clean rerun and ignore the partial work.")
@@ -87,6 +88,8 @@ def _message_turn_locked(session_id: int, body: _SessionMsgBody,
     session = chat_store.get_session(session_id)
     if not session:
         raise HTTPException(404, f"session {session_id} not found")
+    from aiforge_core.runtime import chat_keep_going
+    chat_keep_going.set_for(session_id, bool(body.persist))
 
     # Reject an overlapping run for the same session (two tabs, or a reattach
     # racing a send). Letting a 2nd producer start would replace this session's
@@ -216,7 +219,7 @@ def _message_turn_locked(session_id: int, body: _SessionMsgBody,
             "AIFORGE_CHAT_REVIEW_EDITS", "0") in ("1", "true", "yes", "on")
         chat_wake.bind_turn(session_id, _user_msg_id, _wake_request(body.content, _rows), {
             "review_edits": _review, "context": body.context,
-            "quick": bool(body.quick)}, woke_from=wake)
+            "quick": bool(body.quick), "persist": bool(body.persist)}, woke_from=wake)
     else:
         chat_wake.unbind_turn(session_id)
     # A Team turn runs the team: the mode is the user's pick for this message
@@ -609,7 +612,8 @@ def _start_wake_turn(session_id: int, text: str, ctx: dict) -> None:
     opts = (ctx or {}).get("opts") or {}
     # single_agent: the note is not a request to size up for the team.
     body = _SessionMsgBody(content=text, context=opts.get("context"),
-                           single_agent=True, quick=bool(opts.get("quick")))
+                           single_agent=True, quick=bool(opts.get("quick")),
+                           persist=bool(opts.get("persist")))
     _message_turn(session_id, body, wake=ctx)
 
 

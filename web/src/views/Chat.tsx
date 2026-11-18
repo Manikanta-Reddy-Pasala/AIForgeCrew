@@ -133,19 +133,18 @@ function mergeUsage(prev: LiveTurn, evt: any): LiveTurn {
 }
 
 
-// The POST body for a send — mode/quick/resume/builder/edit flags folded in.
+// The POST body for a send — mode/keep-going/resume/builder/edit flags folded in.
 function buildSendPayload(
   q: string, runMode: ChatMode, builder: unknown, editFrom: number | null,
   opts: { resume?: boolean; singleAgent?: boolean } | undefined,
-  reviewEdits: boolean, quickMode: boolean, contextMode: ContextMode = 'one',
+  reviewEdits: boolean, keepGoing: boolean, contextMode: ContextMode = 'one',
 ): Record<string, unknown> {
   return {
     content: q, mode: builder ? 'simple' : runMode, review_edits: reviewEdits,
     context: contextMode,
-    // Quick only applies to the single-agent modes; Team runs its own pipeline.
-    // An approved plan is real work. The Quick toggle must not cap it at
-    // a handful of steps the way it would a one-line question.
-    quick: (runMode !== 'team' && !opts?.singleAgent) ? quickMode : false,
+    // Keep going (big tasks): the turn starts over with a handoff instead of
+    // stopping when stuck or out of budget. Single-agent modes only.
+    ...(runMode !== 'team' && keepGoing ? { persist: true } : {}),
     // Resume a stopped turn rather than redo it. The server also infers this
     // when the same words are re-sent; the flag covers a rephrase.
     ...(opts?.resume ? { resume: true } : {}),
@@ -229,28 +228,31 @@ function ModeToggle({ chatMode, setChatMode, busy }: Readonly<{
   );
 }
 
-// Quick: one doer, hard step cap. Hidden in Team (nothing to cap).
-function QuickToggle({ chatMode, quickMode, setQuickMode, busy }: Readonly<{
-  chatMode: ChatMode; quickMode: boolean; setQuickMode: React.Dispatch<React.SetStateAction<boolean>>; busy: boolean;
+// Keep going: for big tasks — the agent keeps working on the goal instead of
+// stopping when it gets stuck or runs out of budget (fresh start with a
+// handoff, bounded). Hidden in Team (its own pipeline).
+function KeepGoingToggle({ chatMode, keepGoing, setKeepGoing, busy }: Readonly<{
+  chatMode: ChatMode; keepGoing: boolean; setKeepGoing: React.Dispatch<React.SetStateAction<boolean>>; busy: boolean;
 }>) {
   if (chatMode === 'team') return null;
   return (
     <button
       type="button"
-      onClick={() => setQuickMode(v => !v)}
+      onClick={() => setKeepGoing(v => !v)}
       disabled={busy}
-      title={quickMode
-        ? 'Quick ON — a single doer with a hard step cap. Best for a rename, a one-line fix or a question, where the agent\'s own exploration costs more than the change. Click to turn OFF.'
-        : 'Quick OFF — the agent works until it is done (normal). Turn ON for small asks that should not take minutes.'}
+      aria-pressed={keepGoing}
+      title={keepGoing
+        ? 'Keep going ON (big tasks) — when the agent gets stuck or runs out of its step/time budget it starts over from a fresh context with a handoff of what is known and what failed, and keeps working on the goal (up to 8 fresh starts or 4 hours). Click to turn OFF.'
+        : 'Keep going OFF — the agent stops and reports when it gets stuck or runs out of budget. Turn ON for big tasks that should keep going until solved.'}
       style={{
         display: 'flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-xs)',
         padding: '2px 8px', borderRadius: 999, cursor: 'pointer',
-        border: `1px solid ${quickMode ? 'var(--accent,#2f81f7)' : 'var(--border-1)'}`,
-        background: quickMode ? 'rgba(47,129,247,0.10)' : 'transparent',
-        color: quickMode ? 'var(--accent,#2f81f7)' : 'var(--fg-2)',
+        border: `1px solid ${keepGoing ? 'var(--accent,#2f81f7)' : 'var(--border-1)'}`,
+        background: keepGoing ? 'rgba(47,129,247,0.10)' : 'transparent',
+        color: keepGoing ? 'var(--accent,#2f81f7)' : 'var(--fg-2)',
       }}
     >
-      {quickMode ? '⚡' : '🐢'} Quick {quickMode ? 'on' : 'off'}
+      {keepGoing ? '🔁' : '⏹'} Keep going {keepGoing ? 'on' : 'off'}
     </button>
   );
 }
@@ -288,7 +290,7 @@ function TemporaryToggle({ temporary, busy, onStart, onEnd }: Readonly<{
   );
 }
 
-// One context | Split: how a Simple chat holds its context. A pill like Quick,
+// One context | Split: how a Simple chat holds its context. A pill like Keep going,
 // so the header row does not grow. Hidden in Plan (one read-only agent) and
 // Team (its own pipeline).
 function ContextToggle({ chatMode, contextMode, setContextMode, busy, onCompact, compacting }: Readonly<{
@@ -1023,16 +1025,14 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
   // gate back can force it server-side with AIFORGE_CHAT_REVIEW_EDITS=1.
   // (Team/parallel runs never hold edits regardless.)
   const reviewEdits = false;
-  // Quick mode: cap the agent at a handful of steps for small asks. Persisted
-  // like the mode itself, because someone who wants it usually wants it for a
-  // run of small edits, not for one message.
-  const [quickMode, setQuickMode] = useState<boolean>(() => {
-    try { return localStorage.getItem('aiforge.chat.quick') === '1'; } catch { return false; }
+  // Keep going (big tasks): persisted like the mode itself.
+  const [keepGoing, setKeepGoing] = useState<boolean>(() => {
+    try { return localStorage.getItem('aiforge.chat.keepgoing') === '1'; } catch { return false; }
   });
   useEffect(() => {
-    try { localStorage.setItem('aiforge.chat.quick', quickMode ? '1' : '0'); } catch { /* ignore */ }
-  }, [quickMode]);
-  // One context (default) or Split — kept like Quick, across chats.
+    try { localStorage.setItem('aiforge.chat.keepgoing', keepGoing ? '1' : '0'); } catch { /* ignore */ }
+  }, [keepGoing]);
+  // One context (default) or Split — kept like Keep going, across chats.
   const [contextMode, setContextMode] = useState<ContextMode>(() => {
     try { return localStorage.getItem('aiforge.chat.context') === 'split' ? 'split' : 'one'; } catch { return 'one'; }
   });
@@ -2254,7 +2254,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
       const res = await fetch(chatSessionMessageURL(sessionId), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildSendPayload(q, runMode, builder, editFrom, opts, reviewEdits, quickMode, contextMode)),
+        body: JSON.stringify(buildSendPayload(q, runMode, builder, editFrom, opts, reviewEdits, keepGoing, contextMode)),
         signal: ctrl.signal,
       });
       await raiseForStatus(res);
@@ -2735,7 +2735,7 @@ export default function Chat({ project }: { project?: ChatProject } = {}) {
             <TemporaryToggle temporary={!!activeSession?.temporary} busy={busy}
               onStart={() => { createSession(undefined, true); }}
               onEnd={() => { if (activeId !== null) endTemporary(activeId); }} />
-            <QuickToggle chatMode={chatMode} quickMode={quickMode} setQuickMode={setQuickMode} busy={busy} />
+            <KeepGoingToggle chatMode={chatMode} keepGoing={keepGoing} setKeepGoing={setKeepGoing} busy={busy} />
             <ContextToggle chatMode={chatMode} contextMode={contextMode} setContextMode={setContextMode} busy={busy}
               compacting={compacting}
               onCompact={activeId !== null ? () => compactContext(activeId) : undefined} />

@@ -363,6 +363,8 @@ def _build_loop_state(messages, cwd, role, max_steps, complete_fn,
     from .._guards.zero_edit import head_commit
     st.head0 = head_commit(cwd)
     ensure_started(st)        # a request that arrives as 3+ parts is big from the start
+    from aiforge_core.runtime import chat_keep_going
+    chat_keep_going.start(st, session_id)   # "Keep going": fresh starts instead of stops
     # What the tree already held before this turn (the user's own dirty and
     # untracked code): the test-gaming check scans only THIS turn's lines.
     st.gaming_base = ""

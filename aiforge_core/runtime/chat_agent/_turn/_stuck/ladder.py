@@ -55,6 +55,10 @@ def change_approach(st, why: str, *, reply: str | None = None, prepare=None):
     result = yield from escalate(st, why)
     if result == "continue":
         return "continue"
+    from aiforge_core.runtime import chat_keep_going
+    if chat_keep_going.may_restart(st):      # "Keep going": start over, do not stop
+        yield from chat_keep_going.fresh_start(st, f"got stuck ({why.strip()[:120]})")
+        return "continue"
     # Giving up hands back what is on disk: never worse than the turn's best
     # tested state (a real Java service turn gave up with code that no
     # longer compiled — 0/18 where it started at 16/18).

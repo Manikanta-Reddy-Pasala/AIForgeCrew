@@ -212,6 +212,11 @@ def _step_cap_guard(st, n):
                            f"step budget to {st.safety} "
                            f"({st.extensions_used}/{st.ext_budget})"}
         else:
+            from aiforge_core.runtime import chat_keep_going
+            if chat_keep_going.may_restart(st):  # "Keep going": start over, do not stop
+                st.safety += st.cap_base
+                yield from chat_keep_going.fresh_start(st, "used its step budget without new progress")
+                return None
             from ._best_state import restore_if_worse
             yield from restore_if_worse(st)
             _fire_stop("cap", st.cwd)
@@ -302,6 +307,9 @@ def _time_wrap(st, now: float):
     if st.turn_deadline is None or getattr(st, "time_warned", False) \
             or st.extensions_used < st.ext_budget:
         return
+    from aiforge_core.runtime import chat_keep_going
+    if chat_keep_going.may_restart(st):
+        return                     # "Keep going": the time budget is renewed, no wrap-up
     left = st.turn_deadline - now
     wrap_at = max(_WRAP_MIN_S, _WRAP_SHARE * st.turn_budget_s)
     if wrap_at < left <= _HALF_SHARE * st.turn_budget_s \
@@ -337,6 +345,12 @@ def _deadline_guard(st, n):
         return None
     now = time.monotonic()          # read once: one clock per check
     yield from _time_wrap(st, now)
+    if now > st.turn_deadline and st.extensions_used >= st.ext_budget:
+        from aiforge_core.runtime import chat_keep_going
+        if chat_keep_going.may_restart(st):  # "Keep going": a new time slice, fresh start
+            st.turn_deadline = time.monotonic() + st.turn_budget_s
+            yield from chat_keep_going.fresh_start(st, "used its time budget")
+            return None
     if getattr(st, "deadline_final", None) is None \
             and st.extensions_used >= st.ext_budget and now > st.turn_deadline:
         # Out of time and no slice to buy (warned or not: one long step can
