@@ -44,6 +44,8 @@ def _t_command_wait(args: dict, _cwd: str) -> dict:
                     _cwd)
                 if note:
                     res["toolchain"] = note
+            from ._shell import _symbol_note
+            _symbol_note(res, job.cmd or "", _cwd)
     except Exception:  # noqa: BLE001
         pass
     return res

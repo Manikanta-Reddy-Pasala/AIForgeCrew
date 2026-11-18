@@ -878,7 +878,42 @@ def _t_run_command(args: dict, cwd: str) -> dict:
         res["note"] = ((str(res.get("note")) + " ") if res.get("note") else "") + (
             "(the trailing `| tail` was dropped: the tool keeps the last lines itself, and "
             "the exit code is now the command's own)")
+    _symbol_note(res, str(args.get("cmd") or ""), cwd)
     return res
+
+
+def _symbol_note(res, cmd: str, cwd: str) -> None:
+    """A failed build naming a type it cannot resolve: whether that type exists
+    (project or dependency jars) and the closest real names, so the model does
+    not grep for an invented API (aiforge_core.runtime.symbol_lookup)."""
+    failed = (isinstance(res, dict) and not res.get("running")
+              and res.get("code") not in (0, None))
+    if failed:
+        try:
+            text = f"{res.get('stdout') or ''}\n{res.get('stderr') or ''}\n{res.get('output') or ''}"
+            from aiforge_core.runtime import symbol_lookup
+            line = symbol_lookup.note(text, _jdk_key(cwd), jvm=bool(_JVM_BUILD.search(cmd)))
+            if line:
+                res["symbols"] = line
+        except Exception:  # noqa: BLE001 — a lookup never breaks the command result
+            pass
+    _remote_note(res, cmd, cwd)
+
+
+def _remote_note(res, cmd: str, cwd: str) -> None:
+    """A command run on another host (ssh/scp/rsync) while the local work is
+    not pushed, or the host lacks the branch: say so, with the branch name and
+    the commands that get the code there (aiforge_core.runtime.remote_sync)."""
+    try:
+        if not isinstance(res, dict) or res.get("running"):
+            return
+        from aiforge_core.runtime import remote_sync
+        text = f"{res.get('stdout') or ''}\n{res.get('stderr') or ''}\n{res.get('output') or res.get('new_output') or ''}"
+        line = remote_sync.note(cmd, text, cwd)
+        if line:
+            res["remote"] = line
+    except Exception:  # noqa: BLE001
+        return
 
 
 def _t_run_command_reuse(args: dict, cwd: str) -> dict:

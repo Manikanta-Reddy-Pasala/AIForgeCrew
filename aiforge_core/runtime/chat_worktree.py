@@ -774,7 +774,12 @@ def prompt_note(cwd: "str | None") -> str:
             f"The project's own folder, {repo}, belongs to the user and to other chats: do "
             "not read-modify-write files there by absolute path. Make every edit inside "
             "your workspace (relative paths). Your changes are committed to your branch "
-            "after each turn and the user merges them when ready."
+            "after each turn and the user merges them when ready.\n"
+            "To run or test this code on ANOTHER machine (a VM, a server over ssh): it "
+            "only sees what is pushed. Commit, `git push -u origin "
+            + (branch or "<your branch>") + "` here, then on that machine `git fetch origin "
+            + (branch or "<branch>") + " && git checkout " + (branch or "<branch>")
+            + "` — never pull there a branch you have not pushed."
             + _scratch_note(cwd))
 
 

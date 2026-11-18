@@ -75,6 +75,19 @@ def render_read(result: dict, cap: int) -> str:
     return text
 
 
+#: Advice the command tools attach to a result, shown right after the exit
+#: line (output tails get cut, these must not). Plain-text rendering used to
+#: drop them all: "the code has not changed since this test last ran" never
+#: reached the model (a run re-ran one unchanged test 16 times), nor did the
+#: JDK switch or the unresolved-symbol answer.
+_ADVICE_KEYS = ("reused", "toolchain", "symbols", "remote", "note")
+
+
+def _advice(result: dict, keys=_ADVICE_KEYS) -> str:
+    lines = [str(result[k]).strip() for k in keys if result.get(k)]
+    return "".join(f"[{x}]\n" for x in lines if x)
+
+
 def render_job(result: dict, cap: int) -> str:
     """A command handed back at a check-in, or a look at one. A running job
     has no exit code: calling it ``exit 0`` told the model a build that was
@@ -97,7 +110,7 @@ def render_job(result: dict, cap: int) -> str:
         state = [f"FINISHED (job {key}){took}, exit {code if code is not None else '?'}"]
         if result.get("stopped"):
             state.append(f"stopped: {result.get('error') or 'killed'}")
-    head = "; ".join(state) + "\n"
+    head = "; ".join(state) + "\n" + _advice(result)
     if result.get("returned_because"):
         head += f"returned early: {result['returned_because']}\n"
     hint = str(result.get("hint") or "")
@@ -126,7 +139,7 @@ def render_command(result: dict, cap: int) -> str:
                 if result.get("recipe_was") else f"[recipe {result['recipe']}]\n")
     elif result.get("recipe_warn"):
         head = (f"[this project has a {result['recipe_warn']} recipe — use it next time]\n")
-    header = head + header
+    header = head + header + _advice(result, _ADVICE_KEYS + ("hint",))
     spare = max(0, cap - len(header))
     err_budget = spare // 2 if out else spare
     err_tail = _tail(err, err_budget)
