@@ -57,6 +57,13 @@ def _gaps(st, cached: bool = True) -> list:
             gaps = gaps + [g for g in typed_contract.missing(goal, str(cwd)) if g not in gaps]
     except Exception:  # noqa: BLE001
         pass
+    try:     # the calls the request says the test mocks (an unmocked call returns null)
+        from aiforge_core.runtime import mock_contract
+        if spec_contract.enabled():
+            gaps = gaps + [g for g in mock_contract.missing(goal, str(cwd), work_base(st))
+                           if g not in gaps]
+    except Exception:  # noqa: BLE001
+        pass
     # What the user said mid-run wins over the first message: a gap whose
     # names a steer mentions ("skip the invoices module") is theirs to drop.
     said = " ".join(str(s) for s in (getattr(st, "steers", None) or [])).lower()
