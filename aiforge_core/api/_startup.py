@@ -194,6 +194,17 @@ def _sweep_temporary_chats() -> None:
         logging.getLogger("aiforge").warning("temporary chat sweep skipped: %s", exc)
 
 
+def _start_worktree_sweep() -> None:
+    """Chat worktrees of chats idle for days are removed every six hours; their
+    branches are kept and the chat goes back on it at its next message
+    (runtime/chat_worktree.sweep)."""
+    try:
+        from aiforge_core.runtime import chat_worktree, periodic
+        periodic.register("chat-worktree-sweep", chat_worktree.sweep, every_s=6 * 3600)
+    except Exception as exc:  # noqa: BLE001 — never block boot on this
+        logging.getLogger("aiforge").warning("worktree sweep skipped: %s", exc)
+
+
 def _start_log_cleanup() -> None:
     """Logs and evidence older than ``log_retention_days`` (default 15) are
     cleaned up now and every six hours (runtime/log_retention)."""

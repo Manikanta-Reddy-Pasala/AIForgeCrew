@@ -353,8 +353,9 @@ def ensure(session_id, *, place: "str | None" = None,
         sess = _session(session_id) or sess
         if workdir_of(sess):
             return info(sess)
-        token = uuid.uuid4().hex[:4]
-        branch = f"{_prefix(repo)}/chat-{sess['id']}-{token}"
+        parked = _parked_branch(repo, sess["id"])
+        token = parked.rsplit("-", 1)[-1] if parked else uuid.uuid4().hex[:4]
+        branch = parked or f"{_prefix(repo)}/chat-{sess['id']}-{token}"
         _exclude_state(repo)           # before the folder exists in the repo
         run_dir = _run_dir(repo, f"chat-{sess['id']}-{token}", place)
         wt = os.path.join(run_dir, "work")
@@ -362,8 +363,13 @@ def ensure(session_id, *, place: "str | None" = None,
         base_sha = _out(["rev-parse", "HEAD"], repo)
         base_branch = _out(["symbolic-ref", "--short", "-q", "HEAD"], repo)
         dirty = _tw.dirty_files(repo)
+        if parked:
+            # Its worktree was swept while idle: back on its own branch, with
+            # what it had committed; "ahead" counts from where it forked.
+            base_sha = _out(["merge-base", base_sha, parked], repo) or base_sha
         try:
-            p = _git(["worktree", "add", "-q", "-b", branch, wt, base_sha], repo,
+            p = _git(["worktree", "add", "-q", wt, branch] if parked else
+                     ["worktree", "add", "-q", "-b", branch, wt, base_sha], repo,
                      _timeout("AIFORGE_CHAT_WORKTREE_ADD_S", 900))
         except subprocess.TimeoutExpired:
             shutil.rmtree(run_dir, ignore_errors=True)
@@ -386,6 +392,8 @@ def ensure(session_id, *, place: "str | None" = None,
                          "dirty_at_start": dirty})
         from aiforge_core.runtime import chat_store
         chat_store.set_session_workdir(sess["id"], wt)
+        if parked:
+            _unpark(sess["id"])
     return info(_session(session_id))
 
 
@@ -633,7 +641,121 @@ def remove(session_id) -> dict:
             log.warning("worktree remove failed for %s: %s", wt, exc)
         shutil.rmtree(os.path.dirname(wt), ignore_errors=True)
         out["removed"] = not os.path.isdir(wt)
+        if out["removed"] and repo and out["branch"]:
+            _park(sess["id"], repo, out["branch"])
     chat_store.set_session_workdir(sess["id"], None)
+    return out
+
+
+# ── parked branches and the idle sweep ───────────────────────────────────────
+# One worktree per chat is a full checkout; chats are rarely deleted, so they
+# piled up (one per chat, forever). An idle chat's worktree is removed by
+# :func:`sweep`; its branch is PARKED and :func:`ensure` puts the chat back on
+# it at its next message, so nothing it did is lost or forked.
+
+def _parked_path() -> str:
+    return os.path.join(_root(), "parked-branches.json")
+
+
+def _parked() -> dict:
+    try:
+        with open(_parked_path(), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_parked(data: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(_parked_path()), exist_ok=True)
+        tmp = _parked_path() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=1)
+        os.replace(tmp, _parked_path())
+    except OSError as exc:
+        log.debug("parked branches not saved: %s", exc)
+
+
+def _park(session_id, repo: str, branch: str) -> None:
+    with _lock("parked"):
+        data = _parked()
+        data[str(session_id)] = {"repo": repo, "branch": branch}
+        _save_parked(data)
+
+
+def _unpark(session_id) -> None:
+    with _lock("parked"):
+        data = _parked()
+        if data.pop(str(session_id), None) is not None:
+            _save_parked(data)
+
+
+def _parked_branch(repo: str, session_id) -> str:
+    """The chat's own branch from before its worktree was swept, when it still
+    exists in this repo; else ""."""
+    ent = _parked().get(str(session_id)) or {}
+    br = ent.get("branch") or ""
+    if not br or os.path.realpath(ent.get("repo") or "") != os.path.realpath(repo):
+        return ""
+    return br if _git(["rev-parse", "--verify", "-q", f"refs/heads/{br}"], repo).returncode == 0 else ""
+
+
+def _idle_days() -> float:
+    try:
+        return max(0.0, float(os.environ.get("AIFORGE_CHAT_WORKTREE_IDLE_DAYS", "3")))
+    except ValueError:
+        return 3.0
+
+
+def _age_days(stamp) -> float:
+    import datetime as _dt
+    import time as _time
+    try:
+        if isinstance(stamp, (int, float)):
+            t = float(stamp)
+        else:
+            t = _dt.datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp()
+        return (_time.time() - t) / 86400.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def sweep() -> dict:
+    """Remove the worktrees of chats idle for ``AIFORGE_CHAT_WORKTREE_IDLE_DAYS``
+    (default 3; 0 = never). Uncommitted work is committed to the chat's branch
+    first and the branch is parked for its next message. Parked branches whose
+    commits are all in the branch they came from are deleted (``branch -d``:
+    git refuses anything unmerged)."""
+    out = {"removed": 0, "branches_deleted": 0}
+    days = _idle_days()
+    if not days or not enabled():
+        return out
+    from aiforge_core.runtime import chat_runs, chat_store
+    for s in chat_store.list_sessions() or []:
+        if s.get("parent_id") or not s.get("workdir"):
+            continue
+        if _age_days(s.get("updated_at")) < days:
+            continue
+        try:
+            if chat_runs.is_running(s["id"]) or chat_runs.start_lock_held(s["id"]):
+                continue
+            if remove(s["id"]).get("removed"):
+                out["removed"] += 1
+        except Exception as exc:  # noqa: BLE001 — one chat never stops the sweep
+            log.warning("worktree sweep skipped chat %s: %s", s.get("id"), exc)
+    data = _parked()
+    for sid, ent in list(data.items()):
+        repo, br = ent.get("repo") or "", ent.get("branch") or ""
+        if not repo or not br or not os.path.isdir(repo):
+            continue
+        base = _out(["symbolic-ref", "--short", "-q", "HEAD"], repo) or "HEAD"
+        if _git(["merge-base", "--is-ancestor", br, base], repo).returncode == 0 \
+                and _git(["branch", "-d", br], repo).returncode == 0:
+            data.pop(sid, None)
+            out["branches_deleted"] += 1
+    if out["branches_deleted"]:
+        _save_parked(data)
     return out
 
 

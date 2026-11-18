@@ -597,3 +597,60 @@ def test_git_not_answering_holds_nothing(env, monkeypatch):
         return real(args, cwd, timeout, ok)
     monkeypatch.setattr(chat_run_only, "_git", flaky)
     assert "check_vat.py" in cw.seal_for_session(sid, "add vat", steps=steps)
+
+
+# ── idle sweep: the worktree goes, the branch stays, the chat comes back to it ──
+
+def _make_idle(env, sid, monkeypatch):
+    cw = _cw()
+    real = env.store.list_sessions
+    monkeypatch.setattr(env.store, "list_sessions", lambda: [
+        {**s, "updated_at": "2020-01-01T00:00:00"} if s["id"] == sid else s for s in real()])
+    return cw
+
+
+def test_an_idle_chats_worktree_is_swept_and_its_branch_resumed(env, monkeypatch):
+    cw = _cw()
+    sid = env.new_chat()
+    data = cw.ensure(sid)
+    wt, branch = data["path"], data["branch"]
+    open(os.path.join(wt, "src", "tax.py"), "w").write("def vat(x):\n    return x * 0.2\n")
+    open(os.path.join(wt, "src", "draft.py"), "w").write("x = 1\n")      # never sealed yet
+    cw.seal_for_session(sid, "add tax")
+    open(os.path.join(wt, "src", "draft.py"), "w").write("x = 2\n")      # uncommitted at sweep time
+    other = env.new_chat()
+    cw.ensure(other)                                                     # active chat: not idle
+    _make_idle(env, sid, monkeypatch)
+    res = cw.sweep()
+    assert res["removed"] == 1 and not os.path.isdir(wt)
+    assert cw.workdir_of(env.store.get_session(other))                  # the active one stays
+    assert _git(env.repo, "rev-parse", "--verify", "-q", branch).returncode == 0   # branch kept
+    back = cw.ensure(sid)                                                # next message
+    assert back["branch"] == branch and back["ahead"] >= 2
+    assert open(os.path.join(back["path"], "src", "draft.py")).read() == "x = 2\n"
+    assert open(os.path.join(back["path"], "src", "tax.py")).read().startswith("def vat")
+
+
+def test_a_merged_parked_branch_is_deleted_an_unmerged_one_kept(env, monkeypatch):
+    cw = _cw()
+    a, b = env.new_chat(), env.new_chat()
+    wa, wb = cw.ensure(a)["path"], cw.ensure(b)["path"]
+    br_a, br_b = cw.info(env.store.get_session(a))["branch"], cw.info(env.store.get_session(b))["branch"]
+    open(os.path.join(wa, "src", "a.py"), "w").write("a = 1\n")
+    open(os.path.join(wb, "src", "b.py"), "w").write("b = 1\n")
+    assert cw.merge(a)["ok"]                                             # a's work is in main
+    cw.remove(a)
+    cw.remove(b)
+    res = cw.sweep()
+    assert res["branches_deleted"] == 1
+    assert _git(env.repo, "rev-parse", "--verify", "-q", br_a).returncode != 0
+    assert _git(env.repo, "rev-parse", "--verify", "-q", br_b).returncode == 0
+
+
+def test_sweep_off_with_zero_days(env, monkeypatch):
+    monkeypatch.setenv("AIFORGE_CHAT_WORKTREE_IDLE_DAYS", "0")
+    cw = _cw()
+    sid = env.new_chat()
+    wt = cw.ensure(sid)["path"]
+    _make_idle(env, sid, monkeypatch)
+    assert cw.sweep()["removed"] == 0 and os.path.isdir(wt)
