@@ -1,9 +1,10 @@
 """Mid-run steering (Gap A, team mode) on the lean graph.
 
-Lean loop: doer1 → feedback(fail) → doer2 → feedback(pass) → exit.
-A steer pushed while doer1 is in flight is drained by doer2 (the next
-executor model call). Full-graph refiner drain is covered under
-AIFORGE_FORCE_FULL_PIPELINE=1.
+Lean loop: doer1 → [refiner] → feedback(fail) → doer2 → feedback(pass) → exit.
+A steer pushed while doer1 is in flight is drained by the next executor
+model call: the refiner when it runs (a plan that is not ``plan_small``),
+else doer2 (a small plan skips the plan critic and the polish). Full-graph
+refiner drain is covered under AIFORGE_FORCE_FULL_PIPELINE=1.
 """
 from __future__ import annotations
 
@@ -24,6 +25,12 @@ def _contents_text(llm_request) -> list[str]:
     ]
 
 
+# A plan with a wildcard scope is not ``plan_small``: verifier + refiner run.
+_WIDE_PLAN = 'PLAN: {"subtickets": [{"scope_allowlist_globs": ["src/a/**"]}]}'
+# One named file, no subtickets: ``plan_small``, verifier + refiner skip.
+_SMALL_PLAN = 'PLAN: {"scope_allowlist_globs": ["src/a.py"]}'
+
+
 def _make_stub(role: str, calls: list, doer_contents: list,
                refiner_contents: list, barrier):
     replies = {
@@ -32,8 +39,7 @@ def _make_stub(role: str, calls: list, doer_contents: list,
         "validator": '{"verdict": "approve", "rationale": "ok", '
                      '"scope_ok": true, "tests_present": true, '
                      '"regression_risk": "low"}',
-        "planner": 'PLAN: {"subtickets": '
-                   '[{"scope_allowlist_globs": ["src/a/**"]}]}',
+        "planner": barrier.get("planner_reply", _WIDE_PLAN),
         "verifier": '{"verdict": "pass", "rationale": "ok"}',
         "enhancer": "## Goal\nfix it",
     }
@@ -80,13 +86,11 @@ def _stub_pipeline(monkeypatch):
     chat_interject.clear(SESSION_ID)
 
 
-def test_steer_pushed_mid_run_reaches_next_doer_on_lean(_stub_pipeline, monkeypatch):
-    monkeypatch.delenv("AIFORGE_FORCE_FULL_PIPELINE", raising=False)
+def _run_lean(pl, barrier):
     from aiforge_core.runtime import chat_interject
     from google.adk.runners import Runner
     from google.adk.sessions import InMemorySessionService
 
-    pl, calls, doer_contents, refiner_contents, barrier = _stub_pipeline
     wf = pl.build_pipeline()
 
     async def push_steer_when_ready():
@@ -107,6 +111,35 @@ def test_steer_pushed_mid_run_reaches_next_doer_on_lean(_stub_pipeline, monkeypa
         await pusher
 
     asyncio.run(asyncio.wait_for(_go(), timeout=120))
+
+
+def test_steer_drained_by_refiner_on_lean_wide_plan(_stub_pipeline, monkeypatch):
+    """A plan that is not small keeps the polish on the lean path, so the
+    refiner is the next executor call and drains the steer (once)."""
+    monkeypatch.delenv("AIFORGE_FORCE_FULL_PIPELINE", raising=False)
+    from aiforge_core.runtime import chat_interject
+
+    pl, calls, doer_contents, refiner_contents, barrier = _stub_pipeline
+    _run_lean(pl, barrier)
+
+    assert "refiner" in calls
+    assert calls.count("doer") == 2, f"expected 2 doer iterations, got: {calls}"
+    STEER_MARK = "focus on error handling"
+    assert STEER_MARK not in " ".join(doer_contents[0])
+    assert STEER_MARK in " ".join(refiner_contents[0])
+    assert STEER_MARK not in " ".join(doer_contents[1])
+    assert chat_interject.pending(SESSION_ID) is False
+
+
+def test_steer_pushed_mid_run_reaches_next_doer_on_lean(_stub_pipeline, monkeypatch):
+    """A small plan skips the polish, so doer2 is the next executor call."""
+    monkeypatch.delenv("AIFORGE_FORCE_FULL_PIPELINE", raising=False)
+    monkeypatch.delenv("AIFORGE_SMALL_PLAN_SKIP", raising=False)
+    from aiforge_core.runtime import chat_interject
+
+    pl, calls, doer_contents, refiner_contents, barrier = _stub_pipeline
+    barrier["planner_reply"] = _SMALL_PLAN
+    _run_lean(pl, barrier)
 
     assert "refiner" not in calls
     assert calls.count("doer") == 2, f"expected 2 doer iterations, got: {calls}"

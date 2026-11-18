@@ -452,10 +452,17 @@ def test_a_broken_router_module_never_blocks_the_turn(monkeypatch):
 # ─── plan mode ─────────────────────────────────────────────────────────
 
 
+# plan_ready is offered only for a final message that reads as a plan
+# (_routing._looks_like_plan), so the stub agent ends with one.
+_PLAN_MSG = {"type": "message",
+             "text": "FINAL:\n## Goal\nAdd the helper\n## Steps\n1. edit a.py"}
+
+
 @pytest.fixture
 def plan_agent(monkeypatch):
     import aiforge_core.runtime.chat_agent as ca
-    state: dict = {"events": [{"type": "step"}, {"type": "done"}], "kw": {}}
+    state: dict = {"events": [{"type": "step"}, _PLAN_MSG, {"type": "done"}],
+                   "kw": {}}
 
     def _run(history, **kw):
         state["kw"] = kw
@@ -475,6 +482,7 @@ def test_the_plan_reaches_the_ui_before_the_turn_ends(pp, plan_agent):
     evs = _plan_mode(pp)
     assert [e["type"] for e in evs[-2:]] == ["plan_ready", "done"]
     assert evs[-2]["spec"] == "the spec"
+    assert evs[-2]["plan"] == _PLAN_MSG["text"]
 
 
 def test_plan_mode_starts_the_agent_without_a_planner_call(pp, plan_agent):
@@ -489,12 +497,12 @@ def test_plan_mode_starts_the_agent_without_a_planner_call(pp, plan_agent):
     pp["ns"]._decompose = _decompose
     evs = _plan_mode(pp)
     assert calls["n"] == 0
-    assert [e["type"] for e in evs] == ["step", "plan_ready", "done"]
+    assert [e["type"] for e in evs] == ["step", "message", "plan_ready", "done"]
     assert "subtasks" not in [e["type"] for e in evs]
 
 
 def test_an_agent_that_never_finishes_still_yields_the_plan(pp, plan_agent):
-    plan_agent["events"] = [{"type": "step"}]
+    plan_agent["events"] = [{"type": "step"}, _PLAN_MSG]
     assert _plan_mode(pp)[-1]["type"] == "plan_ready"
 
 
@@ -502,6 +510,7 @@ def test_an_agent_that_never_finishes_still_yields_the_plan(pp, plan_agent):
     {"type": "error", "text": "the model didn't respond"},
     {"type": "stopped", "reason": "deadline"},
     {"type": "message", "text": "Which database?", "awaiting_input": True},
+    {"type": "message", "text": "ok, done."},      # not a plan
 ])
 def test_a_failed_or_open_planning_turn_offers_no_plan(pp, plan_agent, failure):
     """"Approve & Execute" after a turn that produced no plan ran an unplanned
@@ -519,9 +528,17 @@ def test_quick_mode_caps_the_plan_agents_steps(pp, plan_agent, monkeypatch):
     assert plan_agent["kw"]["mode"] == "plan"
 
 
-def test_a_normal_turn_runs_the_open_loop(pp, plan_agent):
+def test_a_normal_turn_runs_the_open_loop(pp, plan_agent, monkeypatch):
+    """Plan mode is always step-capped (AIFORGE_CHAT_PLAN_STEPS, default 8)
+    so a plan turn cannot wander; a normal turn gets the plan cap, not the
+    tighter quick cap."""
+    monkeypatch.delenv("AIFORGE_CHAT_PLAN_STEPS", raising=False)
+    monkeypatch.setenv("AIFORGE_CHAT_QUICK_STEPS", "3")
     _plan_mode(pp)
-    assert plan_agent["kw"]["max_steps"] is None
+    assert plan_agent["kw"]["max_steps"] == 8
+    monkeypatch.setenv("AIFORGE_CHAT_PLAN_STEPS", "5")
+    _plan_mode(pp)
+    assert plan_agent["kw"]["max_steps"] == 5
 
 
 # ─── gathering the routing inputs ──────────────────────────────────────

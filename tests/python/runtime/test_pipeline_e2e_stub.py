@@ -73,16 +73,22 @@ def _drive(workflow, prompt: str) -> dict:
 
 
 def test_lean_graph_executes_every_stage(_stub_pipeline, monkeypatch) -> None:
-    """P0 guard: lean default must not stall; no enhancer/refiner/verifier."""
+    """P0 guard: lean default must not stall; no enhancer/context fan-out.
+
+    The stub plan scopes a wildcard glob, so it is not ``plan_small`` and
+    the plan critic (verifier) and polish (refiner) run on the lean path."""
     monkeypatch.delenv("AIFORGE_FORCE_FULL_PIPELINE", raising=False)
     pl, calls = _stub_pipeline
     wf = pl.build_pipeline()
     state = _drive(wf, "# Ticket T-1\nfix the thing")
     assert calls[0] == "triage"
-    for stage in ("planner", "doer", "feedback", "validator", "learner"):
+    for stage in ("planner", "verifier", "doer", "refiner", "feedback",
+                  "validator", "learner"):
         assert stage in calls, f"{stage} never ran — graph stalled. {calls}"
-    for gone in ("enhancer", "refiner", "verifier", "ctx_repomap"):
+    for gone in ("enhancer", "ctx_repomap", "ctx_conventions"):
         assert gone not in calls
+    assert calls.index("planner") < calls.index("verifier") < calls.index("doer")
+    assert calls.index("doer") < calls.index("refiner")
     assert calls.index("planner") < calls.index("doer")
     assert calls.index("doer") < calls.index("validator")
     assert state.get("scope_allowlist_globs") == ["src/a/**"]

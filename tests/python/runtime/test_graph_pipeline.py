@@ -84,7 +84,14 @@ def test_triage_gate_trivial_routes_trivial() -> None:
     assert ctx.route == gp.ROUTE_TRIVIAL
 
 
-def test_triage_gate_default_routes_full() -> None:
+def test_triage_gate_default_routes_full(monkeypatch) -> None:
+    # Lean default: a non-trivial (here: unknown) ticket goes to the Planner.
+    monkeypatch.delenv("AIFORGE_FORCE_FULL_PIPELINE", raising=False)
+    ctx = _FakeCtx({})
+    _run(gp._triage_gate(ctx))
+    assert ctx.route == gp.ROUTE_SMALL
+    # The full enhancer + context graph is taken only under FORCE_FULL.
+    monkeypatch.setenv("AIFORGE_FORCE_FULL_PIPELINE", "1")
     ctx = _FakeCtx({})
     _run(gp._triage_gate(ctx))
     assert ctx.route == gp.ROUTE_FULL
@@ -199,7 +206,12 @@ def test_verifier_gate_pass_routes_to_doer() -> None:
 
 def _build_stub_graph(order, *, validator_sets, verifier_rejects=False):
     """Mirror the real pipeline topology but stub the agents as recording
-    FunctionNodes, wired through the REAL gate + merge nodes."""
+    FunctionNodes, wired through the REAL gate + merge nodes.
+
+    This is the FULL graph (enhancer + context fan-out), so a non-trivial
+    run needs ``AIFORGE_FORCE_FULL_PIPELINE=1`` (the ``full_graph`` fixture):
+    on the lean default the triage gate routes non-trivial work to the
+    Planner directly and this graph has no such edge."""
 
     def agent_stub(name, sets=None):
         async def _fn(ctx):
@@ -261,6 +273,11 @@ def _build_stub_graph(order, *, validator_sets, verifier_rejects=False):
     return Workflow(name="stub", edges=edges)
 
 
+@pytest.fixture
+def full_graph(monkeypatch):
+    monkeypatch.setenv("AIFORGE_FORCE_FULL_PIPELINE", "1")
+
+
 def _drive(wf, initial_state):
     async def _go():
         svc = InMemorySessionService()
@@ -276,7 +293,7 @@ def _drive(wf, initial_state):
     return asyncio.run(_go())
 
 
-def test_graph_full_path_order_and_merges() -> None:
+def test_graph_full_path_order_and_merges(full_graph) -> None:
     order: list = []
     wf = _build_stub_graph(order, validator_sets={
         "validator_verdict": '{"verdict":"approve"}'})
@@ -304,7 +321,7 @@ def test_graph_trivial_path_skips_planning() -> None:
     assert order[-1] == "learner"
 
 
-def test_graph_replan_loops_back_to_planner_once() -> None:
+def test_graph_replan_loops_back_to_planner_once(full_graph) -> None:
     order: list = []
     wf = _build_stub_graph(order, validator_sets={
         "validator_verdict": '{"verdict":"request_changes"}'})
@@ -316,7 +333,7 @@ def test_graph_replan_loops_back_to_planner_once() -> None:
     assert state.get("replan_count") == 1
 
 
-def test_graph_verifier_validator_pingpong_is_bounded() -> None:
+def test_graph_verifier_validator_pingpong_is_bounded(full_graph) -> None:
     """Worst case: verifier ALWAYS rejects + validator ALWAYS rejects.
     validator-replan clears verify_replan_count, so the budgets compose:
     (MAX_REPLANS+1) × (MAX_VERIFY_REPLANS+1) = 4 planner runs max — the

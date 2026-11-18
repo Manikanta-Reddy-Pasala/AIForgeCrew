@@ -62,7 +62,10 @@ def cfg(monkeypatch):
     ("doer", "pipeline"),
     ("nosuchrole", "pipeline"),
 ])
-def test_roles_are_grouped_for_the_page(role, group):
+def test_roles_are_grouped_for_the_page(role, group, monkeypatch):
+    # Orchestrator / Fan-out strips exist only on the full graph; the lean
+    # default folds them into the Team group (test_lean_agents_visibility).
+    monkeypatch.setenv("AIFORGE_FORCE_FULL_PIPELINE", "1")
     assert ag._role_group(role) == group
 
 

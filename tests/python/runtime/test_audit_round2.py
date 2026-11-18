@@ -177,6 +177,8 @@ def test_quality_signal_callback_never_alters_response() -> None:
 
 def test_pipeline_modes_and_retry(monkeypatch) -> None:
     monkeypatch.setenv("AIFORGE_ESCALATE_DISABLE", "1")
+    # The enhancer exists only on the full graph (the lean default has none).
+    monkeypatch.setenv("AIFORGE_FORCE_FULL_PIPELINE", "1")
     monkeypatch.delenv("AIFORGE_DOER_PROTOCOL", raising=False)  # pin the default
     from aiforge_core.runtime.pipeline import build_pipeline
     p = build_pipeline(skip_researcher=True)

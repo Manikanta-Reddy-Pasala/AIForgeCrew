@@ -31,6 +31,8 @@ def _stub_pipeline(monkeypatch):
     monkeypatch.setenv("AIFORGE_ESCALATE_DISABLE", "1")
     monkeypatch.setenv("AIFORGE_OBSERVABILITY_DISABLE", "1")
     monkeypatch.setenv("AIFORGE_CHAT_LEAN", "1")   # skip researcher/ctx agents
+    # The enhancer runs only on the full graph; the lean default has none.
+    monkeypatch.setenv("AIFORGE_FORCE_FULL_PIPELINE", "1")
     import aiforge_core.runtime.pipeline as pl
     calls: list = []
     replies = {
