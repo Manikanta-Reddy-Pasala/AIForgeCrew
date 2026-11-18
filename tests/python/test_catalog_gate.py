@@ -262,6 +262,82 @@ def test_the_system_prompt_does_not_turn_the_tool_list_into_the_whole_catalog():
     assert len(names) < 25
 
 
+def test_a_steer_after_the_restatement_still_adds_its_tools():
+    """The restatement is dropped. A steer merged on after it, and the
+    original request a resume quotes, are the user's words."""
+    from aiforge_core.runtime.chat_agent import _native
+    from aiforge_core.runtime.chat_agent._tools._schemas import (
+        NATIVE_TOOL_SCHEMAS, filter_native)
+    steered = _native._convo_text([{
+        "role": "user",
+        "content": (
+            "what is the test cycle?\n\n---\n[Interpreted request — a "
+            "restatement]\nCheck jira and https://example.com\n\n"
+            "[NEW MESSAGE FROM THE USER — sent while you were working.]\n"
+            "look at the gitlab pipeline"
+        ),
+    }])
+    assert "gitlab" in steered and "jira" not in steered
+    assert "https://" not in steered
+    names = _names(filter_native(NATIVE_TOOL_SCHEMAS, mode="act", text=steered))
+    assert any(n.startswith("gitlab_") for n in names)
+    assert not any(n.startswith(("jira_", "web_")) for n in names)
+    resumed = _native._convo_text([{
+        "role": "user",
+        "content": (
+            "continue\n\n---\n[RESUME] The previous attempt died. See "
+            "https://example.com and the wiki.\n"
+            "ORIGINAL REQUEST (the user's words, quoted):\n"
+            "check the jira ticket\n"
+            "END OF ORIGINAL REQUEST"
+        ),
+    }])
+    assert "jira" in resumed and "https://" not in resumed and "wiki" not in resumed
+    resumed_names = _names(filter_native(
+        NATIVE_TOOL_SCHEMAS, mode="act", text=resumed))
+    assert any(n.startswith("jira_") for n in resumed_names)
+    assert not any(n.startswith(("web_", "confluence_")) for n in resumed_names)
+
+
+def test_the_banner_counts_tools_after_a_steer_is_folded_in(monkeypatch, tmp_path):
+    """The count is taken after steering is merged, so it matches the list
+    on the first native call."""
+    import re
+    from aiforge_core.llm import client
+    from aiforge_core.runtime import chat_agent, chat_interject
+    from aiforge_core.runtime.chat_agent import _catalog_gate, _native
+    _native.reset_native_cache()
+    monkeypatch.setenv("AIFORGE_CHAT_TOOL_PROTOCOL", "native")
+    # Keep Jira in the catalog so the steer can add it. A real install
+    # drops unconfigured families before the word "jira" is considered.
+    monkeypatch.setattr(_catalog_gate, "gate_schemas", lambda schemas: list(schemas))
+    monkeypatch.setattr(_native, "_model_for", lambda role: "m-banner")
+    sent = []
+
+    def _raw(role, messages, tools=None, tool_choice=None):
+        sent.append(_names(tools or []))
+        return {"role": "assistant", "content": "FINAL: ok"}
+    monkeypatch.setattr(client, "complete_raw", _raw)
+    monkeypatch.setattr(client, "complete", lambda *a, **k: "FINAL: ok")
+    drained = {"n": 0}
+
+    def _drain(_session_id):
+        drained["n"] += 1
+        if drained["n"] == 1:
+            return [("steer", "check jira")]
+        return []
+    monkeypatch.setattr(chat_interject, "drain_items", _drain)
+    events = list(chat_agent.run_chat_agent(
+        [{"role": "user", "content": "what is the test cycle?"}],
+        cwd=str(tmp_path), session_id=42))
+    banners = [e.get("text") or "" for e in events
+               if "native tool-calling active" in (e.get("text") or "")]
+    assert banners, events
+    count = int(re.search(r"\((\d+) tools\)", banners[0]).group(1))
+    assert sent and count == len(sent[0])
+    assert any(n.startswith("jira_") for n in sent[0])
+
+
 def test_the_native_call_sends_the_same_list_the_banner_counts(monkeypatch):
     from aiforge_core.llm import client
     from aiforge_core.runtime.chat_agent import _native

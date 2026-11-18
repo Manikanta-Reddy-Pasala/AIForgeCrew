@@ -141,26 +141,31 @@ def _emit_loop_prelude(st):
             # Both keys go out: `title` is kept for anything already reading it.
             {"slug": f"part-{i + 1}", "goal": a, "title": a, "status": "pending"}
             for i, a in enumerate(st.asks)]}
-    # One-time visibility: confirm native tool-calling is driving this run (every
-    # tool call goes through native OpenAI function-calling, not the text
-    # ACTION/ARGS_JSON protocol). Opt out of the banner: AIFORGE_CHAT_NATIVE_BANNER=0.
-    if st.native_on and os.environ.get("AIFORGE_CHAT_NATIVE_BANNER", "1") not in ("0", "false"):
-        try:
-            from ._native import select_native_tools
-            _mode = ("plan" if st.plan_mode else
-                     "analyze" if st.analyze_mode else "act")
-            # The same list the native call sends. Counting the gated catalog
-            # here reported ~63 tools while the model was offered the short
-            # core list — or the reverse, when the system prompt's "jira" /
-            # "https://" lines were treated as the user naming those systems.
-            _ntools = len(select_native_tools(
-                getattr(st, "convo", None), mode=_mode,
-                builder=getattr(st, "builder", "") or "",
-                session_id=getattr(st, "session_id", None)))
-        except Exception:  # noqa: BLE001
-            _ntools = 0
-        yield {"type": "thought", "role": "system",
-               "text": f"🔌 native tool-calling active ({_ntools} tools)"}
+    # The tool-count banner is not emitted here: steering is drained and the
+    # history condensed before the first model call, and both change the user
+    # text the tool filter sees. _native_banner counts it on that convo.
+
+
+def _native_banner(st):
+    """One line, once, with the tool count the first native call will send.
+    Opt out: AIFORGE_CHAT_NATIVE_BANNER=0."""
+    if getattr(st, "native_banner_sent", False) or not getattr(st, "native_on", False):
+        return
+    if os.environ.get("AIFORGE_CHAT_NATIVE_BANNER", "1") in ("0", "false"):
+        return
+    st.native_banner_sent = True
+    try:
+        from ._native import select_native_tools
+        _mode = ("plan" if st.plan_mode else
+                 "analyze" if st.analyze_mode else "act")
+        _ntools = len(select_native_tools(
+            getattr(st, "convo", None), mode=_mode,
+            builder=getattr(st, "builder", "") or "",
+            session_id=getattr(st, "session_id", None)))
+    except Exception:  # noqa: BLE001
+        _ntools = 0
+    yield {"type": "thought", "role": "system",
+           "text": f"🔌 native tool-calling active ({_ntools} tools)"}
 
 
 def _compact_on_request(st, role, complete_fn, session_id):
@@ -259,6 +264,9 @@ def _step_prologue(st, n, _cwd, role, complete_fn, session_id, builder):
     st.step_n = n
     yield from _compact_on_request(st, role, complete_fn, session_id)
     yield from _condense_and_report(st, role, complete_fn, session_id, st.meter)
+    # Counted after the drain and the condense, on the convo about to go out:
+    # the prelude missed a steer naming Jira and counted turns the condense dropped.
+    yield from _native_banner(st)
     if getattr(st, "ctx_stop", False) and not getattr(st, "ctx_restarted", False):
         # Once, before stopping: start over from a fresh context holding the
         # handoff (goal, task board, what was done, what failed).

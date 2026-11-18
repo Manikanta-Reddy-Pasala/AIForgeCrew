@@ -37,11 +37,41 @@ _CUE_TAILS = (
 )
 
 
-def _cue_body(content: str) -> str:
-    text = content or ""
+def _strip_server_tail(text: str) -> str:
+    """The text before the first server-appended block, or the text itself."""
+    head = text or ""
+    cut = None
     for mark in _CUE_TAILS:
-        text = text.split(mark)[0]
-    return text
+        i = head.find(mark)
+        if i >= 0 and (cut is None or i < cut):
+            cut = i
+    return head if cut is None else head[:cut]
+
+
+def _cue_body(content: str) -> str:
+    """User words for tool selection.
+
+    The interpreted-request, deliverable, and resume boilerplate quote the
+    catalog, so they are not cues. A steer or a rejection typed after that
+    block is the person's words, and so is the original request a resume
+    quotes. Both stay. The quote is stripped the same way, so a restatement
+    saved inside it cannot bring the catalog back."""
+    text = content or ""
+    quoted = ""
+    try:
+        from aiforge_core.runtime.chat_resume import quoted_request
+        quoted = _strip_server_tail(quoted_request(text))
+    except Exception:  # noqa: BLE001 — tool choice must not break the turn
+        quoted = ""
+    head = _strip_server_tail(text)
+    tail = text[len(head):]
+    parts = [head]
+    if quoted and quoted not in head:
+        parts.append(quoted)
+    for segment in tail.split("\n\n"):
+        if segment.lstrip().startswith(_USER_SEGMENT):
+            parts.append(segment)
+    return "\n\n".join(p for p in parts if p and p.strip())
 
 
 def _convo_text(convo) -> str:
