@@ -175,6 +175,27 @@ def memory_project_put(name: str, body: _TextBody) -> dict:
     return res
 
 
+@router.post("/api/memory/projects/compact-all")
+def memory_projects_compact_all() -> dict:
+    """Compact every project's memory now, then clean the shared memory store
+    (merge duplicates, shorten stored vectors, give the space back)."""
+    from aiforge_core.memory import projects
+    out: dict = {"projects": projects.compact_all()}
+    try:
+        from aiforge_core.memory import backend_select
+        if backend_select.memory_backend() == "sqlite":
+            from aiforge_core.memory import sqlite_memory
+            out["dedupe"] = sqlite_memory.dedupe()
+            out["storage"] = sqlite_memory.compact_storage()
+    except Exception as exc:  # noqa: BLE001 — the projects part already ran
+        out["store_error"] = str(exc)
+    res = out["projects"].values()
+    out["compacted"] = sum(1 for r in res if isinstance(r, dict) and r.get("compacted"))
+    out["saved_chars"] = sum(max(0, (r.get("chars_before") or 0) - (r.get("chars_after") or r.get("chars_before") or 0))
+                             for r in res if isinstance(r, dict))
+    return out
+
+
 @router.post("/api/memory/projects/{name}/compact")
 def memory_project_compact(name: str, force: bool = True) -> dict:
     """Sweep stale facts and fold the brief into a shorter one. The previous

@@ -897,6 +897,20 @@ def compact(slug: str, *, force: bool = False) -> dict:
     return out
 
 
+def compact_all(min_chars: int = 2000) -> dict:
+    """Compact every registered project now (the "Compact all" button): each
+    brief of at least ``min_chars`` is folded whatever its size against the
+    cap; smaller ones only get the stale sweep."""
+    done: dict = {}
+    for slug in list(registered()):
+        try:
+            big = len(_knowledge(slug) or "") >= min_chars
+        except Exception:  # noqa: BLE001
+            big = False
+        done[slug] = _quiet(lambda s_=slug, f_=big: compact(s_, force=f_))
+    return done
+
+
 def compact_over_cap() -> dict:
     """The periodic pass: every registered project, stale sweep always,
     compaction once a brief passes ``compact_at()`` (85% of the cap)."""
@@ -1030,6 +1044,6 @@ __all__ = [
     "slug_for", "register", "registered", "entry", "open_project", "sync",
     "sync_for_repo", "ingest_instructions", "find_stale", "sweep_stale",
     "stale_list", "stale_restore", "stale_delete", "compact",
-    "compact_over_cap", "read", "save", "promote", "forget", "summary",
+    "compact_all", "compact_over_cap", "read", "save", "promote", "forget", "summary",
     "memory_cap", "repo_memory_path",
 ]

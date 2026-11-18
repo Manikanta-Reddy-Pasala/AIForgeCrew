@@ -156,6 +156,33 @@ export default function Projects() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPath]);
 
+  const [compacting, setCompacting] = useState<string>('');   // a slug, 'all', or ''
+
+  async function compactOne(p: Project) {
+    const key = p.slug || p.name;
+    setCompacting(key);
+    try {
+      const r = await projectsApi.compact(key);
+      if (r.compacted) toast.success(`${p.name}: memory ${r.chars_before ?? '?'} → ${r.chars_after ?? '?'} chars`);
+      else toast.info(`${p.name}: ${r.error || 'nothing to compact'}${r.stale ? ` · ${r.stale} stale moved` : ''}`);
+      await load();
+    } catch (e: any) { toast.error(e.message); }
+    finally { setCompacting(''); }
+  }
+
+  async function compactAll() {
+    if (!window.confirm('Compact the memory of every project now?\n\nEach brief is summarized '
+      + '(the previous version is archived), duplicates are merged and the store is shrunk.')) return;
+    setCompacting('all');
+    try {
+      const r = await projectsApi.compactAll();
+      toast.success(`Compacted ${r.compacted} project(s), ${r.saved_chars} chars saved`
+        + (r.dedupe ? ` · ${r.dedupe.removed} duplicate(s) merged` : ''));
+      await load();
+    } catch (e: any) { toast.error(e.message); }
+    finally { setCompacting(''); }
+  }
+
   async function remove(p: Project) {
     if (!window.confirm(`Remove “${p.name}” from your projects?\n\nIts chats and memory are kept. `
       + 'You can add it again with Add project.')) return;
@@ -194,7 +221,13 @@ export default function Projects() {
 
   return (
     <div className="projects-page projects-list-page">
-      <div className="projects-list-title">Projects</div>
+      <div className="projects-list-title" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span style={{ flex: 1 }}>Projects</span>
+        <button type="button" className="ghost sm" onClick={compactAll} disabled={!!compacting}
+                title="Summarize every project's memory, merge duplicates and shrink the store">
+          {compacting === 'all' ? 'Compacting…' : 'Compact all'}
+        </button>
+      </div>
       <div className="projects-list">
         {data === null && <div className="projects-row muted">Loading…</div>}
         {mine.map(p => (
@@ -207,6 +240,14 @@ export default function Projects() {
                 {p.memory_chars ? ` · ${memoryLabel(p)}` : ''}
               </span>
             </button>
+            {!!p.memory_chars && (
+              <button type="button" className="ghost sm" onClick={() => compactOne(p)}
+                      disabled={!!compacting}
+                      title="Summarize this project's memory now (the previous version is archived)"
+                      aria-label={`Compact memory of ${p.name}`}>
+                {compacting === (p.slug || p.name) ? 'Compacting…' : 'Compact'}
+              </button>
+            )}
             <button type="button" className="projects-row-x" onClick={() => remove(p)}
                     title="Remove from your projects (chats and memory are kept)"
                     aria-label={`Remove ${p.name}`}>✕</button>

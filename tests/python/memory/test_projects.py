@@ -455,3 +455,26 @@ def test_a_summary_over_the_cap_is_cut_at_a_paragraph(env, monkeypatch):
     out = projects._fit(text, 2000)
     assert len(out) <= 2000 and out.endswith("a\n")
     assert projects._fit("short", 2000) == "short"
+
+
+def test_compact_all_folds_every_big_brief(env, monkeypatch):
+    from aiforge_core.memory import md_store, projects
+    from aiforge_core.memory.md_store import _compact_summarize
+    big = projects.open_project(str(env / "shop"))["slug"]
+    for i in range(80):
+        md_store._brief_upsert("shop", f"Rule {i}: batch {i} settles after region {i} closes")
+    monkeypatch.setattr(_compact_summarize, "_summarize_notes", lambda blocks, role: "Batches settle after close.")
+    res = projects.compact_all(min_chars=500)
+    assert res[big]["compacted"] is True
+
+
+def test_compact_all_route(env, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from aiforge_core.api.routes import projects as route
+    from aiforge_core.memory import projects
+    monkeypatch.setattr(projects, "compact_all",
+                        lambda: {"a": {"compacted": True, "chars_before": 900, "chars_after": 300}, "b": None})
+    app = FastAPI(); app.include_router(route.router)
+    r = TestClient(app).post("/api/memory/projects/compact-all").json()
+    assert r["compacted"] == 1 and r["saved_chars"] == 600

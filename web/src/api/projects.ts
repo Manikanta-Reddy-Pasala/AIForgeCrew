@@ -83,6 +83,10 @@ export const projectsApi = {
     j<{ ok: boolean; compacted?: boolean; stale?: number; error?: string;
         chars_before?: number; chars_after?: number }>(
       `/memory/projects/${enc(name)}/compact`, { method: 'POST' }),
+  compactAll: () =>
+    j<{ compacted: number; saved_chars: number; projects: Record<string, unknown>;
+        dedupe?: { removed: number }; storage?: { rewritten: number; vacuumed: boolean } }>(
+      '/memory/projects/compact-all', { method: 'POST' }),
   promote: (name: string, text: string) =>
     j<{ ok: boolean; moved: number }>(`/memory/projects/${enc(name)}/promote`, {
       method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ text }),
