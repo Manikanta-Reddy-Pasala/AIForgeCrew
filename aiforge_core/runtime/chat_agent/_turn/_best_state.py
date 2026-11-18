@@ -110,7 +110,10 @@ def _fresh_fails(st, k: str, info: dict) -> "int | None":
                          str(getattr(st, "cwd", "") or "."), timeout=600)
         out = _ANSI.sub("", out or "")
         if not _TESTS_RAN.search(out):
-            return None
+            # Code that no longer builds is worse than any state whose tests
+            # ran: a Kotlin run gave up on an unresolved import and handed
+            # back code that did not compile (0/51; its best state had run).
+            return _NO_BUILD if (code not in (0, None) and _BROKEN_BUILD.search(out)) else None
         return 0 if code == 0 and _fail_count(out) == 0 else max(1, _fail_count(out))
     except Exception:  # noqa: BLE001
         return None
@@ -135,19 +138,34 @@ def _restore(b: dict) -> bool:
     return True
 
 
+#: The fail count given to code that no longer builds.
+_NO_BUILD = 10 ** 6
+#: A build that stopped before any test ran: a compiler error, any language.
+_BROKEN_BUILD = re.compile(
+    r"COMPILATION ERROR|Compilation failure|Task :\S*[cC]ompile\S* FAILED|could not compile|"
+    r"cannot find symbol|Unresolved reference|^e: (?:file:)?/|error\[E\d{4}\]|error TS\d+:|"
+    r"error CS\d+:|SyntaxError:|IndentationError:|ImportError while importing|"
+    r"undefined reference to|^\S+\.(?:c|cc|cpp|h|hpp|go):\d+:\d+: error|"
+    r"^\S+\.go:\d+:\d+: ", re.M)
+
+
 #: A test program that died, not one that reported failures.
 _CRASH = re.compile(r"Segmentation fault|Floating point exception|core dumped|Aborted|"
                     r"Bus error|Illegal instruction|stack overflow|panicked at .*SIGSEGV", re.I)
 
 
 def _crashes(cmd: str, cwd: str) -> "bool | None":
-    """``cmd`` run in ``cwd`` crashed (signal exit or crash text); None when it
-    could not be run."""
+    """``cmd`` run in ``cwd`` crashed (signal exit or crash text) or no longer
+    builds (a compiler error before any test ran); None when it could not be run."""
     try:
         from ._done_watch import _run
         code, out = _run(_PIPE.sub("", cmd).strip(), cwd, timeout=600)
     except Exception:  # noqa: BLE001
         return None
+    if code is not None and code != 0 and _BROKEN_BUILD.search(out or ""):
+        from ._outcomes import _TESTS_RAN
+        if not _TESTS_RAN.search(out or ""):
+            return True                    # no longer builds: as lost as a crash
     return (code is not None and (code >= 128 or code < 0)) or bool(_CRASH.search(out or ""))
 
 
@@ -200,7 +218,7 @@ def _revert_crash(st):
     st.best_restored = (key_of(cmd), "no crash", "crash")
     yield {"type": "thought", "role": "system",
            "text": f"↩ gave back the original code of {len(files)} file(s): after this "
-                   f"turn's changes `{key_of(cmd)[:80]}` crashes, and it did not before"
+                   f"turn's changes `{key_of(cmd)[:80]}` crashes or does not build, and it did not before"
                    + (f" (the changed version is kept: `git stash apply {kept_sha[:12]}`)"
                       if kept_sha else "")}
 
@@ -275,9 +293,10 @@ def restore_if_worse(st):
             if now is None or now <= b["fails"]:
                 continue
             if _restore(b):
+                now_s = "the code does not build" if now >= _NO_BUILD else f"{now} now"
                 yield {"type": "thought", "role": "system",
                        "text": f"↩ restored the best tested state of this turn: `{k[:90]}` had "
-                               f"{b['fails']} failing there and {now} now"}
+                               f"{b['fails']} failing there and {now_s}"}
                 st.best_restored = (k, b["fails"], now)
             return
     except Exception:  # noqa: BLE001
